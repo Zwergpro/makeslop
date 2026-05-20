@@ -1,16 +1,21 @@
-// Command makeslop is the CLI entry point for the makeslop workspace registry.
-// Running it bare looks up the cache directory for the current workspace and
-// prints the path; `makeslop init` registers the current directory.
+// Command makeslop is the CLI entry point: bare `makeslop` launches docker;
+// `init` registers the cwd. Container `exit N` propagates as host `exit N`.
 package main
 
 import (
 	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"syscall"
 
 	"github.com/spf13/cobra"
 
+	"github.com/Zwergpro/makeslop/internal/config"
+	"github.com/Zwergpro/makeslop/internal/docker"
 	"github.com/Zwergpro/makeslop/internal/workspace"
 )
 
@@ -18,8 +23,7 @@ import (
 // stderr; main() should exit non-zero without reprinting.
 var errSilent = errors.New("makeslop: silent error already reported")
 
-// resolvePwd returns the absolute, symlink-resolved cwd — the form
-// workspace.Workspaces requires.
+// resolvePwd returns the absolute, EvalSymlinks-resolved cwd required by workspace.Workspaces.
 func resolvePwd() (string, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -36,12 +40,9 @@ func resolvePwd() (string, error) {
 	return resolved, nil
 }
 
-// newRootCmd builds the cobra tree rooted at `makeslop`, backed by baseDir.
 func newRootCmd(baseDir string) *cobra.Command {
 	ws := workspace.New(baseDir)
 
-	// SilenceErrors on the root propagates to subcommands, so main() must
-	// reprint any non-errSilent error itself.
 	rootCmd := &cobra.Command{
 		Use:           "makeslop",
 		Short:         "Run docker-based commands with per-workspace cache",
@@ -53,7 +54,7 @@ func newRootCmd(baseDir string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			workspaceDir, err := ws.Lookup(pwd)
+			workspaceRoot, workspaceDir, err := ws.Lookup(pwd)
 			if errors.Is(err, workspace.ErrNotRegistered) {
 				fmt.Fprintf(cmd.ErrOrStderr(),
 					"makeslop: no workspace registered for %s; run 'makeslop init' to register it\n",
@@ -63,7 +64,27 @@ func newRootCmd(baseDir string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Fprintln(cmd.OutOrStdout(), workspaceDir)
+			s, err := config.Load(baseDir)
+			if err != nil {
+				return err
+			}
+			// ProjectRoot must be the registered ancestor (workspaceRoot), not pwd:
+			// running bare makeslop from a subdir must still mount the whole project.
+			spec := docker.BuildSpec(docker.Options{
+				ProjectRoot:   workspaceRoot,
+				WorkspaceName: filepath.Base(workspaceDir),
+				BaseDir:       baseDir,
+				Image:         s.Image,
+				Command:       s.Shell,
+			})
+			if err := docker.Run(cmd.Context(), spec); err != nil {
+				if errors.Is(err, docker.ErrNoTTY) {
+					fmt.Fprintln(cmd.ErrOrStderr(),
+						"makeslop: stdin/stdout must be a TTY; makeslop is interactive-only")
+					return errSilent
+				}
+				return err
+			}
 			return nil
 		},
 	}
@@ -76,6 +97,9 @@ func newRootCmd(baseDir string) *cobra.Command {
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			pwd, err := resolvePwd()
 			if err != nil {
+				return err
+			}
+			if err := config.Bootstrap(baseDir); err != nil {
 				return err
 			}
 			workspaceDir, err := ws.Init(pwd)
@@ -91,18 +115,47 @@ func newRootCmd(baseDir string) *cobra.Command {
 	return rootCmd
 }
 
+// runWithExitCode maps an Execute() error to a host exit code: *exec.ExitError
+// passes through (signal-killed -> 128+signum), errSilent -> 1 with no reprint, other errors -> 1 prefixed "makeslop: ".
+func runWithExitCode(baseDir string, stdout, stderr io.Writer, args []string) int {
+	cmd := newRootCmd(baseDir)
+	cmd.SetArgs(args)
+	cmd.SetOut(stdout)
+	cmd.SetErr(stderr)
+	err := cmd.Execute()
+	if err == nil {
+		return 0
+	}
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		code := ee.ExitCode()
+		if code >= 0 {
+			return code
+		}
+		if ws, ok := ee.ProcessState.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
+			return 128 + int(ws.Signal())
+		}
+		return 255
+	}
+	if !errors.Is(err, errSilent) {
+		fmt.Fprintf(stderr, "makeslop: %v\n", err)
+	}
+	return 1
+}
+
 func main() {
-	baseDir, err := workspace.DefaultBaseDir()
+	baseDir, err := config.DefaultBaseDir()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "makeslop: %v\n", err)
 		os.Exit(1)
 	}
-	if err := newRootCmd(baseDir).Execute(); err != nil {
-		// errSilent => RunE already printed the hint; otherwise reprint here
-		// because SilenceErrors is inherited from root.
-		if !errors.Is(err, errSilent) {
-			fmt.Fprintf(os.Stderr, "makeslop: %v\n", err)
-		}
+	// Resolve symlinks so docker.Options invariants hold. Missing-dir is fine
+	// on first run; other errors (loop, permission) must surface.
+	if resolved, err := filepath.EvalSymlinks(baseDir); err == nil {
+		baseDir = resolved
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		fmt.Fprintf(os.Stderr, "makeslop: evaluate symlinks for %s: %v\n", baseDir, err)
 		os.Exit(1)
 	}
+	os.Exit(runWithExitCode(baseDir, os.Stdout, os.Stderr, os.Args[1:]))
 }

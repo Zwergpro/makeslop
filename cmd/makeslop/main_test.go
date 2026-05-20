@@ -7,13 +7,18 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strings"
 	"testing"
 
+	"github.com/Zwergpro/makeslop/internal/config"
+	"github.com/Zwergpro/makeslop/internal/docker"
 	"github.com/Zwergpro/makeslop/internal/workspace"
 )
+
+// Tests in this file swap docker.dockerBinary and docker.ttyCheck via the
+// package-level SetForTest helpers. Do not add t.Parallel() to tests that
+// touch those swaps — the underlying state is process-global.
 
 func runCmd(t *testing.T, baseDir string, args ...string) (stdout, stderr string, err error) {
 	t.Helper()
@@ -91,8 +96,6 @@ func listFiles(t *testing.T, root string) []string {
 	return paths
 }
 
-// evalSymlinks matches the canonical key the CLI stores in settings; see
-// "Invariants" in CLAUDE.md.
 func evalSymlinks(t *testing.T, dir string) string {
 	t.Helper()
 	resolved, err := filepath.EvalSymlinks(dir)
@@ -190,7 +193,36 @@ func TestInit_FromScratch(t *testing.T) {
 	}
 }
 
-func TestRoot_AfterInit_ReturnsSamePath(t *testing.T) {
+func installDockerShim(t *testing.T, exitCode int) string {
+	t.Helper()
+	docker.SkipNonPOSIX(t, "docker shim requires POSIX shell; makeslop is POSIX-only")
+	shim, record := docker.WriteShim(t, t.TempDir(), exitCode)
+	t.Cleanup(docker.SetDockerBinaryForTest(shim))
+	return record
+}
+
+func stubTTY(t *testing.T, ok bool) {
+	t.Helper()
+	t.Cleanup(docker.SetTTYCheckForTest(func() bool { return ok }))
+}
+
+func readArgv(t *testing.T, recordPath string) []string {
+	t.Helper()
+	data, err := os.ReadFile(recordPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		t.Fatalf("read argv record: %v", err)
+	}
+	if len(data) == 0 {
+		return nil
+	}
+	return strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+}
+
+// Milestone-1 regression guard: bare makeslop must not print the cache path on stdout.
+func TestRoot_AfterInit_LaunchesDocker(t *testing.T) {
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
 	t.Chdir(pwd)
@@ -199,21 +231,227 @@ func TestRoot_AfterInit_ReturnsSamePath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("init failed: %v", err)
 	}
-	initPath := strings.TrimSpace(initOut)
+	workspaceDir := strings.TrimSpace(initOut)
+
+	record := installDockerShim(t, 0)
+	stubTTY(t, true)
 
 	snapBefore := snapshotTree(t, baseDir)
-
-	rootOut, stderr, err := runCmd(t, baseDir)
+	stdout, stderr, err := runCmd(t, baseDir)
 	if err != nil {
 		t.Fatalf("root failed: %v; stderr=%q", err, stderr)
 	}
-	rootPath := strings.TrimSpace(rootOut)
-	if rootPath != initPath {
-		t.Errorf("root path %q != init path %q", rootPath, initPath)
+	if stdout != "" {
+		t.Errorf("bare makeslop must not print on stdout (milestone-1 path was removed); got %q", stdout)
 	}
-
 	snapAfter := snapshotTree(t, baseDir)
 	assertSnapshotsEqual(t, snapBefore, snapAfter)
+
+	resolvedPwd := evalSymlinks(t, pwd)
+	want := docker.BuildSpec(docker.Options{
+		ProjectRoot:   resolvedPwd,
+		WorkspaceName: filepath.Base(workspaceDir),
+		BaseDir:       baseDir,
+		Image:         "claudebox",
+		Command:       "/bin/zsh",
+	}).Args()
+	got := readArgv(t, record)
+	if len(got) != len(want) {
+		t.Fatalf("argv length mismatch: got %d %v, want %d %v", len(got), got, len(want), want)
+	}
+	for i, w := range want {
+		if got[i] != w {
+			t.Errorf("argv[%d] = %q, want %q", i, got[i], w)
+		}
+	}
+}
+
+func TestRoot_FromSubdirectory_MountsRegisteredAncestor(t *testing.T) {
+	baseDir := t.TempDir()
+	parent := t.TempDir()
+	t.Chdir(parent)
+	initOut, _, err := runCmd(t, baseDir, "init")
+	if err != nil {
+		t.Fatalf("parent init failed: %v", err)
+	}
+	workspaceDir := strings.TrimSpace(initOut)
+
+	sub := filepath.Join(parent, "deeply", "nested")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatalf("mkdir sub: %v", err)
+	}
+	t.Chdir(sub)
+
+	record := installDockerShim(t, 0)
+	stubTTY(t, true)
+
+	if _, _, err := runCmd(t, baseDir); err != nil {
+		t.Fatalf("root failed: %v", err)
+	}
+
+	resolvedParent := evalSymlinks(t, parent)
+	wantSourceFragment := `type=bind,source=` + resolvedParent + `,target=/workspace/` + filepath.Base(workspaceDir)
+	argv := readArgv(t, record)
+	var found bool
+	for _, a := range argv {
+		if a == wantSourceFragment {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("project-root mount not found in argv\nwant: %q\nargv: %v", wantSourceFragment, argv)
+	}
+}
+
+func TestRoot_Unregistered_DoesNotInvokeDocker(t *testing.T) {
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	record := installDockerShim(t, 0)
+	stubTTY(t, true)
+
+	_, stderr, err := runCmd(t, baseDir)
+	if err == nil {
+		t.Fatalf("expected error from unregistered bare makeslop, got nil")
+	}
+	if !strings.Contains(stderr, "no workspace registered") {
+		t.Errorf("stderr missing hint: %q", stderr)
+	}
+	if argv := readArgv(t, record); argv != nil {
+		t.Errorf("docker shim must not be invoked for unregistered workspace; got argv=%v", argv)
+	}
+}
+
+// Exercises the production ttyCheck (pipes in `go test` are not TTYs).
+func TestRoot_NoTTY_FailsBeforeDocker(t *testing.T) {
+	docker.SkipNonPOSIX(t, "POSIX-only invariant per CLAUDE.md")
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	record := installDockerShim(t, 0)
+	// Do NOT stub ttyCheck — the real predicate returns false under go test.
+
+	_, stderr, err := runCmd(t, baseDir)
+	if err == nil {
+		t.Fatalf("expected error when stdin/stdout are not TTYs, got nil")
+	}
+	if !errors.Is(err, errSilent) {
+		t.Errorf("expected errSilent (cobra layer wrote tailored message), got %v", err)
+	}
+	if !strings.Contains(stderr, "TTY") {
+		t.Errorf("stderr missing TTY hint: %q", stderr)
+	}
+	if argv := readArgv(t, record); argv != nil {
+		t.Errorf("docker shim must not be invoked when TTY check fails; got argv=%v", argv)
+	}
+}
+
+func TestRoot_ExitCodePropagation(t *testing.T) {
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	installDockerShim(t, 42)
+	stubTTY(t, true)
+
+	var stdout, stderr bytes.Buffer
+	code := runWithExitCode(baseDir, &stdout, &stderr, nil)
+	if code != 42 {
+		t.Errorf("runWithExitCode = %d, want 42; stderr=%q", code, stderr.String())
+	}
+}
+
+// POSIX-only: syscall.WaitStatus shape and signal numbering are Unix.
+func TestRunWithExitCode_SignalKilledMapsTo128PlusSignum(t *testing.T) {
+	docker.SkipNonPOSIX(t, "POSIX-only invariant per CLAUDE.md; WaitStatus.Signaled is Unix-shaped")
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	// SIGKILL -> 128 + 9 = 137.
+	dir := t.TempDir()
+	shim := filepath.Join(dir, "shim")
+	script := "#!/bin/sh\nkill -KILL $$\n"
+	if err := os.WriteFile(shim, []byte(script), 0o755); err != nil {
+		t.Fatalf("write shim: %v", err)
+	}
+	t.Cleanup(docker.SetDockerBinaryForTest(shim))
+	stubTTY(t, true)
+
+	var stdout, stderr bytes.Buffer
+	code := runWithExitCode(baseDir, &stdout, &stderr, nil)
+	if code != 137 {
+		t.Errorf("runWithExitCode = %d, want 137 (128+SIGKILL); stderr=%q", code, stderr.String())
+	}
+}
+
+// Guards that settings.json values reach the docker invocation, not just compiled-in defaults.
+func TestRoot_CustomImageAndShell_FlowFromSettings(t *testing.T) {
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	s, err := config.Load(baseDir)
+	if err != nil {
+		t.Fatalf("load settings: %v", err)
+	}
+	s.Image = "my-img:tag"
+	s.Shell = "/bin/dash"
+	if err := config.Save(baseDir, s); err != nil {
+		t.Fatalf("save settings: %v", err)
+	}
+
+	record := installDockerShim(t, 0)
+	stubTTY(t, true)
+
+	if _, _, err := runCmd(t, baseDir); err != nil {
+		t.Fatalf("root failed: %v", err)
+	}
+	argv := readArgv(t, record)
+	if len(argv) < 2 {
+		t.Fatalf("argv too short: %v", argv)
+	}
+	if argv[len(argv)-2] != "my-img:tag" {
+		t.Errorf("image arg = %q, want %q", argv[len(argv)-2], "my-img:tag")
+	}
+	if argv[len(argv)-1] != "/bin/dash" {
+		t.Errorf("shell arg = %q, want %q", argv[len(argv)-1], "/bin/dash")
+	}
+}
+
+// Locks the "makeslop: " prefix path for non-ExitError, non-errSilent failures.
+func TestRunWithExitCode_NonExitErrorPrintsPrefix(t *testing.T) {
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+	if err := os.WriteFile(filepath.Join(baseDir, "settings.json"), []byte("{not json"), 0o644); err != nil {
+		t.Fatalf("seed corrupt settings: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := runWithExitCode(baseDir, &stdout, &stderr, nil)
+	if code != 1 {
+		t.Errorf("exit code = %d, want 1", code)
+	}
+	if !strings.HasPrefix(stderr.String(), "makeslop: ") {
+		t.Errorf("stderr missing 'makeslop: ' prefix: %q", stderr.String())
+	}
 }
 
 func TestInit_Twice_Idempotent(t *testing.T) {
@@ -268,13 +506,8 @@ func TestInit_FromSubdir_ReusesParent(t *testing.T) {
 	assertSnapshotsEqual(t, snapBefore, snapAfter)
 }
 
-// TestInit_SymlinkInvariant guards that initialising via a symlinked alias of
-// an already-registered directory is a byte-equal no-op on settings.json.
 func TestInit_SymlinkInvariant(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		// makeslop is POSIX-only; see "Invariants" in CLAUDE.md.
-		t.Skip("symlinks unreliable on Windows; makeslop is POSIX-only")
-	}
+	docker.SkipNonPOSIX(t, "symlinks unreliable on Windows; makeslop is POSIX-only")
 	baseDir := t.TempDir()
 	real := t.TempDir()
 
@@ -367,9 +600,7 @@ func TestRoot_CorruptSettings_ReportsError(t *testing.T) {
 	}
 }
 
-// TestInit_CorruptSettings_ReportsError is the regression guard for the
-// SilenceErrors-on-root inheritance bug: init's failure must not be errSilent
-// so main() prints it.
+// Regression guard for the SilenceErrors-on-root cobra inheritance bug.
 func TestInit_CorruptSettings_ReportsError(t *testing.T) {
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
@@ -394,8 +625,44 @@ func TestInit_CorruptSettings_ReportsError(t *testing.T) {
 	}
 }
 
-// TestRoot_NotRegistered_ReturnsErrSilent locks the hint-path contract: RunE
-// writes the hint and returns errSilent so main() doesn't reprint.
+// Bootstrap contract: artifacts exist after first init; second init is byte-equal.
+func TestInit_BootstrapsAgentArtifacts(t *testing.T) {
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
+		t.Fatalf("first init: %v", err)
+	}
+
+	for _, sub := range []string{".codex", ".claude", "workspaces"} {
+		info, err := os.Stat(filepath.Join(baseDir, sub))
+		if err != nil {
+			t.Errorf("missing %s: %v", sub, err)
+			continue
+		}
+		if !info.IsDir() {
+			t.Errorf("%s is not a directory", sub)
+		}
+	}
+
+	claudeJSON := filepath.Join(baseDir, ".claude.json")
+	data, err := os.ReadFile(claudeJSON)
+	if err != nil {
+		t.Fatalf("read .claude.json: %v", err)
+	}
+	if !bytes.Equal(data, []byte("{}\n")) {
+		t.Errorf(".claude.json content = %q, want %q", data, "{}\n")
+	}
+
+	snapBefore := snapshotTree(t, baseDir)
+	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
+		t.Fatalf("second init: %v", err)
+	}
+	snapAfter := snapshotTree(t, baseDir)
+	assertSnapshotsEqual(t, snapBefore, snapAfter)
+}
+
 func TestRoot_NotRegistered_ReturnsErrSilent(t *testing.T) {
 	baseDir := t.TempDir()
 	pwd := t.TempDir()

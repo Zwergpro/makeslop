@@ -16,12 +16,57 @@
 ## Usage
 
 - `makeslop init` — registers the current working directory as a workspace. If pwd is already a subdirectory of a registered workspace, the existing workspace's cache path is returned (idempotent, no mutation). Otherwise a new entry is added to `settings.json`, the cache directory is created, and its absolute path is printed.
-- `makeslop` — prints the cache path for the current working directory by walking ancestors and looking up the first registered workspace. Exits non-zero with a hint to run `makeslop init` if no ancestor is registered. Never writes to disk.
+- `makeslop` — from within a registered workspace, launches an interactive, project-scoped docker container with the workspace source tree and per-workspace + global agent config (`.claude/`, `.codex/`, `CLAUDE.md`, `docs/`) mounted in. Exits with the container's exit code. Refuses to launch when stdin or stdout is not a TTY. If no ancestor is registered, exits non-zero with a hint to run `makeslop init`.
+
+### Requirements
+
+- The `docker` CLI must be on `PATH`. `makeslop` shells out to it; there is no Go-side docker SDK dependency.
+
+### Container layout
+
+Bare `makeslop` runs (workdir `/workspace/<name>`, where `<name>` is the registered workspace's cache-dir basename):
+
+| Host                                                  | Container                          |
+| ----------------------------------------------------- | ---------------------------------- |
+| `<projectRoot>`                                       | `/workspace/<name>`                |
+| `~/.makeslop/.claude/`                                | `/home/user/.claude/`              |
+| `~/.makeslop/.claude.json`                            | `/home/user/.claude.json`          |
+| `~/.makeslop/.codex/`                                 | `/home/user/.codex/`               |
+| `~/.makeslop/workspaces/<name>/.claude/`              | `/workspace/<name>/.claude/`       |
+| `~/.makeslop/workspaces/<name>/.codex/`               | `/workspace/<name>/.codex/`        |
+| `~/.makeslop/workspaces/<name>/docs/`                 | `/workspace/<name>/docs/`          |
+| `~/.makeslop/workspaces/<name>/CLAUDE.md`             | `/workspace/<name>/CLAUDE.md`      |
+
+Security flags inside the container: `--tmpfs /tmp:size=100m`, `--cap-drop ALL`, `--security-opt no-new-privileges`. Mounts are emitted as `--mount type=bind,source=...,target=...` so paths containing `:` do not break parsing.
+
+### TTY policy
+
+`makeslop` is interactive-only. When stdin or stdout is not a TTY it exits non-zero with:
+
+```
+makeslop: stdin/stdout must be a TTY; makeslop is interactive-only
+```
+
+### Docker container settings
+
+The image and shell are configurable via `settings.json`. Defaults are `claudebox` and `/bin/zsh`:
+
+```json
+{
+    "version": 1,
+    "image": "claudebox",
+    "shell": "/bin/zsh",
+    "workspaces": { }
+}
+```
+
+Omitted or empty `image`/`shell` fields fall back to the defaults; existing `settings.json` files predating these keys keep working unchanged.
 
 ### Exit codes
 
-- `0` — success (path printed to stdout, or `init` registered/reused a project).
-- `1` — any failure: no workspace registered for pwd, corrupt `settings.json`, I/O error, etc. The reason is written to stderr.
+- `0` — success (`init` registered/reused a project, or the container exited cleanly).
+- container's exit code — bare `makeslop` propagates `exit N` from the container as the host's exit code.
+- `1` — any other failure: no workspace registered for pwd, no TTY available, corrupt `settings.json`, I/O error, etc. The reason is written to stderr.
 
 ### Path resolution
 

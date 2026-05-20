@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"io/fs"
 	"os"
@@ -12,10 +11,10 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Zwergpro/makeslop/internal/config"
 )
 
-// evalSymlinks satisfies the Lookup/Init precondition that pwd be
-// EvalSymlinks-resolved; see "Invariants" in CLAUDE.md.
 func evalSymlinks(t *testing.T, dir string) string {
 	t.Helper()
 	resolved, err := filepath.EvalSymlinks(dir)
@@ -25,182 +24,54 @@ func evalSymlinks(t *testing.T, dir string) string {
 	return resolved
 }
 
-func TestLoadSettings_MissingReturnsEmptyDefaults(t *testing.T) {
-	base := t.TempDir()
-	w := New(base)
-
-	s, err := w.loadSettings()
+func snapshotDir(t *testing.T, root string) map[string][]byte {
+	t.Helper()
+	snap := map[string][]byte{}
+	_, err := os.Stat(root)
+	if errors.Is(err, fs.ErrNotExist) {
+		return snap
+	}
 	if err != nil {
-		t.Fatalf("loadSettings: unexpected error: %v", err)
+		t.Fatalf("stat %s: %v", root, err)
 	}
-	if s.Version != currentVersion {
-		t.Errorf("Version = %d, want %d", s.Version, currentVersion)
+	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		snap[rel] = data
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk %s: %v", root, err)
 	}
-	if s.Workspaces == nil {
-		t.Error("Workspaces map is nil; want initialized empty map")
-	}
-	if len(s.Workspaces) != 0 {
-		t.Errorf("Workspaces len = %d, want 0", len(s.Workspaces))
-	}
-
-	if _, err := os.Stat(filepath.Join(base, settingsFile)); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("settings.json should not exist after load of missing file; stat err=%v", err)
-	}
+	return snap
 }
 
-func TestSaveLoadRoundTrip(t *testing.T) {
-	base := t.TempDir()
-	w := New(base)
-
-	want := &Settings{
-		Version: currentVersion,
-		Workspaces: map[string]Workspace{
-			"/workspace/makeslop": {
-				Name:      "makeslop-abcdef",
-				CreatedAt: time.Date(2026, 5, 20, 16, 45, 0, 0, time.UTC),
-			},
-			"/tmp/other": {
-				Name:      "other-123456",
-				CreatedAt: time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC),
-			},
-		},
+func snapshotsEqual(a, b map[string][]byte) bool {
+	if len(a) != len(b) {
+		return false
 	}
-
-	if err := w.saveSettings(want); err != nil {
-		t.Fatalf("saveSettings: %v", err)
-	}
-
-	got, err := w.loadSettings()
-	if err != nil {
-		t.Fatalf("loadSettings: %v", err)
-	}
-
-	if got.Version != want.Version {
-		t.Errorf("Version = %d, want %d", got.Version, want.Version)
-	}
-	if len(got.Workspaces) != len(want.Workspaces) {
-		t.Fatalf("Workspaces len = %d, want %d", len(got.Workspaces), len(want.Workspaces))
-	}
-	for k, wantWs := range want.Workspaces {
-		gotWs, ok := got.Workspaces[k]
+	for k, av := range a {
+		bv, ok := b[k]
 		if !ok {
-			t.Errorf("missing workspace %q after round-trip", k)
-			continue
+			return false
 		}
-		if gotWs.Name != wantWs.Name {
-			t.Errorf("workspace %q Name = %q, want %q", k, gotWs.Name, wantWs.Name)
-		}
-		if !gotWs.CreatedAt.Equal(wantWs.CreatedAt) {
-			t.Errorf("workspace %q CreatedAt = %v, want %v", k, gotWs.CreatedAt, wantWs.CreatedAt)
+		if !bytes.Equal(av, bv) {
+			return false
 		}
 	}
-}
-
-func TestSaveCreatesBaseDir(t *testing.T) {
-	parent := t.TempDir()
-	base := filepath.Join(parent, "nested", "deep", ".makeslop")
-	w := New(base)
-
-	s := &Settings{Version: currentVersion, Workspaces: map[string]Workspace{}}
-	if err := w.saveSettings(s); err != nil {
-		t.Fatalf("saveSettings: %v", err)
-	}
-
-	info, err := os.Stat(base)
-	if err != nil {
-		t.Fatalf("stat base dir: %v", err)
-	}
-	if !info.IsDir() {
-		t.Errorf("baseDir is not a directory")
-	}
-	if _, err := os.Stat(filepath.Join(base, settingsFile)); err != nil {
-		t.Errorf("settings.json missing after save: %v", err)
-	}
-}
-
-func TestLoadSettings_MalformedJSON(t *testing.T) {
-	base := t.TempDir()
-	w := New(base)
-
-	if err := os.WriteFile(filepath.Join(base, settingsFile), []byte("not-json{"), 0o644); err != nil {
-		t.Fatalf("seed bad settings file: %v", err)
-	}
-
-	_, err := w.loadSettings()
-	if err == nil {
-		t.Fatal("expected error from malformed JSON, got nil")
-	}
-	if errors.Is(err, os.ErrNotExist) {
-		t.Errorf("error should not be ErrNotExist: %v", err)
-	}
-	if !strings.Contains(err.Error(), "settings") {
-		t.Errorf("error should mention settings file context: %v", err)
-	}
-}
-
-func TestSaveLoadByteIdenticalForSameSettings(t *testing.T) {
-	base := t.TempDir()
-	w := New(base)
-
-	s := &Settings{
-		Version: currentVersion,
-		Workspaces: map[string]Workspace{
-			"/x/y": {
-				Name:      "y-aabbcc",
-				CreatedAt: time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC),
-			},
-		},
-	}
-
-	if err := w.saveSettings(s); err != nil {
-		t.Fatalf("first save: %v", err)
-	}
-	first, err := os.ReadFile(filepath.Join(base, settingsFile))
-	if err != nil {
-		t.Fatalf("read first: %v", err)
-	}
-
-	loaded, err := w.loadSettings()
-	if err != nil {
-		t.Fatalf("load: %v", err)
-	}
-	if err := w.saveSettings(loaded); err != nil {
-		t.Fatalf("second save: %v", err)
-	}
-	second, err := os.ReadFile(filepath.Join(base, settingsFile))
-	if err != nil {
-		t.Fatalf("read second: %v", err)
-	}
-
-	if !bytes.Equal(first, second) {
-		t.Errorf("settings.json bytes differ between equal saves\nfirst:\n%s\nsecond:\n%s", first, second)
-	}
-
-	var check Settings
-	if err := json.Unmarshal(second, &check); err != nil {
-		t.Errorf("saved file is not valid JSON: %v", err)
-	}
-}
-
-func TestLoadSettings_NullWorkspacesBecomesEmptyMap(t *testing.T) {
-	base := t.TempDir()
-	w := New(base)
-
-	if err := os.WriteFile(
-		filepath.Join(base, settingsFile),
-		[]byte(`{"version":1,"workspaces":null}`),
-		0o644,
-	); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
-
-	s, err := w.loadSettings()
-	if err != nil {
-		t.Fatalf("load: %v", err)
-	}
-	if s.Workspaces == nil {
-		t.Error("Workspaces must be non-nil even when JSON is null")
-	}
+	return true
 }
 
 func TestWorkspaceName(t *testing.T) {
@@ -298,62 +169,12 @@ func TestWorkspaceName_DifferentPathsDifferentHashes(t *testing.T) {
 	}
 }
 
-func snapshotDir(t *testing.T, root string) map[string][]byte {
-	t.Helper()
-	snap := map[string][]byte{}
-	_, err := os.Stat(root)
-	if errors.Is(err, os.ErrNotExist) {
-		return snap
-	}
-	if err != nil {
-		t.Fatalf("stat %s: %v", root, err)
-	}
-	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			return nil
-		}
-		rel, err := filepath.Rel(root, path)
-		if err != nil {
-			return err
-		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		snap[rel] = data
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("walk %s: %v", root, err)
-	}
-	return snap
-}
-
-func snapshotsEqual(a, b map[string][]byte) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for k, av := range a {
-		bv, ok := b[k]
-		if !ok {
-			return false
-		}
-		if !bytes.Equal(av, bv) {
-			return false
-		}
-	}
-	return true
-}
-
 func TestLookup_MissingSettingsReturnsErrNotRegistered(t *testing.T) {
 	base := t.TempDir()
 	w := New(base)
 
 	before := snapshotDir(t, base)
-	_, err := w.Lookup("/some/pwd")
+	_, _, err := w.Lookup("/some/pwd")
 	if !errors.Is(err, ErrNotRegistered) {
 		t.Fatalf("Lookup err = %v, want ErrNotRegistered", err)
 	}
@@ -361,7 +182,7 @@ func TestLookup_MissingSettingsReturnsErrNotRegistered(t *testing.T) {
 	if !snapshotsEqual(before, after) {
 		t.Errorf("Lookup mutated baseDir; before=%v after=%v", before, after)
 	}
-	if _, err := os.Stat(filepath.Join(base, settingsFile)); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(filepath.Join(base, config.SettingsFile)); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("settings.json must not exist after Lookup: %v", err)
 	}
 }
@@ -370,27 +191,27 @@ func TestLookup_NoMatchingAncestor(t *testing.T) {
 	base := t.TempDir()
 	w := New(base)
 
-	seed := &Settings{
-		Version: currentVersion,
-		Workspaces: map[string]Workspace{
+	seed := &config.Settings{
+		Version: config.CurrentVersion,
+		Workspaces: map[string]config.Workspace{
 			"/some/other/project": {Name: "project-abcdef", CreatedAt: time.Now().UTC()},
 		},
 	}
-	if err := w.saveSettings(seed); err != nil {
+	if err := config.Save(base, seed); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 
-	before, err := os.ReadFile(filepath.Join(base, settingsFile))
+	before, err := os.ReadFile(filepath.Join(base, config.SettingsFile))
 	if err != nil {
 		t.Fatalf("read before: %v", err)
 	}
 
-	_, err = w.Lookup("/totally/different/pwd")
+	_, _, err = w.Lookup("/totally/different/pwd")
 	if !errors.Is(err, ErrNotRegistered) {
 		t.Fatalf("Lookup err = %v, want ErrNotRegistered", err)
 	}
 
-	after, err := os.ReadFile(filepath.Join(base, settingsFile))
+	after, err := os.ReadFile(filepath.Join(base, config.SettingsFile))
 	if err != nil {
 		t.Fatalf("read after: %v", err)
 	}
@@ -404,21 +225,24 @@ func TestLookup_ExactPwdMatch(t *testing.T) {
 	w := New(base)
 
 	pwd := "/workspace/makeslop"
-	seed := &Settings{
-		Version: currentVersion,
-		Workspaces: map[string]Workspace{
+	seed := &config.Settings{
+		Version: config.CurrentVersion,
+		Workspaces: map[string]config.Workspace{
 			pwd: {Name: "makeslop-abcdef", CreatedAt: time.Now().UTC()},
 		},
 	}
-	if err := w.saveSettings(seed); err != nil {
+	if err := config.Save(base, seed); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 
-	got, err := w.Lookup(pwd)
+	matched, got, err := w.Lookup(pwd)
 	if err != nil {
 		t.Fatalf("Lookup: %v", err)
 	}
-	want := filepath.Join(base, workspacesDir, "makeslop-abcdef")
+	if matched != pwd {
+		t.Errorf("matched = %q, want %q", matched, pwd)
+	}
+	want := filepath.Join(base, config.WorkspacesDir, "makeslop-abcdef")
 	if got != want {
 		t.Errorf("Lookup = %q, want %q", got, want)
 	}
@@ -429,31 +253,34 @@ func TestLookup_ParentRegistered(t *testing.T) {
 	w := New(base)
 
 	parent := "/workspace/makeslop"
-	seed := &Settings{
-		Version: currentVersion,
-		Workspaces: map[string]Workspace{
+	seed := &config.Settings{
+		Version: config.CurrentVersion,
+		Workspaces: map[string]config.Workspace{
 			parent: {Name: "makeslop-abcdef", CreatedAt: time.Now().UTC()},
 		},
 	}
-	if err := w.saveSettings(seed); err != nil {
+	if err := config.Save(base, seed); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 
-	before, err := os.ReadFile(filepath.Join(base, settingsFile))
+	before, err := os.ReadFile(filepath.Join(base, config.SettingsFile))
 	if err != nil {
 		t.Fatalf("read before: %v", err)
 	}
 
-	got, err := w.Lookup(filepath.Join(parent, "internal", "workspace"))
+	matched, got, err := w.Lookup(filepath.Join(parent, "internal", "workspace"))
 	if err != nil {
 		t.Fatalf("Lookup: %v", err)
 	}
-	want := filepath.Join(base, workspacesDir, "makeslop-abcdef")
+	if matched != parent {
+		t.Errorf("matched = %q, want %q (ancestor, not subdir)", matched, parent)
+	}
+	want := filepath.Join(base, config.WorkspacesDir, "makeslop-abcdef")
 	if got != want {
 		t.Errorf("Lookup = %q, want %q", got, want)
 	}
 
-	after, err := os.ReadFile(filepath.Join(base, settingsFile))
+	after, err := os.ReadFile(filepath.Join(base, config.SettingsFile))
 	if err != nil {
 		t.Fatalf("read after: %v", err)
 	}
@@ -466,11 +293,11 @@ func TestLookup_CorruptSettingsReturnsWrappedError(t *testing.T) {
 	base := t.TempDir()
 	w := New(base)
 
-	if err := os.WriteFile(filepath.Join(base, settingsFile), []byte("{not json"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(base, config.SettingsFile), []byte("{not json"), 0o644); err != nil {
 		t.Fatalf("seed bad settings: %v", err)
 	}
 
-	_, err := w.Lookup("/any/pwd")
+	_, _, err := w.Lookup("/any/pwd")
 	if err == nil {
 		t.Fatal("expected error from corrupt settings, got nil")
 	}
@@ -497,7 +324,7 @@ func TestInit_FreshCreatesEverything(t *testing.T) {
 	}
 
 	wantName := workspaceName(pwd)
-	wantDir := filepath.Join(base, workspacesDir, wantName)
+	wantDir := filepath.Join(base, config.WorkspacesDir, wantName)
 	if got != wantDir {
 		t.Errorf("Init = %q, want %q", got, wantDir)
 	}
@@ -510,9 +337,33 @@ func TestInit_FreshCreatesEverything(t *testing.T) {
 		t.Errorf("workspace path is not a directory")
 	}
 
-	s, err := w.loadSettings()
+	for _, d := range []string{".claude", ".codex", "docs"} {
+		p := filepath.Join(wantDir, d)
+		di, err := os.Stat(p)
+		if err != nil {
+			t.Errorf("stat %s: %v", p, err)
+			continue
+		}
+		if !di.IsDir() {
+			t.Errorf("%s is not a directory", p)
+		}
+	}
+	claudeMd := filepath.Join(wantDir, "CLAUDE.md")
+	fi, err := os.Stat(claudeMd)
 	if err != nil {
-		t.Fatalf("loadSettings: %v", err)
+		t.Errorf("stat %s: %v", claudeMd, err)
+	} else {
+		if !fi.Mode().IsRegular() {
+			t.Errorf("%s is not a regular file", claudeMd)
+		}
+		if fi.Size() != 0 {
+			t.Errorf("%s size = %d, want 0", claudeMd, fi.Size())
+		}
+	}
+
+	s, err := config.Load(base)
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
 	}
 	ws, ok := s.Workspaces[pwd]
 	if !ok {
@@ -543,7 +394,7 @@ func TestInit_FromSubdirOfRegisteredWorkspaceIsNoOp(t *testing.T) {
 		t.Fatalf("Init parent: %v", err)
 	}
 
-	before, err := os.ReadFile(filepath.Join(base, settingsFile))
+	before, err := os.ReadFile(filepath.Join(base, config.SettingsFile))
 	if err != nil {
 		t.Fatalf("read before: %v", err)
 	}
@@ -561,7 +412,7 @@ func TestInit_FromSubdirOfRegisteredWorkspaceIsNoOp(t *testing.T) {
 		t.Errorf("Init from subdir = %q, want parent dir %q", got, parentDir)
 	}
 
-	after, err := os.ReadFile(filepath.Join(base, settingsFile))
+	after, err := os.ReadFile(filepath.Join(base, config.SettingsFile))
 	if err != nil {
 		t.Fatalf("read after: %v", err)
 	}
@@ -593,9 +444,9 @@ func TestInit_FromParentOfRegisteredRegistersNew(t *testing.T) {
 		t.Errorf("parent and child should have different cache dirs; both = %q", parentDir)
 	}
 
-	s, err := w.loadSettings()
+	s, err := config.Load(base)
 	if err != nil {
-		t.Fatalf("loadSettings: %v", err)
+		t.Fatalf("config.Load: %v", err)
 	}
 	if _, ok := s.Workspaces[child]; !ok {
 		t.Errorf("child %q missing from settings", child)
@@ -634,9 +485,9 @@ func TestInit_FromSiblingRegistersNew(t *testing.T) {
 		t.Errorf("siblings should have distinct cache dirs; both = %q", aDir)
 	}
 
-	s, err := w.loadSettings()
+	s, err := config.Load(base)
 	if err != nil {
-		t.Fatalf("loadSettings: %v", err)
+		t.Fatalf("config.Load: %v", err)
 	}
 	if len(s.Workspaces) != 2 {
 		t.Errorf("expected 2 workspaces, got %d", len(s.Workspaces))
@@ -656,10 +507,21 @@ func TestInit_SecondCallByteEqualNoOp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Init first: %v", err)
 	}
-	before, err := os.ReadFile(filepath.Join(base, settingsFile))
+	before, err := os.ReadFile(filepath.Join(base, config.SettingsFile))
 	if err != nil {
 		t.Fatalf("read before: %v", err)
 	}
+
+	// User edits the scaffolded template; the second Init must not clobber.
+	sentinel := []byte("user content\n")
+	if err := os.WriteFile(filepath.Join(first, "CLAUDE.md"), sentinel, 0o644); err != nil {
+		t.Fatalf("write sentinel CLAUDE.md: %v", err)
+	}
+	marker := []byte("marker\n")
+	if err := os.WriteFile(filepath.Join(first, ".claude", "marker.txt"), marker, 0o644); err != nil {
+		t.Fatalf("write marker: %v", err)
+	}
+	cacheBefore := snapshotDir(t, first)
 
 	second, err := w.Init(pwd)
 	if err != nil {
@@ -669,12 +531,17 @@ func TestInit_SecondCallByteEqualNoOp(t *testing.T) {
 		t.Errorf("Init returned different paths on repeat: first=%q second=%q", first, second)
 	}
 
-	after, err := os.ReadFile(filepath.Join(base, settingsFile))
+	after, err := os.ReadFile(filepath.Join(base, config.SettingsFile))
 	if err != nil {
 		t.Fatalf("read after: %v", err)
 	}
 	if !bytes.Equal(before, after) {
 		t.Errorf("settings.json must be byte-equal across idempotent Init\nbefore=%s\nafter=%s", before, after)
+	}
+
+	cacheAfter := snapshotDir(t, first)
+	if !snapshotsEqual(cacheBefore, cacheAfter) {
+		t.Errorf("cache dir must be byte-equal across idempotent Init\nbefore=%v\nafter=%v", cacheBefore, cacheAfter)
 	}
 }
 
@@ -682,7 +549,7 @@ func TestInit_CorruptSettingsReturnsWrappedError(t *testing.T) {
 	base := t.TempDir()
 	w := New(base)
 
-	if err := os.WriteFile(filepath.Join(base, settingsFile), []byte("{not json"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(base, config.SettingsFile), []byte("{not json"), 0o644); err != nil {
 		t.Fatalf("seed bad settings: %v", err)
 	}
 
@@ -701,7 +568,7 @@ func TestInit_CorruptSettingsReturnsWrappedError(t *testing.T) {
 func TestFindAncestor_StopsAtRoot(t *testing.T) {
 	base := t.TempDir()
 	w := New(base)
-	s := &Settings{Version: currentVersion, Workspaces: map[string]Workspace{}}
+	s := &config.Settings{Version: config.CurrentVersion, Workspaces: map[string]config.Workspace{}}
 
 	// Empty settings + deep path: must terminate at the filesystem root.
 	_, _, ok := w.findAncestor(s, "/a/b/c/d/e/f")
@@ -714,9 +581,9 @@ func TestFindAncestor_RootRegistered(t *testing.T) {
 	base := t.TempDir()
 	w := New(base)
 	rootKey := string(filepath.Separator)
-	s := &Settings{
-		Version: currentVersion,
-		Workspaces: map[string]Workspace{
+	s := &config.Settings{
+		Version: config.CurrentVersion,
+		Workspaces: map[string]config.Workspace{
 			rootKey: {Name: "root-aabbcc", CreatedAt: time.Now().UTC()},
 		},
 	}
@@ -729,19 +596,5 @@ func TestFindAncestor_RootRegistered(t *testing.T) {
 	}
 	if ws.Name != "root-aabbcc" {
 		t.Errorf("ws.Name = %q, want root-aabbcc", ws.Name)
-	}
-}
-
-func TestDefaultBaseDir_HonorsHOME(t *testing.T) {
-	fakeHome := t.TempDir()
-	t.Setenv("HOME", fakeHome)
-
-	got, err := DefaultBaseDir()
-	if err != nil {
-		t.Fatalf("DefaultBaseDir: %v", err)
-	}
-	want := filepath.Join(fakeHome, ".makeslop")
-	if got != want {
-		t.Errorf("DefaultBaseDir = %q, want %q", got, want)
 	}
 }
