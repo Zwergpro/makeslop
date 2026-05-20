@@ -12,11 +12,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Zwergpro/makeslop/internal/cache"
+	"github.com/Zwergpro/makeslop/internal/workspace"
 )
 
-// runCmd executes a fresh root command with the provided args and returns
-// captured stdout, stderr, and the Execute error.
 func runCmd(t *testing.T, baseDir string, args ...string) (stdout, stderr string, err error) {
 	t.Helper()
 	cmd := newRootCmd(baseDir)
@@ -28,9 +26,6 @@ func runCmd(t *testing.T, baseDir string, args ...string) (stdout, stderr string
 	return out.String(), errBuf.String(), err
 }
 
-// snapshotTree returns a sorted list of files (relative to root) and their
-// contents, suitable for byte-equality assertions. Returns an empty map
-// when root doesn't exist.
 func snapshotTree(t *testing.T, root string) map[string][]byte {
 	t.Helper()
 	snap := map[string][]byte{}
@@ -65,8 +60,6 @@ func snapshotTree(t *testing.T, root string) map[string][]byte {
 	return snap
 }
 
-// listFiles returns a sorted list of relative file paths within root. Returns
-// an empty slice when root doesn't exist.
 func listFiles(t *testing.T, root string) []string {
 	t.Helper()
 	var paths []string
@@ -98,8 +91,8 @@ func listFiles(t *testing.T, root string) []string {
 	return paths
 }
 
-// evalSymlinks returns dir with symlinks resolved — matches what the CLI
-// stores as the canonical pwd key in settings.
+// evalSymlinks matches the canonical key the CLI stores in settings; see
+// "Invariants" in CLAUDE.md.
 func evalSymlinks(t *testing.T, dir string) string {
 	t.Helper()
 	resolved, err := filepath.EvalSymlinks(dir)
@@ -126,8 +119,8 @@ func TestRoot_NotRegistered_NoMutation(t *testing.T) {
 	if stdout != "" {
 		t.Errorf("expected empty stdout, got %q", stdout)
 	}
-	if !strings.Contains(stderr, "no project registered") {
-		t.Errorf("stderr missing 'no project registered': %q", stderr)
+	if !strings.Contains(stderr, "no workspace registered") {
+		t.Errorf("stderr missing 'no workspace registered': %q", stderr)
 	}
 	if !strings.Contains(stderr, "run 'makeslop init'") {
 		t.Errorf("stderr missing init hint: %q", stderr)
@@ -152,20 +145,20 @@ func TestInit_FromScratch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("init failed: %v; stderr=%q", err, stderr)
 	}
-	projectPath := strings.TrimSpace(stdout)
-	if projectPath == "" {
+	workspacePath := strings.TrimSpace(stdout)
+	if workspacePath == "" {
 		t.Fatalf("init produced empty stdout")
 	}
-	projectsRoot := filepath.Join(baseDir, "projects")
-	if !strings.HasPrefix(projectPath, projectsRoot+string(filepath.Separator)) {
-		t.Errorf("project path %q not under %q", projectPath, projectsRoot)
+	workspacesRoot := filepath.Join(baseDir, "workspaces")
+	if !strings.HasPrefix(workspacePath, workspacesRoot+string(filepath.Separator)) {
+		t.Errorf("workspace path %q not under %q", workspacePath, workspacesRoot)
 	}
-	info, err := os.Stat(projectPath)
+	info, err := os.Stat(workspacePath)
 	if err != nil {
-		t.Fatalf("stat project dir %s: %v", projectPath, err)
+		t.Fatalf("stat workspace dir %s: %v", workspacePath, err)
 	}
 	if !info.IsDir() {
-		t.Errorf("project path %s is not a directory", projectPath)
+		t.Errorf("workspace path %s is not a directory", workspacePath)
 	}
 
 	settingsPath := filepath.Join(baseDir, "settings.json")
@@ -174,8 +167,8 @@ func TestInit_FromScratch(t *testing.T) {
 		t.Fatalf("read settings.json: %v", err)
 	}
 	var s struct {
-		Version  int                       `json:"version"`
-		Projects map[string]map[string]any `json:"projects"`
+		Version    int                       `json:"version"`
+		Workspaces map[string]map[string]any `json:"workspaces"`
 	}
 	if err := json.Unmarshal(data, &s); err != nil {
 		t.Fatalf("unmarshal settings: %v", err)
@@ -184,16 +177,16 @@ func TestInit_FromScratch(t *testing.T) {
 		t.Errorf("expected version 1, got %d", s.Version)
 	}
 	resolvedPwd := evalSymlinks(t, pwd)
-	entry, ok := s.Projects[resolvedPwd]
+	entry, ok := s.Workspaces[resolvedPwd]
 	if !ok {
-		t.Fatalf("settings.projects missing key %q; have %v", resolvedPwd, s.Projects)
+		t.Fatalf("settings.workspaces missing key %q; have %v", resolvedPwd, s.Workspaces)
 	}
 	name, _ := entry["name"].(string)
 	if name == "" {
-		t.Errorf("project entry has empty name")
+		t.Errorf("workspace entry has empty name")
 	}
-	if filepath.Base(projectPath) != name {
-		t.Errorf("project dir basename %q != entry name %q", filepath.Base(projectPath), name)
+	if filepath.Base(workspacePath) != name {
+		t.Errorf("workspace dir basename %q != entry name %q", filepath.Base(workspacePath), name)
 	}
 }
 
@@ -275,18 +268,16 @@ func TestInit_FromSubdir_ReusesParent(t *testing.T) {
 	assertSnapshotsEqual(t, snapBefore, snapAfter)
 }
 
-// TestInit_SymlinkInvariant verifies that the CLI resolves symlinks before
-// touching the cache, so that initialising via a symlinked alias of an
-// already-registered directory is a byte-equal no-op on settings.json.
+// TestInit_SymlinkInvariant guards that initialising via a symlinked alias of
+// an already-registered directory is a byte-equal no-op on settings.json.
 func TestInit_SymlinkInvariant(t *testing.T) {
 	if runtime.GOOS == "windows" {
-		// Project is POSIX-only; see "Invariants" in CLAUDE.md.
-		t.Skip("symlinks unreliable on Windows; project is POSIX-only")
+		// makeslop is POSIX-only; see "Invariants" in CLAUDE.md.
+		t.Skip("symlinks unreliable on Windows; makeslop is POSIX-only")
 	}
 	baseDir := t.TempDir()
 	real := t.TempDir()
 
-	// Create a symlinked alias to `real` and chdir through it for the first init.
 	aliasParent := t.TempDir()
 	alias := filepath.Join(aliasParent, "alias")
 	if err := os.Symlink(real, alias); err != nil {
@@ -302,7 +293,6 @@ func TestInit_SymlinkInvariant(t *testing.T) {
 
 	snapBefore := snapshotTree(t, baseDir)
 
-	// Second init from the real (non-symlinked) path must be a no-op.
 	t.Chdir(real)
 	secondOut, _, err := runCmd(t, baseDir, "init")
 	if err != nil {
@@ -315,7 +305,6 @@ func TestInit_SymlinkInvariant(t *testing.T) {
 	snapAfter := snapshotTree(t, baseDir)
 	assertSnapshotsEqual(t, snapBefore, snapAfter)
 
-	// And once more via the symlinked alias for completeness — also a no-op.
 	t.Chdir(alias)
 	thirdOut, _, err := runCmd(t, baseDir, "init")
 	if err != nil {
@@ -327,30 +316,29 @@ func TestInit_SymlinkInvariant(t *testing.T) {
 	snapFinal := snapshotTree(t, baseDir)
 	assertSnapshotsEqual(t, snapBefore, snapFinal)
 
-	// Settings.json must key projects by the resolved path, not the alias.
+	// settings.json must key by the resolved path, not the alias.
 	settingsData, err := os.ReadFile(filepath.Join(baseDir, "settings.json"))
 	if err != nil {
 		t.Fatalf("read settings: %v", err)
 	}
 	var s struct {
-		Projects map[string]any `json:"projects"`
+		Workspaces map[string]any `json:"workspaces"`
 	}
 	if err := json.Unmarshal(settingsData, &s); err != nil {
 		t.Fatalf("unmarshal settings: %v", err)
 	}
 	resolved := evalSymlinks(t, real)
-	if _, ok := s.Projects[resolved]; !ok {
-		t.Errorf("settings.projects missing resolved key %q; have %v", resolved, s.Projects)
+	if _, ok := s.Workspaces[resolved]; !ok {
+		t.Errorf("settings.workspaces missing resolved key %q; have %v", resolved, s.Workspaces)
 	}
-	if _, ok := s.Projects[alias]; ok {
-		t.Errorf("settings.projects unexpectedly contains alias %q", alias)
+	if _, ok := s.Workspaces[alias]; ok {
+		t.Errorf("settings.workspaces unexpectedly contains alias %q", alias)
 	}
 }
 
-// TestRoot_CorruptSettings_ReportsError verifies that a non-ErrNotRegistered
-// error from cache.Lookup (e.g. malformed settings.json) is surfaced to the
-// user — not silently swallowed by cobra's SilenceErrors. The hint message
-// must not appear because the failure is not "no project registered".
+// TestRoot_CorruptSettings_ReportsError guards that a non-ErrNotRegistered
+// failure from Lookup is surfaced — not swallowed by cobra's SilenceErrors —
+// and that the "not registered" hint is suppressed in that case.
 func TestRoot_CorruptSettings_ReportsError(t *testing.T) {
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
@@ -367,24 +355,21 @@ func TestRoot_CorruptSettings_ReportsError(t *testing.T) {
 	if errors.Is(err, errSilent) {
 		t.Errorf("corrupt-settings error must not be errSilent — main() needs to print it: %v", err)
 	}
-	if errors.Is(err, cache.ErrNotRegistered) {
+	if errors.Is(err, workspace.ErrNotRegistered) {
 		t.Errorf("corrupt-settings error must not be ErrNotRegistered: %v", err)
 	}
 	if stdout != "" {
 		t.Errorf("expected empty stdout, got %q", stdout)
 	}
-	// cobra has SilenceErrors=true on root, so the error itself isn't printed
-	// by Execute; main() prints it. Assert the returned error contains a
-	// diagnostic context substring so main()'s print is meaningful.
+	// main() prints this error; ensure it carries diagnostic context.
 	if !strings.Contains(err.Error(), "settings") {
 		t.Errorf("expected error to mention 'settings' context, got %q", err.Error())
 	}
 }
 
-// TestInit_CorruptSettings_ReportsError verifies that `init` surfaces a
-// non-nil error to main() when cache.Init fails (e.g. corrupt settings.json).
-// This is the regression guard for the SilenceErrors-on-root inheritance bug:
-// the error must NOT be the errSilent sentinel — main() must print it.
+// TestInit_CorruptSettings_ReportsError is the regression guard for the
+// SilenceErrors-on-root inheritance bug: init's failure must not be errSilent
+// so main() prints it.
 func TestInit_CorruptSettings_ReportsError(t *testing.T) {
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
@@ -409,9 +394,8 @@ func TestInit_CorruptSettings_ReportsError(t *testing.T) {
 	}
 }
 
-// TestRoot_NotRegistered_ReturnsErrSilent verifies the hint-path contract:
-// the bare command's RunE writes the hint to stderr and returns errSilent so
-// main() can exit non-zero without re-printing.
+// TestRoot_NotRegistered_ReturnsErrSilent locks the hint-path contract: RunE
+// writes the hint and returns errSilent so main() doesn't reprint.
 func TestRoot_NotRegistered_ReturnsErrSilent(t *testing.T) {
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
@@ -424,7 +408,7 @@ func TestRoot_NotRegistered_ReturnsErrSilent(t *testing.T) {
 	if !errors.Is(err, errSilent) {
 		t.Errorf("expected errSilent (so main() skips reprint), got %v", err)
 	}
-	if !strings.Contains(stderr, "no project registered") {
+	if !strings.Contains(stderr, "no workspace registered") {
 		t.Errorf("stderr missing hint: %q", stderr)
 	}
 }

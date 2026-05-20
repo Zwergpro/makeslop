@@ -1,8 +1,6 @@
-// Command makeslop is the CLI entry point for the makeslop project cache.
-//
-// Running it bare (`makeslop`) looks up the cache directory for the current
-// working directory's project and prints the path. Running `makeslop init`
-// registers the current directory as a project.
+// Command makeslop is the CLI entry point for the makeslop workspace registry.
+// Running it bare looks up the cache directory for the current workspace and
+// prints the path; `makeslop init` registers the current directory.
 package main
 
 import (
@@ -13,18 +11,15 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/Zwergpro/makeslop/internal/cache"
+	"github.com/Zwergpro/makeslop/internal/workspace"
 )
 
-// errSilent wraps an error that has already been reported to stderr by the
-// command's RunE. main() recognises it via errors.Is and exits non-zero
-// without printing it a second time. Any other non-nil error returned from
-// Execute is printed by main() with a "makeslop: " prefix.
+// errSilent signals that a RunE has already written a tailored message to
+// stderr; main() should exit non-zero without reprinting.
 var errSilent = errors.New("makeslop: silent error already reported")
 
-// resolvePwd returns the current working directory, normalized to an
-// absolute path with symlinks resolved. This is the canonical form that
-// cache.Cache expects.
+// resolvePwd returns the absolute, symlink-resolved cwd — the form
+// workspace.Workspaces requires.
 func resolvePwd() (string, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -41,21 +36,15 @@ func resolvePwd() (string, error) {
 	return resolved, nil
 }
 
-// newRootCmd builds the cobra command tree rooted at `makeslop`, wiring it
-// to a Cache backed by baseDir. Tests inject a temp baseDir; production
-// callers pass cache.DefaultBaseDir().
+// newRootCmd builds the cobra tree rooted at `makeslop`, backed by baseDir.
 func newRootCmd(baseDir string) *cobra.Command {
-	c := cache.New(baseDir)
+	ws := workspace.New(baseDir)
 
-	// Note: SilenceErrors is set only on the root command itself, not
-	// inherited via PersistentFlags or by intent — cobra's check at command
-	// dispatch is `!cmd.SilenceErrors && !c.SilenceErrors` (root). We rely on
-	// the errSilent sentinel + main()'s handling to avoid duplicate prints
-	// for the not-registered hint, while still ensuring init and other
-	// subcommands surface real errors via main().
+	// SilenceErrors on the root propagates to subcommands, so main() must
+	// reprint any non-errSilent error itself.
 	rootCmd := &cobra.Command{
 		Use:           "makeslop",
-		Short:         "Run docker-based project commands with per-project cache",
+		Short:         "Run docker-based commands with per-workspace cache",
 		Args:          cobra.NoArgs,
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -64,24 +53,24 @@ func newRootCmd(baseDir string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			projectDir, err := c.Lookup(pwd)
-			if errors.Is(err, cache.ErrNotRegistered) {
+			workspaceDir, err := ws.Lookup(pwd)
+			if errors.Is(err, workspace.ErrNotRegistered) {
 				fmt.Fprintf(cmd.ErrOrStderr(),
-					"makeslop: no project registered for %s; run 'makeslop init' to register it\n",
+					"makeslop: no workspace registered for %s; run 'makeslop init' to register it\n",
 					pwd)
 				return errSilent
 			}
 			if err != nil {
 				return err
 			}
-			fmt.Fprintln(cmd.OutOrStdout(), projectDir)
+			fmt.Fprintln(cmd.OutOrStdout(), workspaceDir)
 			return nil
 		},
 	}
 
 	initCmd := &cobra.Command{
 		Use:          "init",
-		Short:        "Register the current directory as a makeslop project",
+		Short:        "Register the current directory as a makeslop workspace",
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -89,11 +78,11 @@ func newRootCmd(baseDir string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			projectDir, err := c.Init(pwd)
+			workspaceDir, err := ws.Init(pwd)
 			if err != nil {
 				return err
 			}
-			fmt.Fprintln(cmd.OutOrStdout(), projectDir)
+			fmt.Fprintln(cmd.OutOrStdout(), workspaceDir)
 			return nil
 		},
 	}
@@ -103,15 +92,14 @@ func newRootCmd(baseDir string) *cobra.Command {
 }
 
 func main() {
-	baseDir, err := cache.DefaultBaseDir()
+	baseDir, err := workspace.DefaultBaseDir()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "makeslop: %v\n", err)
 		os.Exit(1)
 	}
 	if err := newRootCmd(baseDir).Execute(); err != nil {
-		// errSilent => the RunE already wrote a tailored message to stderr.
-		// Any other error: surface it ourselves because both root and init
-		// inherit SilenceErrors from root, so cobra won't print it.
+		// errSilent => RunE already printed the hint; otherwise reprint here
+		// because SilenceErrors is inherited from root.
 		if !errors.Is(err, errSilent) {
 			fmt.Fprintf(os.Stderr, "makeslop: %v\n", err)
 		}
