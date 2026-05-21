@@ -188,6 +188,68 @@ func TestSpecArgs_MountArgsParseAsRFC4180CSV(t *testing.T) {
 	}
 }
 
+// TestBuildSpec_MaskedFilesAppendDevNullMounts asserts that MaskedFiles
+// produces /dev/null overlay mounts appended after the existing mount list,
+// in the exact caller-provided order.
+func TestBuildSpec_MaskedFilesAppendDevNullMounts(t *testing.T) {
+	o := sampleOptions()
+	o.MaskedFiles = []string{
+		"/home/me/code/myproj/.env",
+		"/home/me/code/myproj/configs/env/local.env",
+	}
+	spec := BuildSpec(o)
+
+	// The last two mounts must be the /dev/null overlays in input order.
+	n := len(spec.Mounts)
+	if n < 2 {
+		t.Fatalf("got %d mounts, want at least 2", n)
+	}
+	wantTail := []Mount{
+		{Host: "/dev/null", Container: "/workspace/myproj-abc123/.env"},
+		{Host: "/dev/null", Container: "/workspace/myproj-abc123/configs/env/local.env"},
+	}
+	gotTail := spec.Mounts[n-2:]
+	if !reflect.DeepEqual(gotTail, wantTail) {
+		t.Errorf("tail mounts mismatch\n got: %+v\nwant: %+v", gotTail, wantTail)
+	}
+}
+
+// TestSpecArgs_MaskedFilesProduceDevNullMountArgs asserts that the full argv
+// emits the additional --mount flags for /dev/null overlays in tail position
+// after the existing agent mounts.
+func TestSpecArgs_MaskedFilesProduceDevNullMountArgs(t *testing.T) {
+	o := sampleOptions()
+	o.MaskedFiles = []string{
+		"/home/me/code/myproj/.env",
+		"/home/me/code/myproj/configs/env/local.env",
+	}
+	spec := BuildSpec(o)
+	args := spec.Args()
+
+	// Collect all --mount args from argv.
+	mountArgs := collectMountArgs(args)
+
+	// The last two --mount values (i.e., pairs from argv) must be the /dev/null overlays.
+	if len(mountArgs) < 2 {
+		t.Fatalf("got %d --mount args, want at least 2", len(mountArgs))
+	}
+	gotTailMountVals := mountArgs[len(mountArgs)-2:]
+
+	wantTailMountVals := []string{
+		"type=bind,source=/dev/null,target=/workspace/myproj-abc123/.env",
+		"type=bind,source=/dev/null,target=/workspace/myproj-abc123/configs/env/local.env",
+	}
+	if !reflect.DeepEqual(gotTailMountVals, wantTailMountVals) {
+		t.Errorf("tail --mount args mismatch\n got: %+v\nwant: %+v", gotTailMountVals, wantTailMountVals)
+	}
+
+	// Verify the full argv ends with the image and command AFTER the /dev/null mounts.
+	lastTwo := args[len(args)-2:]
+	if !reflect.DeepEqual(lastTwo, []string{"claudebox", "/bin/zsh"}) {
+		t.Errorf("argv tail = %v, want [claudebox /bin/zsh]", lastTwo)
+	}
+}
+
 func collectMountArgs(argv []string) []string {
 	out := make([]string, 0, 8)
 	for i := 0; i < len(argv)-1; i++ {

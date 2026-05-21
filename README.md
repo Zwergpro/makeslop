@@ -21,6 +21,7 @@
 ### Requirements
 
 - The `docker` CLI must be on `PATH`. `makeslop` shells out to it; there is no Go-side docker SDK dependency.
+- The `fd` CLI (or its Debian/Ubuntu alias `fdfind`) must be on `PATH`. `makeslop` uses it to scan for `.env` files before launching the container. Install from [https://github.com/sharkdp/fd](https://github.com/sharkdp/fd). If `fd`/`fdfind` is not found, `makeslop` refuses to launch and prints an install hint.
 
 ### Container layout
 
@@ -45,6 +46,23 @@ Security flags inside the container: `--tmpfs /tmp:size=100m`, `--cap-drop ALL`,
 
 ```
 makeslop: stdin/stdout must be a TTY; makeslop is interactive-only
+```
+
+### Secret masking
+
+Before launching the container, `makeslop` runs `fd` (or `fdfind`) to locate every file whose basename ends in `.env` under the project root. For each match, an additional `--mount type=bind,source=/dev/null,target=<workspace>/<rel>` flag is appended to the docker invocation so the container sees a zero-byte file at that path instead of the real secret.
+
+- Masked: `.env`, `local.env`, `sub/dir/.env` (basename ends exactly in `.env`).
+- Not masked: `.env.local`, `.envrc`, `*.pem`, `*.key` (out of scope).
+- Excluded from scan: `.git/`, `node_modules/`, `vendor/`, `.venv/` subtrees.
+- `.gitignore` is intentionally ignored (`--no-ignore` flag) because most `.env` files are gitignored — that is precisely why the scan is necessary.
+
+When at least one file is masked, `makeslop` prints `makeslop: masked N .env file(s)` to stderr. Zero hits are silent.
+
+Secret masking is **non-negotiable**: if `fd`/`fdfind` is not on `PATH`, `makeslop` refuses to launch:
+
+```
+makeslop: fd/fdfind CLI required for secret scanning; install: https://github.com/sharkdp/fd
 ```
 
 ### Docker container settings

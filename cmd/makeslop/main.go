@@ -16,6 +16,7 @@ import (
 
 	"github.com/Zwergpro/makeslop/internal/config"
 	"github.com/Zwergpro/makeslop/internal/docker"
+	"github.com/Zwergpro/makeslop/internal/security"
 	"github.com/Zwergpro/makeslop/internal/workspace"
 )
 
@@ -99,6 +100,18 @@ func newRootCmd(baseDir string) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			masked, err := security.Scan(cmd.Context(), workspaceRoot)
+			if errors.Is(err, security.ErrFdMissing) {
+				fmt.Fprintln(cmd.ErrOrStderr(),
+					"makeslop: fd/fdfind CLI required for secret scanning; install: https://github.com/sharkdp/fd")
+				return errSilent
+			}
+			if err != nil {
+				return err
+			}
+			if len(masked) > 0 {
+				fmt.Fprintf(cmd.ErrOrStderr(), "makeslop: masked %d .env file(s)\n", len(masked))
+			}
 			s, err := config.Load(baseDir)
 			if err != nil {
 				return err
@@ -111,6 +124,7 @@ func newRootCmd(baseDir string) *cobra.Command {
 				BaseDir:       baseDir,
 				Image:         s.Image,
 				Command:       s.Shell,
+				MaskedFiles:   masked,
 			})
 			if err := docker.Run(cmd.Context(), spec); err != nil {
 				if errors.Is(err, docker.ErrNoTTY) {

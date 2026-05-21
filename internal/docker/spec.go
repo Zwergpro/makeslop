@@ -19,6 +19,11 @@ type Options struct {
 	BaseDir       string // ~/.makeslop
 	Image         string
 	Command       string // shell to exec inside the container
+	// MaskedFiles is the list of absolute host paths under ProjectRoot whose
+	// container counterparts should be shadowed by /dev/null. The under-root
+	// guarantee is the caller's (security.Scan enforces it). Caller-provided
+	// order is preserved in the emitted argv. Nil or empty is a no-op.
+	MaskedFiles []string
 }
 
 // Mount is a single host:container bind mount. Trailing slashes are preserved verbatim.
@@ -57,6 +62,17 @@ func BuildSpec(o Options) Spec {
 		{Host: filepath.Join(workspaceHost, ".codex") + "/", Container: workspacePath + "/.codex/"},
 		{Host: filepath.Join(workspaceHost, "docs") + "/", Container: workspacePath + "/docs/"},
 		{Host: filepath.Join(workspaceHost, "CLAUDE.md"), Container: workspacePath + "/CLAUDE.md"},
+	}
+
+	for _, host := range o.MaskedFiles {
+		// Precondition: host is absolute and under ProjectRoot (security.Scan
+		// enforces this). filepath.Rel cannot error on two clean absolute POSIX
+		// paths on the same volume.
+		rel, _ := filepath.Rel(o.ProjectRoot, host)
+		mounts = append(mounts, Mount{
+			Host:      "/dev/null",
+			Container: workspacePath + "/" + filepath.ToSlash(rel),
+		})
 	}
 
 	return Spec{

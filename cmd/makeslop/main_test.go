@@ -13,6 +13,7 @@ import (
 
 	"github.com/Zwergpro/makeslop/internal/config"
 	"github.com/Zwergpro/makeslop/internal/docker"
+	"github.com/Zwergpro/makeslop/internal/security"
 	"github.com/Zwergpro/makeslop/internal/workspace"
 )
 
@@ -248,6 +249,7 @@ func TestRoot_AfterInit_LaunchesDocker(t *testing.T) {
 	}
 	workspaceDir := strings.TrimSpace(initOut)
 
+	installFdShim(t, nil)
 	record := installDockerShim(t, 0)
 	stubTTY(t, true)
 
@@ -298,6 +300,7 @@ func TestRoot_FromSubdirectory_MountsRegisteredAncestor(t *testing.T) {
 	}
 	t.Chdir(sub)
 
+	installFdShim(t, nil)
 	record := installDockerShim(t, 0)
 	stubTTY(t, true)
 
@@ -352,6 +355,7 @@ func TestRoot_NoTTY_FailsBeforeDocker(t *testing.T) {
 	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
 		t.Fatalf("init failed: %v", err)
 	}
+	installFdShim(t, nil)
 	record := installDockerShim(t, 0)
 	// Do NOT stub ttyCheck — the real predicate returns false under go test.
 
@@ -379,6 +383,7 @@ func TestRoot_ExitCodePropagation(t *testing.T) {
 	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
 		t.Fatalf("init failed: %v", err)
 	}
+	installFdShim(t, nil)
 	installDockerShim(t, 42)
 	stubTTY(t, true)
 
@@ -400,6 +405,8 @@ func TestRunWithExitCode_SignalKilledMapsTo128PlusSignum(t *testing.T) {
 	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
 		t.Fatalf("init failed: %v", err)
 	}
+
+	installFdShim(t, nil)
 
 	// SIGKILL -> 128 + 9 = 137.
 	dir := t.TempDir()
@@ -438,6 +445,7 @@ func TestRoot_CustomImageAndShell_FlowFromSettings(t *testing.T) {
 		t.Fatalf("save settings: %v", err)
 	}
 
+	installFdShim(t, nil)
 	record := installDockerShim(t, 0)
 	stubTTY(t, true)
 
@@ -817,6 +825,7 @@ func TestOutOfHomeFlag_Bypasses(t *testing.T) {
 
 	// bare makeslop --out-of-home must bypass the guard; stub docker so it
 	// exits cleanly without a real daemon.
+	installFdShim(t, nil)
 	record := installDockerShim(t, 0)
 	stubTTY(t, true)
 
@@ -829,6 +838,204 @@ func TestOutOfHomeFlag_Bypasses(t *testing.T) {
 	}
 	if argv := readArgv(t, record); argv == nil {
 		t.Errorf("docker shim was not invoked when --out-of-home bypasses guard")
+	}
+}
+
+// installFdShim writes a shim that emits the given paths null-separated and
+// returns its argv record path. The shim is registered as the active fd binary
+// for the duration of the test.
+func installFdShim(t *testing.T, paths []string) string {
+	t.Helper()
+	docker.SkipNonPOSIX(t, "fd shim requires POSIX shell; makeslop is POSIX-only")
+	shim, record := security.WriteFdShim(t, t.TempDir(), paths)
+	t.Cleanup(security.SetFdBinaryForTest(shim))
+	return record
+}
+
+// TestRoot_FdMissing_RefusesAndDoesNotInvokeDocker verifies that when the fd
+// binary is not found, makeslop prints the install hint to stderr, returns
+// errSilent, and never invokes docker.
+func TestRoot_FdMissing_RefusesAndDoesNotInvokeDocker(t *testing.T) {
+	docker.SkipNonPOSIX(t, "docker shim requires POSIX shell; makeslop is POSIX-only")
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	// Register workspace so we get past ws.Lookup.
+	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	// Point fd to a nonexistent binary so Scan returns ErrFdMissing.
+	t.Cleanup(security.SetFdBinaryForTest("/nonexistent/fd-binary-that-does-not-exist"))
+
+	record := installDockerShim(t, 0)
+	stubTTY(t, true)
+
+	snapBefore := snapshotTree(t, baseDir)
+	_, stderr, err := runCmd(t, baseDir)
+	if err == nil {
+		t.Fatalf("expected error when fd is missing, got nil")
+	}
+	if !errors.Is(err, errSilent) {
+		t.Errorf("expected errSilent, got %v", err)
+	}
+	if !strings.Contains(stderr, "fd/fdfind CLI required") {
+		t.Errorf("stderr missing install hint: %q", stderr)
+	}
+	if !strings.Contains(stderr, "https://github.com/sharkdp/fd") {
+		t.Errorf("stderr missing install URL: %q", stderr)
+	}
+	if argv := readArgv(t, record); argv != nil {
+		t.Errorf("docker shim must not be invoked when fd is missing; got argv=%v", argv)
+	}
+	snapAfter := snapshotTree(t, baseDir)
+	assertSnapshotsEqual(t, snapBefore, snapAfter)
+}
+
+// TestRoot_MasksFoundEnvFiles_ArgvContainsDevNullMounts verifies that when the
+// fd shim returns two .env paths, the docker argv contains the expected
+// /dev/null mounts in tail position and stderr reports the count.
+func TestRoot_MasksFoundEnvFiles_ArgvContainsDevNullMounts(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	// Register workspace so we get a workspaceRoot == pwd.
+	initOut, _, err := runCmd(t, baseDir, "init")
+	if err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	workspaceDir := strings.TrimSpace(initOut)
+
+	resolvedPwd := evalSymlinks(t, pwd)
+
+	// Create two .env files inside the project root so the shim paths are real files.
+	envFile1 := filepath.Join(resolvedPwd, ".env")
+	envFile2 := filepath.Join(resolvedPwd, "configs", "local.env")
+	if err := os.MkdirAll(filepath.Dir(envFile2), 0o755); err != nil {
+		t.Fatalf("mkdir configs: %v", err)
+	}
+	if err := os.WriteFile(envFile1, []byte("SECRET=1"), 0o644); err != nil {
+		t.Fatalf("write .env: %v", err)
+	}
+	if err := os.WriteFile(envFile2, []byte("SECRET=2"), 0o644); err != nil {
+		t.Fatalf("write local.env: %v", err)
+	}
+
+	// Shim reports both files (already in sorted order as Scan would deliver).
+	installFdShim(t, []string{envFile1, envFile2})
+
+	record := installDockerShim(t, 0)
+	stubTTY(t, true)
+
+	_, stderr, err := runCmd(t, baseDir)
+	if err != nil {
+		t.Fatalf("root failed: %v; stderr=%q", err, stderr)
+	}
+	if !strings.Contains(stderr, "makeslop: masked 2 .env file(s)") {
+		t.Errorf("stderr missing masked count: %q", stderr)
+	}
+
+	name := filepath.Base(workspaceDir)
+	argv := readArgv(t, record)
+
+	// The two /dev/null overlay mounts must appear at the tail of the argv.
+	wantMount1 := "type=bind,source=/dev/null,target=/workspace/" + name + "/.env"
+	wantMount2 := "type=bind,source=/dev/null,target=/workspace/" + name + "/configs/local.env"
+	var found1, found2 bool
+	for _, a := range argv {
+		if a == wantMount1 {
+			found1 = true
+		}
+		if a == wantMount2 {
+			found2 = true
+		}
+	}
+	if !found1 {
+		t.Errorf("argv missing /dev/null mount for .env: want %q\nargv: %v", wantMount1, argv)
+	}
+	if !found2 {
+		t.Errorf("argv missing /dev/null mount for local.env: want %q\nargv: %v", wantMount2, argv)
+	}
+
+	// Verify the overlay mounts appear after the project bind mount (tail ordering).
+	projectMount := "type=bind,source=" + resolvedPwd + ",target=/workspace/" + name
+	var projectIdx, env1Idx, env2Idx int
+	for i, a := range argv {
+		switch a {
+		case projectMount:
+			projectIdx = i
+		case wantMount1:
+			env1Idx = i
+		case wantMount2:
+			env2Idx = i
+		}
+	}
+	if env1Idx <= projectIdx {
+		t.Errorf("/dev/null mount for .env (idx %d) must come after project mount (idx %d)", env1Idx, projectIdx)
+	}
+	if env2Idx <= projectIdx {
+		t.Errorf("/dev/null mount for local.env (idx %d) must come after project mount (idx %d)", env2Idx, projectIdx)
+	}
+}
+
+// TestRoot_NoEnvFiles_PrintsNothingExtraOnStderr verifies that when the fd
+// shim produces empty output (no .env files), makeslop does not print any
+// "masked" line to stderr and the argv contains no /dev/null mounts.
+func TestRoot_NoEnvFiles_PrintsNothingExtraOnStderr(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	// Shim returns no paths.
+	installFdShim(t, nil)
+
+	record := installDockerShim(t, 0)
+	stubTTY(t, true)
+
+	_, stderr, err := runCmd(t, baseDir)
+	if err != nil {
+		t.Fatalf("root failed: %v; stderr=%q", err, stderr)
+	}
+	if strings.Contains(stderr, "masked") {
+		t.Errorf("stderr must not mention 'masked' when no .env files found: %q", stderr)
+	}
+	argv := readArgv(t, record)
+	for _, a := range argv {
+		if strings.Contains(a, "/dev/null") {
+			t.Errorf("argv must not contain /dev/null mounts when no .env files found: %q", a)
+		}
+	}
+}
+
+// TestInit_DoesNotInvokeFd verifies that the init subcommand never calls
+// security.Scan — a shim that exits 1 must not cause init to fail.
+func TestInit_DoesNotInvokeFd(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	// Install an fd shim that exits 1; if init invokes it, init will fail.
+	docker.SkipNonPOSIX(t, "fd shim requires POSIX shell; makeslop is POSIX-only")
+	shimDir := t.TempDir()
+	shimPath := filepath.Join(shimDir, "fd-shim")
+	if err := os.WriteFile(shimPath, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatalf("write failing fd shim: %v", err)
+	}
+	t.Cleanup(security.SetFdBinaryForTest(shimPath))
+
+	_, stderr, err := runCmd(t, baseDir, "init")
+	if err != nil {
+		t.Fatalf("init must succeed regardless of fd shim; got: %v; stderr=%q", err, stderr)
 	}
 }
 
