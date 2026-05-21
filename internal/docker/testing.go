@@ -1,7 +1,14 @@
 package docker
 
-// Test-only setters for the package-level swap points (dockerBinary, ttyCheck).
-// Non-_test.go because Go does not export _test.go symbols across packages.
+// Test-only helpers for the docker package.
+//
+// These functions are intentionally compiled into the production binary.
+// The idiomatic Go approach (export_test.go) cannot be used here because
+// cmd/makeslop/main_test.go is in package main (not package docker_test), so
+// it can only access exported symbols from the docker package — not
+// _test.go-only exports. This is a known, deliberate trade-off: the test
+// surface (SetDockerBinaryForTest, SetTTYCheckForTest, WriteShim, SkipNonPOSIX)
+// is small, pure-Go, and carries no runtime cost when unused.
 
 import (
 	"os"

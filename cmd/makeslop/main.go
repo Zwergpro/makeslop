@@ -24,24 +24,56 @@ import (
 var errSilent = errors.New("makeslop: silent error already reported")
 
 // resolvePwd returns the absolute, EvalSymlinks-resolved cwd required by workspace.Workspaces.
+// os.Getwd() already returns an absolute path on POSIX, so no filepath.Abs call is needed.
 func resolvePwd() (string, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return "", fmt.Errorf("get working directory: %w", err)
 	}
-	abs, err := filepath.Abs(cwd)
+	resolved, err := filepath.EvalSymlinks(cwd)
 	if err != nil {
-		return "", fmt.Errorf("resolve absolute path of %s: %w", cwd, err)
-	}
-	resolved, err := filepath.EvalSymlinks(abs)
-	if err != nil {
-		return "", fmt.Errorf("evaluate symlinks for %s: %w", abs, err)
+		return "", fmt.Errorf("evaluate symlinks for %s: %w", cwd, err)
 	}
 	return resolved, nil
 }
 
+// ensureWithinHome returns errSilent (after printing a hint) when pwd is
+// outside the user's home directory and outOfHome is false. pwd must be
+// EvalSymlinks-resolved (resolvePwd guarantees this); $HOME is resolved
+// here so the comparison is symlink-symmetric.
+func ensureWithinHome(stderr io.Writer, pwd string, outOfHome bool) error {
+	if outOfHome {
+		return nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("resolve home directory: %w", err)
+	}
+	resolvedHome, err := filepath.EvalSymlinks(home)
+	if err != nil {
+		return fmt.Errorf("evaluate symlinks for %s: %w", home, err)
+	}
+	rel, err := filepath.Rel(resolvedHome, pwd)
+	// filepath.Rel returns an error only when both paths are on different
+	// Windows volumes; on POSIX (this project's only target) both arguments
+	// are always absolute paths on the same volume so err is always nil.
+	// Surface it anyway in case the impossible happens.
+	if err != nil {
+		return fmt.Errorf("compute relative path from %s to %s: %w", resolvedHome, pwd, err)
+	}
+	if !filepath.IsLocal(rel) {
+		fmt.Fprintf(stderr,
+			"makeslop: refusing to run from %s (outside %s); pass --out-of-home to override\n",
+			pwd, resolvedHome)
+		return errSilent
+	}
+	return nil
+}
+
 func newRootCmd(baseDir string) *cobra.Command {
 	ws := workspace.New(baseDir)
+
+	var outOfHome bool
 
 	rootCmd := &cobra.Command{
 		Use:           "makeslop",
@@ -52,6 +84,9 @@ func newRootCmd(baseDir string) *cobra.Command {
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			pwd, err := resolvePwd()
 			if err != nil {
+				return err
+			}
+			if err := ensureWithinHome(cmd.ErrOrStderr(), pwd, outOfHome); err != nil {
 				return err
 			}
 			workspaceRoot, workspaceDir, err := ws.Lookup(pwd)
@@ -99,6 +134,9 @@ func newRootCmd(baseDir string) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if err := ensureWithinHome(cmd.ErrOrStderr(), pwd, outOfHome); err != nil {
+				return err
+			}
 			if err := config.Bootstrap(baseDir); err != nil {
 				return err
 			}
@@ -111,12 +149,16 @@ func newRootCmd(baseDir string) *cobra.Command {
 		},
 	}
 
+	rootCmd.PersistentFlags().BoolVar(&outOfHome, "out-of-home", false,
+		"allow running outside the user's home directory")
+
 	rootCmd.AddCommand(initCmd)
 	return rootCmd
 }
 
 // runWithExitCode maps an Execute() error to a host exit code: *exec.ExitError
-// passes through (signal-killed -> 128+signum), errSilent -> 1 with no reprint, other errors -> 1 prefixed "makeslop: ".
+// passes through (signal-killed -> 128+signum), errSilent -> 1 with no
+// reprint, other errors -> 1 prefixed "makeslop: ".
 func runWithExitCode(baseDir string, stdout, stderr io.Writer, args []string) int {
 	cmd := newRootCmd(baseDir)
 	cmd.SetArgs(args)
@@ -132,8 +174,8 @@ func runWithExitCode(baseDir string, stdout, stderr io.Writer, args []string) in
 		if code >= 0 {
 			return code
 		}
-		if ws, ok := ee.ProcessState.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
-			return 128 + int(ws.Signal())
+		if wstat, ok := ee.ProcessState.Sys().(syscall.WaitStatus); ok && wstat.Signaled() {
+			return 128 + int(wstat.Signal())
 		}
 		return 255
 	}

@@ -68,6 +68,21 @@ Omitted or empty `image`/`shell` fields fall back to the defaults; existing `set
 - container's exit code — bare `makeslop` propagates `exit N` from the container as the host's exit code.
 - `1` — any other failure: no workspace registered for pwd, no TTY available, corrupt `settings.json`, I/O error, etc. The reason is written to stderr.
 
+### Home-directory guard
+
+By default, `makeslop` (bare and `init`) refuses to run from any directory outside the user's home directory. This prevents accidentally registering sensitive system paths (e.g. `/`, `/etc`) as workspaces and mounting them into a container. On violation the tool prints:
+
+```
+makeslop: refusing to run from <pwd> (outside <home>); pass --out-of-home to override
+```
+
+Pass `--out-of-home` (a persistent flag inherited by all subcommands) to bypass this check:
+
+```
+makeslop --out-of-home
+makeslop init --out-of-home
+```
+
 ### Path resolution
 
 `makeslop` resolves the current working directory through `filepath.EvalSymlinks` before consulting the cache. As a result `/tmp/foo` and `/private/tmp/foo` (the macOS-style symlinked form) map to the same workspace, and registering via either alias is idempotent. The key stored in `settings.json` is always the fully-resolved path. The same applies to symlinked home directories on Linux hosts.

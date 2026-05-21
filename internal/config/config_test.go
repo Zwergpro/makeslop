@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -433,10 +434,20 @@ func snapshotTree(t *testing.T, root string) map[string][]byte {
 	return snap
 }
 
+func mapKeys(m map[string][]byte) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 func assertSnapshotsEqual(t *testing.T, before, after map[string][]byte) {
 	t.Helper()
 	if len(before) != len(after) {
-		t.Fatalf("snapshot file count differs: before=%d after=%d", len(before), len(after))
+		t.Fatalf("snapshot file count differs: before=%d after=%d (before keys=%v after keys=%v)",
+			len(before), len(after), mapKeys(before), mapKeys(after))
 	}
 	for k, vBefore := range before {
 		vAfter, ok := after[k]

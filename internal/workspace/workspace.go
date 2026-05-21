@@ -93,8 +93,12 @@ func scaffoldTemplate(workspaceDir string) error {
 		}
 	}
 	p := filepath.Join(workspaceDir, "CLAUDE.md")
-	if err := os.WriteFile(p, nil, 0o644); err != nil {
+	f, err := os.OpenFile(p, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	if err != nil && !errors.Is(err, os.ErrExist) {
 		return fmt.Errorf("scaffold %s: %w", p, err)
+	}
+	if err == nil {
+		f.Close()
 	}
 	return nil
 }

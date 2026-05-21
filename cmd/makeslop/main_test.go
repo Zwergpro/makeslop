@@ -35,7 +35,7 @@ func snapshotTree(t *testing.T, root string) map[string][]byte {
 	t.Helper()
 	snap := map[string][]byte{}
 	_, err := os.Stat(root)
-	if errors.Is(err, os.ErrNotExist) {
+	if errors.Is(err, fs.ErrNotExist) {
 		return snap
 	}
 	if err != nil {
@@ -105,7 +105,20 @@ func evalSymlinks(t *testing.T, dir string) string {
 	return resolved
 }
 
+// setHomeToTestParent sets HOME to the parent directory that t.TempDir() will
+// use for subsequent calls, so that all temp dirs created by the test are
+// "inside home" for ensureWithinHome. The first TempDir() is consumed as a
+// sentinel to discover the parent; subsequent calls in the same test will be
+// siblings under that parent.
+func setHomeToTestParent(t *testing.T) {
+	t.Helper()
+	sentinel := t.TempDir()
+	parent := evalSymlinks(t, filepath.Dir(sentinel))
+	t.Setenv("HOME", parent)
+}
+
 func TestRoot_NotRegistered_NoMutation(t *testing.T) {
+	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
 	t.Chdir(pwd)
@@ -140,6 +153,7 @@ func TestRoot_NotRegistered_NoMutation(t *testing.T) {
 }
 
 func TestInit_FromScratch(t *testing.T) {
+	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
 	t.Chdir(pwd)
@@ -223,6 +237,7 @@ func readArgv(t *testing.T, recordPath string) []string {
 
 // Milestone-1 regression guard: bare makeslop must not print the cache path on stdout.
 func TestRoot_AfterInit_LaunchesDocker(t *testing.T) {
+	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
 	t.Chdir(pwd)
@@ -267,6 +282,7 @@ func TestRoot_AfterInit_LaunchesDocker(t *testing.T) {
 }
 
 func TestRoot_FromSubdirectory_MountsRegisteredAncestor(t *testing.T) {
+	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	parent := t.TempDir()
 	t.Chdir(parent)
@@ -305,6 +321,7 @@ func TestRoot_FromSubdirectory_MountsRegisteredAncestor(t *testing.T) {
 }
 
 func TestRoot_Unregistered_DoesNotInvokeDocker(t *testing.T) {
+	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
 	t.Chdir(pwd)
@@ -327,6 +344,7 @@ func TestRoot_Unregistered_DoesNotInvokeDocker(t *testing.T) {
 // Exercises the production ttyCheck (pipes in `go test` are not TTYs).
 func TestRoot_NoTTY_FailsBeforeDocker(t *testing.T) {
 	docker.SkipNonPOSIX(t, "POSIX-only invariant per CLAUDE.md")
+	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
 	t.Chdir(pwd)
@@ -353,6 +371,7 @@ func TestRoot_NoTTY_FailsBeforeDocker(t *testing.T) {
 }
 
 func TestRoot_ExitCodePropagation(t *testing.T) {
+	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
 	t.Chdir(pwd)
@@ -373,6 +392,7 @@ func TestRoot_ExitCodePropagation(t *testing.T) {
 // POSIX-only: syscall.WaitStatus shape and signal numbering are Unix.
 func TestRunWithExitCode_SignalKilledMapsTo128PlusSignum(t *testing.T) {
 	docker.SkipNonPOSIX(t, "POSIX-only invariant per CLAUDE.md; WaitStatus.Signaled is Unix-shaped")
+	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
 	t.Chdir(pwd)
@@ -400,6 +420,7 @@ func TestRunWithExitCode_SignalKilledMapsTo128PlusSignum(t *testing.T) {
 
 // Guards that settings.json values reach the docker invocation, not just compiled-in defaults.
 func TestRoot_CustomImageAndShell_FlowFromSettings(t *testing.T) {
+	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
 	t.Chdir(pwd)
@@ -437,6 +458,7 @@ func TestRoot_CustomImageAndShell_FlowFromSettings(t *testing.T) {
 
 // Locks the "makeslop: " prefix path for non-ExitError, non-errSilent failures.
 func TestRunWithExitCode_NonExitErrorPrintsPrefix(t *testing.T) {
+	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
 	t.Chdir(pwd)
@@ -455,6 +477,7 @@ func TestRunWithExitCode_NonExitErrorPrintsPrefix(t *testing.T) {
 }
 
 func TestInit_Twice_Idempotent(t *testing.T) {
+	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
 	t.Chdir(pwd)
@@ -478,6 +501,7 @@ func TestInit_Twice_Idempotent(t *testing.T) {
 }
 
 func TestInit_FromSubdir_ReusesParent(t *testing.T) {
+	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	parent := t.TempDir()
 	t.Chdir(parent)
@@ -508,6 +532,7 @@ func TestInit_FromSubdir_ReusesParent(t *testing.T) {
 
 func TestInit_SymlinkInvariant(t *testing.T) {
 	docker.SkipNonPOSIX(t, "symlinks unreliable on Windows; makeslop is POSIX-only")
+	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	real := t.TempDir()
 
@@ -573,6 +598,7 @@ func TestInit_SymlinkInvariant(t *testing.T) {
 // failure from Lookup is surfaced — not swallowed by cobra's SilenceErrors —
 // and that the "not registered" hint is suppressed in that case.
 func TestRoot_CorruptSettings_ReportsError(t *testing.T) {
+	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
 	t.Chdir(pwd)
@@ -602,6 +628,7 @@ func TestRoot_CorruptSettings_ReportsError(t *testing.T) {
 
 // Regression guard for the SilenceErrors-on-root cobra inheritance bug.
 func TestInit_CorruptSettings_ReportsError(t *testing.T) {
+	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
 	t.Chdir(pwd)
@@ -627,6 +654,7 @@ func TestInit_CorruptSettings_ReportsError(t *testing.T) {
 
 // Bootstrap contract: artifacts exist after first init; second init is byte-equal.
 func TestInit_BootstrapsAgentArtifacts(t *testing.T) {
+	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
 	t.Chdir(pwd)
@@ -664,6 +692,7 @@ func TestInit_BootstrapsAgentArtifacts(t *testing.T) {
 }
 
 func TestRoot_NotRegistered_ReturnsErrSilent(t *testing.T) {
+	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
 	t.Chdir(pwd)
@@ -677,6 +706,129 @@ func TestRoot_NotRegistered_ReturnsErrSilent(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "no workspace registered") {
 		t.Errorf("stderr missing hint: %q", stderr)
+	}
+}
+
+// TestRoot_OutsideHome_Refuses guards that bare makeslop refuses when cwd is
+// outside HOME and docker is never invoked.
+func TestRoot_OutsideHome_Refuses(t *testing.T) {
+	// Two separate temp-parent groups: one for HOME (tmpHome), one for the
+	// out-of-home baseDir and pwd that should trigger the guard.
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", evalSymlinks(t, tmpHome))
+
+	// baseDir and pwd are siblings outside tmpHome (different TempDir call,
+	// so they end up under a different test-numbered subdir on the same parent).
+	baseDir := t.TempDir()
+	outsidePwd := t.TempDir()
+	t.Chdir(outsidePwd)
+
+	// The docker shim must never be invoked — fail the test loudly if it is.
+	docker.SkipNonPOSIX(t, "docker shim requires POSIX shell; makeslop is POSIX-only")
+	shim, record := docker.WriteShim(t, t.TempDir(), 0)
+	t.Cleanup(docker.SetDockerBinaryForTest(shim))
+	stubTTY(t, true)
+
+	snapBefore := snapshotTree(t, baseDir)
+	_, stderr, err := runCmd(t, baseDir)
+	if err == nil {
+		t.Fatalf("expected error from bare makeslop outside HOME, got nil")
+	}
+	if !errors.Is(err, errSilent) {
+		t.Errorf("expected errSilent, got %v", err)
+	}
+	if !strings.Contains(stderr, "refusing to run from") {
+		t.Errorf("stderr missing 'refusing to run from': %q", stderr)
+	}
+	if !strings.HasSuffix(stderr, "\n") {
+		t.Errorf("stderr does not end with newline: %q", stderr)
+	}
+	if argv := readArgv(t, record); argv != nil {
+		t.Errorf("docker shim must not be invoked when outside HOME; got argv=%v", argv)
+	}
+	snapAfter := snapshotTree(t, baseDir)
+	assertSnapshotsEqual(t, snapBefore, snapAfter)
+}
+
+// TestInit_OutsideHome_Refuses guards that init refuses and is fully
+// non-mutating when cwd is outside HOME — ensureWithinHome must run before
+// config.Bootstrap.
+func TestInit_OutsideHome_Refuses(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", evalSymlinks(t, tmpHome))
+
+	baseDir := t.TempDir()
+	outsidePwd := t.TempDir()
+	t.Chdir(outsidePwd)
+
+	snapBefore := snapshotTree(t, baseDir)
+	_, stderr, err := runCmd(t, baseDir, "init")
+	if err == nil {
+		t.Fatalf("expected error from init outside HOME, got nil")
+	}
+	if !errors.Is(err, errSilent) {
+		t.Errorf("expected errSilent, got %v", err)
+	}
+	if !strings.HasSuffix(stderr, "\n") {
+		t.Errorf("stderr does not end with newline: %q", stderr)
+	}
+	// Guard: ensureWithinHome must fire BEFORE config.Bootstrap, so baseDir
+	// must be completely untouched (no workspaces/, no agent artifacts).
+	snapAfter := snapshotTree(t, baseDir)
+	assertSnapshotsEqual(t, snapBefore, snapAfter)
+}
+
+// TestInit_HomeRoot_Allowed guards the rel == "." case: cwd == HOME itself
+// must be accepted (filepath.IsLocal(".") is true).
+func TestInit_HomeRoot_Allowed(t *testing.T) {
+	tmpHome := t.TempDir()
+	resolvedHome := evalSymlinks(t, tmpHome)
+	t.Setenv("HOME", resolvedHome)
+	t.Chdir(resolvedHome)
+
+	baseDir := t.TempDir()
+
+	_, stderr, err := runCmd(t, baseDir, "init")
+	if err != nil {
+		t.Fatalf("init from HOME root should succeed, got: %v; stderr=%q", err, stderr)
+	}
+}
+
+// TestOutOfHomeFlag_Bypasses guards that --out-of-home suppresses the guard
+// for both the root command and init.
+func TestOutOfHomeFlag_Bypasses(t *testing.T) {
+	docker.SkipNonPOSIX(t, "docker shim requires POSIX shell; makeslop is POSIX-only")
+
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", evalSymlinks(t, tmpHome))
+
+	baseDir := t.TempDir()
+	outsidePwd := t.TempDir()
+	t.Chdir(outsidePwd)
+
+	// init --out-of-home must succeed and NOT produce the refusing-to-run message.
+	_, stderr, err := runCmd(t, baseDir, "--out-of-home", "init")
+	if err != nil {
+		t.Fatalf("init --out-of-home should succeed outside HOME, got: %v; stderr=%q", err, stderr)
+	}
+	if strings.Contains(stderr, "refusing to run") {
+		t.Errorf("init --out-of-home: stderr unexpectedly contains 'refusing to run': %q", stderr)
+	}
+
+	// bare makeslop --out-of-home must bypass the guard; stub docker so it
+	// exits cleanly without a real daemon.
+	record := installDockerShim(t, 0)
+	stubTTY(t, true)
+
+	_, stderr, err = runCmd(t, baseDir, "--out-of-home")
+	if err != nil {
+		t.Fatalf("bare makeslop --out-of-home should succeed outside HOME, got: %v; stderr=%q", err, stderr)
+	}
+	if strings.Contains(stderr, "refusing to run") {
+		t.Errorf("bare makeslop --out-of-home: stderr unexpectedly contains 'refusing to run': %q", stderr)
+	}
+	if argv := readArgv(t, record); argv == nil {
+		t.Errorf("docker shim was not invoked when --out-of-home bypasses guard")
 	}
 }
 
