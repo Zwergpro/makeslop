@@ -250,6 +250,177 @@ func TestSpecArgs_MaskedFilesProduceDevNullMountArgs(t *testing.T) {
 	}
 }
 
+// ── ShellCommand tests ────────────────────────────────────────────────────────
+
+// TestShellCommand_MinimalSpec_GoldenString tests ShellCommand against a
+// minimal hand-built Spec (not via BuildSpec) so the golden stays stable if
+// BuildSpec later adds new flags.
+func TestShellCommand_MinimalSpec_GoldenString(t *testing.T) {
+	spec := Spec{
+		Image:   "claudebox",
+		Command: "/bin/zsh",
+		Workdir: "/workspace/myproj-abc123",
+		Mounts:  []Mount{{Host: "/home/me/code/myproj", Container: "/workspace/myproj-abc123"}},
+		Tmpfs:   []string{"/tmp:size=100m"},
+	}
+	want := "docker run \\\n" +
+		"  --rm \\\n" +
+		"  -it \\\n" +
+		"  --workdir /workspace/myproj-abc123 \\\n" +
+		"  --tmpfs /tmp:size=100m \\\n" +
+		"  --mount type=bind,source=/home/me/code/myproj,target=/workspace/myproj-abc123 \\\n" +
+		"  claudebox \\\n" +
+		"  /bin/zsh"
+	got := spec.ShellCommand()
+	if got != want {
+		t.Errorf("ShellCommand mismatch\ngot:\n%s\n\nwant:\n%s", got, want)
+	}
+	// Final line must NOT have trailing backslash.
+	lines := strings.Split(got, "\n")
+	last := lines[len(lines)-1]
+	if strings.HasSuffix(last, `\`) {
+		t.Errorf("final line must not have trailing backslash: %q", last)
+	}
+	// All lines except the last must have trailing backslash.
+	for i, line := range lines[:len(lines)-1] {
+		if !strings.HasSuffix(line, ` \`) {
+			t.Errorf("line %d missing trailing backslash: %q", i, line)
+		}
+	}
+}
+
+// TestShellCommand_ShellQuoting tests the quoting predicate.
+func TestShellCommand_ShellQuoting(t *testing.T) {
+	tests := []struct {
+		name    string
+		spec    Spec
+		wantSub string // substring that must appear in ShellCommand output
+	}{
+		{
+			name: "image with space is single-quoted",
+			spec: Spec{
+				Image:   "my image",
+				Command: "sh",
+				Workdir: "/wd",
+			},
+			wantSub: `'my image'`,
+		},
+		{
+			name: "command with embedded single-quote uses POSIX escape",
+			spec: Spec{
+				Image:   "img",
+				Command: "it's-a-shell",
+				Workdir: "/wd",
+			},
+			wantSub: `'it'\''s-a-shell'`,
+		},
+		{
+			name: "mount value with CSV-quoted double-quote triggers single-quote wrap",
+			spec: Spec{
+				Image:   "img",
+				Command: "sh",
+				Workdir: "/wd",
+				Mounts:  []Mount{{Host: `/has"quote/x`, Container: "/plain"}},
+			},
+			// csvField doubles the embedded " to "" per RFC 4180, producing
+			// type=bind,"source=/has""quote/x",target=/plain in Args().
+			// shellQuote wraps it in single quotes because it contains `"`.
+			wantSub: `'type=bind,"source=/has""quote/x",target=/plain'`,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := tc.spec.ShellCommand()
+			if !strings.Contains(got, tc.wantSub) {
+				t.Errorf("ShellCommand output does not contain %q\ngot:\n%s", tc.wantSub, got)
+			}
+		})
+	}
+}
+
+// TestShellCommand_NilSlices_DegenerateCase asserts that a hand-built Spec
+// with nil Mounts, Tmpfs, CapDrop, and SecOpt still produces a valid,
+// parseable ShellCommand (the empty-slices degenerate case).
+func TestShellCommand_NilSlices_DegenerateCase(t *testing.T) {
+	spec := Spec{
+		Image:   "img",
+		Command: "sh",
+		Workdir: "/wd",
+		// Mounts, Tmpfs, CapDrop, SecOpt all nil.
+	}
+	got := spec.ShellCommand()
+	// Must start with docker run and end without trailing backslash.
+	if !strings.HasPrefix(got, "docker run") {
+		t.Errorf("must start with 'docker run', got: %q", got)
+	}
+	lines := strings.Split(got, "\n")
+	if last := lines[len(lines)-1]; strings.HasSuffix(last, `\`) {
+		t.Errorf("final line must not end with backslash: %q", last)
+	}
+	// round-trip: parsed tokens must equal ["docker"] + Args()
+	var parsed []string
+	for _, raw := range lines {
+		line := strings.TrimSuffix(raw, ` \`)
+		for _, field := range strings.Fields(line) {
+			parsed = append(parsed, shellUnquote(field))
+		}
+	}
+	want := append([]string{"docker"}, spec.Args()...)
+	if !reflect.DeepEqual(parsed, want) {
+		t.Errorf("round-trip mismatch\n got: %#v\nwant: %#v", parsed, want)
+	}
+}
+
+// TestShellCommand_Deterministic guards against map-iteration leaking.
+func TestShellCommand_Deterministic(t *testing.T) {
+	spec := BuildSpec(sampleOptions())
+	first := spec.ShellCommand()
+	for i := 0; i < 20; i++ {
+		if got := spec.ShellCommand(); got != first {
+			t.Fatalf("ShellCommand is not deterministic (iteration %d differs)", i+1)
+		}
+	}
+}
+
+// TestShellCommand_AgreeWithArgs asserts that ShellCommand encodes exactly the
+// same tokens as ["docker"] + Args() in the same order. The output is parsed
+// back: strip " \" line continuations, split lines, split each line on
+// whitespace, then strip shell quotes — the resulting token list must equal the
+// expected slice. This is the structural round-trip check the plan required.
+func TestShellCommand_AgreeWithArgs(t *testing.T) {
+	spec := BuildSpec(sampleOptions())
+	output := spec.ShellCommand()
+
+	// Parse the multi-line shell command back into tokens.
+	var got []string
+	for _, raw := range strings.Split(output, "\n") {
+		line := strings.TrimSuffix(raw, ` \`)
+		for _, field := range strings.Fields(line) {
+			got = append(got, shellUnquote(field))
+		}
+	}
+
+	want := append([]string{"docker"}, spec.Args()...)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("round-trip mismatch\n got: %#v\nwant: %#v", got, want)
+	}
+}
+
+// shellUnquote reverses shellQuote: removes surrounding single quotes and
+// expands '\'' back to a literal single quote. Used only in tests.
+//
+// Limitation: this helper uses strings.Fields to tokenise lines, so it only
+// works correctly when no argv token contains embedded whitespace. The current
+// test fixture (sampleOptions) has no space-containing tokens, so this is
+// acceptable for the tests that use it.
+func shellUnquote(s string) string {
+	if len(s) >= 2 && s[0] == '\'' && s[len(s)-1] == '\'' {
+		inner := s[1 : len(s)-1]
+		return strings.ReplaceAll(inner, `'\''`, "'")
+	}
+	return s
+}
+
 func collectMountArgs(argv []string) []string {
 	out := make([]string, 0, 8)
 	for i := 0; i < len(argv)-1; i++ {

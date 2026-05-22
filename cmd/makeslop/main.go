@@ -72,8 +72,8 @@ func ensureWithinHome(stderr io.Writer, pwd string, outOfHome bool) error {
 }
 
 // runGo implements the docker-launch logic for the "go" subcommand.
-// ws, baseDir, and outOfHome are provided by the caller (the goCmd RunE closure).
-func runGo(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfHome bool) error {
+// ws, baseDir, outOfHome, and dryRun are provided by the caller (the goCmd RunE closure).
+func runGo(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfHome, dryRun bool) error {
 	pwd, err := resolvePwd()
 	if err != nil {
 		return err
@@ -117,6 +117,10 @@ func runGo(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfHo
 		Command:       s.Shell,
 		MaskedFiles:   masked,
 	})
+	if dryRun {
+		fmt.Fprintln(cmd.OutOrStdout(), spec.ShellCommand())
+		return nil
+	}
 	if err := docker.Run(cmd.Context(), spec); err != nil {
 		if errors.Is(err, docker.ErrNoTTY) {
 			fmt.Fprintln(cmd.ErrOrStderr(),
@@ -131,7 +135,10 @@ func runGo(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfHo
 func newRootCmd(baseDir string) *cobra.Command {
 	ws := workspace.New(baseDir)
 
-	var outOfHome bool
+	var (
+		outOfHome bool
+		dryRun    bool
+	)
 
 	rootCmd := &cobra.Command{
 		Use:           "makeslop",
@@ -170,8 +177,11 @@ func newRootCmd(baseDir string) *cobra.Command {
 		Short:        "Launch the docker container for this workspace",
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
-		RunE:         func(cmd *cobra.Command, _ []string) error { return runGo(cmd, ws, baseDir, outOfHome) },
+		RunE:         func(cmd *cobra.Command, _ []string) error { return runGo(cmd, ws, baseDir, outOfHome, dryRun) },
 	}
+
+	goCmd.Flags().BoolVarP(&dryRun, "dry-run", "n", false,
+		"print the docker run command instead of executing it")
 
 	rootCmd.PersistentFlags().BoolVar(&outOfHome, "out-of-home", false,
 		"allow running outside the user's home directory")

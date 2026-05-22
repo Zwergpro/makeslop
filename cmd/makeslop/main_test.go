@@ -36,7 +36,7 @@ func snapshotTree(t *testing.T, root string) map[string][]byte {
 	t.Helper()
 	snap := map[string][]byte{}
 	_, err := os.Stat(root)
-	if errors.Is(err, fs.ErrNotExist) {
+	if errors.Is(err, os.ErrNotExist) {
 		return snap
 	}
 	if err != nil {
@@ -602,7 +602,7 @@ func TestInit_SymlinkInvariant(t *testing.T) {
 	}
 }
 
-// TestRoot_CorruptSettings_ReportsError guards that a non-ErrNotRegistered
+// TestGo_CorruptSettings_ReportsError guards that a non-ErrNotRegistered
 // failure from Lookup is surfaced — not swallowed by cobra's SilenceErrors —
 // and that the "not registered" hint is suppressed in that case.
 func TestGo_CorruptSettings_ReportsError(t *testing.T) {
@@ -717,7 +717,7 @@ func TestGo_NotRegistered_ReturnsErrSilent(t *testing.T) {
 	}
 }
 
-// TestRoot_OutsideHome_Refuses guards that makeslop go refuses when cwd is
+// TestGo_OutsideHome_Refuses guards that makeslop go refuses when cwd is
 // outside HOME and docker is never invoked.
 func TestGo_OutsideHome_Refuses(t *testing.T) {
 	// Two separate temp-parent groups: one for HOME (tmpHome), one for the
@@ -852,7 +852,7 @@ func installFdShim(t *testing.T, paths []string) string {
 	return record
 }
 
-// TestRoot_FdMissing_RefusesAndDoesNotInvokeDocker verifies that when the fd
+// TestGo_FdMissing_RefusesAndDoesNotInvokeDocker verifies that when the fd
 // binary is not found, makeslop prints the install hint to stderr, returns
 // errSilent, and never invokes docker.
 func TestGo_FdMissing_RefusesAndDoesNotInvokeDocker(t *testing.T) {
@@ -894,7 +894,7 @@ func TestGo_FdMissing_RefusesAndDoesNotInvokeDocker(t *testing.T) {
 	assertSnapshotsEqual(t, snapBefore, snapAfter)
 }
 
-// TestRoot_MasksFoundEnvFiles_ArgvContainsDevNullMounts verifies that when the
+// TestGo_MasksFoundEnvFiles_ArgvContainsDevNullMounts verifies that when the
 // fd shim returns two .env paths, the docker argv contains the expected
 // /dev/null mounts in tail position and stderr reports the count.
 func TestGo_MasksFoundEnvFiles_ArgvContainsDevNullMounts(t *testing.T) {
@@ -982,7 +982,7 @@ func TestGo_MasksFoundEnvFiles_ArgvContainsDevNullMounts(t *testing.T) {
 	}
 }
 
-// TestRoot_NoEnvFiles_PrintsNothingExtraOnStderr verifies that when the fd
+// TestGo_NoEnvFiles_PrintsNothingExtraOnStderr verifies that when the fd
 // shim produces empty output (no .env files), makeslop does not print any
 // "masked" line to stderr and the argv contains no /dev/null mounts.
 func TestGo_NoEnvFiles_PrintsNothingExtraOnStderr(t *testing.T) {
@@ -1102,4 +1102,411 @@ func mapKeys(m map[string][]byte) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// ── dry-run integration tests ─────────────────────────────────────────────────
+
+// TestGo_DryRun_SkipsDocker verifies the "no exec" contract: with --dry-run,
+// the docker shim is never invoked regardless of TTY state.
+func TestGo_DryRun_SkipsDocker(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	installFdShim(t, nil)
+	record := installDockerShim(t, 0)
+	stubTTY(t, false)
+
+	stdout, stderr, err := runCmd(t, baseDir, "go", "--dry-run")
+	if err != nil {
+		t.Fatalf("--dry-run should succeed, got err: %v; stderr=%q", err, stderr)
+	}
+	if argv := readArgv(t, record); argv != nil {
+		t.Errorf("docker shim must not be invoked on --dry-run; got argv=%v", argv)
+	}
+	if stdout == "" {
+		t.Errorf("--dry-run must print to stdout; got empty")
+	}
+}
+
+// TestGo_DryRun_StdoutEqualsBuildSpecShellCommand asserts exact equality
+// between runCmd stdout (after trimming the trailing newline added by
+// fmt.Fprintln) and docker.BuildSpec(opts).ShellCommand(). This is the single
+// source of truth for the format.
+func TestGo_DryRun_StdoutEqualsBuildSpecShellCommand(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	initOut, _, err := runCmd(t, baseDir, "init")
+	if err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	workspaceDir := strings.TrimSpace(initOut)
+
+	installFdShim(t, nil)
+	stubTTY(t, false)
+
+	stdout, stderr, err := runCmd(t, baseDir, "go", "--dry-run")
+	if err != nil {
+		t.Fatalf("--dry-run failed: %v; stderr=%q", err, stderr)
+	}
+
+	resolvedPwd := evalSymlinks(t, pwd)
+	s, loadErr := config.Load(baseDir)
+	if loadErr != nil {
+		t.Fatalf("load settings: %v", loadErr)
+	}
+	want := docker.BuildSpec(docker.Options{
+		ProjectRoot:   resolvedPwd,
+		WorkspaceName: filepath.Base(workspaceDir),
+		BaseDir:       baseDir,
+		Image:         s.Image,
+		Command:       s.Shell,
+	}).ShellCommand()
+
+	got := strings.TrimSuffix(stdout, "\n")
+	if got != want {
+		t.Errorf("stdout mismatch\ngot:\n%s\n\nwant:\n%s", got, want)
+	}
+}
+
+// TestGo_DryRun_ShortFlag asserts that -n is a synonym for --dry-run and
+// produces identical stdout.
+func TestGo_DryRun_ShortFlag(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	installFdShim(t, nil)
+	stubTTY(t, false)
+
+	stdoutLong, stderrLong, errLong := runCmd(t, baseDir, "go", "--dry-run")
+	if errLong != nil {
+		t.Fatalf("--dry-run failed: %v; stderr=%q", errLong, stderrLong)
+	}
+
+	stdoutShort, stderrShort, errShort := runCmd(t, baseDir, "go", "-n")
+	if errShort != nil {
+		t.Fatalf("-n failed: %v; stderr=%q", errShort, stderrShort)
+	}
+
+	if stdoutShort != stdoutLong {
+		t.Errorf("-n stdout != --dry-run stdout\nshort:\n%s\nlong:\n%s", stdoutShort, stdoutLong)
+	}
+}
+
+// TestGo_DryRun_NoTTY_Succeeds is the TTY-bypass regression guard. The real
+// ttyCheck returns false under go test (stdin/stdout are pipes). --dry-run must
+// succeed because docker.Run — which is the only caller of ttyCheck — is never
+// invoked.
+func TestGo_DryRun_NoTTY_Succeeds(t *testing.T) {
+	docker.SkipNonPOSIX(t, "fd shim requires POSIX shell; makeslop is POSIX-only")
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	// Scan runs before the dry-run branch, so fd must be available.
+	installFdShim(t, nil)
+	// Do NOT stub ttyCheck — the real predicate returns false under go test.
+	// Do NOT install docker shim — docker.Run must never be called.
+
+	stdout, stderr, err := runCmd(t, baseDir, "go", "--dry-run")
+	if err != nil {
+		t.Fatalf("--dry-run must succeed with no TTY (TTY check lives in docker.Run which is skipped); err=%v; stderr=%q", err, stderr)
+	}
+	if stdout == "" {
+		t.Errorf("--dry-run must print command to stdout; got empty")
+	}
+}
+
+// TestGo_DryRun_Unregistered_StillRefuses verifies that the workspace-lookup
+// precondition fires even with --dry-run.
+func TestGo_DryRun_Unregistered_StillRefuses(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+	// No init — workspace is not registered.
+
+	stdout, stderr, err := runCmd(t, baseDir, "go", "--dry-run")
+	if err == nil {
+		t.Fatalf("expected error for unregistered workspace, got nil; stdout=%q", stdout)
+	}
+	if !errors.Is(err, errSilent) {
+		t.Errorf("expected errSilent, got %v", err)
+	}
+	if !strings.Contains(stderr, "no workspace registered") {
+		t.Errorf("stderr missing 'no workspace registered': %q", stderr)
+	}
+	if stdout != "" {
+		t.Errorf("stdout must be empty when precondition fails; got %q", stdout)
+	}
+}
+
+// TestGo_DryRun_OutsideHome_StillRefuses verifies that the home-dir guard
+// fires even with --dry-run.
+func TestGo_DryRun_OutsideHome_StillRefuses(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", evalSymlinks(t, tmpHome))
+
+	baseDir := t.TempDir()
+	outsidePwd := t.TempDir()
+	t.Chdir(outsidePwd)
+
+	stdout, stderr, err := runCmd(t, baseDir, "go", "--dry-run")
+	if err == nil {
+		t.Fatalf("expected error from --dry-run outside HOME, got nil; stdout=%q", stdout)
+	}
+	if !errors.Is(err, errSilent) {
+		t.Errorf("expected errSilent, got %v", err)
+	}
+	if !strings.Contains(stderr, "refusing to run from") {
+		t.Errorf("stderr missing 'refusing to run from': %q", stderr)
+	}
+	if stdout != "" {
+		t.Errorf("stdout must be empty when home-dir guard fires; got %q", stdout)
+	}
+}
+
+// TestGo_DryRun_OutOfHomeBypasses verifies that --out-of-home combined with
+// --dry-run prints the command even when cwd is outside HOME.
+func TestGo_DryRun_OutOfHomeBypasses(t *testing.T) {
+	docker.SkipNonPOSIX(t, "fd shim requires POSIX shell; makeslop is POSIX-only")
+
+	// Use setHomeToTestParent so that the init directory is inside home.
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+
+	// Create the workspace inside home (where init is allowed).
+	insidePwd := t.TempDir()
+	t.Chdir(insidePwd)
+	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
+		t.Fatalf("init inside home failed: %v", err)
+	}
+
+	// Now set HOME to a new temp dir that does not contain insidePwd.
+	newHome := t.TempDir()
+	t.Setenv("HOME", evalSymlinks(t, newHome))
+
+	// insidePwd is now "outside" the new HOME. Use it as cwd for the dry-run.
+	t.Chdir(insidePwd)
+
+	installFdShim(t, nil)
+	stubTTY(t, false)
+
+	// --out-of-home flag comes before the subcommand (it is a persistent flag).
+	stdout, stderr, err := runCmd(t, baseDir, "--out-of-home", "go", "--dry-run")
+	if err != nil {
+		t.Fatalf("--out-of-home --dry-run should succeed; err=%v; stderr=%q", err, stderr)
+	}
+	if strings.Contains(stderr, "refusing to run") {
+		t.Errorf("stderr must not contain 'refusing to run' when --out-of-home is set: %q", stderr)
+	}
+	if stdout == "" {
+		t.Errorf("--out-of-home --dry-run must print command to stdout")
+	}
+}
+
+// TestGo_DryRun_FdMissing_StillRefuses verifies that the Scan precondition
+// fires even with --dry-run.
+func TestGo_DryRun_FdMissing_StillRefuses(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	// Point fd to a nonexistent binary so Scan returns ErrFdMissing.
+	t.Cleanup(security.SetFdBinaryForTest("/nonexistent/fd-binary-that-does-not-exist"))
+
+	stdout, stderr, err := runCmd(t, baseDir, "go", "--dry-run")
+	if err == nil {
+		t.Fatalf("expected error when fd is missing, got nil; stdout=%q", stdout)
+	}
+	if !errors.Is(err, errSilent) {
+		t.Errorf("expected errSilent, got %v", err)
+	}
+	if !strings.Contains(stderr, "fd/fdfind CLI required") {
+		t.Errorf("stderr missing fd install hint: %q", stderr)
+	}
+	if stdout != "" {
+		t.Errorf("stdout must be empty when fd is missing; got %q", stdout)
+	}
+}
+
+// TestGo_DryRun_CorruptSettings verifies that --dry-run propagates a wrapped
+// error when settings.json is corrupt. Specifically: corrupt settings.json
+// causes ws.Lookup to fail (Lookup calls config.Load internally), which
+// precedes the dry-run branch — errors from preconditions propagate under
+// --dry-run.
+func TestGo_DryRun_CorruptSettings(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	// Register workspace so init succeeds, then corrupt settings so ws.Lookup fails.
+	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(baseDir, "settings.json"), []byte("{not json"), 0o644); err != nil {
+		t.Fatalf("corrupt settings: %v", err)
+	}
+
+	installFdShim(t, nil)
+	stubTTY(t, false)
+
+	stdout, _, err := runCmd(t, baseDir, "go", "--dry-run")
+	if err == nil {
+		t.Fatalf("expected error for corrupt settings under --dry-run, got nil; stdout=%q", stdout)
+	}
+	// Must NOT be errSilent — main() must print the wrapped error.
+	if errors.Is(err, errSilent) {
+		t.Errorf("corrupt-settings error must not be errSilent: %v", err)
+	}
+	if stdout != "" {
+		t.Errorf("stdout must be empty when config.Load fails; got %q", stdout)
+	}
+}
+
+// TestGo_DryRun_MasksEnvFiles_StdoutContainsDevNullMounts verifies that when
+// the fd shim returns two .env paths, the dry-run stdout contains both
+// /dev/null mount lines and stderr reports the masked count.
+func TestGo_DryRun_MasksEnvFiles_StdoutContainsDevNullMounts(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	initOut, _, err := runCmd(t, baseDir, "init")
+	if err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	workspaceDir := strings.TrimSpace(initOut)
+
+	resolvedPwd := evalSymlinks(t, pwd)
+
+	// Create two .env files so the shim paths are real files.
+	envFile1 := filepath.Join(resolvedPwd, ".env")
+	envFile2 := filepath.Join(resolvedPwd, "configs", "local.env")
+	if err := os.MkdirAll(filepath.Dir(envFile2), 0o755); err != nil {
+		t.Fatalf("mkdir configs: %v", err)
+	}
+	if err := os.WriteFile(envFile1, []byte("SECRET=1"), 0o644); err != nil {
+		t.Fatalf("write .env: %v", err)
+	}
+	if err := os.WriteFile(envFile2, []byte("SECRET=2"), 0o644); err != nil {
+		t.Fatalf("write local.env: %v", err)
+	}
+
+	installFdShim(t, []string{envFile1, envFile2})
+	stubTTY(t, false)
+
+	stdout, stderr, err := runCmd(t, baseDir, "go", "--dry-run")
+	if err != nil {
+		t.Fatalf("--dry-run failed: %v; stderr=%q", err, stderr)
+	}
+	if !strings.Contains(stderr, "makeslop: masked 2 .env file(s)") {
+		t.Errorf("stderr missing masked count: %q", stderr)
+	}
+
+	name := filepath.Base(workspaceDir)
+	wantMount1 := "type=bind,source=/dev/null,target=/workspace/" + name + "/.env"
+	wantMount2 := "type=bind,source=/dev/null,target=/workspace/" + name + "/configs/local.env"
+	if !strings.Contains(stdout, wantMount1) {
+		t.Errorf("stdout missing /dev/null mount for .env: want substring %q\nstdout:\n%s", wantMount1, stdout)
+	}
+	if !strings.Contains(stdout, wantMount2) {
+		t.Errorf("stdout missing /dev/null mount for local.env: want substring %q\nstdout:\n%s", wantMount2, stdout)
+	}
+
+	// Verify the /dev/null overlay mounts appear AFTER the project bind mount
+	// in the printed output (mount-order invariant).
+	projectMount := "source=" + resolvedPwd + ",target=/workspace/" + name
+	projectIdx := strings.Index(stdout, projectMount)
+	env1Idx := strings.Index(stdout, wantMount1)
+	env2Idx := strings.Index(stdout, wantMount2)
+	if projectIdx < 0 {
+		t.Errorf("stdout missing project bind mount %q\nstdout:\n%s", projectMount, stdout)
+	}
+	if env1Idx >= 0 && env1Idx <= projectIdx {
+		t.Errorf("/dev/null mount for .env (byte %d) must appear after project bind mount (byte %d)", env1Idx, projectIdx)
+	}
+	if env2Idx >= 0 && env2Idx <= projectIdx {
+		t.Errorf("/dev/null mount for local.env (byte %d) must appear after project bind mount (byte %d)", env2Idx, projectIdx)
+	}
+}
+
+// TestGo_DryRun_FromSubdir_MountsAncestor verifies that invoking --dry-run
+// from a subdirectory mounts the registered ancestor root, not pwd.
+func TestGo_DryRun_FromSubdir_MountsAncestor(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	parent := t.TempDir()
+	t.Chdir(parent)
+
+	initOut, _, err := runCmd(t, baseDir, "init")
+	if err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	workspaceDir := strings.TrimSpace(initOut)
+
+	sub := filepath.Join(parent, "deeply", "nested")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatalf("mkdir sub: %v", err)
+	}
+	t.Chdir(sub)
+
+	installFdShim(t, nil)
+	stubTTY(t, false)
+
+	stdout, stderr, err := runCmd(t, baseDir, "go", "--dry-run")
+	if err != nil {
+		t.Fatalf("--dry-run from subdir failed: %v; stderr=%q", err, stderr)
+	}
+
+	resolvedParent := evalSymlinks(t, parent)
+	wantFragment := "source=" + resolvedParent + ",target=/workspace/" + filepath.Base(workspaceDir)
+	if !strings.Contains(stdout, wantFragment) {
+		t.Errorf("stdout missing project-root mount fragment %q\nstdout:\n%s", wantFragment, stdout)
+	}
+}
+
+// TestInit_DryRunFlagRejected guards that --dry-run is scoped to goCmd and not
+// a persistent flag that leaks into init.
+func TestInit_DryRunFlagRejected(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	_, _, err := runCmd(t, baseDir, "init", "--dry-run")
+	if err == nil {
+		t.Fatalf("init --dry-run should fail, got nil error")
+	}
+	// The error message must mention "dry-run" (exact cobra phrasing may vary
+	// across versions, so we check for the flag name substring only).
+	if !strings.Contains(err.Error(), "dry-run") {
+		t.Errorf("error must mention 'dry-run', got: %q", err.Error())
+	}
 }

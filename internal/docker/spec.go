@@ -4,6 +4,7 @@ package docker
 
 import (
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/Zwergpro/makeslop/internal/config"
@@ -107,6 +108,69 @@ func (s Spec) Args() []string {
 	}
 	args = append(args, s.Image, s.Command)
 	return args
+}
+
+// shellSafeRe matches tokens that need no shell quoting: non-empty strings
+// composed only of alphanumerics and the safe punctuation set.
+var shellSafeRe = regexp.MustCompile(`^[A-Za-z0-9_./:=,@+-]+$`)
+
+// shellQuote returns s in a form safe for inclusion in a POSIX shell command
+// line. Tokens matching shellSafeRe are returned bare. An empty string returns
+// ''. All other strings are wrapped in single quotes with embedded single
+// quotes rewritten as the POSIX idiom '\''.
+func shellQuote(s string) string {
+	if s != "" && shellSafeRe.MatchString(s) {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// ShellCommand returns a multi-line, backslash-continued shell command
+// equivalent to `docker` invoked with s.Args(). The first line is `docker run
+// \` and each subsequent token group is two-space-indented. Flag/value pairs
+// share one line; single-token flags are on their own line. The image and
+// command each occupy their own trailing line; the image line carries a
+// trailing ` \` and the command line does not. Tokens that contain
+// shell-special characters are single-quoted with POSIX-safe escaping (see
+// shellQuote). Pure: same Spec → same string.
+func (s Spec) ShellCommand() string {
+	// Build the same logical groups as Args() but in line-oriented form.
+	// We collect lines and join them with " \\\n" between consecutive lines,
+	// with the final line having no trailing continuation.
+	args := s.Args() // starts with "run", not "docker"
+
+	var lines []string
+	lines = append(lines, "docker run")
+
+	// i := 1 skips the leading "run" token — we already prepended "docker run".
+	// The last two args are always Image and Command; handle them explicitly
+	// below so a paired-flag name in Image cannot be misread as a flag.
+	i := 1 // skip "run"
+	for i < len(args)-2 {
+		tok := args[i]
+		switch tok {
+		case "--workdir", "--tmpfs", "--cap-drop", "--security-opt", "--mount":
+			lines = append(lines, "  "+shellQuote(tok)+" "+shellQuote(args[i+1]))
+			i += 2
+		default:
+			lines = append(lines, "  "+shellQuote(tok))
+			i++
+		}
+	}
+	// Emit image and command as explicit trailing lines regardless of their value.
+	lines = append(lines, "  "+shellQuote(args[len(args)-2]))
+	lines = append(lines, "  "+shellQuote(args[len(args)-1]))
+
+	// Join with " \" continuation on all but the last line.
+	var sb strings.Builder
+	for j, line := range lines {
+		sb.WriteString(line)
+		if j < len(lines)-1 {
+			sb.WriteString(" \\")
+		}
+		sb.WriteByte('\n')
+	}
+	return strings.TrimSuffix(sb.String(), "\n")
 }
 
 // csvField returns s as a single RFC 4180 CSV field: unquoted when it contains

@@ -80,6 +80,21 @@ The image and shell are configurable via `settings.json`. Defaults are `claudebo
 
 Omitted or empty `image`/`shell` fields fall back to the defaults; existing `settings.json` files predating these keys keep working unchanged.
 
+### Dry run
+
+Pass `--dry-run` (short: `-n`) to print the exact `docker run` invocation that makeslop would execute and then exit without launching docker. The output is a multi-line, backslash-continued, paste-ready shell command on stdout. All pre-launch checks still run (home-dir guard, workspace lookup, secret scan, settings load), so the printed command equals the real invocation byte-for-byte.
+
+```
+makeslop go --dry-run
+makeslop go -n
+```
+
+Because the TTY check lives inside `docker run` (which is skipped on dry-run), `--dry-run` succeeds even when stdin/stdout are pipes. This makes it suitable for CI inspection:
+
+```
+makeslop go -n > cmd.sh   # capture only the command; masked-file count goes to stderr
+```
+
 ### Exit codes
 
 - `0` — success (`init` registered/reused a project, or the container exited cleanly).
