@@ -13,6 +13,7 @@ import (
 
 	"github.com/Zwergpro/makeslop/internal/config"
 	"github.com/Zwergpro/makeslop/internal/docker"
+	"github.com/Zwergpro/makeslop/internal/projectconfig"
 	"github.com/Zwergpro/makeslop/internal/security"
 	"github.com/Zwergpro/makeslop/internal/workspace"
 )
@@ -487,7 +488,7 @@ func TestRunWithExitCode_NonExitErrorPrintsPrefix(t *testing.T) {
 func TestInit_Twice_Idempotent(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
-	pwd := t.TempDir()
+	pwd := evalSymlinks(t, t.TempDir())
 	t.Chdir(pwd)
 
 	out1, _, err := runCmd(t, baseDir, "init")
@@ -506,6 +507,17 @@ func TestInit_Twice_Idempotent(t *testing.T) {
 
 	snapAfter := snapshotTree(t, baseDir)
 	assertSnapshotsEqual(t, snapBefore, snapAfter)
+
+	// Verify that the second init did not modify .makeslop.yaml in the project
+	// directory — Scaffold must be idempotent and leave a hand-edited file untouched.
+	yamlPath := filepath.Join(pwd, projectconfig.Filename)
+	got, err := os.ReadFile(yamlPath)
+	if err != nil {
+		t.Fatalf("read %s after second init: %v", projectconfig.Filename, err)
+	}
+	if !bytes.Equal(got, projectconfig.Stub) {
+		t.Errorf("%s content after second init = %q, want %q", projectconfig.Filename, got, projectconfig.Stub)
+	}
 }
 
 func TestInit_FromSubdir_ReusesParent(t *testing.T) {
@@ -536,6 +548,17 @@ func TestInit_FromSubdir_ReusesParent(t *testing.T) {
 
 	snapAfter := snapshotTree(t, baseDir)
 	assertSnapshotsEqual(t, snapBefore, snapAfter)
+
+	// Scaffold placement: .makeslop.yaml must appear in the parent (workspace root),
+	// NOT in the subdirectory from which init was called.
+	resolvedParent := evalSymlinks(t, parent)
+	resolvedSub := evalSymlinks(t, sub)
+	if _, err := os.Stat(filepath.Join(resolvedSub, projectconfig.Filename)); err == nil {
+		t.Errorf(".makeslop.yaml must NOT be created in the subdir %s; it belongs in the workspace root", resolvedSub)
+	}
+	if _, err := os.Stat(filepath.Join(resolvedParent, projectconfig.Filename)); err != nil {
+		t.Errorf(".makeslop.yaml must exist in the workspace root %s: %v", resolvedParent, err)
+	}
 }
 
 func TestInit_SymlinkInvariant(t *testing.T) {
@@ -1106,6 +1129,84 @@ func mapKeys(m map[string][]byte) []string {
 
 // ── dry-run integration tests ─────────────────────────────────────────────────
 
+// TestMergeUniqueSorted validates the mergeUniqueSorted helper: sorted union of
+// two string slices with deduplication within and across slices.
+func TestMergeUniqueSorted(t *testing.T) {
+	cases := []struct {
+		name string
+		a, b []string
+		want []string
+	}{
+		{
+			name: "both nil",
+			a:    nil,
+			b:    nil,
+			want: nil,
+		},
+		{
+			name: "both empty",
+			a:    []string{},
+			b:    []string{},
+			want: nil,
+		},
+		{
+			name: "a only",
+			a:    []string{"c", "a", "b"},
+			b:    nil,
+			want: []string{"a", "b", "c"},
+		},
+		{
+			name: "b only",
+			b:    []string{"z", "x", "y"},
+			want: []string{"x", "y", "z"},
+		},
+		{
+			name: "no overlap",
+			a:    []string{"a", "b"},
+			b:    []string{"c", "d"},
+			want: []string{"a", "b", "c", "d"},
+		},
+		{
+			name: "within-list duplicates in a",
+			a:    []string{"a", "a", "b"},
+			b:    []string{"c"},
+			want: []string{"a", "b", "c"},
+		},
+		{
+			name: "within-list duplicates in b",
+			a:    []string{"a"},
+			b:    []string{"b", "b", "c"},
+			want: []string{"a", "b", "c"},
+		},
+		{
+			name: "cross-list duplicates",
+			a:    []string{"a", "b"},
+			b:    []string{"b", "c"},
+			want: []string{"a", "b", "c"},
+		},
+		{
+			name: "all duplicates",
+			a:    []string{"x", "y"},
+			b:    []string{"x", "y"},
+			want: []string{"x", "y"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := mergeUniqueSorted(tc.a, tc.b)
+			if len(got) != len(tc.want) {
+				t.Fatalf("mergeUniqueSorted(%v, %v) = %v, want %v", tc.a, tc.b, got, tc.want)
+			}
+			for i := range tc.want {
+				if got[i] != tc.want[i] {
+					t.Errorf("mergeUniqueSorted result[%d] = %q, want %q", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
+
 // TestGo_DryRun_SkipsDocker verifies the "no exec" contract: with --dry-run,
 // the docker shim is never invoked regardless of TTY state.
 func TestGo_DryRun_SkipsDocker(t *testing.T) {
@@ -1508,5 +1609,556 @@ func TestInit_DryRunFlagRejected(t *testing.T) {
 	// across versions, so we check for the flag name substring only).
 	if !strings.Contains(err.Error(), "dry-run") {
 		t.Errorf("error must mention 'dry-run', got: %q", err.Error())
+	}
+}
+
+// TestInit_ScaffoldsProjectConfig verifies that running init creates a
+// .makeslop.yaml file with the exact stub content in the project directory.
+func TestInit_ScaffoldsProjectConfig(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	_, stderr, err := runCmd(t, baseDir, "init")
+	if err != nil {
+		t.Fatalf("init failed: %v; stderr=%q", err, stderr)
+	}
+
+	resolvedPwd := evalSymlinks(t, pwd)
+	configPath := filepath.Join(resolvedPwd, projectconfig.Filename)
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", projectconfig.Filename, err)
+	}
+	if !bytes.Equal(data, projectconfig.Stub) {
+		t.Errorf("%s content = %q, want %q", projectconfig.Filename, data, projectconfig.Stub)
+	}
+}
+
+// TestInit_PreservesExistingProjectConfig verifies that running init on a
+// directory that already has a .makeslop.yaml with user content leaves the
+// file byte-for-byte unchanged.
+func TestInit_PreservesExistingProjectConfig(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	resolvedPwd := evalSymlinks(t, pwd)
+	configPath := filepath.Join(resolvedPwd, projectconfig.Filename)
+	userContent := []byte("exclude:\n  dirs: [node_modules]\n  files: [secrets/key]\n")
+	if err := os.WriteFile(configPath, userContent, 0o644); err != nil {
+		t.Fatalf("write pre-existing config: %v", err)
+	}
+
+	_, stderr, err := runCmd(t, baseDir, "init")
+	if err != nil {
+		t.Fatalf("init failed: %v; stderr=%q", err, stderr)
+	}
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read %s after init: %v", projectconfig.Filename, err)
+	}
+	if !bytes.Equal(data, userContent) {
+		t.Errorf("%s was modified by init\ngot:  %q\nwant: %q", projectconfig.Filename, data, userContent)
+	}
+}
+
+// TestInit_DoesNotInvokeScan_StillHolds re-verifies the existing invariant
+// that the init subcommand never calls security.Scan. The fd shim here exits
+// non-zero; if init were to invoke it, init would fail. This test exists to
+// confirm that wiring projectconfig.Scaffold did not accidentally introduce a
+// Scan call.
+func TestInit_DoesNotInvokeScan_StillHolds(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	// Install an fd shim that exits 1; if init invokes it, init will fail.
+	docker.SkipNonPOSIX(t, "fd shim requires POSIX shell; makeslop is POSIX-only")
+	shimDir := t.TempDir()
+	shimPath := filepath.Join(shimDir, "fd-shim")
+	if err := os.WriteFile(shimPath, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatalf("write failing fd shim: %v", err)
+	}
+	t.Cleanup(security.SetFdBinaryForTest(shimPath))
+
+	_, stderr, err := runCmd(t, baseDir, "init")
+	if err != nil {
+		t.Fatalf("init must succeed regardless of fd shim; got: %v; stderr=%q", err, stderr)
+	}
+
+	// Also verify the config was scaffolded successfully.
+	resolvedPwd := evalSymlinks(t, pwd)
+	if _, err := os.Stat(filepath.Join(resolvedPwd, projectconfig.Filename)); err != nil {
+		t.Errorf("%s not created by init: %v", projectconfig.Filename, err)
+	}
+}
+
+// ── projectconfig.Load wiring tests ───────────────────────────────────────────
+
+// TestGo_LoadsYamlAndMergesMaskedFiles verifies that when fdfind returns one
+// .env path and .makeslop.yaml lists an additional file under exclude.files,
+// both appear as /dev/null overlay mounts in the docker argv in lex-sorted order.
+func TestGo_LoadsYamlAndMergesMaskedFiles(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	initOut, _, err := runCmd(t, baseDir, "init")
+	if err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	workspaceDir := strings.TrimSpace(initOut)
+	resolvedPwd := evalSymlinks(t, pwd)
+
+	// Create both files on disk so security.Scan and projectconfig.Load stat-keep them.
+	envFile := filepath.Join(resolvedPwd, ".env")
+	secretFile := filepath.Join(resolvedPwd, "private", "token.txt")
+	if err := os.MkdirAll(filepath.Dir(secretFile), 0o755); err != nil {
+		t.Fatalf("mkdir private: %v", err)
+	}
+	if err := os.WriteFile(envFile, []byte("SECRET=1"), 0o644); err != nil {
+		t.Fatalf("write .env: %v", err)
+	}
+	if err := os.WriteFile(secretFile, []byte("tok"), 0o644); err != nil {
+		t.Fatalf("write token.txt: %v", err)
+	}
+
+	// fd shim returns only .env; the yaml file adds private/token.txt.
+	installFdShim(t, []string{envFile})
+	yamlContent := "exclude:\n  dirs: []\n  files: [private/token.txt]\n"
+	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(yamlContent), 0o644); err != nil {
+		t.Fatalf("write yaml: %v", err)
+	}
+
+	record := installDockerShim(t, 0)
+	stubTTY(t, true)
+
+	_, stderr, err := runCmd(t, baseDir, "go")
+	if err != nil {
+		t.Fatalf("go failed: %v; stderr=%q", err, stderr)
+	}
+
+	name := filepath.Base(workspaceDir)
+	argv := readArgv(t, record)
+	wantMount1 := "type=bind,source=/dev/null,target=/workspace/" + name + "/.env"
+	wantMount2 := "type=bind,source=/dev/null,target=/workspace/" + name + "/private/token.txt"
+	var found1, found2 bool
+	for _, a := range argv {
+		if a == wantMount1 {
+			found1 = true
+		}
+		if a == wantMount2 {
+			found2 = true
+		}
+	}
+	if !found1 {
+		t.Errorf("argv missing /dev/null mount for .env: want %q\nargv: %v", wantMount1, argv)
+	}
+	if !found2 {
+		t.Errorf("argv missing /dev/null mount for private/token.txt: want %q\nargv: %v", wantMount2, argv)
+	}
+
+	// Lex-sorted order: .env < private/token.txt — check index ordering.
+	var idx1, idx2 int
+	for i, a := range argv {
+		if a == wantMount1 {
+			idx1 = i
+		}
+		if a == wantMount2 {
+			idx2 = i
+		}
+	}
+	if idx1 >= idx2 {
+		t.Errorf("/dev/null mount for .env (idx %d) should come before private/token.txt (idx %d) in lex order", idx1, idx2)
+	}
+}
+
+// TestGo_LoadsYamlMaskedDirs_TmpfsMountInArgv verifies that a directory listed
+// under exclude.dirs in .makeslop.yaml results in a --mount type=tmpfs entry in
+// the docker argv in tail position (after project bind mount).
+func TestGo_LoadsYamlMaskedDirs_TmpfsMountInArgv(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	initOut, _, err := runCmd(t, baseDir, "init")
+	if err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	workspaceDir := strings.TrimSpace(initOut)
+	resolvedPwd := evalSymlinks(t, pwd)
+
+	// Create the directory on disk so projectconfig.Load stat-keeps it.
+	nodeModules := filepath.Join(resolvedPwd, "node_modules")
+	if err := os.MkdirAll(nodeModules, 0o755); err != nil {
+		t.Fatalf("mkdir node_modules: %v", err)
+	}
+
+	// fd shim returns nothing; yaml masks node_modules as a dir.
+	installFdShim(t, nil)
+	yamlContent := "exclude:\n  dirs: [node_modules]\n  files: []\n"
+	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(yamlContent), 0o644); err != nil {
+		t.Fatalf("write yaml: %v", err)
+	}
+
+	record := installDockerShim(t, 0)
+	stubTTY(t, true)
+
+	_, stderr, err := runCmd(t, baseDir, "go")
+	if err != nil {
+		t.Fatalf("go failed: %v; stderr=%q", err, stderr)
+	}
+
+	name := filepath.Base(workspaceDir)
+	argv := readArgv(t, record)
+	wantTmpfs := "type=tmpfs,target=/workspace/" + name + "/node_modules"
+	projectMount := "type=bind,source=" + resolvedPwd + ",target=/workspace/" + name
+
+	var tmpfsIdx, projectIdx int
+	var foundTmpfs bool
+	for i, a := range argv {
+		if a == wantTmpfs {
+			foundTmpfs = true
+			tmpfsIdx = i
+		}
+		if a == projectMount {
+			projectIdx = i
+		}
+	}
+	if !foundTmpfs {
+		t.Errorf("argv missing tmpfs mount: want %q\nargv: %v", wantTmpfs, argv)
+	}
+	if tmpfsIdx <= projectIdx {
+		t.Errorf("tmpfs mount (idx %d) must come after project bind mount (idx %d)", tmpfsIdx, projectIdx)
+	}
+	// Also assert no source= segment in the tmpfs mount value.
+	for _, a := range argv {
+		if a == wantTmpfs && strings.Contains(a, "source=") {
+			t.Errorf("tmpfs mount must not contain source=: %q", a)
+		}
+	}
+}
+
+// TestGo_YamlAbsentIsBitIdenticalArgv verifies that when no .makeslop.yaml
+// exists and fdfind returns nothing, the argv is identical to the pre-YAML
+// baseline (no extra mounts).
+func TestGo_YamlAbsentIsBitIdenticalArgv(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	initOut, _, err := runCmd(t, baseDir, "init")
+	if err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	workspaceDir := strings.TrimSpace(initOut)
+	resolvedPwd := evalSymlinks(t, pwd)
+
+	// Remove the scaffolded .makeslop.yaml so Load returns a zero Excludes.
+	if err := os.Remove(filepath.Join(resolvedPwd, projectconfig.Filename)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("remove yaml: %v", err)
+	}
+
+	installFdShim(t, nil)
+	record := installDockerShim(t, 0)
+	stubTTY(t, true)
+
+	_, stderr, err := runCmd(t, baseDir, "go")
+	if err != nil {
+		t.Fatalf("go failed: %v; stderr=%q", err, stderr)
+	}
+
+	got := readArgv(t, record)
+	s, loadErr := config.Load(baseDir)
+	if loadErr != nil {
+		t.Fatalf("load settings: %v", loadErr)
+	}
+	want := docker.BuildSpec(docker.Options{
+		ProjectRoot:   resolvedPwd,
+		WorkspaceName: filepath.Base(workspaceDir),
+		BaseDir:       baseDir,
+		Image:         s.Image,
+		Command:       s.Shell,
+	}).Args()
+
+	if len(got) != len(want) {
+		t.Fatalf("argv length mismatch: got %d %v, want %d %v", len(got), got, len(want), want)
+	}
+	for i, w := range want {
+		if got[i] != w {
+			t.Errorf("argv[%d] = %q, want %q", i, got[i], w)
+		}
+	}
+}
+
+// TestGo_YamlDedupsAgainstScan verifies that when security.Scan and
+// .makeslop.yaml both report the same file, only one /dev/null overlay appears
+// in the docker argv.
+func TestGo_YamlDedupsAgainstScan(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	initOut, _, err := runCmd(t, baseDir, "init")
+	if err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	workspaceDir := strings.TrimSpace(initOut)
+	resolvedPwd := evalSymlinks(t, pwd)
+
+	// Create .env on disk.
+	envFile := filepath.Join(resolvedPwd, ".env")
+	if err := os.WriteFile(envFile, []byte("S=1"), 0o644); err != nil {
+		t.Fatalf("write .env: %v", err)
+	}
+
+	// fd shim returns .env; yaml also lists .env in exclude.files.
+	installFdShim(t, []string{envFile})
+	yamlContent := "exclude:\n  dirs: []\n  files: [.env]\n"
+	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(yamlContent), 0o644); err != nil {
+		t.Fatalf("write yaml: %v", err)
+	}
+
+	record := installDockerShim(t, 0)
+	stubTTY(t, true)
+
+	_, stderr, err := runCmd(t, baseDir, "go")
+	if err != nil {
+		t.Fatalf("go failed: %v; stderr=%q", err, stderr)
+	}
+
+	name := filepath.Base(workspaceDir)
+	argv := readArgv(t, record)
+	wantMount := "type=bind,source=/dev/null,target=/workspace/" + name + "/.env"
+	var count int
+	for _, a := range argv {
+		if a == wantMount {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("expected exactly 1 /dev/null mount for .env, got %d\nargv: %v", count, argv)
+	}
+}
+
+// ── YAML error propagation tests ──────────────────────────────────────────────
+
+// TestGo_YamlMalformedAbortsBeforeDocker verifies that a malformed .makeslop.yaml
+// causes makeslop go to exit non-zero with "makeslop: " on stderr and that docker
+// is never invoked (preserving the secret-masking invariant: no container starts
+// means no .env leak is possible).
+//
+// Uses runWithExitCode (not runCmd) so that non-errSilent errors are formatted
+// with the "makeslop: " prefix on stderr, matching the production code path.
+func TestGo_YamlMalformedAbortsBeforeDocker(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	resolvedPwd := evalSymlinks(t, pwd)
+
+	// Write invalid YAML.
+	badYAML := []byte("exclude:\n  dirs: [unclosed\n")
+	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), badYAML, 0o644); err != nil {
+		t.Fatalf("write bad yaml: %v", err)
+	}
+
+	installFdShim(t, nil)
+	record := installDockerShim(t, 0)
+	stubTTY(t, true)
+
+	var stdout, stderr bytes.Buffer
+	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"go"})
+	if code == 0 {
+		t.Fatalf("expected non-zero exit from malformed yaml, got 0; stderr=%q", stderr.String())
+	}
+	if !strings.HasPrefix(stderr.String(), "makeslop: ") {
+		t.Errorf("stderr missing 'makeslop: ' prefix: %q", stderr.String())
+	}
+	if argv := readArgv(t, record); argv != nil {
+		t.Errorf("docker shim must not be invoked on yaml parse error; got argv=%v", argv)
+	}
+}
+
+// TestGo_YamlReservedPathAbortsBeforeDocker verifies that listing a reserved
+// agent path (.claude) in exclude.dirs causes makeslop go to abort before docker
+// is invoked, with an error mentioning "reserved agent path".
+//
+// Uses runWithExitCode so that the error message appears on stderr.
+func TestGo_YamlReservedPathAbortsBeforeDocker(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	resolvedPwd := evalSymlinks(t, pwd)
+
+	// List a reserved agent path in exclude.dirs.
+	yamlContent := "exclude:\n  dirs: [.claude]\n  files: []\n"
+	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(yamlContent), 0o644); err != nil {
+		t.Fatalf("write yaml: %v", err)
+	}
+
+	installFdShim(t, nil)
+	record := installDockerShim(t, 0)
+	stubTTY(t, true)
+
+	var stdout, stderr bytes.Buffer
+	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"go"})
+	if code == 0 {
+		t.Fatalf("expected non-zero exit from reserved path, got 0; stderr=%q", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "reserved agent path") {
+		t.Errorf("stderr missing 'reserved agent path': %q", stderr.String())
+	}
+	if argv := readArgv(t, record); argv != nil {
+		t.Errorf("docker shim must not be invoked when yaml lists reserved path; got argv=%v", argv)
+	}
+}
+
+// TestGo_YamlDirAndFileDupAborts verifies that listing the same relative path in
+// both exclude.dirs and exclude.files causes makeslop go to abort before docker
+// is invoked, with an error mentioning "listed in both".
+//
+// Uses runWithExitCode so that the error message appears on stderr.
+func TestGo_YamlDirAndFileDupAborts(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	resolvedPwd := evalSymlinks(t, pwd)
+
+	// Same path in both dirs and files — cross-list duplicate.
+	yamlContent := "exclude:\n  dirs: [data]\n  files: [data]\n"
+	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(yamlContent), 0o644); err != nil {
+		t.Fatalf("write yaml: %v", err)
+	}
+
+	installFdShim(t, nil)
+	record := installDockerShim(t, 0)
+	stubTTY(t, true)
+
+	var stdout, stderr bytes.Buffer
+	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"go"})
+	if code == 0 {
+		t.Fatalf("expected non-zero exit from cross-list dup, got 0; stderr=%q", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "listed in both") {
+		t.Errorf("stderr missing 'listed in both': %q", stderr.String())
+	}
+	if argv := readArgv(t, record); argv != nil {
+		t.Errorf("docker shim must not be invoked when yaml has cross-list dup; got argv=%v", argv)
+	}
+}
+
+// TestGo_YamlMissingPathSkippedSilently verifies that when .makeslop.yaml lists
+// a file that does not exist on disk, makeslop go exits 0, produces no error
+// output mentioning the missing path, and the docker argv contains no /dev/null
+// overlay for that path (the silent-skip flows through to the cobra layer).
+func TestGo_YamlMissingPathSkippedSilently(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	resolvedPwd := evalSymlinks(t, pwd)
+
+	// List a path that does NOT exist on disk.
+	yamlContent := "exclude:\n  dirs: []\n  files: [secrets/api.key]\n"
+	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(yamlContent), 0o644); err != nil {
+		t.Fatalf("write yaml: %v", err)
+	}
+	// Explicitly ensure the file does not exist.
+	_ = os.Remove(filepath.Join(resolvedPwd, "secrets", "api.key"))
+
+	installFdShim(t, nil)
+	record := installDockerShim(t, 0)
+	stubTTY(t, true)
+
+	_, stderr, err := runCmd(t, baseDir, "go")
+	if err != nil {
+		t.Fatalf("expected success when missing path is silently skipped, got: %v; stderr=%q", err, stderr)
+	}
+	if strings.Contains(stderr, "api.key") {
+		t.Errorf("stderr must not mention missing path 'api.key': %q", stderr)
+	}
+
+	// The docker argv must not contain any /dev/null overlay for secrets/api.key.
+	argv := readArgv(t, record)
+	for _, a := range argv {
+		if strings.Contains(a, "api.key") {
+			t.Errorf("argv must not contain overlay for missing api.key: %q", a)
+		}
+	}
+}
+
+// TestGo_DryRunIncludesMaskedDirs verifies that --dry-run stdout includes the
+// tmpfs mount for a directory listed in .makeslop.yaml exclude.dirs.
+func TestGo_DryRunIncludesMaskedDirs(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	initOut, _, err := runCmd(t, baseDir, "init")
+	if err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	workspaceDir := strings.TrimSpace(initOut)
+	resolvedPwd := evalSymlinks(t, pwd)
+
+	// Create the directory on disk.
+	secretsDir := filepath.Join(resolvedPwd, "secrets")
+	if err := os.MkdirAll(secretsDir, 0o755); err != nil {
+		t.Fatalf("mkdir secrets: %v", err)
+	}
+
+	// fd shim returns nothing; yaml masks secrets/ as a dir.
+	installFdShim(t, nil)
+	yamlContent := "exclude:\n  dirs: [secrets]\n  files: []\n"
+	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(yamlContent), 0o644); err != nil {
+		t.Fatalf("write yaml: %v", err)
+	}
+
+	stubTTY(t, false)
+
+	stdout, stderr, err := runCmd(t, baseDir, "go", "--dry-run")
+	if err != nil {
+		t.Fatalf("--dry-run failed: %v; stderr=%q", err, stderr)
+	}
+
+	name := filepath.Base(workspaceDir)
+	wantFragment := "type=tmpfs,target=/workspace/" + name + "/secrets"
+	if !strings.Contains(stdout, wantFragment) {
+		t.Errorf("--dry-run stdout missing tmpfs mount: want substring %q\nstdout:\n%s", wantFragment, stdout)
+	}
+	// Verify no source= in the tmpfs mount line.
+	for _, line := range strings.Split(stdout, "\n") {
+		if strings.Contains(line, "tmpfs") && strings.Contains(line, "source=") {
+			t.Errorf("tmpfs mount line must not contain source=: %q", line)
+		}
 	}
 }

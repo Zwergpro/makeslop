@@ -65,6 +65,42 @@ Secret masking is **non-negotiable**: if `fd`/`fdfind` is not on `PATH`, `makesl
 makeslop: fd/fdfind CLI required for secret scanning; install: https://github.com/sharkdp/fd
 ```
 
+### Project-local exclusions
+
+`makeslop init` creates a `.makeslop.yaml` file at the project root with an empty-list stub:
+
+```yaml
+exclude:
+  dirs: []
+  files: []
+```
+
+Edit this file to hide additional directories and files from the container on every `makeslop go` invocation:
+
+- Entries under `exclude.dirs` are mounted as an empty in-memory tmpfs, so the container sees an empty directory at that path instead of the real contents.
+- Entries under `exclude.files` are overlaid with `/dev/null`, so the container sees a zero-byte file at that path.
+
+All paths must be relative to the project root. Example:
+
+```yaml
+exclude:
+  dirs:
+    - node_modules        # large build artifact — skip it entirely
+    - secrets             # local secrets directory
+  files:
+    - secrets/local.env   # specific file overlay
+```
+
+The existing `.env` auto-scan (see [Secret masking](#secret-masking)) still runs unconditionally. The YAML entries layer on top; if the same path is found by the scan and listed in `exclude.files`, only one overlay mount is emitted. A YAML parse error aborts the launch before docker is invoked — it is symmetric with a scan failure.
+
+**Reserved paths.** The paths `.claude`, `.codex`, `docs`, and `CLAUDE.md` are already mounted by `makeslop go` for agent state. Listing them in `.makeslop.yaml` is rejected with an error (`projectconfig: path %q collides with a reserved agent path`).
+
+Use `--dry-run` to preview the resulting `docker run` command, including all exclusion mounts, before launching:
+
+```
+makeslop go --dry-run
+```
+
 ### Docker container settings
 
 The image and shell are configurable via `settings.json`. Defaults are `claudebox` and `/bin/zsh`:

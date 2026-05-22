@@ -10,12 +10,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"syscall"
 
 	"github.com/spf13/cobra"
 
 	"github.com/Zwergpro/makeslop/internal/config"
 	"github.com/Zwergpro/makeslop/internal/docker"
+	"github.com/Zwergpro/makeslop/internal/projectconfig"
 	"github.com/Zwergpro/makeslop/internal/security"
 	"github.com/Zwergpro/makeslop/internal/workspace"
 )
@@ -71,6 +73,27 @@ func ensureWithinHome(stderr io.Writer, pwd string, outOfHome bool) error {
 	return nil
 }
 
+// mergeUniqueSorted returns the sorted union of two string slices. Duplicates
+// (across or within the slices) are removed. The inputs are not modified.
+func mergeUniqueSorted(a, b []string) []string {
+	seen := make(map[string]struct{}, len(a)+len(b))
+	for _, s := range a {
+		seen[s] = struct{}{}
+	}
+	for _, s := range b {
+		seen[s] = struct{}{}
+	}
+	if len(seen) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(seen))
+	for s := range seen {
+		out = append(out, s)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // runGo implements the docker-launch logic for the "go" subcommand.
 // ws, baseDir, outOfHome, and dryRun are provided by the caller (the goCmd RunE closure).
 func runGo(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfHome, dryRun bool) error {
@@ -103,6 +126,16 @@ func runGo(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfHo
 	if len(masked) > 0 {
 		fmt.Fprintf(cmd.ErrOrStderr(), "makeslop: masked %d .env file(s)\n", len(masked))
 	}
+	// Load user YAML and merge with the auto-scan results. A YAML parse error
+	// aborts the launch BEFORE docker.Run — symmetric with security.Scan failure.
+	// The auto-scan invariant (masking is non-negotiable) is preserved by the
+	// abort: no container starts on YAML error, so no .env leak is possible.
+	yamlExcludes, err := projectconfig.Load(workspaceRoot)
+	if err != nil {
+		return err
+	}
+	maskedFiles := mergeUniqueSorted(masked, yamlExcludes.Files)
+
 	s, err := config.Load(baseDir)
 	if err != nil {
 		return err
@@ -115,7 +148,8 @@ func runGo(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfHo
 		BaseDir:       baseDir,
 		Image:         s.Image,
 		Command:       s.Shell,
-		MaskedFiles:   masked,
+		MaskedFiles:   maskedFiles,
+		MaskedDirs:    yamlExcludes.Dirs,
 	})
 	if dryRun {
 		fmt.Fprintln(cmd.OutOrStdout(), spec.ShellCommand())
@@ -165,6 +199,21 @@ func newRootCmd(baseDir string) *cobra.Command {
 			}
 			workspaceDir, err := ws.Init(pwd)
 			if err != nil {
+				return err
+			}
+			// ws.Init returns the cache directory, not the project root. A second
+			// ws.Lookup is required to obtain the registered ancestor path (matchedRoot)
+			// that Scaffold must target. This is intentional: Init's return type cannot
+			// be widened without breaking its existing callers and test contracts.
+			// ErrNotRegistered is impossible here: ws.Init just succeeded, which
+			// guarantees that pwd (or an ancestor) is registered. If this Lookup
+			// ever returns ErrNotRegistered it indicates a severe TOCTTOU race or
+			// filesystem corruption; surfacing the raw error is correct.
+			workspaceRoot, _, err := ws.Lookup(pwd)
+			if err != nil {
+				return err
+			}
+			if err := projectconfig.Scaffold(workspaceRoot); err != nil {
 				return err
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), workspaceDir)

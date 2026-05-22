@@ -131,14 +131,20 @@ func TestSpecArgs_MountValuesQuoteCommaInPath(t *testing.T) {
 // three logical fields type=bind, source=<host>, target=<container>. A prior
 // iteration emitted source="/path",target="/path" which RFC 4180 rejects as
 // "bare \" in non-quoted-field"; this test would have caught that regression.
+//
+// Only bind mounts are CSV-checked here; tmpfs mounts emit 2 fields
+// (type=tmpfs,target=...) and are covered by TestSpecArgs_TmpfsMountFlagShape.
 func TestSpecArgs_MountArgsParseAsRFC4180CSV(t *testing.T) {
 	spec := BuildSpec(sampleOptions())
 	args := spec.Args()
 
 	type pair struct{ host, container string }
+	// Collect bind mounts only (skip tmpfs entries).
 	want := make([]pair, 0, len(spec.Mounts))
 	for _, m := range spec.Mounts {
-		want = append(want, pair{m.Host, m.Container})
+		if m.Type != "tmpfs" {
+			want = append(want, pair{m.Host, m.Container})
+		}
 	}
 
 	commaSpec := Spec{
@@ -155,9 +161,17 @@ func TestSpecArgs_MountArgsParseAsRFC4180CSV(t *testing.T) {
 		want = append(want, pair{m.Host, m.Container})
 	}
 
-	mountArgs := collectMountArgs(append(args, commaArgs...))
+	// Collect bind-only --mount args (exclude tmpfs ones).
+	allMountArgs := collectMountArgs(append(args, commaArgs...))
+	var mountArgs []string
+	for _, raw := range allMountArgs {
+		if !strings.HasPrefix(raw, "type=tmpfs") {
+			mountArgs = append(mountArgs, raw)
+		}
+	}
+
 	if len(mountArgs) != len(want) {
-		t.Fatalf("collected %d --mount args, want %d", len(mountArgs), len(want))
+		t.Fatalf("collected %d bind --mount args, want %d", len(mountArgs), len(want))
 	}
 	for i, raw := range mountArgs {
 		r := csv.NewReader(strings.NewReader(raw))
@@ -247,6 +261,77 @@ func TestSpecArgs_MaskedFilesProduceDevNullMountArgs(t *testing.T) {
 	lastTwo := args[len(args)-2:]
 	if !reflect.DeepEqual(lastTwo, []string{"claudebox", "/bin/zsh"}) {
 		t.Errorf("argv tail = %v, want [claudebox /bin/zsh]", lastTwo)
+	}
+}
+
+// TestBuildSpec_MaskedDirsAppendTmpfsMounts asserts that MaskedDirs produces
+// tmpfs overlay mounts appended AFTER any MaskedFiles overlays, in caller order.
+func TestBuildSpec_MaskedDirsAppendTmpfsMounts(t *testing.T) {
+	o := sampleOptions()
+	o.MaskedDirs = []string{
+		"/home/me/code/myproj/node_modules",
+		"/home/me/code/myproj/secrets",
+	}
+	spec := BuildSpec(o)
+
+	// The last two mounts must be the tmpfs overlays in input order.
+	n := len(spec.Mounts)
+	if n < 2 {
+		t.Fatalf("got %d mounts, want at least 2", n)
+	}
+	wantTail := []Mount{
+		{Type: "tmpfs", Container: "/workspace/myproj-abc123/node_modules"},
+		{Type: "tmpfs", Container: "/workspace/myproj-abc123/secrets"},
+	}
+	gotTail := spec.Mounts[n-2:]
+	if !reflect.DeepEqual(gotTail, wantTail) {
+		t.Errorf("tail mounts mismatch\n got: %+v\nwant: %+v", gotTail, wantTail)
+	}
+}
+
+// TestBuildSpec_MaskedFilesAndDirsInteract asserts that when both MaskedFiles
+// and MaskedDirs are populated, the tail of Mounts has files overlays first,
+// then dirs overlays.
+func TestBuildSpec_MaskedFilesAndDirsInteract(t *testing.T) {
+	o := sampleOptions()
+	o.MaskedFiles = []string{"/home/me/code/myproj/.env"}
+	o.MaskedDirs = []string{"/home/me/code/myproj/node_modules"}
+	spec := BuildSpec(o)
+
+	n := len(spec.Mounts)
+	if n < 2 {
+		t.Fatalf("got %d mounts, want at least 2", n)
+	}
+	wantTail := []Mount{
+		{Host: "/dev/null", Container: "/workspace/myproj-abc123/.env"},
+		{Type: "tmpfs", Container: "/workspace/myproj-abc123/node_modules"},
+	}
+	gotTail := spec.Mounts[n-2:]
+	if !reflect.DeepEqual(gotTail, wantTail) {
+		t.Errorf("tail mounts mismatch\n got: %+v\nwant: %+v", gotTail, wantTail)
+	}
+}
+
+// TestSpecArgs_TmpfsMountFlagShape asserts that a tmpfs Mount renders as
+// --mount type=tmpfs,target=... with no source= segment in the argv.
+func TestSpecArgs_TmpfsMountFlagShape(t *testing.T) {
+	o := sampleOptions()
+	o.MaskedDirs = []string{"/home/me/code/myproj/node_modules"}
+	spec := BuildSpec(o)
+	args := spec.Args()
+
+	mountArgs := collectMountArgs(args)
+	if len(mountArgs) == 0 {
+		t.Fatal("no --mount args found")
+	}
+	last := mountArgs[len(mountArgs)-1]
+	want := "type=tmpfs,target=/workspace/myproj-abc123/node_modules"
+	if last != want {
+		t.Errorf("last --mount value = %q, want %q", last, want)
+	}
+	// Must not contain source=
+	if strings.Contains(last, "source=") {
+		t.Errorf("tmpfs mount must not contain source=, got %q", last)
 	}
 }
 

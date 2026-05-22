@@ -25,10 +25,25 @@ type Options struct {
 	// guarantee is the caller's (security.Scan enforces it). Caller-provided
 	// order is preserved in the emitted argv. Nil or empty is a no-op.
 	MaskedFiles []string
+	// MaskedDirs is the list of absolute host paths under ProjectRoot whose
+	// container counterparts should be replaced by an empty in-memory tmpfs
+	// mount. The under-root guarantee is the caller's (projectconfig.Load
+	// enforces it). Caller-provided order is preserved in the emitted argv.
+	// Nil or empty is a no-op.
+	MaskedDirs []string
 }
 
-// Mount is a single host:container bind mount. Trailing slashes are preserved verbatim.
+// Mount is a single docker mount entry. Trailing slashes are preserved verbatim.
+//
+// Type selects the mount type: "" (zero value) and "bind" both render as
+// type=bind with source= and target=. "tmpfs" renders as type=tmpfs,target=
+// only — Host is ignored for tmpfs mounts. Any future unrecognized value falls
+// through to bind (Mount is constructed only inside this package, so callers
+// cannot inject an unknown type in practice).
 type Mount struct {
+	// Type is the docker mount type. "" (zero value) means "bind".
+	// "tmpfs" is the only other recognized value; Host is unused for tmpfs.
+	Type            string
 	Host, Container string
 }
 
@@ -44,9 +59,14 @@ type Spec struct {
 }
 
 // BuildSpec is pure: same Options → same Spec. The mount list is emitted in a
-// fixed explicit order (project root, then global agent paths under BaseDir,
-// then per-workspace agent paths under BaseDir/workspaces/<name>) so callers
-// and tests can rely on argv ordering.
+// fixed explicit order so callers and tests can rely on argv ordering:
+//  1. project root bind mount
+//  2. global and per-workspace agent path bind mounts
+//  3. /dev/null overlay bind mounts (one per MaskedFiles entry)
+//  4. tmpfs overlay mounts (one per MaskedDirs entry)
+//
+// Both overlay groups come after the directory bind they shadow, so docker's
+// argv-order evaluation makes the overlays win.
 func BuildSpec(o Options) Spec {
 	workspacePath := "/workspace/" + o.WorkspaceName
 	workspaceHost := filepath.Join(o.BaseDir, config.WorkspacesDir, o.WorkspaceName)
@@ -72,6 +92,17 @@ func BuildSpec(o Options) Spec {
 		rel, _ := filepath.Rel(o.ProjectRoot, host)
 		mounts = append(mounts, Mount{
 			Host:      "/dev/null",
+			Container: workspacePath + "/" + filepath.ToSlash(rel),
+		})
+	}
+
+	for _, host := range o.MaskedDirs {
+		// Precondition: host is absolute and under ProjectRoot (projectconfig.Load
+		// enforces this). filepath.Rel cannot error on two clean absolute POSIX
+		// paths on the same volume.
+		rel, _ := filepath.Rel(o.ProjectRoot, host)
+		mounts = append(mounts, Mount{
+			Type:      "tmpfs",
 			Container: workspacePath + "/" + filepath.ToSlash(rel),
 		})
 	}
@@ -103,8 +134,13 @@ func (s Spec) Args() []string {
 		args = append(args, "--security-opt", so)
 	}
 	for _, m := range s.Mounts {
-		args = append(args, "--mount",
-			"type=bind,"+csvField("source="+m.Host)+","+csvField("target="+m.Container))
+		if m.Type == "tmpfs" {
+			args = append(args, "--mount",
+				"type=tmpfs,"+csvField("target="+m.Container))
+		} else {
+			args = append(args, "--mount",
+				"type=bind,"+csvField("source="+m.Host)+","+csvField("target="+m.Container))
+		}
 	}
 	args = append(args, s.Image, s.Command)
 	return args
