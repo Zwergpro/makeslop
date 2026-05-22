@@ -1,5 +1,5 @@
-// Command makeslop is the CLI entry point: bare `makeslop` launches docker;
-// `init` registers the cwd. Container `exit N` propagates as host `exit N`.
+// Command makeslop is the CLI entry point: bare `makeslop` prints help;
+// `go` launches docker; `init` registers the cwd. Container `exit N` propagates as host `exit N`.
 package main
 
 import (
@@ -71,6 +71,63 @@ func ensureWithinHome(stderr io.Writer, pwd string, outOfHome bool) error {
 	return nil
 }
 
+// runGo implements the docker-launch logic for the "go" subcommand.
+// ws, baseDir, and outOfHome are provided by the caller (the goCmd RunE closure).
+func runGo(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfHome bool) error {
+	pwd, err := resolvePwd()
+	if err != nil {
+		return err
+	}
+	if err := ensureWithinHome(cmd.ErrOrStderr(), pwd, outOfHome); err != nil {
+		return err
+	}
+	workspaceRoot, workspaceDir, err := ws.Lookup(pwd)
+	if errors.Is(err, workspace.ErrNotRegistered) {
+		fmt.Fprintf(cmd.ErrOrStderr(),
+			"makeslop: no workspace registered for %s; run 'makeslop init' to register it\n",
+			pwd)
+		return errSilent
+	}
+	if err != nil {
+		return err
+	}
+	masked, err := security.Scan(cmd.Context(), workspaceRoot)
+	if errors.Is(err, security.ErrFdMissing) {
+		fmt.Fprintln(cmd.ErrOrStderr(),
+			"makeslop: fd/fdfind CLI required for secret scanning; install: https://github.com/sharkdp/fd")
+		return errSilent
+	}
+	if err != nil {
+		return err
+	}
+	if len(masked) > 0 {
+		fmt.Fprintf(cmd.ErrOrStderr(), "makeslop: masked %d .env file(s)\n", len(masked))
+	}
+	s, err := config.Load(baseDir)
+	if err != nil {
+		return err
+	}
+	// ProjectRoot must be the registered ancestor (workspaceRoot), not pwd:
+	// running 'makeslop go' from a subdir must still mount the whole project.
+	spec := docker.BuildSpec(docker.Options{
+		ProjectRoot:   workspaceRoot,
+		WorkspaceName: filepath.Base(workspaceDir),
+		BaseDir:       baseDir,
+		Image:         s.Image,
+		Command:       s.Shell,
+		MaskedFiles:   masked,
+	})
+	if err := docker.Run(cmd.Context(), spec); err != nil {
+		if errors.Is(err, docker.ErrNoTTY) {
+			fmt.Fprintln(cmd.ErrOrStderr(),
+				"makeslop: stdin/stdout must be a TTY; makeslop is interactive-only")
+			return errSilent
+		}
+		return err
+	}
+	return nil
+}
+
 func newRootCmd(baseDir string) *cobra.Command {
 	ws := workspace.New(baseDir)
 
@@ -79,63 +136,8 @@ func newRootCmd(baseDir string) *cobra.Command {
 	rootCmd := &cobra.Command{
 		Use:           "makeslop",
 		Short:         "Run docker-based commands with per-workspace cache",
-		Args:          cobra.NoArgs,
 		SilenceUsage:  true,
 		SilenceErrors: true,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			pwd, err := resolvePwd()
-			if err != nil {
-				return err
-			}
-			if err := ensureWithinHome(cmd.ErrOrStderr(), pwd, outOfHome); err != nil {
-				return err
-			}
-			workspaceRoot, workspaceDir, err := ws.Lookup(pwd)
-			if errors.Is(err, workspace.ErrNotRegistered) {
-				fmt.Fprintf(cmd.ErrOrStderr(),
-					"makeslop: no workspace registered for %s; run 'makeslop init' to register it\n",
-					pwd)
-				return errSilent
-			}
-			if err != nil {
-				return err
-			}
-			masked, err := security.Scan(cmd.Context(), workspaceRoot)
-			if errors.Is(err, security.ErrFdMissing) {
-				fmt.Fprintln(cmd.ErrOrStderr(),
-					"makeslop: fd/fdfind CLI required for secret scanning; install: https://github.com/sharkdp/fd")
-				return errSilent
-			}
-			if err != nil {
-				return err
-			}
-			if len(masked) > 0 {
-				fmt.Fprintf(cmd.ErrOrStderr(), "makeslop: masked %d .env file(s)\n", len(masked))
-			}
-			s, err := config.Load(baseDir)
-			if err != nil {
-				return err
-			}
-			// ProjectRoot must be the registered ancestor (workspaceRoot), not pwd:
-			// running bare makeslop from a subdir must still mount the whole project.
-			spec := docker.BuildSpec(docker.Options{
-				ProjectRoot:   workspaceRoot,
-				WorkspaceName: filepath.Base(workspaceDir),
-				BaseDir:       baseDir,
-				Image:         s.Image,
-				Command:       s.Shell,
-				MaskedFiles:   masked,
-			})
-			if err := docker.Run(cmd.Context(), spec); err != nil {
-				if errors.Is(err, docker.ErrNoTTY) {
-					fmt.Fprintln(cmd.ErrOrStderr(),
-						"makeslop: stdin/stdout must be a TTY; makeslop is interactive-only")
-					return errSilent
-				}
-				return err
-			}
-			return nil
-		},
 	}
 
 	initCmd := &cobra.Command{
@@ -163,10 +165,18 @@ func newRootCmd(baseDir string) *cobra.Command {
 		},
 	}
 
+	goCmd := &cobra.Command{
+		Use:          "go",
+		Short:        "Launch the docker container for this workspace",
+		Args:         cobra.NoArgs,
+		SilenceUsage: true,
+		RunE:         func(cmd *cobra.Command, _ []string) error { return runGo(cmd, ws, baseDir, outOfHome) },
+	}
+
 	rootCmd.PersistentFlags().BoolVar(&outOfHome, "out-of-home", false,
 		"allow running outside the user's home directory")
 
-	rootCmd.AddCommand(initCmd)
+	rootCmd.AddCommand(initCmd, goCmd)
 	return rootCmd
 }
 

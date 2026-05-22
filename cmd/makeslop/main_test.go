@@ -118,7 +118,7 @@ func setHomeToTestParent(t *testing.T) {
 	t.Setenv("HOME", parent)
 }
 
-func TestRoot_NotRegistered_NoMutation(t *testing.T) {
+func TestGo_NotRegistered_NoMutation(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
@@ -129,9 +129,9 @@ func TestRoot_NotRegistered_NoMutation(t *testing.T) {
 		t.Fatalf("baseDir not empty before run: %v", beforeFiles)
 	}
 
-	stdout, stderr, err := runCmd(t, baseDir)
+	stdout, stderr, err := runCmd(t, baseDir, "go")
 	if err == nil {
-		t.Fatalf("expected error from bare makeslop, got nil; stdout=%q stderr=%q", stdout, stderr)
+		t.Fatalf("expected error from makeslop go, got nil; stdout=%q stderr=%q", stdout, stderr)
 	}
 	if stdout != "" {
 		t.Errorf("expected empty stdout, got %q", stdout)
@@ -236,8 +236,8 @@ func readArgv(t *testing.T, recordPath string) []string {
 	return strings.Split(strings.TrimRight(string(data), "\n"), "\n")
 }
 
-// Milestone-1 regression guard: bare makeslop must not print the cache path on stdout.
-func TestRoot_AfterInit_LaunchesDocker(t *testing.T) {
+// Milestone-1 regression guard: makeslop go must not print the cache path on stdout.
+func TestGo_AfterInit_LaunchesDocker(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
@@ -254,12 +254,12 @@ func TestRoot_AfterInit_LaunchesDocker(t *testing.T) {
 	stubTTY(t, true)
 
 	snapBefore := snapshotTree(t, baseDir)
-	stdout, stderr, err := runCmd(t, baseDir)
+	stdout, stderr, err := runCmd(t, baseDir, "go")
 	if err != nil {
 		t.Fatalf("root failed: %v; stderr=%q", err, stderr)
 	}
 	if stdout != "" {
-		t.Errorf("bare makeslop must not print on stdout (milestone-1 path was removed); got %q", stdout)
+		t.Errorf("makeslop go must not print on stdout (milestone-1 path was removed); got %q", stdout)
 	}
 	snapAfter := snapshotTree(t, baseDir)
 	assertSnapshotsEqual(t, snapBefore, snapAfter)
@@ -283,7 +283,7 @@ func TestRoot_AfterInit_LaunchesDocker(t *testing.T) {
 	}
 }
 
-func TestRoot_FromSubdirectory_MountsRegisteredAncestor(t *testing.T) {
+func TestGo_FromSubdirectory_MountsRegisteredAncestor(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	parent := t.TempDir()
@@ -304,7 +304,7 @@ func TestRoot_FromSubdirectory_MountsRegisteredAncestor(t *testing.T) {
 	record := installDockerShim(t, 0)
 	stubTTY(t, true)
 
-	if _, _, err := runCmd(t, baseDir); err != nil {
+	if _, _, err := runCmd(t, baseDir, "go"); err != nil {
 		t.Fatalf("root failed: %v", err)
 	}
 
@@ -323,7 +323,7 @@ func TestRoot_FromSubdirectory_MountsRegisteredAncestor(t *testing.T) {
 	}
 }
 
-func TestRoot_Unregistered_DoesNotInvokeDocker(t *testing.T) {
+func TestGo_Unregistered_DoesNotInvokeDocker(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
@@ -332,9 +332,9 @@ func TestRoot_Unregistered_DoesNotInvokeDocker(t *testing.T) {
 	record := installDockerShim(t, 0)
 	stubTTY(t, true)
 
-	_, stderr, err := runCmd(t, baseDir)
+	_, stderr, err := runCmd(t, baseDir, "go")
 	if err == nil {
-		t.Fatalf("expected error from unregistered bare makeslop, got nil")
+		t.Fatalf("expected error from unregistered makeslop go, got nil")
 	}
 	if !strings.Contains(stderr, "no workspace registered") {
 		t.Errorf("stderr missing hint: %q", stderr)
@@ -345,7 +345,7 @@ func TestRoot_Unregistered_DoesNotInvokeDocker(t *testing.T) {
 }
 
 // Exercises the production ttyCheck (pipes in `go test` are not TTYs).
-func TestRoot_NoTTY_FailsBeforeDocker(t *testing.T) {
+func TestGo_NoTTY_FailsBeforeDocker(t *testing.T) {
 	docker.SkipNonPOSIX(t, "POSIX-only invariant per CLAUDE.md")
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -359,7 +359,7 @@ func TestRoot_NoTTY_FailsBeforeDocker(t *testing.T) {
 	record := installDockerShim(t, 0)
 	// Do NOT stub ttyCheck — the real predicate returns false under go test.
 
-	_, stderr, err := runCmd(t, baseDir)
+	_, stderr, err := runCmd(t, baseDir, "go")
 	if err == nil {
 		t.Fatalf("expected error when stdin/stdout are not TTYs, got nil")
 	}
@@ -374,7 +374,7 @@ func TestRoot_NoTTY_FailsBeforeDocker(t *testing.T) {
 	}
 }
 
-func TestRoot_ExitCodePropagation(t *testing.T) {
+func TestGo_ExitCodePropagation(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
@@ -388,7 +388,7 @@ func TestRoot_ExitCodePropagation(t *testing.T) {
 	stubTTY(t, true)
 
 	var stdout, stderr bytes.Buffer
-	code := runWithExitCode(baseDir, &stdout, &stderr, nil)
+	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"go"})
 	if code != 42 {
 		t.Errorf("runWithExitCode = %d, want 42; stderr=%q", code, stderr.String())
 	}
@@ -419,14 +419,14 @@ func TestRunWithExitCode_SignalKilledMapsTo128PlusSignum(t *testing.T) {
 	stubTTY(t, true)
 
 	var stdout, stderr bytes.Buffer
-	code := runWithExitCode(baseDir, &stdout, &stderr, nil)
+	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"go"})
 	if code != 137 {
 		t.Errorf("runWithExitCode = %d, want 137 (128+SIGKILL); stderr=%q", code, stderr.String())
 	}
 }
 
 // Guards that settings.json values reach the docker invocation, not just compiled-in defaults.
-func TestRoot_CustomImageAndShell_FlowFromSettings(t *testing.T) {
+func TestGo_CustomImageAndShell_FlowFromSettings(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
@@ -449,7 +449,7 @@ func TestRoot_CustomImageAndShell_FlowFromSettings(t *testing.T) {
 	record := installDockerShim(t, 0)
 	stubTTY(t, true)
 
-	if _, _, err := runCmd(t, baseDir); err != nil {
+	if _, _, err := runCmd(t, baseDir, "go"); err != nil {
 		t.Fatalf("root failed: %v", err)
 	}
 	argv := readArgv(t, record)
@@ -475,7 +475,7 @@ func TestRunWithExitCode_NonExitErrorPrintsPrefix(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	code := runWithExitCode(baseDir, &stdout, &stderr, nil)
+	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"go"})
 	if code != 1 {
 		t.Errorf("exit code = %d, want 1", code)
 	}
@@ -605,7 +605,7 @@ func TestInit_SymlinkInvariant(t *testing.T) {
 // TestRoot_CorruptSettings_ReportsError guards that a non-ErrNotRegistered
 // failure from Lookup is surfaced — not swallowed by cobra's SilenceErrors —
 // and that the "not registered" hint is suppressed in that case.
-func TestRoot_CorruptSettings_ReportsError(t *testing.T) {
+func TestGo_CorruptSettings_ReportsError(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
@@ -615,9 +615,9 @@ func TestRoot_CorruptSettings_ReportsError(t *testing.T) {
 		t.Fatalf("seed corrupt settings: %v", err)
 	}
 
-	stdout, _, err := runCmd(t, baseDir)
+	stdout, _, err := runCmd(t, baseDir, "go")
 	if err == nil {
-		t.Fatalf("expected error from bare makeslop with corrupt settings, got nil; stdout=%q", stdout)
+		t.Fatalf("expected error from makeslop go with corrupt settings, got nil; stdout=%q", stdout)
 	}
 	if errors.Is(err, errSilent) {
 		t.Errorf("corrupt-settings error must not be errSilent — main() needs to print it: %v", err)
@@ -699,15 +699,15 @@ func TestInit_BootstrapsAgentArtifacts(t *testing.T) {
 	assertSnapshotsEqual(t, snapBefore, snapAfter)
 }
 
-func TestRoot_NotRegistered_ReturnsErrSilent(t *testing.T) {
+func TestGo_NotRegistered_ReturnsErrSilent(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	_, stderr, err := runCmd(t, baseDir)
+	_, stderr, err := runCmd(t, baseDir, "go")
 	if err == nil {
-		t.Fatalf("expected error from bare makeslop, got nil")
+		t.Fatalf("expected error from makeslop go, got nil")
 	}
 	if !errors.Is(err, errSilent) {
 		t.Errorf("expected errSilent (so main() skips reprint), got %v", err)
@@ -717,9 +717,9 @@ func TestRoot_NotRegistered_ReturnsErrSilent(t *testing.T) {
 	}
 }
 
-// TestRoot_OutsideHome_Refuses guards that bare makeslop refuses when cwd is
+// TestRoot_OutsideHome_Refuses guards that makeslop go refuses when cwd is
 // outside HOME and docker is never invoked.
-func TestRoot_OutsideHome_Refuses(t *testing.T) {
+func TestGo_OutsideHome_Refuses(t *testing.T) {
 	// Two separate temp-parent groups: one for HOME (tmpHome), one for the
 	// out-of-home baseDir and pwd that should trigger the guard.
 	tmpHome := t.TempDir()
@@ -738,9 +738,9 @@ func TestRoot_OutsideHome_Refuses(t *testing.T) {
 	stubTTY(t, true)
 
 	snapBefore := snapshotTree(t, baseDir)
-	_, stderr, err := runCmd(t, baseDir)
+	_, stderr, err := runCmd(t, baseDir, "go")
 	if err == nil {
-		t.Fatalf("expected error from bare makeslop outside HOME, got nil")
+		t.Fatalf("expected error from makeslop go outside HOME, got nil")
 	}
 	if !errors.Is(err, errSilent) {
 		t.Errorf("expected errSilent, got %v", err)
@@ -803,7 +803,7 @@ func TestInit_HomeRoot_Allowed(t *testing.T) {
 }
 
 // TestOutOfHomeFlag_Bypasses guards that --out-of-home suppresses the guard
-// for both the root command and init.
+// for both go and init.
 func TestOutOfHomeFlag_Bypasses(t *testing.T) {
 	docker.SkipNonPOSIX(t, "docker shim requires POSIX shell; makeslop is POSIX-only")
 
@@ -823,18 +823,18 @@ func TestOutOfHomeFlag_Bypasses(t *testing.T) {
 		t.Errorf("init --out-of-home: stderr unexpectedly contains 'refusing to run': %q", stderr)
 	}
 
-	// bare makeslop --out-of-home must bypass the guard; stub docker so it
+	// makeslop --out-of-home go must bypass the guard; stub docker so it
 	// exits cleanly without a real daemon.
 	installFdShim(t, nil)
 	record := installDockerShim(t, 0)
 	stubTTY(t, true)
 
-	_, stderr, err = runCmd(t, baseDir, "--out-of-home")
+	_, stderr, err = runCmd(t, baseDir, "--out-of-home", "go")
 	if err != nil {
-		t.Fatalf("bare makeslop --out-of-home should succeed outside HOME, got: %v; stderr=%q", err, stderr)
+		t.Fatalf("makeslop --out-of-home go should succeed outside HOME, got: %v; stderr=%q", err, stderr)
 	}
 	if strings.Contains(stderr, "refusing to run") {
-		t.Errorf("bare makeslop --out-of-home: stderr unexpectedly contains 'refusing to run': %q", stderr)
+		t.Errorf("makeslop --out-of-home go: stderr unexpectedly contains 'refusing to run': %q", stderr)
 	}
 	if argv := readArgv(t, record); argv == nil {
 		t.Errorf("docker shim was not invoked when --out-of-home bypasses guard")
@@ -855,7 +855,7 @@ func installFdShim(t *testing.T, paths []string) string {
 // TestRoot_FdMissing_RefusesAndDoesNotInvokeDocker verifies that when the fd
 // binary is not found, makeslop prints the install hint to stderr, returns
 // errSilent, and never invokes docker.
-func TestRoot_FdMissing_RefusesAndDoesNotInvokeDocker(t *testing.T) {
+func TestGo_FdMissing_RefusesAndDoesNotInvokeDocker(t *testing.T) {
 	docker.SkipNonPOSIX(t, "docker shim requires POSIX shell; makeslop is POSIX-only")
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -874,7 +874,7 @@ func TestRoot_FdMissing_RefusesAndDoesNotInvokeDocker(t *testing.T) {
 	stubTTY(t, true)
 
 	snapBefore := snapshotTree(t, baseDir)
-	_, stderr, err := runCmd(t, baseDir)
+	_, stderr, err := runCmd(t, baseDir, "go")
 	if err == nil {
 		t.Fatalf("expected error when fd is missing, got nil")
 	}
@@ -897,7 +897,7 @@ func TestRoot_FdMissing_RefusesAndDoesNotInvokeDocker(t *testing.T) {
 // TestRoot_MasksFoundEnvFiles_ArgvContainsDevNullMounts verifies that when the
 // fd shim returns two .env paths, the docker argv contains the expected
 // /dev/null mounts in tail position and stderr reports the count.
-func TestRoot_MasksFoundEnvFiles_ArgvContainsDevNullMounts(t *testing.T) {
+func TestGo_MasksFoundEnvFiles_ArgvContainsDevNullMounts(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
@@ -931,7 +931,7 @@ func TestRoot_MasksFoundEnvFiles_ArgvContainsDevNullMounts(t *testing.T) {
 	record := installDockerShim(t, 0)
 	stubTTY(t, true)
 
-	_, stderr, err := runCmd(t, baseDir)
+	_, stderr, err := runCmd(t, baseDir, "go")
 	if err != nil {
 		t.Fatalf("root failed: %v; stderr=%q", err, stderr)
 	}
@@ -985,7 +985,7 @@ func TestRoot_MasksFoundEnvFiles_ArgvContainsDevNullMounts(t *testing.T) {
 // TestRoot_NoEnvFiles_PrintsNothingExtraOnStderr verifies that when the fd
 // shim produces empty output (no .env files), makeslop does not print any
 // "masked" line to stderr and the argv contains no /dev/null mounts.
-func TestRoot_NoEnvFiles_PrintsNothingExtraOnStderr(t *testing.T) {
+func TestGo_NoEnvFiles_PrintsNothingExtraOnStderr(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
@@ -1001,7 +1001,7 @@ func TestRoot_NoEnvFiles_PrintsNothingExtraOnStderr(t *testing.T) {
 	record := installDockerShim(t, 0)
 	stubTTY(t, true)
 
-	_, stderr, err := runCmd(t, baseDir)
+	_, stderr, err := runCmd(t, baseDir, "go")
 	if err != nil {
 		t.Fatalf("root failed: %v; stderr=%q", err, stderr)
 	}
@@ -1037,6 +1037,39 @@ func TestInit_DoesNotInvokeFd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("init must succeed regardless of fd shim; got: %v; stderr=%q", err, stderr)
 	}
+}
+
+// TestRoot_BareInvocation_PrintsHelp verifies that bare makeslop (no args)
+// prints cobra's help to stdout, exits 0, writes nothing to stderr, and does
+// not mutate any state. No workspace init, docker shim, or fd shim required.
+func TestRoot_BareInvocation_PrintsHelp(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	snapBefore := snapshotTree(t, baseDir)
+
+	stdout, stderr, err := runCmd(t, baseDir) // no args
+	if err != nil {
+		t.Fatalf("bare makeslop should exit 0, got err: %v; stdout=%q stderr=%q", err, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "Available Commands:") {
+		t.Errorf("stdout missing 'Available Commands:': %q", stdout)
+	}
+	// cobra indents subcommands two spaces in the Available Commands block.
+	if !strings.Contains(stdout, "\n  go ") {
+		t.Errorf("stdout missing '\\n  go ' command entry: %q", stdout)
+	}
+	if !strings.Contains(stdout, "\n  init ") {
+		t.Errorf("stdout missing '\\n  init ' command entry: %q", stdout)
+	}
+	if stderr != "" {
+		t.Errorf("expected empty stderr, got %q", stderr)
+	}
+
+	snapAfter := snapshotTree(t, baseDir)
+	assertSnapshotsEqual(t, snapBefore, snapAfter)
 }
 
 func assertSnapshotsEqual(t *testing.T, before, after map[string][]byte) {

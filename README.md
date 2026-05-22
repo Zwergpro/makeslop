@@ -16,7 +16,7 @@
 ## Usage
 
 - `makeslop init` — registers the current working directory as a workspace. If pwd is already a subdirectory of a registered workspace, the existing workspace's cache path is returned (idempotent, no mutation). Otherwise a new entry is added to `settings.json`, the cache directory is created, and its absolute path is printed.
-- `makeslop` — from within a registered workspace, launches an interactive, project-scoped docker container with the workspace source tree and per-workspace + global agent config (`.claude/`, `.codex/`, `CLAUDE.md`, `docs/`) mounted in. Exits with the container's exit code. Refuses to launch when stdin or stdout is not a TTY. If no ancestor is registered, exits non-zero with a hint to run `makeslop init`.
+- `makeslop go` — from within a registered workspace, launches an interactive, project-scoped docker container with the workspace source tree and per-workspace + global agent config (`.claude/`, `.codex/`, `CLAUDE.md`, `docs/`) mounted in. Exits with the container's exit code. Refuses to launch when stdin or stdout is not a TTY. If no ancestor is registered, exits non-zero with a hint to run `makeslop init`.
 
 ### Requirements
 
@@ -25,7 +25,7 @@
 
 ### Container layout
 
-Bare `makeslop` runs (workdir `/workspace/<name>`, where `<name>` is the registered workspace's cache-dir basename):
+`makeslop go` runs (workdir `/workspace/<name>`, where `<name>` is the registered workspace's cache-dir basename):
 
 | Host                                                  | Container                          |
 | ----------------------------------------------------- | ---------------------------------- |
@@ -83,12 +83,12 @@ Omitted or empty `image`/`shell` fields fall back to the defaults; existing `set
 ### Exit codes
 
 - `0` — success (`init` registered/reused a project, or the container exited cleanly).
-- container's exit code — bare `makeslop` propagates `exit N` from the container as the host's exit code.
+- container's exit code — `makeslop go` propagates `exit N` from the container as the host's exit code.
 - `1` — any other failure: no workspace registered for pwd, no TTY available, corrupt `settings.json`, I/O error, etc. The reason is written to stderr.
 
 ### Home-directory guard
 
-By default, `makeslop` (bare and `init`) refuses to run from any directory outside the user's home directory. This prevents accidentally registering sensitive system paths (e.g. `/`, `/etc`) as workspaces and mounting them into a container. On violation the tool prints:
+By default, `makeslop go` and `makeslop init` refuse to run from any directory outside the user's home directory. This prevents accidentally registering sensitive system paths (e.g. `/`, `/etc`) as workspaces and mounting them into a container. On violation the tool prints:
 
 ```
 makeslop: refusing to run from <pwd> (outside <home>); pass --out-of-home to override
@@ -97,8 +97,8 @@ makeslop: refusing to run from <pwd> (outside <home>); pass --out-of-home to ove
 Pass `--out-of-home` (a persistent flag inherited by all subcommands) to bypass this check:
 
 ```
-makeslop --out-of-home
-makeslop init --out-of-home
+makeslop --out-of-home go
+makeslop --out-of-home init
 ```
 
 ### Path resolution
