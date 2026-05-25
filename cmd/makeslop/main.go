@@ -28,8 +28,8 @@ import (
 // stderr; main() should exit non-zero without reprinting.
 var errSilent = errors.New("makeslop: silent error already reported")
 
-// resolvePwd returns the absolute, EvalSymlinks-resolved cwd required by workspace.Workspaces.
-// os.Getwd() already returns an absolute path on POSIX, so no filepath.Abs call is needed.
+// resolvePwd returns the absolute, EvalSymlinks-resolved cwd.
+// os.Getwd() is already absolute on POSIX, so no filepath.Abs is needed.
 func resolvePwd() (string, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -42,10 +42,9 @@ func resolvePwd() (string, error) {
 	return resolved, nil
 }
 
-// ensureWithinHome returns errSilent (after printing a hint) when pwd is
-// outside the user's home directory and outOfHome is false. pwd must be
-// EvalSymlinks-resolved (resolvePwd guarantees this); $HOME is resolved
-// here so the comparison is symlink-symmetric.
+// ensureWithinHome returns errSilent when pwd is outside the user's home
+// directory and outOfHome is false. pwd must be EvalSymlinks-resolved; $HOME
+// is resolved here for a symlink-symmetric comparison.
 func ensureWithinHome(stderr io.Writer, pwd string, outOfHome bool) error {
 	if outOfHome {
 		return nil
@@ -59,10 +58,7 @@ func ensureWithinHome(stderr io.Writer, pwd string, outOfHome bool) error {
 		return fmt.Errorf("evaluate symlinks for %s: %w", home, err)
 	}
 	rel, err := filepath.Rel(resolvedHome, pwd)
-	// filepath.Rel returns an error only when both paths are on different
-	// Windows volumes; on POSIX (this project's only target) both arguments
-	// are always absolute paths on the same volume so err is always nil.
-	// Surface it anyway in case the impossible happens.
+	// filepath.Rel never errors on POSIX; surface it anyway.
 	if err != nil {
 		return fmt.Errorf("compute relative path from %s to %s: %w", resolvedHome, pwd, err)
 	}
@@ -97,7 +93,6 @@ func mergeUniqueSorted(a, b []string) []string {
 }
 
 // runGo implements the docker-launch logic for the "go" subcommand.
-// ws, baseDir, outOfHome, and dryRun are provided by the caller (the goCmd RunE closure).
 func runGo(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfHome, dryRun bool) error {
 	pwd, err := resolvePwd()
 	if err != nil {
@@ -128,10 +123,8 @@ func runGo(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfHo
 	if len(masked) > 0 {
 		fmt.Fprintf(cmd.ErrOrStderr(), "makeslop: masked %d .env file(s)\n", len(masked))
 	}
-	// Load user YAML and merge with the auto-scan results. A YAML parse error
-	// aborts the launch BEFORE docker.Run — symmetric with security.Scan failure.
-	// The auto-scan invariant (masking is non-negotiable) is preserved by the
-	// abort: no container starts on YAML error, so no .env leak is possible.
+	// YAML parse error aborts launch before docker.Run — symmetric with security.Scan
+	// failure to preserve the no-.env-leak invariant.
 	yamlExcludes, netCfg, err := projectconfig.Load(workspaceRoot)
 	if err != nil {
 		return err
@@ -143,8 +136,7 @@ func runGo(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfHo
 		return err
 	}
 
-	// Build docker options. Proxy socket paths are computed here (in the cobra
-	// layer) to keep docker.BuildSpec pure — PID/path computation is impure.
+	// Proxy socket path computed here to keep docker.BuildSpec pure (PID-based, so impure).
 	opts := docker.Options{
 		ProjectRoot:   workspaceRoot,
 		WorkspaceName: filepath.Base(workspaceDir),
@@ -155,12 +147,8 @@ func runGo(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfHo
 		MaskedDirs:    yamlExcludes.Dirs,
 	}
 
-	// When a proxy address is configured, compute the per-invocation socket
-	// path and set the proxy Options fields. The socket path uses the first 12
-	// hex characters of sha256(workspaceDir) for per-project uniqueness and the
-	// PID for uniqueness across concurrent runs of the same project. This scheme
-	// guarantees a path of ~39 bytes regardless of project name length, safely
-	// under the 108-byte sockaddr_un limit.
+	// sha256(workspaceDir)[:12] + PID: unique across projects and concurrent runs,
+	// ~39 bytes (safely under the 108-byte sockaddr_un limit).
 	var proxy *networks.Proxy
 	if netCfg.ProxyAddress != "" {
 		h := sha256.Sum256([]byte(workspaceDir))
@@ -182,8 +170,7 @@ func runGo(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfHo
 		return nil
 	}
 
-	// Start the proxy if configured. A Start failure aborts the launch —
-	// network isolation depends on the socket existing before the container.
+	// Proxy must exist before the container starts; a Start failure aborts the launch.
 	if proxy != nil {
 		if err := proxy.Start(cmd.Context()); err != nil {
 			return err
@@ -237,14 +224,8 @@ func newRootCmd(baseDir string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			// ws.Init returns the cache directory, not the project root. A second
-			// ws.Lookup is required to obtain the registered ancestor path (matchedRoot)
-			// that Scaffold must target. This is intentional: Init's return type cannot
-			// be widened without breaking its existing callers and test contracts.
-			// ErrNotRegistered is impossible here: ws.Init just succeeded, which
-			// guarantees that pwd (or an ancestor) is registered. If this Lookup
-			// ever returns ErrNotRegistered it indicates a severe TOCTTOU race or
-			// filesystem corruption; surfacing the raw error is correct.
+			// Init returns the cache dir, not the registered root. Lookup retrieves
+			// the root for Scaffold. ErrNotRegistered is impossible — Init just registered pwd.
 			workspaceRoot, _, err := ws.Lookup(pwd)
 			if err != nil {
 				return err

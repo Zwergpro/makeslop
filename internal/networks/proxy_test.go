@@ -57,9 +57,7 @@ func startFakeUpstream(t *testing.T) string {
 	return ln.Addr().String()
 }
 
-// TestStart_BindsAndChmodSocket verifies that Start creates the socket file and
-// sets 0666 permissions (world-connectable so container processes with a
-// different UID can connect).
+// 0666 so container processes with a different UID can connect.
 func TestStart_BindsAndChmodSocket(t *testing.T) {
 	sock := tempSockPath(t)
 	p := NewProxy(sock, "127.0.0.1:1") // upstream address irrelevant for this test
@@ -77,7 +75,6 @@ func TestStart_BindsAndChmodSocket(t *testing.T) {
 	}
 }
 
-// TestSocketPath_Accessor verifies that SocketPath returns the configured path.
 func TestSocketPath_Accessor(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX-only per CLAUDE.md")
@@ -89,9 +86,6 @@ func TestSocketPath_Accessor(t *testing.T) {
 	}
 }
 
-// TestCONNECT_TunnelRelaysBytesViaBothDirections verifies that the proxy
-// relays bytes bidirectionally through an in-process fake upstream (an echo
-// server at 127.0.0.1:0).
 func TestCONNECT_TunnelRelaysBytesViaBothDirections(t *testing.T) {
 	sock := tempSockPath(t)
 	upstreamAddr := startFakeUpstream(t)
@@ -102,14 +96,12 @@ func TestCONNECT_TunnelRelaysBytesViaBothDirections(t *testing.T) {
 	}
 	defer p.Close()
 
-	// Connect to the proxy via the unix socket.
 	conn, err := net.Dial("unix", sock)
 	if err != nil {
 		t.Fatalf("dial unix socket: %v", err)
 	}
 	defer conn.Close()
 
-	// Send a payload and expect it echoed back (fake upstream echoes everything).
 	payload := "hello proxy\n"
 	if _, err := fmt.Fprint(conn, payload); err != nil {
 		t.Fatalf("write: %v", err)
@@ -125,9 +117,6 @@ func TestCONNECT_TunnelRelaysBytesViaBothDirections(t *testing.T) {
 	}
 }
 
-// TestHandle_HalfCloseTerminatesGoroutines verifies that when one side of a
-// tunnel closes its write half, the opposite io.Copy goroutine returns without
-// hanging. We test this by running handle directly with a pipe-backed conn.
 func TestHandle_HalfCloseTerminatesGoroutines(t *testing.T) {
 	sock := tempSockPath(t)
 	upstreamAddr := startFakeUpstream(t)
@@ -143,19 +132,16 @@ func TestHandle_HalfCloseTerminatesGoroutines(t *testing.T) {
 		t.Fatalf("dial: %v", err)
 	}
 
-	// Send some data, then close the write half.
 	payload := strings.Repeat("x", 64)
 	if _, err := fmt.Fprint(conn, payload); err != nil {
 		t.Fatalf("write payload: %v", err)
 	}
 
-	// Half-close the client write side so the upstream sees EOF.
 	if uc, ok := conn.(*net.UnixConn); ok {
 		_ = uc.CloseWrite()
 	}
 
-	// Read all echoed data back; io.ReadAll returns after the server side
-	// also half-closes (triggered by the proxy's halfCloseWrite call).
+	// io.ReadAll returns once the server half-closes (proxy's halfCloseWrite propagates EOF).
 	conn.SetDeadline(time.Now().Add(3 * time.Second))
 	got, err := io.ReadAll(conn)
 	if err != nil {
@@ -167,12 +153,8 @@ func TestHandle_HalfCloseTerminatesGoroutines(t *testing.T) {
 	conn.Close()
 }
 
-// TestHandle_DialFailureClosesClientCleanly verifies that when the upstream
-// is unreachable, handle returns without panicking and the client connection
-// is closed.
 func TestHandle_DialFailureClosesClientCleanly(t *testing.T) {
 	sock := tempSockPath(t)
-	// Use a port that is (almost certainly) not listening.
 	p := NewProxy(sock, "127.0.0.1:1")
 	if err := p.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -185,8 +167,6 @@ func TestHandle_DialFailureClosesClientCleanly(t *testing.T) {
 	}
 	defer conn.Close()
 
-	// The proxy will fail to dial the upstream and close the client conn.
-	// We should see an EOF or closed-connection error on the next read.
 	conn.SetDeadline(time.Now().Add(3 * time.Second))
 	buf := make([]byte, 1)
 	_, err = conn.Read(buf)
@@ -195,7 +175,6 @@ func TestHandle_DialFailureClosesClientCleanly(t *testing.T) {
 	}
 }
 
-// TestClose_UnlinksSocket verifies that Close removes the socket file.
 func TestClose_UnlinksSocket(t *testing.T) {
 	sock := tempSockPath(t)
 	p := NewProxy(sock, "127.0.0.1:1")
@@ -203,7 +182,6 @@ func TestClose_UnlinksSocket(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	// Verify socket exists.
 	if _, err := os.Stat(sock); err != nil {
 		t.Fatalf("socket file missing before Close: %v", err)
 	}
@@ -215,8 +193,6 @@ func TestClose_UnlinksSocket(t *testing.T) {
 	}
 }
 
-// TestClose_IsIdempotent verifies that calling Close multiple times does not
-// panic or deadlock.
 func TestClose_IsIdempotent(t *testing.T) {
 	sock := tempSockPath(t)
 	p := NewProxy(sock, "127.0.0.1:1")
@@ -238,32 +214,27 @@ func TestClose_IsIdempotent(t *testing.T) {
 	}
 }
 
-// TestClose_BeforeStart verifies that Close on a never-started Proxy is safe.
 func TestClose_BeforeStart(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX-only per CLAUDE.md")
 	}
 	p := NewProxy("/tmp/nonexistent-makeslop-test.sock", "127.0.0.1:1")
-	// Must not panic or deadlock.
 	if err := p.Close(); err != nil {
 		t.Errorf("Close before Start returned error: %v", err)
 	}
 }
 
-// TestClose_DoesNotHangWithInFlightConnection verifies that Close terminates
-// promptly even when a tunnel connection is in progress.
 func TestClose_DoesNotHangWithInFlightConnection(t *testing.T) {
 	sock := tempSockPath(t)
-	// Use a fake upstream that blocks after accepting (simulates a slow upstream).
+	// blockLn simulates a slow upstream — blocks after accepting so Close must drain in-flight goroutines.
 	blockLn, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen block upstream: %v", err)
 	}
 	defer blockLn.Close()
 
-	// accepted is closed when the upstream's Accept() fires, which means the
-	// proxy's handle goroutine has successfully established the in-flight
-	// connection. This replaces the racy time.Sleep.
+	// accepted is closed when upstream Accept fires — proves handle is in-flight
+	// before we call Close, avoiding a racy time.Sleep.
 	accepted := make(chan struct{})
 	go func() {
 		c, err := blockLn.Accept()
@@ -271,7 +242,6 @@ func TestClose_DoesNotHangWithInFlightConnection(t *testing.T) {
 			return
 		}
 		close(accepted)
-		// Block: read forever (or until conn is closed by proxy teardown).
 		buf := make([]byte, 1024)
 		for {
 			if _, err := c.Read(buf); err != nil {
@@ -286,25 +256,20 @@ func TestClose_DoesNotHangWithInFlightConnection(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	// Establish a connection to the proxy (this will connect to the blocking upstream).
 	conn, err := net.Dial("unix", sock)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
 	defer conn.Close()
 
-	// Send a byte to trigger the proxy's handle goroutine to dial upstream.
 	conn.Write([]byte("x")) //nolint:errcheck
 
-	// Wait until the upstream has accepted the connection, confirming the
-	// in-flight tunnel is established before we call Close.
 	select {
 	case <-accepted:
 	case <-time.After(3 * time.Second):
 		t.Fatal("upstream never accepted connection")
 	}
 
-	// Close must return promptly.
 	done := make(chan struct{})
 	go func() {
 		p.Close()
@@ -317,8 +282,6 @@ func TestClose_DoesNotHangWithInFlightConnection(t *testing.T) {
 	}
 }
 
-// TestCtxCancellation_StopsAcceptLoop verifies that cancelling the context
-// passed to Start causes the accept loop to stop.
 func TestCtxCancellation_StopsAcceptLoop(t *testing.T) {
 	sock := tempSockPath(t)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -328,10 +291,8 @@ func TestCtxCancellation_StopsAcceptLoop(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	// Cancel the context — this should stop the accept loop.
 	cancel()
 
-	// After cancellation, Close should return promptly (wg already done or fast).
 	done := make(chan struct{})
 	go func() {
 		p.Close()
@@ -344,12 +305,9 @@ func TestCtxCancellation_StopsAcceptLoop(t *testing.T) {
 	}
 }
 
-// TestStart_RemovesStaleSocket verifies that Start removes a stale socket file
-// left from a previous run.
 func TestStart_RemovesStaleSocket(t *testing.T) {
 	sock := tempSockPath(t)
 
-	// Create a stale socket file.
 	if err := os.WriteFile(sock, []byte("stale"), 0o600); err != nil {
 		t.Fatalf("create stale file: %v", err)
 	}
@@ -360,7 +318,6 @@ func TestStart_RemovesStaleSocket(t *testing.T) {
 	}
 	defer p.Close()
 
-	// Verify the socket is now a real socket (not the stale file).
 	info, err := os.Stat(sock)
 	if err != nil {
 		t.Fatalf("stat socket: %v", err)

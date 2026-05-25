@@ -1,31 +1,20 @@
 // Package networks owns the host-side HTTP forward proxy that bridges container
-// traffic (arriving over a unix domain socket) to an upstream HTTP CONNECT
-// proxy reachable over TCP.
+// traffic (via unix socket) to an upstream HTTP CONNECT proxy over TCP.
 //
 // # Data path
 //
 //	Container app ──unix socket──► Proxy ──TCP──► upstream proxy ──► internet
 //
-// The proxy speaks a verbatim-forward protocol: after the container app sends
-// a CONNECT request the proxy dials the upstream, replays bytes in both
-// directions without further HTTP parsing, and tears down when either side
-// closes.  This is the only correct shape for CONNECT tunnelling because the
-// payload is opaque TLS.
+// The proxy forwards CONNECT tunnels verbatim without HTTP parsing — the
+// payload is opaque TLS and cannot be inspected.
 //
-// # Half-close protocol
+// When one copy direction finishes, halfCloseWrite signals EOF to the peer so
+// the opposite io.Copy returns rather than blocking wg.Wait.
 //
-// Each direction uses a dedicated io.Copy goroutine. When one direction
-// finishes copying, halfCloseWrite shuts down the write half of the
-// destination connection so the peer's io.Copy sees EOF and returns, rather
-// than blocking until a full TCP close. This lets handlers terminate promptly
-// and prevents wg.Wait from hanging.
+// # Socket-path limit
 //
-// # POSIX-only / 108-byte socket-path limit
-//
-// Unix domain sockets on Linux and macOS have a maximum path length of 108
-// bytes (the sun_path field in sockaddr_un). Callers must ensure the socket
-// path is within that limit; Start returns the bind error if it is exceeded.
-// The recommended scheme is /tmp/makeslop-<12hex>-<pid>.sock (~39 bytes).
+// Unix sockets have a 108-byte sun_path limit. Start returns the bind error if
+// exceeded. Use /tmp/makeslop-<12hex>-<pid>.sock (~39 bytes).
 package networks
 
 import (
@@ -37,12 +26,8 @@ import (
 	"syscall"
 )
 
-// Proxy is a host-side HTTP forward proxy that listens on a unix domain socket
-// and tunnels connections verbatim to an upstream HTTP CONNECT proxy over TCP.
-//
-// Lifecycle: call Start to begin accepting connections, call Close to
-// shut down. Close is idempotent and safe to call before Start or on a
-// partially-started Proxy.
+// Proxy listens on a unix socket and tunnels CONNECT requests to an upstream
+// TCP proxy. Call Start/Close to manage the lifecycle; Close is idempotent.
 type Proxy struct {
 	socketPath string
 	upstream   string
@@ -54,9 +39,8 @@ type Proxy struct {
 	wg       sync.WaitGroup
 }
 
-// NewProxy returns a new Proxy that will listen on socketPath (a host-side
-// unix socket path) and forward CONNECT tunnels to upstream ("host:port").
-// Neither value is validated here; Start surfaces errors on bind/listen.
+// NewProxy constructs a Proxy; neither socketPath nor upstream is validated —
+// Start surfaces bind/listen errors.
 func NewProxy(socketPath, upstream string) *Proxy {
 	return &Proxy{
 		socketPath: socketPath,
@@ -64,43 +48,27 @@ func NewProxy(socketPath, upstream string) *Proxy {
 	}
 }
 
-// SocketPath returns the host path of the unix socket that Start will bind.
-// Use this value as the source path when bind-mounting the socket into a
-// container.
+// SocketPath returns the unix socket path Start will bind; use it as the
+// source for the container bind mount.
 func (p *Proxy) SocketPath() string {
 	return p.socketPath
 }
 
-// Start removes any stale socket file, listens on the configured unix socket
-// path, chmods the socket to 0666, and spawns the accept loop in a background
-// goroutine. The accept loop runs until Close is called; ctx cancellation alone
-// does not stop it because the loop blocks on ln.Accept() — only
-// listener.Close() (which Close() calls) unblocks that call. ctx is
-// propagated to per-connection handlers so that in-flight dials are
-// interrupted when Close is called.
+// Start binds the unix socket (removing any stale file first), chmod 0666,
+// and spawns the accept loop. ctx cancellation alone does not stop the loop
+// (which blocks on Accept); only Close unblocks it. ctx is propagated to
+// in-flight connection handlers.
 //
-// The socket is created with mode 0666 (world-connectable) because container
-// processes may run as a different UID than the host user; connecting to a unix
-// socket is permission-checked against the socket's mode bits on the host, not
-// the bind-mount flags. The path is unique (/tmp/makeslop-<hash12>-<pid>.sock)
-// so broad permissions are safe.
+// 0666 is required because container processes may run as a different UID;
+// unix socket access is permission-checked against the socket's mode, not the
+// bind-mount flags.
 //
-// Start returns an error if the socket cannot be bound (e.g. path too long,
-// permission denied). Such an error should abort the container launch — the
-// network isolation invariant requires the socket to exist before the
-// container starts.
+// A bind error (e.g. path too long) should abort the container launch.
 func (p *Proxy) Start(ctx context.Context) error {
 	// Remove any stale socket left by a previous (crashed) run.
 	_ = os.Remove(p.socketPath)
 
-	// Set umask to 0 before net.Listen so the socket is created with mode
-	// 0777 immediately (no race window where a too-permissive or
-	// too-restrictive mode is visible). The path is unique
-	// (/tmp/makeslop-<hash12>-<pid>.sock) so broad permissions are
-	// acceptable; we then chmod to 0666 explicitly so the socket is
-	// world-connectable (required because container processes may run as a
-	// different UID — connecting to a unix socket is permission-checked
-	// against the socket's mode bits on the host, not the bind-mount flags).
+	// Set umask 0 before Listen to avoid a race window on socket mode, then restore.
 	oldUmask := syscall.Umask(0)
 	ln, err := net.Listen("unix", p.socketPath)
 	syscall.Umask(oldUmask)
@@ -134,7 +102,7 @@ func (p *Proxy) acceptLoop(ctx context.Context, ln net.Listener) {
 	for {
 		client, err := ln.Accept()
 		if err != nil {
-			// Listener was closed (via Close or ctx cancellation) — stop.
+			// Listener closed by Close() — stop.
 			return
 		}
 		p.trackConn(client)
@@ -147,10 +115,8 @@ func (p *Proxy) acceptLoop(ctx context.Context, ln net.Listener) {
 	}
 }
 
-// handle dials the upstream proxy and splices bytes between client and
-// upstream in both directions. When one direction finishes it calls
-// halfCloseWrite on the destination so the opposite direction drains and
-// returns rather than blocking.
+// handle splices bytes between client and upstream. When one direction
+// finishes, halfCloseWrite lets the opposite direction drain rather than block.
 func (p *Proxy) handle(ctx context.Context, client net.Conn) {
 	defer client.Close()
 
@@ -177,24 +143,20 @@ func (p *Proxy) handle(ctx context.Context, client net.Conn) {
 	wg.Wait()
 }
 
-// halfCloseWrite shuts down the write half of c so the peer's io.Copy sees
-// EOF and returns. Both *net.UnixConn and *net.TCPConn implement the
-// CloseWrite method; other types are silently ignored.
+// halfCloseWrite signals EOF to the peer by closing the write half of c;
+// types without CloseWrite are silently ignored.
 func halfCloseWrite(c net.Conn) {
 	if cw, ok := c.(interface{ CloseWrite() error }); ok {
 		_ = cw.CloseWrite()
 	}
 }
 
-// trackConn registers c in the tracked connection list so Close can
-// force-close it.
 func (p *Proxy) trackConn(c net.Conn) {
 	p.mu.Lock()
 	p.conns = append(p.conns, c)
 	p.mu.Unlock()
 }
 
-// untrackConn removes c from the tracked connection list.
 func (p *Proxy) untrackConn(c net.Conn) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -207,10 +169,7 @@ func (p *Proxy) untrackConn(c net.Conn) {
 	}
 }
 
-// Close shuts down the proxy: cancels the proxy-scoped context, closes the
-// listener, force-closes every in-flight connection, waits for all goroutines
-// to finish, then removes the socket file. Close is idempotent and safe to
-// call before Start or on a Proxy whose Start returned an error.
+// Close is idempotent: safe to call before Start or after a failed Start.
 func (p *Proxy) Close() error {
 	p.mu.Lock()
 	cancel := p.cancel

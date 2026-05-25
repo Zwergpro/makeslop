@@ -10,59 +10,40 @@ import (
 	"github.com/Zwergpro/makeslop/internal/config"
 )
 
-// Options is the caller-supplied input to BuildSpec. All path fields are
-// expected to be absolute and EvalSymlinks-evaluated by the caller — the cobra
-// layer already enforces this for ProjectRoot/BaseDir, matching the same
-// precondition workspace.Workspaces.Lookup documents.
+// Options is the caller-supplied input to BuildSpec. Path fields must be
+// absolute and EvalSymlinks-evaluated.
 type Options struct {
 	ProjectRoot   string // host path mounted at /workspace/<WorkspaceName>
-	WorkspaceName string // e.g. "makeslop-ab12cd"; derived from cache dir basename
+	WorkspaceName string // e.g. "makeslop-ab12cd"
 	BaseDir       string // ~/.makeslop
 	Image         string
 	Command       string // shell to exec inside the container
-	// MaskedFiles is the list of absolute host paths under ProjectRoot whose
-	// container counterparts should be shadowed by /dev/null. The under-root
-	// guarantee is the caller's (security.Scan enforces it). Caller-provided
-	// order is preserved in the emitted argv. Nil or empty is a no-op.
+	// MaskedFiles: absolute host paths under ProjectRoot to shadow with /dev/null.
+	// Under-root guarantee is the caller's. Nil or empty is a no-op.
 	MaskedFiles []string
-	// MaskedDirs is the list of absolute host paths under ProjectRoot whose
-	// container counterparts should be replaced by an empty in-memory tmpfs
-	// mount. The under-root guarantee is the caller's (projectconfig.Load
-	// enforces it). Caller-provided order is preserved in the emitted argv.
-	// Nil or empty is a no-op.
+	// MaskedDirs: absolute host paths under ProjectRoot to replace with tmpfs.
+	// Under-root guarantee is the caller's. Nil or empty is a no-op.
 	MaskedDirs []string
 
-	// ProxySocketHost is the host path of the per-invocation unix socket for
-	// the forward proxy. When non-empty, BuildSpec emits --network none, a
-	// read-only bind mount of the socket into the container at
-	// ProxySocketContainer, and HTTP_PROXY/HTTPS_PROXY env vars pointing at it.
-	// Empty ⇒ no networking changes (default bridge networking, as today).
+	// ProxySocketHost is the host-side unix socket for the forward proxy. When
+	// non-empty, BuildSpec emits --network none, a read-only socket bind mount,
+	// and HTTP_PROXY/HTTPS_PROXY pointing at ProxySocketContainer. Empty means
+	// default bridge networking.
 	ProxySocketHost string
-	// ProxySocketContainer is the in-container socket path. Use /tmp
-	// (e.g. /tmp/makeslop-proxy.sock): the container already mounts
-	// --tmpfs /tmp, so the path is guaranteed writable. The env vars reference
-	// this path via unix:// URL.
+	// ProxySocketContainer is the in-container socket path; use /tmp (guaranteed
+	// writable via --tmpfs /tmp). The env vars reference it via unix:// URL.
 	ProxySocketContainer string
 }
 
-// Mount is a single docker mount entry. Trailing slashes are preserved verbatim.
+// Mount is a single docker mount entry.
 //
-// Type selects the mount type: "" (zero value) and "bind" both render as
-// type=bind with source= and target=. "tmpfs" renders as type=tmpfs,target=
-// only — Host is ignored for tmpfs mounts. Any future unrecognized value falls
-// through to bind (Mount is constructed only inside this package, so callers
-// cannot inject an unknown type in practice).
-//
-// ReadOnly, when true, appends ",readonly" to the bind mount rendering. It has
-// no effect on tmpfs mounts. Defaults to false, so existing mounts render
-// byte-identically.
+// Type: "" or "bind" → type=bind; "tmpfs" → type=tmpfs (Host ignored).
+// ReadOnly: when true, appends ",readonly" to bind mounts; zero value is
+// backward-compatible (existing mounts render byte-identically).
 type Mount struct {
-	// Type is the docker mount type. "" (zero value) means "bind".
-	// "tmpfs" is the only other recognized value; Host is unused for tmpfs.
 	Type            string
 	Host, Container string
-	// ReadOnly, when true, adds ",readonly" to bind mounts. Ignored for tmpfs.
-	ReadOnly bool
+	ReadOnly        bool
 }
 
 // Spec is the deterministic shape of a `docker run` invocation; Args() is a pure projection.
@@ -78,17 +59,15 @@ type Spec struct {
 	Env         []string // KEY=VALUE pairs emitted as -e flags
 }
 
-// BuildSpec is pure: same Options → same Spec. The mount list is emitted in a
-// fixed explicit order so callers and tests can rely on argv ordering:
-//  1. project root bind mount
-//  2. global and per-workspace agent path bind mounts
-//  3. /dev/null overlay bind mounts (one per MaskedFiles entry)
-//  4. tmpfs overlay mounts (one per MaskedDirs entry)
-//  5. proxy socket bind mount (read-only), when ProxySocketHost is set
+// BuildSpec is pure: same Options → same Spec. Mount order is deterministic:
+//  1. project root bind
+//  2. agent path binds
+//  3. MaskedFiles /dev/null overlays
+//  4. MaskedDirs tmpfs overlays
+//  5. proxy socket bind (when ProxySocketHost is set)
 //
-// Overlay groups 3 and 4 come after the directory bind they shadow, so docker's
-// argv-order evaluation makes the overlays win. The proxy socket mount (5) is
-// independent of the overlay ordering and is appended last.
+// Overlays (3–4) follow the directory bind they shadow so docker's argv-order
+// evaluation makes them win.
 func BuildSpec(o Options) Spec {
 	workspacePath := "/workspace/" + o.WorkspaceName
 	workspaceHost := filepath.Join(o.BaseDir, config.WorkspacesDir, o.WorkspaceName)
@@ -108,9 +87,7 @@ func BuildSpec(o Options) Spec {
 	}
 
 	for _, host := range o.MaskedFiles {
-		// Precondition: host is absolute and under ProjectRoot (security.Scan
-		// enforces this). filepath.Rel cannot error on two clean absolute POSIX
-		// paths on the same volume.
+		// security.Scan guarantees host is under ProjectRoot; Rel never errors on POSIX.
 		rel, _ := filepath.Rel(o.ProjectRoot, host)
 		mounts = append(mounts, Mount{
 			Host:      "/dev/null",
@@ -119,9 +96,7 @@ func BuildSpec(o Options) Spec {
 	}
 
 	for _, host := range o.MaskedDirs {
-		// Precondition: host is absolute and under ProjectRoot (projectconfig.Load
-		// enforces this). filepath.Rel cannot error on two clean absolute POSIX
-		// paths on the same volume.
+		// projectconfig.Load guarantees host is under ProjectRoot; Rel never errors on POSIX.
 		rel, _ := filepath.Rel(o.ProjectRoot, host)
 		mounts = append(mounts, Mount{
 			Type:      "tmpfs",
@@ -193,14 +168,10 @@ func (s Spec) Args() []string {
 	return args
 }
 
-// shellSafeRe matches tokens that need no shell quoting: non-empty strings
-// composed only of alphanumerics and the safe punctuation set.
 var shellSafeRe = regexp.MustCompile(`^[A-Za-z0-9_./:=,@+-]+$`)
 
-// shellQuote returns s in a form safe for inclusion in a POSIX shell command
-// line. Tokens matching shellSafeRe are returned bare. An empty string returns
-// ''. All other strings are wrapped in single quotes with embedded single
-// quotes rewritten as the POSIX idiom '\''.
+// shellQuote returns s safe for POSIX shell inclusion: bare if alphanumeric-safe,
+// empty string as ”, otherwise single-quoted with '\” escaping.
 func shellQuote(s string) string {
 	if s != "" && shellSafeRe.MatchString(s) {
 		return s
@@ -208,27 +179,15 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
-// ShellCommand returns a multi-line, backslash-continued shell command
-// equivalent to `docker` invoked with s.Args(). The first line is `docker run
-// \` and each subsequent token group is two-space-indented. Flag/value pairs
-// share one line; single-token flags are on their own line. The image and
-// command each occupy their own trailing line; the image line carries a
-// trailing ` \` and the command line does not. Tokens that contain
-// shell-special characters are single-quoted with POSIX-safe escaping (see
-// shellQuote). Pure: same Spec → same string.
+// ShellCommand renders s as a multi-line backslash-continued `docker run`
+// command. Pure: same Spec → same string.
 func (s Spec) ShellCommand() string {
-	// Build the same logical groups as Args() but in line-oriented form.
-	// We collect lines and join them with " \\\n" between consecutive lines,
-	// with the final line having no trailing continuation.
 	args := s.Args() // starts with "run", not "docker"
 
 	var lines []string
 	lines = append(lines, "docker run")
 
-	// i := 1 skips the leading "run" token — we already prepended "docker run".
-	// The last two args are always Image and Command; handle them explicitly
-	// below so a paired-flag name in Image cannot be misread as a flag.
-	i := 1 // skip "run"
+	i := 1 // skip "run" — already in "docker run" prefix
 	for i < len(args)-2 {
 		tok := args[i]
 		switch tok {
@@ -240,11 +199,10 @@ func (s Spec) ShellCommand() string {
 			i++
 		}
 	}
-	// Emit image and command as explicit trailing lines regardless of their value.
+	// Explicit tail lines: a flag-shaped image name must not be parsed as a flag.
 	lines = append(lines, "  "+shellQuote(args[len(args)-2]))
 	lines = append(lines, "  "+shellQuote(args[len(args)-1]))
 
-	// Join with " \" continuation on all but the last line.
 	var sb strings.Builder
 	for j, line := range lines {
 		sb.WriteString(line)

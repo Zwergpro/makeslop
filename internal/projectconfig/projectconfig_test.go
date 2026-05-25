@@ -9,10 +9,8 @@ import (
 	"github.com/Zwergpro/makeslop/internal/docker"
 )
 
-// evalSymlinks resolves symlinks for a temp-dir path, matching the precondition
-// documented on Load (and workspace.Lookup, security.Scan). On macOS-style
-// hosts /tmp is itself a symlink, so raw t.TempDir() paths violate the
-// precondition.
+// evalSymlinks resolves a temp dir path — on macOS /tmp is a symlink, so raw
+// t.TempDir() paths violate the EvalSymlinks precondition.
 func evalSymlinks(t *testing.T, dir string) string {
 	t.Helper()
 	resolved, err := filepath.EvalSymlinks(dir)
@@ -22,8 +20,6 @@ func evalSymlinks(t *testing.T, dir string) string {
 	return resolved
 }
 
-// TestScaffold_WritesStub verifies that Scaffold creates .makeslop.yaml with
-// the exact byte-stable stub when no file exists.
 func TestScaffold_WritesStub(t *testing.T) {
 	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
@@ -41,8 +37,6 @@ func TestScaffold_WritesStub(t *testing.T) {
 	}
 }
 
-// TestScaffold_Idempotent verifies that Scaffold does not modify an existing
-// .makeslop.yaml with arbitrary user content.
 func TestScaffold_Idempotent(t *testing.T) {
 	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
@@ -65,8 +59,6 @@ func TestScaffold_Idempotent(t *testing.T) {
 	}
 }
 
-// TestLoad_MissingFile verifies that Load returns a zero Excludes (no error)
-// when the config file is absent.
 func TestLoad_MissingFile(t *testing.T) {
 	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
@@ -80,8 +72,6 @@ func TestLoad_MissingFile(t *testing.T) {
 	}
 }
 
-// TestLoad_EmptyStub verifies that Load returns a zero Excludes when the file
-// contains the scaffolded empty-list stub.
 func TestLoad_EmptyStub(t *testing.T) {
 	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
@@ -99,8 +89,6 @@ func TestLoad_EmptyStub(t *testing.T) {
 	}
 }
 
-// TestLoad_EmptyAndCommentOnlyFiles verifies that Load returns a zero Excludes
-// (no error) for empty bytes, whitespace-only, and comment-only YAML files.
 // yaml.NewDecoder returns io.EOF for these cases; Load must treat it as zero config.
 func TestLoad_EmptyAndCommentOnlyFiles(t *testing.T) {
 	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
@@ -131,8 +119,6 @@ func TestLoad_EmptyAndCommentOnlyFiles(t *testing.T) {
 	}
 }
 
-// TestLoad_MalformedYAML verifies that Load returns a "projectconfig:"-prefixed
-// error when the file contains invalid YAML.
 func TestLoad_MalformedYAML(t *testing.T) {
 	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
@@ -150,8 +136,6 @@ func TestLoad_MalformedYAML(t *testing.T) {
 	}
 }
 
-// TestLoad_UnknownField verifies that KnownFields(true) causes an error on
-// unrecognized top-level keys (e.g. "include:").
 func TestLoad_UnknownField(t *testing.T) {
 	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
@@ -169,8 +153,6 @@ func TestLoad_UnknownField(t *testing.T) {
 	}
 }
 
-// TestLoad_ValidationRules verifies individual path validation rules via
-// subtests.
 func TestLoad_ValidationRules(t *testing.T) {
 	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 
@@ -251,9 +233,6 @@ func TestLoad_ValidationRules(t *testing.T) {
 	}
 }
 
-// TestLoad_ReservedPaths verifies that each of the four reserved agent paths
-// is rejected with a "collides with a reserved agent path" error, for both
-// exclude.dirs and exclude.files.
 func TestLoad_ReservedPaths(t *testing.T) {
 	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 
@@ -289,9 +268,6 @@ func TestLoad_ReservedPaths(t *testing.T) {
 	}
 }
 
-// TestLoad_CrossListDuplicate verifies that listing the same path in both
-// exclude.files and exclude.dirs is a parse-time error, regardless of on-disk
-// state.
 func TestLoad_CrossListDuplicate(t *testing.T) {
 	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
@@ -331,8 +307,6 @@ func TestLoad_CrossListDuplicate_NoFileOnDisk(t *testing.T) {
 	}
 }
 
-// TestLoad_SilentlyDropsMissingEntries verifies that entries whose path does
-// not exist on disk are silently skipped (both files and dirs).
 func TestLoad_SilentlyDropsMissingEntries(t *testing.T) {
 	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
@@ -351,13 +325,10 @@ func TestLoad_SilentlyDropsMissingEntries(t *testing.T) {
 	}
 }
 
-// TestLoad_DropsWrongType verifies that a dirs entry that is actually a file
-// is dropped, and a files entry that is actually a directory is dropped.
 func TestLoad_DropsWrongType(t *testing.T) {
 	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
-	// Create a regular file at "am-a-file" and a directory at "am-a-dir".
 	if err := os.WriteFile(filepath.Join(root, "am-a-file"), []byte("data"), 0o644); err != nil {
 		t.Fatalf("write file: %v", err)
 	}
@@ -381,13 +352,10 @@ func TestLoad_DropsWrongType(t *testing.T) {
 	}
 }
 
-// TestLoad_DropsSymlinks verifies that symlinks (to regular file and to dir)
-// are silently dropped from both exclude.files and exclude.dirs.
 func TestLoad_DropsSymlinks(t *testing.T) {
 	docker.SkipNonPOSIX(t, "symlinks and /‐paths required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
-	// Create real targets.
 	realFile := filepath.Join(root, "real-file")
 	realDir := filepath.Join(root, "real-dir")
 	if err := os.WriteFile(realFile, []byte("data"), 0o644); err != nil {
@@ -397,7 +365,6 @@ func TestLoad_DropsSymlinks(t *testing.T) {
 		t.Fatalf("mkdir real dir: %v", err)
 	}
 
-	// Create symlinks pointing to real targets.
 	symlinkToFile := filepath.Join(root, "link-to-file")
 	symlinkToDir := filepath.Join(root, "link-to-dir")
 	if err := os.Symlink(realFile, symlinkToFile); err != nil {
@@ -427,8 +394,6 @@ func TestLoad_DropsSymlinks(t *testing.T) {
 // configurations. Skip for now; the error path in statFilter is exercised by
 // careful code review.
 
-// TestLoad_DeduplicatesWithinLists verifies that the same path listed twice
-// within files (or dirs) results in exactly one entry.
 func TestLoad_DeduplicatesWithinLists(t *testing.T) {
 	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
@@ -458,8 +423,6 @@ func TestLoad_DeduplicatesWithinLists(t *testing.T) {
 	}
 }
 
-// TestLoad_ReturnsAbsoluteSortedPaths verifies that Load returns absolute paths
-// joined under root, and that multiple entries are lexicographically sorted.
 func TestLoad_ReturnsAbsoluteSortedPaths(t *testing.T) {
 	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
@@ -480,7 +443,6 @@ func TestLoad_ReturnsAbsoluteSortedPaths(t *testing.T) {
 		}
 	}
 
-	// Deliberately list in z-first order to verify sorting.
 	content := "exclude:\n  files:\n    - z-secret.txt\n    - a-secret.txt\n  dirs:\n    - z-priv\n    - a-priv\n"
 	if err := os.WriteFile(filepath.Join(root, Filename), []byte(content), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -519,8 +481,6 @@ func TestLoad_ReturnsAbsoluteSortedPaths(t *testing.T) {
 	}
 }
 
-// TestLoad_Network_ValidAddress verifies that a well-formed host:port address in
-// network.proxy.address is parsed into Network.ProxyAddress.
 func TestLoad_Network_ValidAddress(t *testing.T) {
 	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 
@@ -553,13 +513,10 @@ func TestLoad_Network_ValidAddress(t *testing.T) {
 	}
 }
 
-// TestLoad_Network_AbsentSection verifies that Load returns a zero Network when
-// the network: section is absent from the YAML.
 func TestLoad_Network_AbsentSection(t *testing.T) {
 	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
-	// Use the standard stub which has no network: section.
 	if err := os.WriteFile(filepath.Join(root, Filename), Stub, 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
@@ -573,8 +530,6 @@ func TestLoad_Network_AbsentSection(t *testing.T) {
 	}
 }
 
-// TestLoad_Network_MissingFile verifies that Load returns a zero Network (not
-// an error) when the config file is absent.
 func TestLoad_Network_MissingFile(t *testing.T) {
 	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
@@ -588,8 +543,6 @@ func TestLoad_Network_MissingFile(t *testing.T) {
 	}
 }
 
-// TestLoad_Network_InvalidAddress verifies that a malformed network.proxy.address
-// causes a "projectconfig:"-prefixed error.
 func TestLoad_Network_InvalidAddress(t *testing.T) {
 	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 
@@ -614,7 +567,6 @@ func TestLoad_Network_InvalidAddress(t *testing.T) {
 			root := evalSymlinks(t, t.TempDir())
 			var content string
 			if tc.address == "" {
-				// Omit the address field entirely to test the "empty address ⇒ zero Network" case.
 				content = "exclude:\n  dirs: []\n  files: []\nnetwork:\n  proxy:\n    address: \"\"\n"
 			} else if tc.quoted {
 				content = "exclude:\n  dirs: []\n  files: []\nnetwork:\n  proxy:\n    address: \"" + tc.address + "\"\n"
@@ -627,7 +579,6 @@ func TestLoad_Network_InvalidAddress(t *testing.T) {
 
 			_, netCfg, err := Load(root)
 			if tc.address == "" {
-				// Empty address field → no error, zero Network.
 				if err != nil {
 					t.Fatalf("unexpected error for empty address: %v", err)
 				}
@@ -649,13 +600,10 @@ func TestLoad_Network_InvalidAddress(t *testing.T) {
 	}
 }
 
-// TestLoad_Network_ExcludesUnchanged verifies that the presence of a network:
-// section does not affect the Excludes parsing behavior.
 func TestLoad_Network_ExcludesUnchanged(t *testing.T) {
 	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
-	// Create real files/dirs so they pass the stat filter.
 	if err := os.WriteFile(filepath.Join(root, "secret.env"), []byte("s"), 0o644); err != nil {
 		t.Fatalf("write file: %v", err)
 	}
@@ -673,7 +621,6 @@ func TestLoad_Network_ExcludesUnchanged(t *testing.T) {
 		t.Fatalf("Load returned error: %v", err)
 	}
 
-	// Verify excludes still work correctly.
 	if len(excl.Files) != 1 || excl.Files[0] != filepath.Join(root, "secret.env") {
 		t.Errorf("unexpected Files: %v", excl.Files)
 	}
@@ -681,7 +628,6 @@ func TestLoad_Network_ExcludesUnchanged(t *testing.T) {
 		t.Errorf("unexpected Dirs: %v", excl.Dirs)
 	}
 
-	// Verify network config is also parsed.
 	if netCfg.ProxyAddress != "10.0.0.1:8888" {
 		t.Errorf("ProxyAddress: got %q, want %q", netCfg.ProxyAddress, "10.0.0.1:8888")
 	}

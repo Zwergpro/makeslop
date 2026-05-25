@@ -12,8 +12,7 @@ import (
 	"testing"
 )
 
-// skipNonPOSIX skips the calling test on non-POSIX hosts per the CLAUDE.md
-// invariant. why becomes the skip reason so failure logs explain the gate.
+// skipNonPOSIX skips on non-POSIX hosts per the CLAUDE.md invariant.
 func skipNonPOSIX(t *testing.T, why string) {
 	t.Helper()
 	if runtime.GOOS == "windows" {
@@ -21,9 +20,8 @@ func skipNonPOSIX(t *testing.T, why string) {
 	}
 }
 
-// evalSymlinks resolves symlinks for a temp dir path, matching the precondition
-// documented on Scan (and workspace.Lookup). On macOS-style hosts /tmp is
-// itself a symlink, so raw t.TempDir() paths violate the precondition.
+// evalSymlinks resolves a temp dir path — on macOS /tmp is a symlink, so raw
+// t.TempDir() paths violate the EvalSymlinks precondition.
 func evalSymlinks(t *testing.T, dir string) string {
 	t.Helper()
 	resolved, err := filepath.EvalSymlinks(dir)
@@ -33,8 +31,6 @@ func evalSymlinks(t *testing.T, dir string) string {
 	return resolved
 }
 
-// TestScan_FdMissing_ReturnsErrFdMissing verifies that pointing fdBinary to a
-// nonexistent path causes Scan to return ErrFdMissing.
 func TestScan_FdMissing_ReturnsErrFdMissing(t *testing.T) {
 	skipNonPOSIX(t, "shim scripts require POSIX shell; security package is POSIX-only per CLAUDE.md")
 	t.Cleanup(SetFdBinaryForTest("/nonexistent/fd-binary"))
@@ -46,8 +42,6 @@ func TestScan_FdMissing_ReturnsErrFdMissing(t *testing.T) {
 	}
 }
 
-// TestScan_TwoPaths_ReturnsSorted verifies that two paths returned by the shim
-// come back lexicographically sorted regardless of shim output order.
 func TestScan_TwoPaths_ReturnsSorted(t *testing.T) {
 	skipNonPOSIX(t, "shim scripts require POSIX shell; security package is POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
@@ -75,8 +69,7 @@ func TestScan_TwoPaths_ReturnsSorted(t *testing.T) {
 	}
 }
 
-// TestScan_OutsideRootPathDropped verifies that a path outside root is silently
-// dropped — Scan is the trust boundary for the external process.
+// Scan is the trust boundary for the external process; paths outside root are silently dropped.
 func TestScan_OutsideRootPathDropped(t *testing.T) {
 	skipNonPOSIX(t, "shim scripts require POSIX shell; security package is POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
@@ -101,8 +94,6 @@ func TestScan_OutsideRootPathDropped(t *testing.T) {
 	}
 }
 
-// TestScan_EmptyStdout_ReturnsEmptySlice verifies that an empty shim response
-// yields a nil/empty slice with no error.
 func TestScan_EmptyStdout_ReturnsEmptySlice(t *testing.T) {
 	skipNonPOSIX(t, "shim scripts require POSIX shell; security package is POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
@@ -120,8 +111,7 @@ func TestScan_EmptyStdout_ReturnsEmptySlice(t *testing.T) {
 	}
 }
 
-// TestScan_NonZeroExit_ReturnsWrappedError verifies that a non-zero shim exit
-// produces a wrapped error that is NOT ErrFdMissing.
+// Non-zero exit must produce a wrapped error, not ErrFdMissing.
 func TestScan_NonZeroExit_ReturnsWrappedError(t *testing.T) {
 	skipNonPOSIX(t, "shim scripts require POSIX shell; security package is POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
@@ -147,7 +137,6 @@ func TestScan_NonZeroExit_ReturnsWrappedError(t *testing.T) {
 	}
 }
 
-// TestScan_ArgvShape verifies the exact flag sequence passed to the fd binary.
 func TestScan_ArgvShape(t *testing.T) {
 	skipNonPOSIX(t, "shim scripts require POSIX shell; security package is POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
@@ -189,11 +178,7 @@ func TestScan_ArgvShape(t *testing.T) {
 	}
 }
 
-// TestScan_RealFd_MatchesExpectedFiles runs against the real fd binary (if
-// available) and asserts the exact set of .env files returned. Requires "fd"
-// on PATH; skips otherwise.
 func TestScan_RealFd_MatchesExpectedFiles(t *testing.T) {
-	// Try "fd" first, then "fdfind".
 	var fdExe string
 	for _, name := range []string{"fd", "fdfind"} {
 		if resolved, err := exec.LookPath(name); err == nil {
@@ -211,7 +196,6 @@ func TestScan_RealFd_MatchesExpectedFiles(t *testing.T) {
 
 	root := evalSymlinks(t, t.TempDir())
 
-	// Tree layout (see plan § Task 1):
 	mustWriteFile := func(path, content string) {
 		t.Helper()
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -252,7 +236,6 @@ func TestScan_RealFd_MatchesExpectedFiles(t *testing.T) {
 		t.Fatalf("Scan returned error: %v", err)
 	}
 
-	// Sort both for comparison.
 	sortedIncluded := make([]string, len(included))
 	copy(sortedIncluded, included)
 	sort.Strings(sortedIncluded)
@@ -266,4 +249,3 @@ func TestScan_RealFd_MatchesExpectedFiles(t *testing.T) {
 		}
 	}
 }
-

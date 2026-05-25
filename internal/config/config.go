@@ -1,7 +1,5 @@
-// Package config owns the makeslop-global configuration stored under
-// ~/.makeslop: the settings.json file (versioned shape plus workspaces
-// registry payload) and the one-shot bootstrap of agent dirs/files
-// (.codex/, .claude/, .claude.json, workspaces/).
+// Package config manages global settings (settings.json) and one-shot agent
+// directory bootstrap under ~/.makeslop.
 package config
 
 import (
@@ -14,8 +12,6 @@ import (
 	"time"
 )
 
-// Exported so internal/workspace can join paths against the same well-known
-// names and stamp the same version on freshly created Settings.
 const (
 	SettingsFile   = "settings.json"
 	WorkspacesDir  = "workspaces"
@@ -50,10 +46,9 @@ func DefaultBaseDir() (string, error) {
 	return filepath.Join(home, ".makeslop"), nil
 }
 
-// Load reads <baseDir>/settings.json. A missing file yields an empty Settings
-// at CurrentVersion (not an error); malformed JSON is wrapped. Empty Image/Shell
-// fields are populated from DefaultImage/DefaultShell so pre-existing configs
-// that predate those fields keep working without an explicit migration step.
+// Load reads <baseDir>/settings.json. Missing file yields an empty Settings at
+// CurrentVersion (not an error); malformed JSON is an error. Empty Image/Shell
+// fields default to DefaultImage/DefaultShell for backward compatibility.
 func Load(baseDir string) (*Settings, error) {
 	path := filepath.Join(baseDir, SettingsFile)
 	data, err := os.ReadFile(path)
@@ -141,11 +136,8 @@ var bootstrapFiles = []struct {
 	{".claude.json", []byte("{}\n")},
 }
 
-// Bootstrap is idempotent: it creates the makeslop-managed agent directories
-// (.codex/, .claude/, workspaces/) and seed files (.claude.json = "{}\n")
-// under baseDir if they don't already exist. It never overwrites a pre-existing
-// file — O_EXCL + EEXIST-as-success guards user edits. settings.json is NOT
-// touched here; the workspace registry's Save owns that file.
+// Bootstrap is idempotent: creates the agent directories and seed files under
+// baseDir, never overwriting existing content. settings.json is not touched.
 func Bootstrap(baseDir string) error {
 	for _, sub := range bootstrapDirs {
 		dir := filepath.Join(baseDir, sub)

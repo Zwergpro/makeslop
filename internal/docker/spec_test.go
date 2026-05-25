@@ -161,7 +161,6 @@ func TestSpecArgs_MountArgsParseAsRFC4180CSV(t *testing.T) {
 		want = append(want, pair{m.Host, m.Container})
 	}
 
-	// Collect bind-only --mount args (exclude tmpfs ones).
 	allMountArgs := collectMountArgs(append(args, commaArgs...))
 	var mountArgs []string
 	for _, raw := range allMountArgs {
@@ -202,9 +201,6 @@ func TestSpecArgs_MountArgsParseAsRFC4180CSV(t *testing.T) {
 	}
 }
 
-// TestBuildSpec_MaskedFilesAppendDevNullMounts asserts that MaskedFiles
-// produces /dev/null overlay mounts appended after the existing mount list,
-// in the exact caller-provided order.
 func TestBuildSpec_MaskedFilesAppendDevNullMounts(t *testing.T) {
 	o := sampleOptions()
 	o.MaskedFiles = []string{
@@ -213,7 +209,6 @@ func TestBuildSpec_MaskedFilesAppendDevNullMounts(t *testing.T) {
 	}
 	spec := BuildSpec(o)
 
-	// The last two mounts must be the /dev/null overlays in input order.
 	n := len(spec.Mounts)
 	if n < 2 {
 		t.Fatalf("got %d mounts, want at least 2", n)
@@ -228,9 +223,6 @@ func TestBuildSpec_MaskedFilesAppendDevNullMounts(t *testing.T) {
 	}
 }
 
-// TestSpecArgs_MaskedFilesProduceDevNullMountArgs asserts that the full argv
-// emits the additional --mount flags for /dev/null overlays in tail position
-// after the existing agent mounts.
 func TestSpecArgs_MaskedFilesProduceDevNullMountArgs(t *testing.T) {
 	o := sampleOptions()
 	o.MaskedFiles = []string{
@@ -240,10 +232,7 @@ func TestSpecArgs_MaskedFilesProduceDevNullMountArgs(t *testing.T) {
 	spec := BuildSpec(o)
 	args := spec.Args()
 
-	// Collect all --mount args from argv.
 	mountArgs := collectMountArgs(args)
-
-	// The last two --mount values (i.e., pairs from argv) must be the /dev/null overlays.
 	if len(mountArgs) < 2 {
 		t.Fatalf("got %d --mount args, want at least 2", len(mountArgs))
 	}
@@ -257,15 +246,12 @@ func TestSpecArgs_MaskedFilesProduceDevNullMountArgs(t *testing.T) {
 		t.Errorf("tail --mount args mismatch\n got: %+v\nwant: %+v", gotTailMountVals, wantTailMountVals)
 	}
 
-	// Verify the full argv ends with the image and command AFTER the /dev/null mounts.
 	lastTwo := args[len(args)-2:]
 	if !reflect.DeepEqual(lastTwo, []string{"claudebox", "/bin/zsh"}) {
 		t.Errorf("argv tail = %v, want [claudebox /bin/zsh]", lastTwo)
 	}
 }
 
-// TestBuildSpec_MaskedDirsAppendTmpfsMounts asserts that MaskedDirs produces
-// tmpfs overlay mounts appended AFTER any MaskedFiles overlays, in caller order.
 func TestBuildSpec_MaskedDirsAppendTmpfsMounts(t *testing.T) {
 	o := sampleOptions()
 	o.MaskedDirs = []string{
@@ -274,7 +260,6 @@ func TestBuildSpec_MaskedDirsAppendTmpfsMounts(t *testing.T) {
 	}
 	spec := BuildSpec(o)
 
-	// The last two mounts must be the tmpfs overlays in input order.
 	n := len(spec.Mounts)
 	if n < 2 {
 		t.Fatalf("got %d mounts, want at least 2", n)
@@ -289,9 +274,6 @@ func TestBuildSpec_MaskedDirsAppendTmpfsMounts(t *testing.T) {
 	}
 }
 
-// TestBuildSpec_MaskedFilesAndDirsInteract asserts that when both MaskedFiles
-// and MaskedDirs are populated, the tail of Mounts has files overlays first,
-// then dirs overlays.
 func TestBuildSpec_MaskedFilesAndDirsInteract(t *testing.T) {
 	o := sampleOptions()
 	o.MaskedFiles = []string{"/home/me/code/myproj/.env"}
@@ -312,8 +294,6 @@ func TestBuildSpec_MaskedFilesAndDirsInteract(t *testing.T) {
 	}
 }
 
-// TestSpecArgs_TmpfsMountFlagShape asserts that a tmpfs Mount renders as
-// --mount type=tmpfs,target=... with no source= segment in the argv.
 func TestSpecArgs_TmpfsMountFlagShape(t *testing.T) {
 	o := sampleOptions()
 	o.MaskedDirs = []string{"/home/me/code/myproj/node_modules"}
@@ -329,7 +309,6 @@ func TestSpecArgs_TmpfsMountFlagShape(t *testing.T) {
 	if last != want {
 		t.Errorf("last --mount value = %q, want %q", last, want)
 	}
-	// Must not contain source=
 	if strings.Contains(last, "source=") {
 		t.Errorf("tmpfs mount must not contain source=, got %q", last)
 	}
@@ -374,7 +353,6 @@ func TestShellCommand_MinimalSpec_GoldenString(t *testing.T) {
 	}
 }
 
-// TestShellCommand_ShellQuoting tests the quoting predicate.
 func TestShellCommand_ShellQuoting(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -423,9 +401,6 @@ func TestShellCommand_ShellQuoting(t *testing.T) {
 	}
 }
 
-// TestShellCommand_NilSlices_DegenerateCase asserts that a hand-built Spec
-// with nil Mounts, Tmpfs, CapDrop, and SecOpt still produces a valid,
-// parseable ShellCommand (the empty-slices degenerate case).
 func TestShellCommand_NilSlices_DegenerateCase(t *testing.T) {
 	spec := Spec{
 		Image:   "img",
@@ -467,16 +442,10 @@ func TestShellCommand_Deterministic(t *testing.T) {
 	}
 }
 
-// TestShellCommand_AgreeWithArgs asserts that ShellCommand encodes exactly the
-// same tokens as ["docker"] + Args() in the same order. The output is parsed
-// back: strip " \" line continuations, split lines, split each line on
-// whitespace, then strip shell quotes — the resulting token list must equal the
-// expected slice. This is the structural round-trip check the plan required.
 func TestShellCommand_AgreeWithArgs(t *testing.T) {
 	spec := BuildSpec(sampleOptions())
 	output := spec.ShellCommand()
 
-	// Parse the multi-line shell command back into tokens.
 	var got []string
 	for _, raw := range strings.Split(output, "\n") {
 		line := strings.TrimSuffix(raw, ` \`)
@@ -491,13 +460,8 @@ func TestShellCommand_AgreeWithArgs(t *testing.T) {
 	}
 }
 
-// shellUnquote reverses shellQuote: removes surrounding single quotes and
-// expands '\'' back to a literal single quote. Used only in tests.
-//
-// Limitation: this helper uses strings.Fields to tokenise lines, so it only
-// works correctly when no argv token contains embedded whitespace. The current
-// test fixture (sampleOptions) has no space-containing tokens, so this is
-// acceptable for the tests that use it.
+// shellUnquote reverses shellQuote. Limitation: uses strings.Fields, so only
+// works when no argv token contains embedded whitespace.
 func shellUnquote(s string) string {
 	if len(s) >= 2 && s[0] == '\'' && s[len(s)-1] == '\'' {
 		inner := s[1 : len(s)-1]
@@ -518,9 +482,6 @@ func collectMountArgs(argv []string) []string {
 
 // ── Proxy / ReadOnly / NetworkMode / Env tests ────────────────────────────────
 
-// TestBuildSpec_ProxyConfigured asserts that when ProxySocketHost is set,
-// BuildSpec emits NetworkMode="none", the two env vars, and a read-only socket
-// mount appended after all other mounts.
 func TestBuildSpec_ProxyConfigured(t *testing.T) {
 	o := sampleOptions()
 	o.ProxySocketHost = "/tmp/makeslop-abc123-42.sock"
@@ -537,7 +498,6 @@ func TestBuildSpec_ProxyConfigured(t *testing.T) {
 	if !reflect.DeepEqual(spec.Env, wantEnv) {
 		t.Errorf("Env = %v, want %v", spec.Env, wantEnv)
 	}
-	// Last mount must be the read-only socket bind mount.
 	lastMount := spec.Mounts[len(spec.Mounts)-1]
 	wantMount := Mount{
 		Host:      "/tmp/makeslop-abc123-42.sock",
@@ -549,8 +509,6 @@ func TestBuildSpec_ProxyConfigured(t *testing.T) {
 	}
 }
 
-// TestBuildSpec_ProxyUnconfigured asserts that absent proxy fields produce no
-// NetworkMode, no Env, and no additional mount — argv is byte-identical to today.
 func TestBuildSpec_ProxyUnconfigured(t *testing.T) {
 	spec := BuildSpec(sampleOptions())
 	if spec.NetworkMode != "" {
@@ -559,15 +517,11 @@ func TestBuildSpec_ProxyUnconfigured(t *testing.T) {
 	if len(spec.Env) != 0 {
 		t.Errorf("Env = %v, want nil/empty", spec.Env)
 	}
-	// Mount count must equal the baseline 8 agent mounts (no extra socket mount).
 	if len(spec.Mounts) != 8 {
 		t.Errorf("Mounts len = %d, want 8", len(spec.Mounts))
 	}
 }
 
-// TestSpecArgs_ProxyArgvContainsNetworkEnvAndMount asserts the full argv
-// contains --network none, both -e flags, and the read-only socket --mount
-// with ,readonly suffix.
 func TestSpecArgs_ProxyArgvContainsNetworkEnvAndMount(t *testing.T) {
 	o := sampleOptions()
 	o.ProxySocketHost = "/tmp/makeslop-abc123-42.sock"
@@ -575,7 +529,6 @@ func TestSpecArgs_ProxyArgvContainsNetworkEnvAndMount(t *testing.T) {
 	spec := BuildSpec(o)
 	args := spec.Args()
 
-	// Check --network none appears.
 	foundNetwork := false
 	for i := 0; i < len(args)-1; i++ {
 		if args[i] == "--network" && args[i+1] == "none" {
@@ -587,7 +540,6 @@ func TestSpecArgs_ProxyArgvContainsNetworkEnvAndMount(t *testing.T) {
 		t.Errorf("argv missing --network none; got: %v", args)
 	}
 
-	// Check -e HTTP_PROXY and -e HTTPS_PROXY appear.
 	wantEnvFlags := map[string]bool{
 		"HTTP_PROXY=unix:///tmp/makeslop-proxy.sock":  false,
 		"HTTPS_PROXY=unix:///tmp/makeslop-proxy.sock": false,
@@ -605,7 +557,6 @@ func TestSpecArgs_ProxyArgvContainsNetworkEnvAndMount(t *testing.T) {
 		}
 	}
 
-	// Check the last --mount has ,readonly.
 	mountArgs := collectMountArgs(args)
 	if len(mountArgs) == 0 {
 		t.Fatal("no --mount args found")
@@ -617,13 +568,10 @@ func TestSpecArgs_ProxyArgvContainsNetworkEnvAndMount(t *testing.T) {
 	}
 }
 
-// TestSpecArgs_ProxyUnconfiguredArgvIdentical asserts that when no proxy fields
-// are set, Args() produces the exact same output as before the proxy feature.
 func TestSpecArgs_ProxyUnconfiguredArgvIdentical(t *testing.T) {
 	spec := BuildSpec(sampleOptions())
 	args := spec.Args()
 
-	// Must not contain --network or -e.
 	for i, tok := range args {
 		if tok == "--network" {
 			t.Errorf("unexpected --network at index %d", i)
@@ -634,8 +582,7 @@ func TestSpecArgs_ProxyUnconfiguredArgvIdentical(t *testing.T) {
 	}
 }
 
-// TestMount_ReadOnlyFalseRendersIdentical asserts that a non-readonly bind
-// mount renders byte-identically to the pre-ReadOnly behavior.
+// ReadOnly: false must render byte-identically to pre-ReadOnly behavior.
 func TestMount_ReadOnlyFalseRendersIdentical(t *testing.T) {
 	spec := Spec{
 		Image:   "img",
@@ -654,8 +601,6 @@ func TestMount_ReadOnlyFalseRendersIdentical(t *testing.T) {
 	}
 }
 
-// TestMount_ReadOnlyTrueAddsReadonlySuffix asserts that a read-only bind mount
-// has ,readonly appended.
 func TestMount_ReadOnlyTrueAddsReadonlySuffix(t *testing.T) {
 	spec := Spec{
 		Image:   "img",
@@ -674,8 +619,6 @@ func TestMount_ReadOnlyTrueAddsReadonlySuffix(t *testing.T) {
 	}
 }
 
-// TestMount_ReadOnlyIgnoredForTmpfs asserts that ReadOnly:true on a tmpfs
-// mount has no effect (no ,readonly in output, since tmpfs ignores it).
 func TestMount_ReadOnlyIgnoredForTmpfs(t *testing.T) {
 	spec := Spec{
 		Image:   "img",
@@ -694,8 +637,6 @@ func TestMount_ReadOnlyIgnoredForTmpfs(t *testing.T) {
 	}
 }
 
-// TestShellCommand_ProxyFlagsRenderedCorrectly asserts that ShellCommand renders
-// --network, -e, and the socket mount correctly when proxy is configured.
 func TestShellCommand_ProxyFlagsRenderedCorrectly(t *testing.T) {
 	o := sampleOptions()
 	o.ProxySocketHost = "/tmp/makeslop-abc123-42.sock"
@@ -703,23 +644,19 @@ func TestShellCommand_ProxyFlagsRenderedCorrectly(t *testing.T) {
 	spec := BuildSpec(o)
 	out := spec.ShellCommand()
 
-	// Must contain --network none as a paired line.
 	if !strings.Contains(out, "--network none") {
 		t.Errorf("ShellCommand missing '--network none':\n%s", out)
 	}
-	// Must contain -e with the env var.
 	if !strings.Contains(out, "-e HTTP_PROXY=unix:///tmp/makeslop-proxy.sock") {
 		t.Errorf("ShellCommand missing HTTP_PROXY env:\n%s", out)
 	}
 	if !strings.Contains(out, "-e HTTPS_PROXY=unix:///tmp/makeslop-proxy.sock") {
 		t.Errorf("ShellCommand missing HTTPS_PROXY env:\n%s", out)
 	}
-	// Must contain the read-only mount.
 	if !strings.Contains(out, "readonly") {
 		t.Errorf("ShellCommand missing 'readonly' in mount:\n%s", out)
 	}
 
-	// Round-trip: ShellCommand must agree with Args() token-for-token.
 	var got []string
 	for _, raw := range strings.Split(out, "\n") {
 		line := strings.TrimSuffix(raw, ` \`)
@@ -733,8 +670,6 @@ func TestShellCommand_ProxyFlagsRenderedCorrectly(t *testing.T) {
 	}
 }
 
-// TestBuildSpec_ProxySocketMountPositionAfterOtherGroups asserts that the proxy
-// socket mount is appended after MaskedFiles and MaskedDirs overlays.
 func TestBuildSpec_ProxySocketMountPositionAfterOtherGroups(t *testing.T) {
 	o := sampleOptions()
 	o.MaskedFiles = []string{"/home/me/code/myproj/.env"}

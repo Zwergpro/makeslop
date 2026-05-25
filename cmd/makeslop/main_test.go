@@ -109,11 +109,8 @@ func evalSymlinks(t *testing.T, dir string) string {
 	return resolved
 }
 
-// setHomeToTestParent sets HOME to the parent directory that t.TempDir() will
-// use for subsequent calls, so that all temp dirs created by the test are
-// "inside home" for ensureWithinHome. The first TempDir() is consumed as a
-// sentinel to discover the parent; subsequent calls in the same test will be
-// siblings under that parent.
+// setHomeToTestParent sets HOME to the parent of t.TempDir(), making all
+// subsequent TempDir() calls siblings that satisfy ensureWithinHome.
 func setHomeToTestParent(t *testing.T) {
 	t.Helper()
 	sentinel := t.TempDir()
@@ -627,9 +624,7 @@ func TestInit_SymlinkInvariant(t *testing.T) {
 	}
 }
 
-// TestGo_CorruptSettings_ReportsError guards that a non-ErrNotRegistered
-// failure from Lookup is surfaced — not swallowed by cobra's SilenceErrors —
-// and that the "not registered" hint is suppressed in that case.
+// Guards that non-ErrNotRegistered errors from Lookup surface through cobra's SilenceErrors.
 func TestGo_CorruptSettings_ReportsError(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -742,21 +737,15 @@ func TestGo_NotRegistered_ReturnsErrSilent(t *testing.T) {
 	}
 }
 
-// TestGo_OutsideHome_Refuses guards that makeslop go refuses when cwd is
-// outside HOME and docker is never invoked.
+// Guards that docker is never invoked when cwd is outside HOME.
 func TestGo_OutsideHome_Refuses(t *testing.T) {
-	// Two separate temp-parent groups: one for HOME (tmpHome), one for the
-	// out-of-home baseDir and pwd that should trigger the guard.
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", evalSymlinks(t, tmpHome))
 
-	// baseDir and pwd are siblings outside tmpHome (different TempDir call,
-	// so they end up under a different test-numbered subdir on the same parent).
 	baseDir := t.TempDir()
 	outsidePwd := t.TempDir()
 	t.Chdir(outsidePwd)
 
-	// The docker shim must never be invoked — fail the test loudly if it is.
 	docker.SkipNonPOSIX(t, "docker shim requires POSIX shell; makeslop is POSIX-only")
 	shim, record := docker.WriteShim(t, t.TempDir(), 0)
 	t.Cleanup(docker.SetDockerBinaryForTest(shim))
@@ -783,9 +772,7 @@ func TestGo_OutsideHome_Refuses(t *testing.T) {
 	assertSnapshotsEqual(t, snapBefore, snapAfter)
 }
 
-// TestInit_OutsideHome_Refuses guards that init refuses and is fully
-// non-mutating when cwd is outside HOME — ensureWithinHome must run before
-// config.Bootstrap.
+// Guards that ensureWithinHome fires before config.Bootstrap (no mutation when outside HOME).
 func TestInit_OutsideHome_Refuses(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", evalSymlinks(t, tmpHome))
@@ -811,8 +798,7 @@ func TestInit_OutsideHome_Refuses(t *testing.T) {
 	assertSnapshotsEqual(t, snapBefore, snapAfter)
 }
 
-// TestInit_HomeRoot_Allowed guards the rel == "." case: cwd == HOME itself
-// must be accepted (filepath.IsLocal(".") is true).
+// Guards the rel == "." edge case: cwd == HOME is local and must be allowed.
 func TestInit_HomeRoot_Allowed(t *testing.T) {
 	tmpHome := t.TempDir()
 	resolvedHome := evalSymlinks(t, tmpHome)
@@ -827,8 +813,6 @@ func TestInit_HomeRoot_Allowed(t *testing.T) {
 	}
 }
 
-// TestOutOfHomeFlag_Bypasses guards that --out-of-home suppresses the guard
-// for both go and init.
 func TestOutOfHomeFlag_Bypasses(t *testing.T) {
 	docker.SkipNonPOSIX(t, "docker shim requires POSIX shell; makeslop is POSIX-only")
 
@@ -839,7 +823,6 @@ func TestOutOfHomeFlag_Bypasses(t *testing.T) {
 	outsidePwd := t.TempDir()
 	t.Chdir(outsidePwd)
 
-	// init --out-of-home must succeed and NOT produce the refusing-to-run message.
 	_, stderr, err := runCmd(t, baseDir, "--out-of-home", "init")
 	if err != nil {
 		t.Fatalf("init --out-of-home should succeed outside HOME, got: %v; stderr=%q", err, stderr)
@@ -848,8 +831,6 @@ func TestOutOfHomeFlag_Bypasses(t *testing.T) {
 		t.Errorf("init --out-of-home: stderr unexpectedly contains 'refusing to run': %q", stderr)
 	}
 
-	// makeslop --out-of-home go must bypass the guard; stub docker so it
-	// exits cleanly without a real daemon.
 	installFdShim(t, nil)
 	record := installDockerShim(t, 0)
 	stubTTY(t, true)
@@ -866,9 +847,8 @@ func TestOutOfHomeFlag_Bypasses(t *testing.T) {
 	}
 }
 
-// installFdShim writes a shim that emits the given paths null-separated and
-// returns its argv record path. The shim is registered as the active fd binary
-// for the duration of the test.
+// installFdShim installs a shim that emits the given paths null-separated;
+// active for the test duration via SetFdBinaryForTest.
 func installFdShim(t *testing.T, paths []string) string {
 	t.Helper()
 	docker.SkipNonPOSIX(t, "fd shim requires POSIX shell; makeslop is POSIX-only")
@@ -877,9 +857,6 @@ func installFdShim(t *testing.T, paths []string) string {
 	return record
 }
 
-// TestGo_FdMissing_RefusesAndDoesNotInvokeDocker verifies that when the fd
-// binary is not found, makeslop prints the install hint to stderr, returns
-// errSilent, and never invokes docker.
 func TestGo_FdMissing_RefusesAndDoesNotInvokeDocker(t *testing.T) {
 	docker.SkipNonPOSIX(t, "docker shim requires POSIX shell; makeslop is POSIX-only")
 	setHomeToTestParent(t)
@@ -892,7 +869,6 @@ func TestGo_FdMissing_RefusesAndDoesNotInvokeDocker(t *testing.T) {
 		t.Fatalf("init failed: %v", err)
 	}
 
-	// Point fd to a nonexistent binary so Scan returns ErrFdMissing.
 	t.Cleanup(security.SetFdBinaryForTest("/nonexistent/fd-binary-that-does-not-exist"))
 
 	record := installDockerShim(t, 0)
@@ -919,16 +895,12 @@ func TestGo_FdMissing_RefusesAndDoesNotInvokeDocker(t *testing.T) {
 	assertSnapshotsEqual(t, snapBefore, snapAfter)
 }
 
-// TestGo_MasksFoundEnvFiles_ArgvContainsDevNullMounts verifies that when the
-// fd shim returns two .env paths, the docker argv contains the expected
-// /dev/null mounts in tail position and stderr reports the count.
 func TestGo_MasksFoundEnvFiles_ArgvContainsDevNullMounts(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	// Register workspace so we get a workspaceRoot == pwd.
 	initOut, _, err := runCmd(t, baseDir, "init")
 	if err != nil {
 		t.Fatalf("init failed: %v", err)
@@ -937,7 +909,6 @@ func TestGo_MasksFoundEnvFiles_ArgvContainsDevNullMounts(t *testing.T) {
 
 	resolvedPwd := evalSymlinks(t, pwd)
 
-	// Create two .env files inside the project root so the shim paths are real files.
 	envFile1 := filepath.Join(resolvedPwd, ".env")
 	envFile2 := filepath.Join(resolvedPwd, "configs", "local.env")
 	if err := os.MkdirAll(filepath.Dir(envFile2), 0o755); err != nil {
@@ -950,7 +921,6 @@ func TestGo_MasksFoundEnvFiles_ArgvContainsDevNullMounts(t *testing.T) {
 		t.Fatalf("write local.env: %v", err)
 	}
 
-	// Shim reports both files (already in sorted order as Scan would deliver).
 	installFdShim(t, []string{envFile1, envFile2})
 
 	record := installDockerShim(t, 0)
@@ -967,7 +937,6 @@ func TestGo_MasksFoundEnvFiles_ArgvContainsDevNullMounts(t *testing.T) {
 	name := filepath.Base(workspaceDir)
 	argv := readArgv(t, record)
 
-	// The two /dev/null overlay mounts must appear at the tail of the argv.
 	wantMount1 := "type=bind,source=/dev/null,target=/workspace/" + name + "/.env"
 	wantMount2 := "type=bind,source=/dev/null,target=/workspace/" + name + "/configs/local.env"
 	var found1, found2 bool
@@ -1007,9 +976,6 @@ func TestGo_MasksFoundEnvFiles_ArgvContainsDevNullMounts(t *testing.T) {
 	}
 }
 
-// TestGo_NoEnvFiles_PrintsNothingExtraOnStderr verifies that when the fd
-// shim produces empty output (no .env files), makeslop does not print any
-// "masked" line to stderr and the argv contains no /dev/null mounts.
 func TestGo_NoEnvFiles_PrintsNothingExtraOnStderr(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -1020,7 +986,6 @@ func TestGo_NoEnvFiles_PrintsNothingExtraOnStderr(t *testing.T) {
 		t.Fatalf("init failed: %v", err)
 	}
 
-	// Shim returns no paths.
 	installFdShim(t, nil)
 
 	record := installDockerShim(t, 0)
@@ -1041,8 +1006,6 @@ func TestGo_NoEnvFiles_PrintsNothingExtraOnStderr(t *testing.T) {
 	}
 }
 
-// TestInit_DoesNotInvokeFd verifies that the init subcommand never calls
-// security.Scan — a shim that exits 1 must not cause init to fail.
 func TestInit_DoesNotInvokeFd(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -1064,9 +1027,7 @@ func TestInit_DoesNotInvokeFd(t *testing.T) {
 	}
 }
 
-// TestRoot_BareInvocation_PrintsHelp verifies that bare makeslop (no args)
-// prints cobra's help to stdout, exits 0, writes nothing to stderr, and does
-// not mutate any state. No workspace init, docker shim, or fd shim required.
+// No workspace init, docker shim, or fd shim required.
 func TestRoot_BareInvocation_PrintsHelp(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -1131,8 +1092,6 @@ func mapKeys(m map[string][]byte) []string {
 
 // ── dry-run integration tests ─────────────────────────────────────────────────
 
-// TestMergeUniqueSorted validates the mergeUniqueSorted helper: sorted union of
-// two string slices with deduplication within and across slices.
 func TestMergeUniqueSorted(t *testing.T) {
 	cases := []struct {
 		name string
@@ -1209,8 +1168,7 @@ func TestMergeUniqueSorted(t *testing.T) {
 	}
 }
 
-// TestGo_DryRun_SkipsDocker verifies the "no exec" contract: with --dry-run,
-// the docker shim is never invoked regardless of TTY state.
+// "no exec" contract: --dry-run succeeds even when TTY is false (no docker exec).
 func TestGo_DryRun_SkipsDocker(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -1237,10 +1195,8 @@ func TestGo_DryRun_SkipsDocker(t *testing.T) {
 	}
 }
 
-// TestGo_DryRun_StdoutEqualsBuildSpecShellCommand asserts exact equality
-// between runCmd stdout (after trimming the trailing newline added by
-// fmt.Fprintln) and docker.BuildSpec(opts).ShellCommand(). This is the single
-// source of truth for the format.
+// Single source of truth: --dry-run stdout must equal BuildSpec(opts).ShellCommand()
+// (after stripping the trailing newline from fmt.Fprintln).
 func TestGo_DryRun_StdoutEqualsBuildSpecShellCommand(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -1280,8 +1236,6 @@ func TestGo_DryRun_StdoutEqualsBuildSpecShellCommand(t *testing.T) {
 	}
 }
 
-// TestGo_DryRun_ShortFlag asserts that -n is a synonym for --dry-run and
-// produces identical stdout.
 func TestGo_DryRun_ShortFlag(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -1310,10 +1264,8 @@ func TestGo_DryRun_ShortFlag(t *testing.T) {
 	}
 }
 
-// TestGo_DryRun_NoTTY_Succeeds is the TTY-bypass regression guard. The real
-// ttyCheck returns false under go test (stdin/stdout are pipes). --dry-run must
-// succeed because docker.Run — which is the only caller of ttyCheck — is never
-// invoked.
+// TTY-bypass guard: --dry-run succeeds even when real ttyCheck returns false
+// because docker.Run (the only ttyCheck caller) is never invoked.
 func TestGo_DryRun_NoTTY_Succeeds(t *testing.T) {
 	docker.SkipNonPOSIX(t, "fd shim requires POSIX shell; makeslop is POSIX-only")
 	setHomeToTestParent(t)
@@ -1339,8 +1291,6 @@ func TestGo_DryRun_NoTTY_Succeeds(t *testing.T) {
 	}
 }
 
-// TestGo_DryRun_Unregistered_StillRefuses verifies that the workspace-lookup
-// precondition fires even with --dry-run.
 func TestGo_DryRun_Unregistered_StillRefuses(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -1363,8 +1313,6 @@ func TestGo_DryRun_Unregistered_StillRefuses(t *testing.T) {
 	}
 }
 
-// TestGo_DryRun_OutsideHome_StillRefuses verifies that the home-dir guard
-// fires even with --dry-run.
 func TestGo_DryRun_OutsideHome_StillRefuses(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", evalSymlinks(t, tmpHome))
@@ -1388,27 +1336,21 @@ func TestGo_DryRun_OutsideHome_StillRefuses(t *testing.T) {
 	}
 }
 
-// TestGo_DryRun_OutOfHomeBypasses verifies that --out-of-home combined with
-// --dry-run prints the command even when cwd is outside HOME.
 func TestGo_DryRun_OutOfHomeBypasses(t *testing.T) {
 	docker.SkipNonPOSIX(t, "fd shim requires POSIX shell; makeslop is POSIX-only")
 
-	// Use setHomeToTestParent so that the init directory is inside home.
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 
-	// Create the workspace inside home (where init is allowed).
 	insidePwd := t.TempDir()
 	t.Chdir(insidePwd)
 	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
 		t.Fatalf("init inside home failed: %v", err)
 	}
 
-	// Now set HOME to a new temp dir that does not contain insidePwd.
 	newHome := t.TempDir()
 	t.Setenv("HOME", evalSymlinks(t, newHome))
 
-	// insidePwd is now "outside" the new HOME. Use it as cwd for the dry-run.
 	t.Chdir(insidePwd)
 
 	installFdShim(t, nil)
@@ -1427,8 +1369,6 @@ func TestGo_DryRun_OutOfHomeBypasses(t *testing.T) {
 	}
 }
 
-// TestGo_DryRun_FdMissing_StillRefuses verifies that the Scan precondition
-// fires even with --dry-run.
 func TestGo_DryRun_FdMissing_StillRefuses(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -1439,7 +1379,6 @@ func TestGo_DryRun_FdMissing_StillRefuses(t *testing.T) {
 		t.Fatalf("init failed: %v", err)
 	}
 
-	// Point fd to a nonexistent binary so Scan returns ErrFdMissing.
 	t.Cleanup(security.SetFdBinaryForTest("/nonexistent/fd-binary-that-does-not-exist"))
 
 	stdout, stderr, err := runCmd(t, baseDir, "go", "--dry-run")
@@ -1457,11 +1396,7 @@ func TestGo_DryRun_FdMissing_StillRefuses(t *testing.T) {
 	}
 }
 
-// TestGo_DryRun_CorruptSettings verifies that --dry-run propagates a wrapped
-// error when settings.json is corrupt. Specifically: corrupt settings.json
-// causes ws.Lookup to fail (Lookup calls config.Load internally), which
-// precedes the dry-run branch — errors from preconditions propagate under
-// --dry-run.
+// Guards that precondition errors (ws.Lookup → config.Load) propagate under --dry-run.
 func TestGo_DryRun_CorruptSettings(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -1492,9 +1427,6 @@ func TestGo_DryRun_CorruptSettings(t *testing.T) {
 	}
 }
 
-// TestGo_DryRun_MasksEnvFiles_StdoutContainsDevNullMounts verifies that when
-// the fd shim returns two .env paths, the dry-run stdout contains both
-// /dev/null mount lines and stderr reports the masked count.
 func TestGo_DryRun_MasksEnvFiles_StdoutContainsDevNullMounts(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -1509,7 +1441,6 @@ func TestGo_DryRun_MasksEnvFiles_StdoutContainsDevNullMounts(t *testing.T) {
 
 	resolvedPwd := evalSymlinks(t, pwd)
 
-	// Create two .env files so the shim paths are real files.
 	envFile1 := filepath.Join(resolvedPwd, ".env")
 	envFile2 := filepath.Join(resolvedPwd, "configs", "local.env")
 	if err := os.MkdirAll(filepath.Dir(envFile2), 0o755); err != nil {
@@ -1560,8 +1491,6 @@ func TestGo_DryRun_MasksEnvFiles_StdoutContainsDevNullMounts(t *testing.T) {
 	}
 }
 
-// TestGo_DryRun_FromSubdir_MountsAncestor verifies that invoking --dry-run
-// from a subdirectory mounts the registered ancestor root, not pwd.
 func TestGo_DryRun_FromSubdir_MountsAncestor(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -1595,8 +1524,6 @@ func TestGo_DryRun_FromSubdir_MountsAncestor(t *testing.T) {
 	}
 }
 
-// TestInit_DryRunFlagRejected guards that --dry-run is scoped to goCmd and not
-// a persistent flag that leaks into init.
 func TestInit_DryRunFlagRejected(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -1614,8 +1541,6 @@ func TestInit_DryRunFlagRejected(t *testing.T) {
 	}
 }
 
-// TestInit_ScaffoldsProjectConfig verifies that running init creates a
-// .makeslop.yaml file with the exact stub content in the project directory.
 func TestInit_ScaffoldsProjectConfig(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -1638,9 +1563,6 @@ func TestInit_ScaffoldsProjectConfig(t *testing.T) {
 	}
 }
 
-// TestInit_PreservesExistingProjectConfig verifies that running init on a
-// directory that already has a .makeslop.yaml with user content leaves the
-// file byte-for-byte unchanged.
 func TestInit_PreservesExistingProjectConfig(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -1668,18 +1590,14 @@ func TestInit_PreservesExistingProjectConfig(t *testing.T) {
 	}
 }
 
-// TestInit_DoesNotInvokeScan_StillHolds re-verifies the existing invariant
-// that the init subcommand never calls security.Scan. The fd shim here exits
-// non-zero; if init were to invoke it, init would fail. This test exists to
-// confirm that wiring projectconfig.Scaffold did not accidentally introduce a
-// Scan call.
+// Re-verifies the init-does-not-invoke-Scan invariant after Scaffold wiring.
+// If init calls the shim (which exits 1), init will fail.
 func TestInit_DoesNotInvokeScan_StillHolds(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	// Install an fd shim that exits 1; if init invokes it, init will fail.
 	docker.SkipNonPOSIX(t, "fd shim requires POSIX shell; makeslop is POSIX-only")
 	shimDir := t.TempDir()
 	shimPath := filepath.Join(shimDir, "fd-shim")
@@ -1693,7 +1611,6 @@ func TestInit_DoesNotInvokeScan_StillHolds(t *testing.T) {
 		t.Fatalf("init must succeed regardless of fd shim; got: %v; stderr=%q", err, stderr)
 	}
 
-	// Also verify the config was scaffolded successfully.
 	resolvedPwd := evalSymlinks(t, pwd)
 	if _, err := os.Stat(filepath.Join(resolvedPwd, projectconfig.Filename)); err != nil {
 		t.Errorf("%s not created by init: %v", projectconfig.Filename, err)
@@ -1702,9 +1619,6 @@ func TestInit_DoesNotInvokeScan_StillHolds(t *testing.T) {
 
 // ── projectconfig.Load wiring tests ───────────────────────────────────────────
 
-// TestGo_LoadsYamlAndMergesMaskedFiles verifies that when fdfind returns one
-// .env path and .makeslop.yaml lists an additional file under exclude.files,
-// both appear as /dev/null overlay mounts in the docker argv in lex-sorted order.
 func TestGo_LoadsYamlAndMergesMaskedFiles(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -1718,7 +1632,6 @@ func TestGo_LoadsYamlAndMergesMaskedFiles(t *testing.T) {
 	workspaceDir := strings.TrimSpace(initOut)
 	resolvedPwd := evalSymlinks(t, pwd)
 
-	// Create both files on disk so security.Scan and projectconfig.Load stat-keep them.
 	envFile := filepath.Join(resolvedPwd, ".env")
 	secretFile := filepath.Join(resolvedPwd, "private", "token.txt")
 	if err := os.MkdirAll(filepath.Dir(secretFile), 0o755); err != nil {
@@ -1731,7 +1644,6 @@ func TestGo_LoadsYamlAndMergesMaskedFiles(t *testing.T) {
 		t.Fatalf("write token.txt: %v", err)
 	}
 
-	// fd shim returns only .env; the yaml file adds private/token.txt.
 	installFdShim(t, []string{envFile})
 	yamlContent := "exclude:\n  dirs: []\n  files: [private/token.txt]\n"
 	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(yamlContent), 0o644); err != nil {
@@ -1781,9 +1693,6 @@ func TestGo_LoadsYamlAndMergesMaskedFiles(t *testing.T) {
 	}
 }
 
-// TestGo_LoadsYamlMaskedDirs_TmpfsMountInArgv verifies that a directory listed
-// under exclude.dirs in .makeslop.yaml results in a --mount type=tmpfs entry in
-// the docker argv in tail position (after project bind mount).
 func TestGo_LoadsYamlMaskedDirs_TmpfsMountInArgv(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -1803,7 +1712,6 @@ func TestGo_LoadsYamlMaskedDirs_TmpfsMountInArgv(t *testing.T) {
 		t.Fatalf("mkdir node_modules: %v", err)
 	}
 
-	// fd shim returns nothing; yaml masks node_modules as a dir.
 	installFdShim(t, nil)
 	yamlContent := "exclude:\n  dirs: [node_modules]\n  files: []\n"
 	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(yamlContent), 0o644); err != nil {
@@ -1840,7 +1748,6 @@ func TestGo_LoadsYamlMaskedDirs_TmpfsMountInArgv(t *testing.T) {
 	if tmpfsIdx <= projectIdx {
 		t.Errorf("tmpfs mount (idx %d) must come after project bind mount (idx %d)", tmpfsIdx, projectIdx)
 	}
-	// Also assert no source= segment in the tmpfs mount value.
 	for _, a := range argv {
 		if a == wantTmpfs && strings.Contains(a, "source=") {
 			t.Errorf("tmpfs mount must not contain source=: %q", a)
@@ -1848,9 +1755,6 @@ func TestGo_LoadsYamlMaskedDirs_TmpfsMountInArgv(t *testing.T) {
 	}
 }
 
-// TestGo_YamlAbsentIsBitIdenticalArgv verifies that when no .makeslop.yaml
-// exists and fdfind returns nothing, the argv is identical to the pre-YAML
-// baseline (no extra mounts).
 func TestGo_YamlAbsentIsBitIdenticalArgv(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -1864,7 +1768,6 @@ func TestGo_YamlAbsentIsBitIdenticalArgv(t *testing.T) {
 	workspaceDir := strings.TrimSpace(initOut)
 	resolvedPwd := evalSymlinks(t, pwd)
 
-	// Remove the scaffolded .makeslop.yaml so Load returns a zero Excludes.
 	if err := os.Remove(filepath.Join(resolvedPwd, projectconfig.Filename)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("remove yaml: %v", err)
 	}
@@ -1901,9 +1804,6 @@ func TestGo_YamlAbsentIsBitIdenticalArgv(t *testing.T) {
 	}
 }
 
-// TestGo_YamlDedupsAgainstScan verifies that when security.Scan and
-// .makeslop.yaml both report the same file, only one /dev/null overlay appears
-// in the docker argv.
 func TestGo_YamlDedupsAgainstScan(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -1917,13 +1817,11 @@ func TestGo_YamlDedupsAgainstScan(t *testing.T) {
 	workspaceDir := strings.TrimSpace(initOut)
 	resolvedPwd := evalSymlinks(t, pwd)
 
-	// Create .env on disk.
 	envFile := filepath.Join(resolvedPwd, ".env")
 	if err := os.WriteFile(envFile, []byte("S=1"), 0o644); err != nil {
 		t.Fatalf("write .env: %v", err)
 	}
 
-	// fd shim returns .env; yaml also lists .env in exclude.files.
 	installFdShim(t, []string{envFile})
 	yamlContent := "exclude:\n  dirs: []\n  files: [.env]\n"
 	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(yamlContent), 0o644); err != nil {
@@ -1954,13 +1852,8 @@ func TestGo_YamlDedupsAgainstScan(t *testing.T) {
 
 // ── YAML error propagation tests ──────────────────────────────────────────────
 
-// TestGo_YamlMalformedAbortsBeforeDocker verifies that a malformed .makeslop.yaml
-// causes makeslop go to exit non-zero with "makeslop: " on stderr and that docker
-// is never invoked (preserving the secret-masking invariant: no container starts
-// means no .env leak is possible).
-//
-// Uses runWithExitCode (not runCmd) so that non-errSilent errors are formatted
-// with the "makeslop: " prefix on stderr, matching the production code path.
+// Guards the secret-masking invariant: docker must never start when yaml parse fails.
+// Uses runWithExitCode (not runCmd) so non-errSilent errors appear on stderr.
 func TestGo_YamlMalformedAbortsBeforeDocker(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -1972,7 +1865,6 @@ func TestGo_YamlMalformedAbortsBeforeDocker(t *testing.T) {
 	}
 	resolvedPwd := evalSymlinks(t, pwd)
 
-	// Write invalid YAML.
 	badYAML := []byte("exclude:\n  dirs: [unclosed\n")
 	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), badYAML, 0o644); err != nil {
 		t.Fatalf("write bad yaml: %v", err)
@@ -1995,11 +1887,7 @@ func TestGo_YamlMalformedAbortsBeforeDocker(t *testing.T) {
 	}
 }
 
-// TestGo_YamlReservedPathAbortsBeforeDocker verifies that listing a reserved
-// agent path (.claude) in exclude.dirs causes makeslop go to abort before docker
-// is invoked, with an error mentioning "reserved agent path".
-//
-// Uses runWithExitCode so that the error message appears on stderr.
+// Uses runWithExitCode (not runCmd) so the error appears on stderr.
 func TestGo_YamlReservedPathAbortsBeforeDocker(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -2011,7 +1899,6 @@ func TestGo_YamlReservedPathAbortsBeforeDocker(t *testing.T) {
 	}
 	resolvedPwd := evalSymlinks(t, pwd)
 
-	// List a reserved agent path in exclude.dirs.
 	yamlContent := "exclude:\n  dirs: [.claude]\n  files: []\n"
 	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(yamlContent), 0o644); err != nil {
 		t.Fatalf("write yaml: %v", err)
@@ -2034,11 +1921,7 @@ func TestGo_YamlReservedPathAbortsBeforeDocker(t *testing.T) {
 	}
 }
 
-// TestGo_YamlDirAndFileDupAborts verifies that listing the same relative path in
-// both exclude.dirs and exclude.files causes makeslop go to abort before docker
-// is invoked, with an error mentioning "listed in both".
-//
-// Uses runWithExitCode so that the error message appears on stderr.
+// Uses runWithExitCode (not runCmd) so the error appears on stderr.
 func TestGo_YamlDirAndFileDupAborts(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -2050,7 +1933,6 @@ func TestGo_YamlDirAndFileDupAborts(t *testing.T) {
 	}
 	resolvedPwd := evalSymlinks(t, pwd)
 
-	// Same path in both dirs and files — cross-list duplicate.
 	yamlContent := "exclude:\n  dirs: [data]\n  files: [data]\n"
 	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(yamlContent), 0o644); err != nil {
 		t.Fatalf("write yaml: %v", err)
@@ -2073,10 +1955,6 @@ func TestGo_YamlDirAndFileDupAborts(t *testing.T) {
 	}
 }
 
-// TestGo_YamlMissingPathSkippedSilently verifies that when .makeslop.yaml lists
-// a file that does not exist on disk, makeslop go exits 0, produces no error
-// output mentioning the missing path, and the docker argv contains no /dev/null
-// overlay for that path (the silent-skip flows through to the cobra layer).
 func TestGo_YamlMissingPathSkippedSilently(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -2088,7 +1966,6 @@ func TestGo_YamlMissingPathSkippedSilently(t *testing.T) {
 	}
 	resolvedPwd := evalSymlinks(t, pwd)
 
-	// List a path that does NOT exist on disk.
 	yamlContent := "exclude:\n  dirs: []\n  files: [secrets/api.key]\n"
 	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(yamlContent), 0o644); err != nil {
 		t.Fatalf("write yaml: %v", err)
@@ -2108,7 +1985,6 @@ func TestGo_YamlMissingPathSkippedSilently(t *testing.T) {
 		t.Errorf("stderr must not mention missing path 'api.key': %q", stderr)
 	}
 
-	// The docker argv must not contain any /dev/null overlay for secrets/api.key.
 	argv := readArgv(t, record)
 	for _, a := range argv {
 		if strings.Contains(a, "api.key") {
@@ -2117,13 +1993,10 @@ func TestGo_YamlMissingPathSkippedSilently(t *testing.T) {
 	}
 }
 
-// ── proxy lifecycle wiring tests (Task 4) ─────────────────────────────────────
+// ── proxy lifecycle wiring tests ──────────────────────────────────────────────
 
-// TestGo_DryRun_WithProxy_PrintsProxyArgvNoSocket verifies that with a
-// configured network.proxy.address, --dry-run:
-//  1. Prints argv containing --network none, HTTP_PROXY/HTTPS_PROXY env vars,
-//     and a read-only socket mount with the expected path.
-//  2. Does NOT create a socket file on disk.
+// Guards the dry-run contract: no socket is created on disk even though
+// the argv includes proxy plumbing (--network none, env vars, socket mount).
 func TestGo_DryRun_WithProxy_PrintsProxyArgvNoSocket(t *testing.T) {
 	docker.SkipNonPOSIX(t, "proxy socket tests are POSIX-only; makeslop is POSIX-only")
 	setHomeToTestParent(t)
@@ -2138,7 +2011,6 @@ func TestGo_DryRun_WithProxy_PrintsProxyArgvNoSocket(t *testing.T) {
 	workspaceDir := strings.TrimSpace(initOut)
 	resolvedPwd := evalSymlinks(t, pwd)
 
-	// Write .makeslop.yaml with a proxy address.
 	yamlContent := "exclude:\n  dirs: []\n  files: []\nnetwork:\n  proxy:\n    address: 10.0.0.5:8888\n"
 	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(yamlContent), 0o644); err != nil {
 		t.Fatalf("write yaml: %v", err)
@@ -2152,42 +2024,31 @@ func TestGo_DryRun_WithProxy_PrintsProxyArgvNoSocket(t *testing.T) {
 		t.Fatalf("--dry-run with proxy failed: %v; stderr=%q", err, stderr)
 	}
 
-	// Must contain --network none.
 	if !strings.Contains(stdout, "--network none") {
 		t.Errorf("stdout missing '--network none'\nstdout:\n%s", stdout)
 	}
-
-	// Must contain HTTP_PROXY and HTTPS_PROXY pointing to the container socket.
 	if !strings.Contains(stdout, "HTTP_PROXY=unix:///tmp/makeslop-proxy.sock") {
 		t.Errorf("stdout missing HTTP_PROXY env var\nstdout:\n%s", stdout)
 	}
 	if !strings.Contains(stdout, "HTTPS_PROXY=unix:///tmp/makeslop-proxy.sock") {
 		t.Errorf("stdout missing HTTPS_PROXY env var\nstdout:\n%s", stdout)
 	}
-
-	// Must contain a read-only socket mount targeting the container path.
 	if !strings.Contains(stdout, "target=/tmp/makeslop-proxy.sock") {
 		t.Errorf("stdout missing proxy socket container target\nstdout:\n%s", stdout)
 	}
 	if !strings.Contains(stdout, "readonly") {
 		t.Errorf("stdout missing 'readonly' in proxy socket mount\nstdout:\n%s", stdout)
 	}
-
-	// Verify the host socket source path has the expected structure: /tmp/makeslop-<12hex>-<pid>.sock
-	// We check the path contains "makeslop-" and ".sock" as a proxy-path marker.
 	if !strings.Contains(stdout, "source=/tmp/makeslop-") {
 		t.Errorf("stdout missing expected socket host path 'source=/tmp/makeslop-'\nstdout:\n%s", stdout)
 	}
 
 	// CRITICAL: no socket file must have been created on disk.
-	// Collect all /tmp/makeslop-*.sock paths referenced in stdout.
 	name := filepath.Base(workspaceDir)
-	// The project bind mount confirms the workspace name is correct.
 	if !strings.Contains(stdout, name) {
 		t.Errorf("stdout missing workspace name %q\nstdout:\n%s", name, stdout)
 	}
 
-	// Extract the host socket path from the argv output.
 	// The format is: source=/tmp/makeslop-<hash>-<pid>.sock
 	const prefix = "source=/tmp/makeslop-"
 	pidx := strings.Index(stdout, prefix)
@@ -2209,9 +2070,6 @@ func TestGo_DryRun_WithProxy_PrintsProxyArgvNoSocket(t *testing.T) {
 	}
 }
 
-// TestGo_DryRun_WithoutProxy_UnchangedArgv verifies that when no network:
-// section is configured, --dry-run stdout is identical to the baseline argv
-// without proxy fields (no --network, no -e, no proxy socket mount).
 func TestGo_DryRun_WithoutProxy_UnchangedArgv(t *testing.T) {
 	docker.SkipNonPOSIX(t, "fd shim requires POSIX shell; makeslop is POSIX-only")
 	setHomeToTestParent(t)
@@ -2226,7 +2084,6 @@ func TestGo_DryRun_WithoutProxy_UnchangedArgv(t *testing.T) {
 	workspaceDir := strings.TrimSpace(initOut)
 	resolvedPwd := evalSymlinks(t, pwd)
 
-	// Remove any scaffolded yaml; absent section must yield unchanged argv.
 	_ = os.Remove(filepath.Join(resolvedPwd, projectconfig.Filename))
 
 	installFdShim(t, nil)
@@ -2237,7 +2094,6 @@ func TestGo_DryRun_WithoutProxy_UnchangedArgv(t *testing.T) {
 		t.Fatalf("--dry-run without proxy failed: %v; stderr=%q", err, stderr)
 	}
 
-	// Must NOT contain any proxy-related tokens.
 	if strings.Contains(stdout, "--network") {
 		t.Errorf("stdout must not contain --network when no proxy configured\nstdout:\n%s", stdout)
 	}
@@ -2251,7 +2107,6 @@ func TestGo_DryRun_WithoutProxy_UnchangedArgv(t *testing.T) {
 		t.Errorf("stdout must not contain proxy socket when no proxy configured\nstdout:\n%s", stdout)
 	}
 
-	// Verify the output equals exactly what BuildSpec would produce without proxy fields.
 	s, loadErr := config.Load(baseDir)
 	if loadErr != nil {
 		t.Fatalf("load settings: %v", loadErr)
@@ -2269,13 +2124,9 @@ func TestGo_DryRun_WithoutProxy_UnchangedArgv(t *testing.T) {
 	}
 }
 
-// TestGo_SocketPathLength_AtMost108Bytes verifies that the computed socket
-// path is at most 108 bytes even when the workspace dir name is very long,
-// which guards the sockaddr_un limit on Linux and macOS.
 func TestGo_SocketPathLength_AtMost108Bytes(t *testing.T) {
-	// Simulate computeSocketPath logic from runGo using a very long workspace dir.
-	// The real workspaceDir is the cache dir path like ~/.makeslop/workspaces/<name>,
-	// where <name> = <basename>-<6hex>. Use a contrived extreme case.
+	// Simulates computeSocketPath with an extreme workspace dir name to verify
+	// the path stays within the 108-byte sockaddr_un limit.
 	const sockaddrUnLimit = 108
 
 	longBasename := strings.Repeat("a", 200)
@@ -2290,8 +2141,6 @@ func TestGo_SocketPathLength_AtMost108Bytes(t *testing.T) {
 	t.Logf("socket path (%d bytes): %q", len(sockPath), sockPath)
 }
 
-// TestGo_DryRunIncludesMaskedDirs verifies that --dry-run stdout includes the
-// tmpfs mount for a directory listed in .makeslop.yaml exclude.dirs.
 func TestGo_DryRunIncludesMaskedDirs(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -2305,13 +2154,11 @@ func TestGo_DryRunIncludesMaskedDirs(t *testing.T) {
 	workspaceDir := strings.TrimSpace(initOut)
 	resolvedPwd := evalSymlinks(t, pwd)
 
-	// Create the directory on disk.
 	secretsDir := filepath.Join(resolvedPwd, "secrets")
 	if err := os.MkdirAll(secretsDir, 0o755); err != nil {
 		t.Fatalf("mkdir secrets: %v", err)
 	}
 
-	// fd shim returns nothing; yaml masks secrets/ as a dir.
 	installFdShim(t, nil)
 	yamlContent := "exclude:\n  dirs: [secrets]\n  files: []\n"
 	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(yamlContent), 0o644); err != nil {
@@ -2330,7 +2177,6 @@ func TestGo_DryRunIncludesMaskedDirs(t *testing.T) {
 	if !strings.Contains(stdout, wantFragment) {
 		t.Errorf("--dry-run stdout missing tmpfs mount: want substring %q\nstdout:\n%s", wantFragment, stdout)
 	}
-	// Verify no source= in the tmpfs mount line.
 	for _, line := range strings.Split(stdout, "\n") {
 		if strings.Contains(line, "tmpfs") && strings.Contains(line, "source=") {
 			t.Errorf("tmpfs mount line must not contain source=: %q", line)

@@ -1,14 +1,8 @@
 package docker
 
-// Test-only helpers for the docker package.
-//
-// These functions are intentionally compiled into the production binary.
-// The idiomatic Go approach (export_test.go) cannot be used here because
-// cmd/makeslop/main_test.go is in package main (not package docker_test), so
-// it can only access exported symbols from the docker package — not
-// _test.go-only exports. This is a known, deliberate trade-off: the test
-// surface (SetDockerBinaryForTest, SetTTYCheckForTest, WriteShim, SkipNonPOSIX)
-// is small, pure-Go, and carries no runtime cost when unused.
+// Test-only helpers, compiled into the production binary so package-main tests
+// can access them as exported symbols (export_test.go cannot satisfy this because
+// main_test.go is in package main, not package docker_test).
 
 import (
 	"os"
@@ -36,8 +30,7 @@ func SetTTYCheckForTest(fn func() bool) (restore func()) {
 	return func() { ttyCheck = prev }
 }
 
-// SkipNonPOSIX skips the calling test on non-POSIX hosts per the CLAUDE.md
-// invariant. why becomes the skip reason so failure logs explain the gate.
+// SkipNonPOSIX skips on non-POSIX hosts per the CLAUDE.md invariant.
 func SkipNonPOSIX(t *testing.T, why string) {
 	t.Helper()
 	if runtime.GOOS == "windows" {

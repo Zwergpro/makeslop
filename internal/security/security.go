@@ -1,7 +1,5 @@
-// Package security provides secret-file scanning for the makeslop container
-// launcher. It locates .env files under a project root so the docker layer can
-// overlay them with /dev/null mounts, preventing the container from reading
-// host secrets.
+// Package security scans for .env files under a project root so they can be
+// overlaid with /dev/null mounts, preventing container access to host secrets.
 package security
 
 import (
@@ -14,37 +12,20 @@ import (
 	"strings"
 )
 
-// fdBinary is the package-level swap point for tests (see testing.go). It is
-// resolved via exec.LookPath at call time, so tests may point it at a shim
-// shell script or a nonexistent path to exercise error paths.
-//
-// When empty (the default), Scan discovers "fd" or "fdfind" from PATH.
-// When set by a test shim, Scan uses this path directly.
+// fdBinary is a test-only swap point for the fd binary; empty means discover from PATH.
 var fdBinary = ""
 
-// ErrFdMissing is returned when neither "fd" nor "fdfind" is on PATH. The
-// cobra layer translates this sentinel into a user-facing install hint and
-// returns errSilent so main() skips the reprint.
+// ErrFdMissing is returned when neither fd nor fdfind is on PATH.
 var ErrFdMissing = errors.New("security: fd CLI not found on PATH")
 
-// Scan returns the absolute, lexicographically sorted paths of every regular
-// file whose basename ends in ".env" found under root.
-//
-// Precondition: root must be an absolute path that has been resolved through
-// filepath.EvalSymlinks (the same precondition as workspace.Workspaces.Lookup
-// and docker.BuildSpec). The cobra layer enforces this via resolvePwd; any
-// direct caller must do the same.
-//
-// The returned paths are guaranteed to be under root (Scan is the trust
-// boundary for the external process; any path outside root is silently
-// dropped). Consumers (e.g. docker.BuildSpec) may rely on this guarantee and
-// do not need to re-validate.
-//
-// If neither "fd" nor "fdfind" is on PATH, Scan returns ErrFdMissing.
-// Other exec errors are wrapped with a "security: run fd: " prefix.
+// Scan returns the absolute, sorted paths of every .env file under root.
+// Precondition: root must be absolute and EvalSymlinks-evaluated; any direct
+// caller must enforce this.
+// Returned paths are guaranteed to be under root (trust boundary for the fd
+// process; paths outside root are silently dropped).
+// Returns ErrFdMissing when fd/fdfind is not on PATH; other exec errors are
+// wrapped with "security: run fd: ".
 func Scan(ctx context.Context, root string) ([]string, error) {
-	// Resolve the binary to use. When fdBinary is set (e.g. by a test shim),
-	// use it directly. Otherwise try "fd" then "fdfind".
 	var bin string
 	if fdBinary != "" {
 		resolved, err := exec.LookPath(fdBinary)
@@ -88,7 +69,7 @@ func Scan(ctx context.Context, root string) ([]string, error) {
 		return nil, nil
 	}
 
-	// Split on NUL, drop the trailing empty token that follows the last NUL.
+	// fd's NUL-separated output ends with a trailing NUL; drop the empty token it produces.
 	raw := strings.Split(string(out), "\x00")
 	if len(raw) > 0 && raw[len(raw)-1] == "" {
 		raw = raw[:len(raw)-1]
@@ -99,10 +80,8 @@ func Scan(ctx context.Context, root string) ([]string, error) {
 		if p == "" {
 			continue
 		}
-		// Trust boundary: verify every path returned by the external process is
-		// under root. filepath.Rel returns an error only when the two paths are
-		// on different Windows volumes; on POSIX (this project's only target)
-		// the call always succeeds. Use filepath.IsLocal to detect ".."-escapes.
+		// Trust boundary: drop paths outside root. filepath.Rel never errors on
+		// POSIX; IsLocal catches ..-escapes.
 		rel, err := filepath.Rel(root, p)
 		if err != nil || !filepath.IsLocal(rel) {
 			continue

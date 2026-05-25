@@ -1,8 +1,5 @@
-// Package workspace manages the on-disk makeslop workspace registry stored
-// under ~/.makeslop. It exposes lookup and registration operations keyed by
-// the absolute, symlink-evaluated path of a workspace root. The settings file
-// itself is owned by internal/config; this package only operates on the
-// Workspaces map inside it.
+// Package workspace manages the workspace registry under ~/.makeslop,
+// keyed by absolute EvalSymlinks-evaluated paths.
 package workspace
 
 import (
@@ -27,7 +24,6 @@ func New(baseDir string) *Workspaces {
 	return &Workspaces{baseDir: baseDir}
 }
 
-// pwd MUST be an absolute, EvalSymlinks-evaluated path.
 func (w *Workspaces) findAncestor(s *config.Settings, pwd string) (matchedPath string, ws config.Workspace, ok bool) {
 	for p := pwd; ; {
 		if entry, found := s.Workspaces[p]; found {
@@ -41,9 +37,8 @@ func (w *Workspaces) findAncestor(s *config.Settings, pwd string) (matchedPath s
 	}
 }
 
-// Lookup returns the registered ancestor root (callers must mount this, not
-// pwd) and its cache directory. Never mutates state on disk.
-// pwd MUST be an absolute, EvalSymlinks-evaluated path.
+// Lookup returns the registered ancestor root (mount this, not pwd) and its
+// cache directory. pwd must be absolute and EvalSymlinks-evaluated.
 func (w *Workspaces) Lookup(pwd string) (matchedRoot, cacheDir string, err error) {
 	s, err := config.Load(w.baseDir)
 	if err != nil {
@@ -56,9 +51,8 @@ func (w *Workspaces) Lookup(pwd string) (matchedRoot, cacheDir string, err error
 	return matched, filepath.Join(w.baseDir, config.WorkspacesDir, ws.Name), nil
 }
 
-// Init is idempotent: an already-registered pwd (or ancestor) is a no-op that
-// does not touch settings or the scaffolded template.
-// pwd MUST be an absolute, EvalSymlinks-evaluated path.
+// Init is idempotent: registering an already-known pwd (or ancestor) is a no-op.
+// pwd must be absolute and EvalSymlinks-evaluated.
 func (w *Workspaces) Init(pwd string) (string, error) {
 	s, err := config.Load(w.baseDir)
 	if err != nil {
@@ -77,8 +71,7 @@ func (w *Workspaces) Init(pwd string) (string, error) {
 	if err := scaffoldTemplate(workspaceDir); err != nil {
 		return "", err
 	}
-	// If Save fails after MkdirAll, the cache dir is left orphaned.
-	// The next successful Init for the same pwd reclaims it (MkdirAll no-op).
+	// Save failure leaves the cache dir orphaned; the next Init for this pwd reclaims it.
 	if err := config.Save(w.baseDir, s); err != nil {
 		return "", err
 	}
