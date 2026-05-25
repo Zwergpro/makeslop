@@ -516,6 +516,248 @@ func collectMountArgs(argv []string) []string {
 	return out
 }
 
+// ── Proxy / ReadOnly / NetworkMode / Env tests ────────────────────────────────
+
+// TestBuildSpec_ProxyConfigured asserts that when ProxySocketHost is set,
+// BuildSpec emits NetworkMode="none", the two env vars, and a read-only socket
+// mount appended after all other mounts.
+func TestBuildSpec_ProxyConfigured(t *testing.T) {
+	o := sampleOptions()
+	o.ProxySocketHost = "/tmp/makeslop-abc123-42.sock"
+	o.ProxySocketContainer = "/tmp/makeslop-proxy.sock"
+	spec := BuildSpec(o)
+
+	if spec.NetworkMode != "none" {
+		t.Errorf("NetworkMode = %q, want %q", spec.NetworkMode, "none")
+	}
+	wantEnv := []string{
+		"HTTP_PROXY=unix:///tmp/makeslop-proxy.sock",
+		"HTTPS_PROXY=unix:///tmp/makeslop-proxy.sock",
+	}
+	if !reflect.DeepEqual(spec.Env, wantEnv) {
+		t.Errorf("Env = %v, want %v", spec.Env, wantEnv)
+	}
+	// Last mount must be the read-only socket bind mount.
+	lastMount := spec.Mounts[len(spec.Mounts)-1]
+	wantMount := Mount{
+		Host:      "/tmp/makeslop-abc123-42.sock",
+		Container: "/tmp/makeslop-proxy.sock",
+		ReadOnly:  true,
+	}
+	if lastMount != wantMount {
+		t.Errorf("last mount = %+v, want %+v", lastMount, wantMount)
+	}
+}
+
+// TestBuildSpec_ProxyUnconfigured asserts that absent proxy fields produce no
+// NetworkMode, no Env, and no additional mount — argv is byte-identical to today.
+func TestBuildSpec_ProxyUnconfigured(t *testing.T) {
+	spec := BuildSpec(sampleOptions())
+	if spec.NetworkMode != "" {
+		t.Errorf("NetworkMode = %q, want empty", spec.NetworkMode)
+	}
+	if len(spec.Env) != 0 {
+		t.Errorf("Env = %v, want nil/empty", spec.Env)
+	}
+	// Mount count must equal the baseline 8 agent mounts (no extra socket mount).
+	if len(spec.Mounts) != 8 {
+		t.Errorf("Mounts len = %d, want 8", len(spec.Mounts))
+	}
+}
+
+// TestSpecArgs_ProxyArgvContainsNetworkEnvAndMount asserts the full argv
+// contains --network none, both -e flags, and the read-only socket --mount
+// with ,readonly suffix.
+func TestSpecArgs_ProxyArgvContainsNetworkEnvAndMount(t *testing.T) {
+	o := sampleOptions()
+	o.ProxySocketHost = "/tmp/makeslop-abc123-42.sock"
+	o.ProxySocketContainer = "/tmp/makeslop-proxy.sock"
+	spec := BuildSpec(o)
+	args := spec.Args()
+
+	// Check --network none appears.
+	foundNetwork := false
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == "--network" && args[i+1] == "none" {
+			foundNetwork = true
+			break
+		}
+	}
+	if !foundNetwork {
+		t.Errorf("argv missing --network none; got: %v", args)
+	}
+
+	// Check -e HTTP_PROXY and -e HTTPS_PROXY appear.
+	wantEnvFlags := map[string]bool{
+		"HTTP_PROXY=unix:///tmp/makeslop-proxy.sock":  false,
+		"HTTPS_PROXY=unix:///tmp/makeslop-proxy.sock": false,
+	}
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == "-e" {
+			if _, ok := wantEnvFlags[args[i+1]]; ok {
+				wantEnvFlags[args[i+1]] = true
+			}
+		}
+	}
+	for kv, found := range wantEnvFlags {
+		if !found {
+			t.Errorf("argv missing -e %s", kv)
+		}
+	}
+
+	// Check the last --mount has ,readonly.
+	mountArgs := collectMountArgs(args)
+	if len(mountArgs) == 0 {
+		t.Fatal("no --mount args found")
+	}
+	lastMount := mountArgs[len(mountArgs)-1]
+	wantLastMount := "type=bind,source=/tmp/makeslop-abc123-42.sock,target=/tmp/makeslop-proxy.sock,readonly"
+	if lastMount != wantLastMount {
+		t.Errorf("last --mount value = %q, want %q", lastMount, wantLastMount)
+	}
+}
+
+// TestSpecArgs_ProxyUnconfiguredArgvIdentical asserts that when no proxy fields
+// are set, Args() produces the exact same output as before the proxy feature.
+func TestSpecArgs_ProxyUnconfiguredArgvIdentical(t *testing.T) {
+	spec := BuildSpec(sampleOptions())
+	args := spec.Args()
+
+	// Must not contain --network or -e.
+	for i, tok := range args {
+		if tok == "--network" {
+			t.Errorf("unexpected --network at index %d", i)
+		}
+		if tok == "-e" {
+			t.Errorf("unexpected -e at index %d", i)
+		}
+	}
+}
+
+// TestMount_ReadOnlyFalseRendersIdentical asserts that a non-readonly bind
+// mount renders byte-identically to the pre-ReadOnly behavior.
+func TestMount_ReadOnlyFalseRendersIdentical(t *testing.T) {
+	spec := Spec{
+		Image:   "img",
+		Command: "sh",
+		Workdir: "/wd",
+		Mounts:  []Mount{{Host: "/h", Container: "/c", ReadOnly: false}},
+	}
+	args := spec.Args()
+	mountArgs := collectMountArgs(args)
+	if len(mountArgs) != 1 {
+		t.Fatalf("want 1 mount arg, got %d", len(mountArgs))
+	}
+	want := "type=bind,source=/h,target=/c"
+	if mountArgs[0] != want {
+		t.Errorf("mount value = %q, want %q", mountArgs[0], want)
+	}
+}
+
+// TestMount_ReadOnlyTrueAddsReadonlySuffix asserts that a read-only bind mount
+// has ,readonly appended.
+func TestMount_ReadOnlyTrueAddsReadonlySuffix(t *testing.T) {
+	spec := Spec{
+		Image:   "img",
+		Command: "sh",
+		Workdir: "/wd",
+		Mounts:  []Mount{{Host: "/h", Container: "/c", ReadOnly: true}},
+	}
+	args := spec.Args()
+	mountArgs := collectMountArgs(args)
+	if len(mountArgs) != 1 {
+		t.Fatalf("want 1 mount arg, got %d", len(mountArgs))
+	}
+	want := "type=bind,source=/h,target=/c,readonly"
+	if mountArgs[0] != want {
+		t.Errorf("mount value = %q, want %q", mountArgs[0], want)
+	}
+}
+
+// TestMount_ReadOnlyIgnoredForTmpfs asserts that ReadOnly:true on a tmpfs
+// mount has no effect (no ,readonly in output, since tmpfs ignores it).
+func TestMount_ReadOnlyIgnoredForTmpfs(t *testing.T) {
+	spec := Spec{
+		Image:   "img",
+		Command: "sh",
+		Workdir: "/wd",
+		Mounts:  []Mount{{Type: "tmpfs", Container: "/c", ReadOnly: true}},
+	}
+	args := spec.Args()
+	mountArgs := collectMountArgs(args)
+	if len(mountArgs) != 1 {
+		t.Fatalf("want 1 mount arg, got %d", len(mountArgs))
+	}
+	want := "type=tmpfs,target=/c"
+	if mountArgs[0] != want {
+		t.Errorf("mount value = %q, want %q", mountArgs[0], want)
+	}
+}
+
+// TestShellCommand_ProxyFlagsRenderedCorrectly asserts that ShellCommand renders
+// --network, -e, and the socket mount correctly when proxy is configured.
+func TestShellCommand_ProxyFlagsRenderedCorrectly(t *testing.T) {
+	o := sampleOptions()
+	o.ProxySocketHost = "/tmp/makeslop-abc123-42.sock"
+	o.ProxySocketContainer = "/tmp/makeslop-proxy.sock"
+	spec := BuildSpec(o)
+	out := spec.ShellCommand()
+
+	// Must contain --network none as a paired line.
+	if !strings.Contains(out, "--network none") {
+		t.Errorf("ShellCommand missing '--network none':\n%s", out)
+	}
+	// Must contain -e with the env var.
+	if !strings.Contains(out, "-e HTTP_PROXY=unix:///tmp/makeslop-proxy.sock") {
+		t.Errorf("ShellCommand missing HTTP_PROXY env:\n%s", out)
+	}
+	if !strings.Contains(out, "-e HTTPS_PROXY=unix:///tmp/makeslop-proxy.sock") {
+		t.Errorf("ShellCommand missing HTTPS_PROXY env:\n%s", out)
+	}
+	// Must contain the read-only mount.
+	if !strings.Contains(out, "readonly") {
+		t.Errorf("ShellCommand missing 'readonly' in mount:\n%s", out)
+	}
+
+	// Round-trip: ShellCommand must agree with Args() token-for-token.
+	var got []string
+	for _, raw := range strings.Split(out, "\n") {
+		line := strings.TrimSuffix(raw, ` \`)
+		for _, field := range strings.Fields(line) {
+			got = append(got, shellUnquote(field))
+		}
+	}
+	want := append([]string{"docker"}, spec.Args()...)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("round-trip mismatch\n got: %#v\nwant: %#v", got, want)
+	}
+}
+
+// TestBuildSpec_ProxySocketMountPositionAfterOtherGroups asserts that the proxy
+// socket mount is appended after MaskedFiles and MaskedDirs overlays.
+func TestBuildSpec_ProxySocketMountPositionAfterOtherGroups(t *testing.T) {
+	o := sampleOptions()
+	o.MaskedFiles = []string{"/home/me/code/myproj/.env"}
+	o.MaskedDirs = []string{"/home/me/code/myproj/secrets"}
+	o.ProxySocketHost = "/tmp/makeslop-abc123-42.sock"
+	o.ProxySocketContainer = "/tmp/makeslop-proxy.sock"
+	spec := BuildSpec(o)
+
+	n := len(spec.Mounts)
+	if n < 3 {
+		t.Fatalf("got %d mounts, want at least 3", n)
+	}
+	// Second-to-last should be the tmpfs (MaskedDirs), last should be socket.
+	secondToLast := spec.Mounts[n-2]
+	if secondToLast.Type != "tmpfs" {
+		t.Errorf("second-to-last mount type = %q, want tmpfs", secondToLast.Type)
+	}
+	last := spec.Mounts[n-1]
+	if last.Host != "/tmp/makeslop-abc123-42.sock" || !last.ReadOnly {
+		t.Errorf("last mount = %+v, want proxy socket (ReadOnly=true)", last)
+	}
+}
+
 func TestSpecArgs_MultiValueSlicesRepeatFlag(t *testing.T) {
 	spec := Spec{
 		Image:   "img",

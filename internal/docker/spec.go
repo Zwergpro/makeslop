@@ -31,6 +31,18 @@ type Options struct {
 	// enforces it). Caller-provided order is preserved in the emitted argv.
 	// Nil or empty is a no-op.
 	MaskedDirs []string
+
+	// ProxySocketHost is the host path of the per-invocation unix socket for
+	// the forward proxy. When non-empty, BuildSpec emits --network none, a
+	// read-only bind mount of the socket into the container at
+	// ProxySocketContainer, and HTTP_PROXY/HTTPS_PROXY env vars pointing at it.
+	// Empty ⇒ no networking changes (default bridge networking, as today).
+	ProxySocketHost string
+	// ProxySocketContainer is the in-container socket path. Use /tmp
+	// (e.g. /tmp/makeslop-proxy.sock): the container already mounts
+	// --tmpfs /tmp, so the path is guaranteed writable. The env vars reference
+	// this path via unix:// URL.
+	ProxySocketContainer string
 }
 
 // Mount is a single docker mount entry. Trailing slashes are preserved verbatim.
@@ -40,22 +52,30 @@ type Options struct {
 // only — Host is ignored for tmpfs mounts. Any future unrecognized value falls
 // through to bind (Mount is constructed only inside this package, so callers
 // cannot inject an unknown type in practice).
+//
+// ReadOnly, when true, appends ",readonly" to the bind mount rendering. It has
+// no effect on tmpfs mounts. Defaults to false, so existing mounts render
+// byte-identically.
 type Mount struct {
 	// Type is the docker mount type. "" (zero value) means "bind".
 	// "tmpfs" is the only other recognized value; Host is unused for tmpfs.
 	Type            string
 	Host, Container string
+	// ReadOnly, when true, adds ",readonly" to bind mounts. Ignored for tmpfs.
+	ReadOnly bool
 }
 
 // Spec is the deterministic shape of a `docker run` invocation; Args() is a pure projection.
 type Spec struct {
-	Image   string
-	Command string
-	Workdir string
-	Mounts  []Mount
-	Tmpfs   []string
-	CapDrop []string
-	SecOpt  []string
+	Image       string
+	Command     string
+	Workdir     string
+	Mounts      []Mount
+	Tmpfs       []string
+	CapDrop     []string
+	SecOpt      []string
+	NetworkMode string   // e.g. "none"; empty ⇒ default docker networking
+	Env         []string // KEY=VALUE pairs emitted as -e flags
 }
 
 // BuildSpec is pure: same Options → same Spec. The mount list is emitted in a
@@ -64,9 +84,11 @@ type Spec struct {
 //  2. global and per-workspace agent path bind mounts
 //  3. /dev/null overlay bind mounts (one per MaskedFiles entry)
 //  4. tmpfs overlay mounts (one per MaskedDirs entry)
+//  5. proxy socket bind mount (read-only), when ProxySocketHost is set
 //
-// Both overlay groups come after the directory bind they shadow, so docker's
-// argv-order evaluation makes the overlays win.
+// Overlay groups 3 and 4 come after the directory bind they shadow, so docker's
+// argv-order evaluation makes the overlays win. The proxy socket mount (5) is
+// independent of the overlay ordering and is appended last.
 func BuildSpec(o Options) Spec {
 	workspacePath := "/workspace/" + o.WorkspaceName
 	workspaceHost := filepath.Join(o.BaseDir, config.WorkspacesDir, o.WorkspaceName)
@@ -107,7 +129,7 @@ func BuildSpec(o Options) Spec {
 		})
 	}
 
-	return Spec{
+	spec := Spec{
 		Image:   o.Image,
 		Command: o.Command,
 		Workdir: workspacePath,
@@ -116,6 +138,22 @@ func BuildSpec(o Options) Spec {
 		CapDrop: []string{"ALL"},
 		SecOpt:  []string{"no-new-privileges"},
 	}
+
+	if o.ProxySocketHost != "" {
+		spec.NetworkMode = "none"
+		unixURL := "unix://" + o.ProxySocketContainer
+		spec.Env = []string{
+			"HTTP_PROXY=" + unixURL,
+			"HTTPS_PROXY=" + unixURL,
+		}
+		spec.Mounts = append(spec.Mounts, Mount{
+			Host:      o.ProxySocketHost,
+			Container: o.ProxySocketContainer,
+			ReadOnly:  true,
+		})
+	}
+
+	return spec
 }
 
 // Args returns argv starting with "run". Mount source/target fields use RFC 4180
@@ -123,6 +161,9 @@ func BuildSpec(o Options) Spec {
 func (s Spec) Args() []string {
 	var args []string
 	args = append(args, "run", "--rm", "-it")
+	if s.NetworkMode != "" {
+		args = append(args, "--network", s.NetworkMode)
+	}
 	args = append(args, "--workdir", s.Workdir)
 	for _, t := range s.Tmpfs {
 		args = append(args, "--tmpfs", t)
@@ -133,13 +174,19 @@ func (s Spec) Args() []string {
 	for _, so := range s.SecOpt {
 		args = append(args, "--security-opt", so)
 	}
+	for _, e := range s.Env {
+		args = append(args, "-e", e)
+	}
 	for _, m := range s.Mounts {
 		if m.Type == "tmpfs" {
 			args = append(args, "--mount",
 				"type=tmpfs,"+csvField("target="+m.Container))
 		} else {
-			args = append(args, "--mount",
-				"type=bind,"+csvField("source="+m.Host)+","+csvField("target="+m.Container))
+			val := "type=bind," + csvField("source="+m.Host) + "," + csvField("target="+m.Container)
+			if m.ReadOnly {
+				val += ",readonly"
+			}
+			args = append(args, "--mount", val)
 		}
 	}
 	args = append(args, s.Image, s.Command)
@@ -185,7 +232,7 @@ func (s Spec) ShellCommand() string {
 	for i < len(args)-2 {
 		tok := args[i]
 		switch tok {
-		case "--workdir", "--tmpfs", "--cap-drop", "--security-opt", "--mount":
+		case "--network", "--workdir", "--tmpfs", "--cap-drop", "--security-opt", "--mount", "-e":
 			lines = append(lines, "  "+shellQuote(tok)+" "+shellQuote(args[i+1]))
 			i += 2
 		default:

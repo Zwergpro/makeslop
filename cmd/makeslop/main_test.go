@@ -2,8 +2,10 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -2113,6 +2115,179 @@ func TestGo_YamlMissingPathSkippedSilently(t *testing.T) {
 			t.Errorf("argv must not contain overlay for missing api.key: %q", a)
 		}
 	}
+}
+
+// ── proxy lifecycle wiring tests (Task 4) ─────────────────────────────────────
+
+// TestGo_DryRun_WithProxy_PrintsProxyArgvNoSocket verifies that with a
+// configured network.proxy.address, --dry-run:
+//  1. Prints argv containing --network none, HTTP_PROXY/HTTPS_PROXY env vars,
+//     and a read-only socket mount with the expected path.
+//  2. Does NOT create a socket file on disk.
+func TestGo_DryRun_WithProxy_PrintsProxyArgvNoSocket(t *testing.T) {
+	docker.SkipNonPOSIX(t, "proxy socket tests are POSIX-only; makeslop is POSIX-only")
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	initOut, _, err := runCmd(t, baseDir, "init")
+	if err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	workspaceDir := strings.TrimSpace(initOut)
+	resolvedPwd := evalSymlinks(t, pwd)
+
+	// Write .makeslop.yaml with a proxy address.
+	yamlContent := "exclude:\n  dirs: []\n  files: []\nnetwork:\n  proxy:\n    address: 10.0.0.5:8888\n"
+	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(yamlContent), 0o644); err != nil {
+		t.Fatalf("write yaml: %v", err)
+	}
+
+	installFdShim(t, nil)
+	stubTTY(t, false)
+
+	stdout, stderr, err := runCmd(t, baseDir, "go", "--dry-run")
+	if err != nil {
+		t.Fatalf("--dry-run with proxy failed: %v; stderr=%q", err, stderr)
+	}
+
+	// Must contain --network none.
+	if !strings.Contains(stdout, "--network none") {
+		t.Errorf("stdout missing '--network none'\nstdout:\n%s", stdout)
+	}
+
+	// Must contain HTTP_PROXY and HTTPS_PROXY pointing to the container socket.
+	if !strings.Contains(stdout, "HTTP_PROXY=unix:///tmp/makeslop-proxy.sock") {
+		t.Errorf("stdout missing HTTP_PROXY env var\nstdout:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "HTTPS_PROXY=unix:///tmp/makeslop-proxy.sock") {
+		t.Errorf("stdout missing HTTPS_PROXY env var\nstdout:\n%s", stdout)
+	}
+
+	// Must contain a read-only socket mount targeting the container path.
+	if !strings.Contains(stdout, "target=/tmp/makeslop-proxy.sock") {
+		t.Errorf("stdout missing proxy socket container target\nstdout:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "readonly") {
+		t.Errorf("stdout missing 'readonly' in proxy socket mount\nstdout:\n%s", stdout)
+	}
+
+	// Verify the host socket source path has the expected structure: /tmp/makeslop-<12hex>-<pid>.sock
+	// We check the path contains "makeslop-" and ".sock" as a proxy-path marker.
+	if !strings.Contains(stdout, "source=/tmp/makeslop-") {
+		t.Errorf("stdout missing expected socket host path 'source=/tmp/makeslop-'\nstdout:\n%s", stdout)
+	}
+
+	// CRITICAL: no socket file must have been created on disk.
+	// Collect all /tmp/makeslop-*.sock paths referenced in stdout.
+	name := filepath.Base(workspaceDir)
+	// The project bind mount confirms the workspace name is correct.
+	if !strings.Contains(stdout, name) {
+		t.Errorf("stdout missing workspace name %q\nstdout:\n%s", name, stdout)
+	}
+
+	// Extract the host socket path from the argv output.
+	// The format is: source=/tmp/makeslop-<hash>-<pid>.sock
+	const prefix = "source=/tmp/makeslop-"
+	pidx := strings.Index(stdout, prefix)
+	if pidx < 0 {
+		t.Fatalf("stdout missing source=/tmp/makeslop- prefix\nstdout:\n%s", stdout)
+	}
+	rest := stdout[pidx+len("source="):]
+	// The --mount value is a single comma-separated token; take everything up to
+	// the next comma to get just the path (e.g. "/tmp/makeslop-abc123-999.sock").
+	end := strings.IndexByte(rest, ',')
+	if end < 0 {
+		end = len(rest)
+	}
+	sockPath := rest[:end]
+	if _, err := os.Lstat(sockPath); err == nil {
+		t.Errorf("--dry-run must NOT create the socket file %q on disk", sockPath)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		t.Logf("unexpected stat error for socket path %q: %v (expected ErrNotExist)", sockPath, err)
+	}
+}
+
+// TestGo_DryRun_WithoutProxy_UnchangedArgv verifies that when no network:
+// section is configured, --dry-run stdout is identical to the baseline argv
+// without proxy fields (no --network, no -e, no proxy socket mount).
+func TestGo_DryRun_WithoutProxy_UnchangedArgv(t *testing.T) {
+	docker.SkipNonPOSIX(t, "fd shim requires POSIX shell; makeslop is POSIX-only")
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	initOut, _, err := runCmd(t, baseDir, "init")
+	if err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	workspaceDir := strings.TrimSpace(initOut)
+	resolvedPwd := evalSymlinks(t, pwd)
+
+	// Remove any scaffolded yaml; absent section must yield unchanged argv.
+	_ = os.Remove(filepath.Join(resolvedPwd, projectconfig.Filename))
+
+	installFdShim(t, nil)
+	stubTTY(t, false)
+
+	stdout, stderr, err := runCmd(t, baseDir, "go", "--dry-run")
+	if err != nil {
+		t.Fatalf("--dry-run without proxy failed: %v; stderr=%q", err, stderr)
+	}
+
+	// Must NOT contain any proxy-related tokens.
+	if strings.Contains(stdout, "--network") {
+		t.Errorf("stdout must not contain --network when no proxy configured\nstdout:\n%s", stdout)
+	}
+	if strings.Contains(stdout, "HTTP_PROXY") {
+		t.Errorf("stdout must not contain HTTP_PROXY when no proxy configured\nstdout:\n%s", stdout)
+	}
+	if strings.Contains(stdout, "HTTPS_PROXY") {
+		t.Errorf("stdout must not contain HTTPS_PROXY when no proxy configured\nstdout:\n%s", stdout)
+	}
+	if strings.Contains(stdout, "makeslop-proxy.sock") {
+		t.Errorf("stdout must not contain proxy socket when no proxy configured\nstdout:\n%s", stdout)
+	}
+
+	// Verify the output equals exactly what BuildSpec would produce without proxy fields.
+	s, loadErr := config.Load(baseDir)
+	if loadErr != nil {
+		t.Fatalf("load settings: %v", loadErr)
+	}
+	want := docker.BuildSpec(docker.Options{
+		ProjectRoot:   resolvedPwd,
+		WorkspaceName: filepath.Base(workspaceDir),
+		BaseDir:       baseDir,
+		Image:         s.Image,
+		Command:       s.Shell,
+	}).ShellCommand()
+	got := strings.TrimSuffix(stdout, "\n")
+	if got != want {
+		t.Errorf("stdout mismatch (proxy section absent must yield identical argv)\ngot:\n%s\n\nwant:\n%s", got, want)
+	}
+}
+
+// TestGo_SocketPathLength_AtMost108Bytes verifies that the computed socket
+// path is at most 108 bytes even when the workspace dir name is very long,
+// which guards the sockaddr_un limit on Linux and macOS.
+func TestGo_SocketPathLength_AtMost108Bytes(t *testing.T) {
+	// Simulate computeSocketPath logic from runGo using a very long workspace dir.
+	// The real workspaceDir is the cache dir path like ~/.makeslop/workspaces/<name>,
+	// where <name> = <basename>-<6hex>. Use a contrived extreme case.
+	const sockaddrUnLimit = 108
+
+	longBasename := strings.Repeat("a", 200)
+	workspaceDir := "/home/user/.makeslop/workspaces/" + longBasename + "-abcdef"
+
+	h := sha256.Sum256([]byte(workspaceDir))
+	sockPath := filepath.Join("/tmp", fmt.Sprintf("makeslop-%x-%d.sock", h[:6], 99999))
+
+	if len(sockPath) > sockaddrUnLimit {
+		t.Errorf("socket path length %d exceeds %d-byte sockaddr_un limit: %q", len(sockPath), sockaddrUnLimit, sockPath)
+	}
+	t.Logf("socket path (%d bytes): %q", len(sockPath), sockPath)
 }
 
 // TestGo_DryRunIncludesMaskedDirs verifies that --dry-run stdout includes the

@@ -3,6 +3,7 @@
 package main
 
 import (
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/Zwergpro/makeslop/internal/config"
 	"github.com/Zwergpro/makeslop/internal/docker"
+	"github.com/Zwergpro/makeslop/internal/networks"
 	"github.com/Zwergpro/makeslop/internal/projectconfig"
 	"github.com/Zwergpro/makeslop/internal/security"
 	"github.com/Zwergpro/makeslop/internal/workspace"
@@ -130,7 +132,7 @@ func runGo(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfHo
 	// aborts the launch BEFORE docker.Run — symmetric with security.Scan failure.
 	// The auto-scan invariant (masking is non-negotiable) is preserved by the
 	// abort: no container starts on YAML error, so no .env leak is possible.
-	yamlExcludes, err := projectconfig.Load(workspaceRoot)
+	yamlExcludes, netCfg, err := projectconfig.Load(workspaceRoot)
 	if err != nil {
 		return err
 	}
@@ -140,9 +142,10 @@ func runGo(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfHo
 	if err != nil {
 		return err
 	}
-	// ProjectRoot must be the registered ancestor (workspaceRoot), not pwd:
-	// running 'makeslop go' from a subdir must still mount the whole project.
-	spec := docker.BuildSpec(docker.Options{
+
+	// Build docker options. Proxy socket paths are computed here (in the cobra
+	// layer) to keep docker.BuildSpec pure — PID/path computation is impure.
+	opts := docker.Options{
 		ProjectRoot:   workspaceRoot,
 		WorkspaceName: filepath.Base(workspaceDir),
 		BaseDir:       baseDir,
@@ -150,11 +153,44 @@ func runGo(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfHo
 		Command:       s.Shell,
 		MaskedFiles:   maskedFiles,
 		MaskedDirs:    yamlExcludes.Dirs,
-	})
+	}
+
+	// When a proxy address is configured, compute the per-invocation socket
+	// path and set the proxy Options fields. The socket path uses the first 12
+	// hex characters of sha256(workspaceDir) for per-project uniqueness and the
+	// PID for uniqueness across concurrent runs of the same project. This scheme
+	// guarantees a path of ~39 bytes regardless of project name length, safely
+	// under the 108-byte sockaddr_un limit.
+	var proxy *networks.Proxy
+	if netCfg.ProxyAddress != "" {
+		h := sha256.Sum256([]byte(workspaceDir))
+		sockPath := filepath.Join("/tmp", fmt.Sprintf("makeslop-%x-%d.sock", h[:6], os.Getpid()))
+		opts.ProxySocketHost = sockPath
+		opts.ProxySocketContainer = "/tmp/makeslop-proxy.sock"
+		proxy = networks.NewProxy(sockPath, netCfg.ProxyAddress)
+	}
+
+	// ProjectRoot must be the registered ancestor (workspaceRoot), not pwd:
+	// running 'makeslop go' from a subdir must still mount the whole project.
+	spec := docker.BuildSpec(opts)
+
+	// Dry-run: print the argv (including proxy plumbing when configured) and
+	// return WITHOUT starting the proxy — no socket is bound. The printed argv
+	// matches what would execute, satisfying the "printed == executed" invariant.
 	if dryRun {
 		fmt.Fprintln(cmd.OutOrStdout(), spec.ShellCommand())
 		return nil
 	}
+
+	// Start the proxy if configured. A Start failure aborts the launch —
+	// network isolation depends on the socket existing before the container.
+	if proxy != nil {
+		if err := proxy.Start(cmd.Context()); err != nil {
+			return err
+		}
+		defer proxy.Close() //nolint:errcheck // teardown; error not actionable here
+	}
+
 	if err := docker.Run(cmd.Context(), spec); err != nil {
 		if errors.Is(err, docker.ErrNoTTY) {
 			fmt.Fprintln(cmd.ErrOrStderr(),

@@ -95,6 +95,35 @@ The existing `.env` auto-scan (see [Secret masking](#secret-masking)) still runs
 
 **Reserved paths.** The paths `.claude`, `.codex`, `docs`, and `CLAUDE.md` are already mounted by `makeslop go` for agent state. Listing them in `.makeslop.yaml` is rejected with an error (`projectconfig: path %q collides with a reserved agent path`).
 
+### Controlled network access via a remote proxy
+
+By default `makeslop go` uses Docker's default bridge networking, giving the container unrestricted outbound access. You can restrict outbound access to a controlled egress proxy by adding a `network:` section to `.makeslop.yaml`:
+
+```yaml
+network:
+  proxy:
+    address: 10.0.0.5:8888   # host:port of your upstream HTTP forward proxy
+```
+
+When `network.proxy.address` is set, `makeslop go`:
+
+1. Starts a host-side forward proxy listening on a per-invocation unix socket under `/tmp`.
+2. Runs the container with `--network none` (no direct internet access), bind-mounts the socket read-only into the container at `/tmp/makeslop-proxy.sock`, and sets `HTTP_PROXY` and `HTTPS_PROXY` to `unix:///tmp/makeslop-proxy.sock`.
+3. Tears down the proxy (closes listener, unlinks socket) when the container exits.
+
+The upstream address (`10.0.0.5:8888`) is a plain HTTP forward proxy such as [tinyproxy](https://tinyproxy.github.io/). The container app speaks standard forward-proxy protocol (HTTP `CONNECT` for HTTPS, absolute-URL requests for plain HTTP); the unix socket is fully transparent.
+
+**Important — `unix://` proxy URL client support.** Setting `HTTP_PROXY=unix://...` is **not** honored by all HTTP clients:
+
+| Client | `unix://` proxy support |
+|--------|------------------------|
+| `curl` (recent versions, `--proxy unix://`) | Yes |
+| Node.js `undici` | Yes |
+| Python `requests` / `urllib3` | **No** |
+| Go `net/http` (default transport) | **No** |
+
+With `--network none`, any client that ignores the env var gets **no** network access at all — there is no fallback to direct internet. This feature is therefore scoped to containers whose HTTP clients support `unix://` forward proxy URLs. Verify client support before enabling this feature in production.
+
 Use `--dry-run` to preview the resulting `docker run` command, including all exclusion mounts, before launching:
 
 ```

@@ -33,6 +33,13 @@
 // hard error (projectconfig: path %q collides with a reserved agent path)
 // because mount order means a user overlay would shadow the agent mount,
 // silently disabling agent features.
+//
+// # Network configuration
+//
+// Load also parses an optional network.proxy.address field. When present, the
+// address is validated as a syntactic "host:port" pair via net.SplitHostPort
+// (no network I/O is performed). The validated address is returned in the
+// Network return value; an empty ProxyAddress means no proxy was configured.
 package projectconfig
 
 import (
@@ -41,6 +48,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net"
 	"os"
 	"path/filepath"
 	"sort"
@@ -74,14 +82,30 @@ type Excludes struct {
 	Dirs  []string // absolute host paths; tmpfs overlay targets
 }
 
+// Network is the parsed, validated network configuration from .makeslop.yaml.
+// ProxyAddress is the upstream forward proxy address in "host:port" form.
+// An empty ProxyAddress means no proxy was configured (the network: section
+// is absent or network.proxy.address is unset).
+//
+// Load performs only syntactic validation (net.SplitHostPort) — no network
+// I/O, no reachability check.
+type Network struct {
+	ProxyAddress string // "host:port"; "" when unconfigured
+}
+
 // yamlSchema is the strict decode target. Using KnownFields(true) means any
-// top-level key other than "exclude" (and its "dirs"/"files" sub-keys) is
+// top-level key other than "exclude" / "network" (and their sub-keys) is
 // rejected immediately with a meaningful decoder error.
 type yamlSchema struct {
 	Exclude struct {
 		Dirs  []string `yaml:"dirs"`
 		Files []string `yaml:"files"`
 	} `yaml:"exclude"`
+	Network struct {
+		Proxy struct {
+			Address string `yaml:"address"`
+		} `yaml:"proxy"`
+	} `yaml:"network"`
 }
 
 // Scaffold creates <root>/.makeslop.yaml with the empty-list stub if it does
@@ -112,20 +136,29 @@ func Scaffold(root string) error {
 	return nil
 }
 
-// Load parses <root>/.makeslop.yaml. A missing file yields a zero Excludes
-// with no error. Malformed YAML, unknown fields, paths listed in both lists,
-// reserved-agent-path collisions, and invalid paths (absolute, .. escapes,
-// empty) are surfaced as errors wrapped with "projectconfig: ". Symlinks and
-// entries that do not exist on disk are silently dropped (Lstat +
-// IsRegular/IsDir). root MUST be absolute and EvalSymlinks-evaluated.
-func Load(root string) (Excludes, error) {
+// Load parses <root>/.makeslop.yaml and returns the validated Excludes,
+// Network configuration, and any error.
+//
+// A missing file yields zero Excludes and zero Network with no error. Malformed
+// YAML, unknown fields, paths listed in both lists, reserved-agent-path
+// collisions, invalid paths (absolute, .. escapes, empty), and an invalid
+// network.proxy.address are surfaced as errors wrapped with "projectconfig: ".
+// Symlinks and entries that do not exist on disk are silently dropped (Lstat +
+// IsRegular/IsDir).
+//
+// Network.ProxyAddress is set only when network.proxy.address is present in the
+// YAML and passes syntactic validation (net.SplitHostPort — no network I/O, no
+// reachability check). An empty ProxyAddress means no proxy was configured.
+//
+// root MUST be absolute and EvalSymlinks-evaluated.
+func Load(root string) (Excludes, Network, error) {
 	path := filepath.Join(root, Filename)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return Excludes{}, nil
+			return Excludes{}, Network{}, nil
 		}
-		return Excludes{}, fmt.Errorf("projectconfig: read %s: %w", Filename, err)
+		return Excludes{}, Network{}, fmt.Errorf("projectconfig: read %s: %w", Filename, err)
 	}
 
 	// Decode with strict mode: unknown top-level fields cause an error, surfacing
@@ -137,19 +170,19 @@ func Load(root string) (Excludes, error) {
 	if err := dec.Decode(&schema); err != nil {
 		if errors.Is(err, io.EOF) {
 			// Empty file, whitespace-only, or comment-only YAML: treat as zero config.
-			return Excludes{}, nil
+			return Excludes{}, Network{}, nil
 		}
-		return Excludes{}, fmt.Errorf("projectconfig: parse %s: %w", Filename, err)
+		return Excludes{}, Network{}, fmt.Errorf("projectconfig: parse %s: %w", Filename, err)
 	}
 
 	// Validate and clean all entries, building cleaned relative path sets.
 	cleanedFiles, err := validateEntries(schema.Exclude.Files, "exclude.files")
 	if err != nil {
-		return Excludes{}, err
+		return Excludes{}, Network{}, err
 	}
 	cleanedDirs, err := validateEntries(schema.Exclude.Dirs, "exclude.dirs")
 	if err != nil {
-		return Excludes{}, err
+		return Excludes{}, Network{}, err
 	}
 
 	// Cross-list duplicate check: a path in both lists is an error. Done before
@@ -160,25 +193,35 @@ func Load(root string) (Excludes, error) {
 	}
 	for _, rel := range cleanedDirs {
 		if _, ok := seen[rel]; ok {
-			return Excludes{}, fmt.Errorf("projectconfig: path %q listed in both exclude.files and exclude.dirs", rel)
+			return Excludes{}, Network{}, fmt.Errorf("projectconfig: path %q listed in both exclude.files and exclude.dirs", rel)
 		}
 	}
 
 	// Stat-and-drop: Lstat each entry, drop missing or wrong-type entries silently.
 	files, err := statFilter(root, cleanedFiles, func(info os.FileInfo) bool { return info.Mode().IsRegular() })
 	if err != nil {
-		return Excludes{}, err
+		return Excludes{}, Network{}, err
 	}
 	dirs, err := statFilter(root, cleanedDirs, func(info os.FileInfo) bool { return info.IsDir() })
 	if err != nil {
-		return Excludes{}, err
+		return Excludes{}, Network{}, err
 	}
 
 	// Deduplicate within each list (user may list same path twice) and sort.
 	files = dedupSorted(files)
 	dirs = dedupSorted(dirs)
 
-	return Excludes{Files: files, Dirs: dirs}, nil
+	// Validate network.proxy.address if present.
+	var netCfg Network
+	if addr := schema.Network.Proxy.Address; addr != "" {
+		host, port, splitErr := net.SplitHostPort(addr)
+		if splitErr != nil || host == "" || port == "" {
+			return Excludes{}, Network{}, fmt.Errorf("projectconfig: invalid network.proxy.address %q: must be host:port", addr)
+		}
+		netCfg.ProxyAddress = addr
+	}
+
+	return Excludes{Files: files, Dirs: dirs}, netCfg, nil
 }
 
 // validateEntries validates and cleans a list of user-supplied relative path
