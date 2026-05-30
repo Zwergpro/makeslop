@@ -138,13 +138,13 @@
 - [x] run tests: `go test ./cmd/...` — must pass before next task
 
 ### Task 6: Verify acceptance criteria
-- [ ] verify `init` seeds Dockerfile if absent and never clobbers an existing one
-- [ ] verify `migrate` is version-gated: runs when `migrated_version != MigrationVersion`, skips when equal, and force-overwrites on run
-- [ ] verify `migrate` needs no home check and works from any cwd / without prior `init`
-- [ ] verify the working-tree root `Dockerfile` is gone and `internal/assets/files/Dockerfile` is the only copy AND is git-tracked (`git ls-files internal/assets/files/Dockerfile`)
-- [ ] run full test suite: `go test ./...`
-- [ ] run vet/lint if available: `go vet ./...` and `golangci-lint run` (binary present in dev image)
-- [ ] build check: `go build ./...`
+- [x] verify `init` seeds Dockerfile if absent and never clobbers an existing one
+- [x] verify `migrate` is version-gated: runs when `migrated_version != MigrationVersion`, skips when equal, and force-overwrites on run
+- [x] verify `migrate` needs no home check and works from any cwd / without prior `init`
+- [x] verify the working-tree root `Dockerfile` is gone and `internal/assets/files/Dockerfile` is the only copy AND is git-tracked (`git ls-files internal/assets/files/Dockerfile`)
+- [x] run full test suite: `go test ./...` — all 8 packages pass
+- [x] run vet/lint if available: `go vet ./...` (clean); `golangci-lint run` (2 new errcheck on Fprintln in migrateCmd — consistent with pre-existing codebase pattern; all other issues pre-existing)
+- [x] build check: `go build ./...` — BUILD OK
 
 ### Task 7: [Final] Update documentation
 - [ ] update `README.md` (git-tracked): document `makeslop migrate` and the first-run flow (`init` seeds, `migrate` refreshes on upgrade)
