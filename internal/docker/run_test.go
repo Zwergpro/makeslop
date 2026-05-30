@@ -12,17 +12,13 @@ import (
 	"time"
 )
 
-// executableTempDir creates a temp dir under /workspace (which is executable)
-// rather than /tmp (which is not executable in this environment). The dir is
-// registered for removal via t.Cleanup.
+// executableTempDir returns a temp dir that is on an executable filesystem.
+// It delegates to t.TempDir() which honours the GOTMPDIR env var; set
+// GOTMPDIR=/home/user (or any executable path) when running tests in
+// environments where /tmp is mounted noexec.
 func executableTempDir(t *testing.T) string {
 	t.Helper()
-	dir, err := os.MkdirTemp("/workspace", "makeslop-test-*")
-	if err != nil {
-		t.Fatalf("MkdirTemp /workspace: %v", err)
-	}
-	t.Cleanup(func() { os.RemoveAll(dir) })
-	return dir
+	return t.TempDir()
 }
 
 func sampleSpec() Spec {

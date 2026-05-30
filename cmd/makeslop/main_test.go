@@ -2291,17 +2291,13 @@ func TestGo_DryRunIncludesMaskedDirs(t *testing.T) {
 
 // ── build subcommand tests ─────────────────────────────────────────────────────
 
-// executableTempDirForCmd creates a temp dir under /workspace (which is
-// executable, unlike /tmp in this environment) for use with build shims.
-// The dir is registered for cleanup via t.Cleanup.
+// executableTempDirForCmd returns a temp dir that is on an executable
+// filesystem. It delegates to t.TempDir() which honours the GOTMPDIR env var;
+// set GOTMPDIR=/home/user (or any executable path) when running tests in
+// environments where /tmp is mounted noexec.
 func executableTempDirForCmd(t *testing.T) string {
 	t.Helper()
-	dir, err := os.MkdirTemp("/workspace", "makeslop-cmd-test-*")
-	if err != nil {
-		t.Fatalf("MkdirTemp /workspace: %v", err)
-	}
-	t.Cleanup(func() { os.RemoveAll(dir) })
-	return dir
+	return t.TempDir()
 }
 
 // installBuildShim installs a build shim (recording argv + DOCKER_BUILDKIT)
