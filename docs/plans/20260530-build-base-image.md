@@ -188,13 +188,13 @@
 - [x] run `go test ./...` — must pass before Task 4.
 
 ### Task 4: Verify acceptance criteria
-- [ ] verify `makeslop build` builds the image from `~/.makeslop/Dockerfile` with the
+- [x] verify `makeslop build` builds the image from `~/.makeslop/Dockerfile` with the
       configured tag (Overview requirement).
-- [ ] verify `--no-cache` and repeatable `--build-arg` reach docker (rebuild + passthrough).
-- [ ] verify self-heal: `build` with no prior `init` seeds `~/.makeslop/` then builds.
-- [ ] verify `go`/`init`/`migrate` behavior is unchanged (no regressions).
-- [ ] run full suite: `go test ./...`
-- [ ] run `go vet ./...` and `go build ./cmd/makeslop`.
+- [x] verify `--no-cache` and repeatable `--build-arg` reach docker (rebuild + passthrough).
+- [x] verify self-heal: `build` with no prior `init` seeds `~/.makeslop/` then builds.
+- [x] verify `go`/`init`/`migrate` behavior is unchanged (no regressions).
+- [x] run full suite: `go test ./...`
+- [x] run `go vet ./...` and `go build ./cmd/makeslop`.
 
 ### Task 5: [Final] Update documentation
 - [ ] add a `makeslop build` entry to the README Usage list and document `--no-cache`
