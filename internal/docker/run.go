@@ -9,10 +9,8 @@ import (
 	"golang.org/x/term"
 )
 
-// ErrNoTTY is returned by Run when stdin or stdout is not a terminal.
 var ErrNoTTY = errors.New("interactive TTY required on stdin and stdout")
 
-// Test-only swap points for the docker binary and TTY check.
 var (
 	dockerBinary = "docker"
 	ttyCheck     = func() bool { return isTTY(os.Stdin) && isTTY(os.Stdout) }
