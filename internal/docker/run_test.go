@@ -3,6 +3,7 @@ package docker
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,6 +11,19 @@ import (
 	"testing"
 	"time"
 )
+
+// executableTempDir creates a temp dir under /workspace (which is executable)
+// rather than /tmp (which is not executable in this environment). The dir is
+// registered for removal via t.Cleanup.
+func executableTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("/workspace", "makeslop-test-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp /workspace: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	return dir
+}
 
 func sampleSpec() Spec {
 	return BuildSpec(Options{
@@ -142,5 +156,163 @@ func TestRun_ContextCancellation_KillsChild(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatalf("Run did not return within 5s after context cancellation")
+	}
+}
+
+// sampleBuildOptions returns a minimal BuildOptions with ContextDir set so it
+// can be compared against the shim's recorded argv (Build fills ContextDir
+// only when the caller leaves it empty, but the test passes a known value).
+func sampleBuildOptions(contextDir string) BuildOptions {
+	return BuildOptions{
+		Image:          "claudebox",
+		DockerfilePath: "/home/user/.makeslop/Dockerfile",
+		ContextDir:     contextDir,
+	}
+}
+
+func TestBuild_HappyPath_RecordsArgvAndBuildKit(t *testing.T) {
+	SkipNonPOSIX(t, "shell shim requires POSIX shell; makeslop is POSIX-only")
+	dir := executableTempDir(t)
+	shim, record, envFile := WriteBuildShim(t, dir, 0)
+	t.Cleanup(SetDockerBinaryForTest(shim))
+
+	ctxDir := t.TempDir()
+	o := sampleBuildOptions(ctxDir)
+	if err := Build(context.Background(), o, io.Discard, io.Discard); err != nil {
+		t.Fatalf("Build returned unexpected error: %v", err)
+	}
+
+	// Verify recorded argv matches BuildArgv output.
+	data, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatalf("read argv record: %v", err)
+	}
+	got := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+	want := BuildArgv(o)
+	if len(got) != len(want) {
+		t.Fatalf("argv length mismatch: got %d %v, want %d %v", len(got), got, len(want), want)
+	}
+	for i, w := range want {
+		if got[i] != w {
+			t.Errorf("argv[%d] = %q, want %q", i, got[i], w)
+		}
+	}
+
+	// Verify DOCKER_BUILDKIT=1 was set in the child environment.
+	envData, err := os.ReadFile(envFile)
+	if err != nil {
+		t.Fatalf("read env record: %v", err)
+	}
+	if got := strings.TrimRight(string(envData), "\n"); got != "1" {
+		t.Errorf("DOCKER_BUILDKIT = %q, want %q", got, "1")
+	}
+}
+
+func TestBuild_EmptyContextDir_UsesGeneratedDir(t *testing.T) {
+	SkipNonPOSIX(t, "shell shim requires POSIX shell; makeslop is POSIX-only")
+	dir := executableTempDir(t)
+	shim, record, _ := WriteBuildShim(t, dir, 0)
+	t.Cleanup(SetDockerBinaryForTest(shim))
+
+	o := BuildOptions{
+		Image:          "claudebox",
+		DockerfilePath: "/home/user/.makeslop/Dockerfile",
+		// ContextDir intentionally left empty — Build should create one.
+	}
+	if err := Build(context.Background(), o, io.Discard, io.Discard); err != nil {
+		t.Fatalf("Build returned unexpected error: %v", err)
+	}
+
+	// The last token of the recorded argv is the context dir.
+	data, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatalf("read argv record: %v", err)
+	}
+	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+	if len(lines) == 0 {
+		t.Fatal("no argv recorded")
+	}
+	generatedCtxDir := lines[len(lines)-1]
+
+	// The generated context dir must be a non-empty path.
+	if generatedCtxDir == "" {
+		t.Fatal("last argv token (context dir) is empty")
+	}
+	// The directory was passed in; it exists during the shim run. After Build
+	// returns, defer os.RemoveAll has run, so it must no longer exist.
+	if _, err := os.Stat(generatedCtxDir); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("temp context dir %q still exists after Build returned (want ErrNotExist, got %v)", generatedCtxDir, err)
+	}
+}
+
+func TestBuild_TempContextDir_RemovedAfterReturn(t *testing.T) {
+	SkipNonPOSIX(t, "shell shim requires POSIX shell; makeslop is POSIX-only")
+	dir := executableTempDir(t)
+	shim, record, _ := WriteBuildShim(t, dir, 0)
+	t.Cleanup(SetDockerBinaryForTest(shim))
+
+	o := BuildOptions{
+		Image:          "testimage",
+		DockerfilePath: "/some/Dockerfile",
+		// ContextDir empty: Build will create and remove a temp dir.
+	}
+	if err := Build(context.Background(), o, io.Discard, io.Discard); err != nil {
+		t.Fatalf("Build returned unexpected error: %v", err)
+	}
+
+	data, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatalf("read argv record: %v", err)
+	}
+	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+	ctxDir := lines[len(lines)-1]
+
+	if _, statErr := os.Stat(ctxDir); !errors.Is(statErr, os.ErrNotExist) {
+		t.Errorf("temp context dir %q not removed: got %v, want ErrNotExist", ctxDir, statErr)
+	}
+}
+
+func TestBuild_NonZeroExit_PropagatesCode(t *testing.T) {
+	SkipNonPOSIX(t, "POSIX-only invariant per CLAUDE.md")
+	dir := executableTempDir(t)
+	shim, _, _ := WriteBuildShim(t, dir, 5)
+	t.Cleanup(SetDockerBinaryForTest(shim))
+
+	o := BuildOptions{
+		Image:          "claudebox",
+		DockerfilePath: "/home/user/.makeslop/Dockerfile",
+		ContextDir:     t.TempDir(),
+	}
+	err := Build(context.Background(), o, io.Discard, io.Discard)
+	if err == nil {
+		t.Fatalf("expected error from shim exit 5, got nil")
+	}
+	var ee *exec.ExitError
+	if !errors.As(err, &ee) {
+		t.Fatalf("expected *exec.ExitError, got %T: %v", err, err)
+	}
+	if got := ee.ExitCode(); got != 5 {
+		t.Errorf("exit code = %d, want 5", got)
+	}
+}
+
+func TestBuild_DockerNotFound_ReturnsError(t *testing.T) {
+	SkipNonPOSIX(t, "POSIX-only invariant per CLAUDE.md")
+	missing := filepath.Join(t.TempDir(), "no-such-docker")
+	t.Cleanup(SetDockerBinaryForTest(missing))
+
+	o := BuildOptions{
+		Image:          "claudebox",
+		DockerfilePath: "/home/user/.makeslop/Dockerfile",
+		ContextDir:     t.TempDir(),
+	}
+	err := Build(context.Background(), o, io.Discard, io.Discard)
+	if err == nil {
+		t.Fatalf("expected error for missing docker binary, got nil")
+	}
+	var execErr *exec.Error
+	var pathErr *os.PathError
+	if !errors.As(err, &execErr) && !errors.As(err, &pathErr) {
+		t.Errorf("expected *exec.Error or *os.PathError, got %T: %v", err, err)
 	}
 }

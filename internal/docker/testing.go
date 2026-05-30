@@ -53,3 +53,22 @@ func WriteShim(t *testing.T, dir string, exitCode int) (shimPath, recordPath str
 	}
 	return shimPath, recordPath
 }
+
+// WriteBuildShim drops a POSIX shell script at <dir>/shim that records its
+// argv (one arg per line) to a sibling argv.txt AND records the value of
+// DOCKER_BUILDKIT to a sibling env.txt, then exits with exitCode.
+// Returns the shim path, argv record path, and env record path.
+func WriteBuildShim(t *testing.T, dir string, exitCode int) (shimPath, recordPath, envPath string) {
+	t.Helper()
+	shimPath = filepath.Join(dir, "shim")
+	recordPath = filepath.Join(dir, "argv.txt")
+	envPath = filepath.Join(dir, "env.txt")
+	script := "#!/bin/sh\n" +
+		"for arg in \"$@\"; do printf '%s\\n' \"$arg\" >> \"" + recordPath + "\"; done\n" +
+		"printf '%s\\n' \"$DOCKER_BUILDKIT\" >> \"" + envPath + "\"\n" +
+		"exit " + strconv.Itoa(exitCode) + "\n"
+	if err := os.WriteFile(shimPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write build shim: %v", err)
+	}
+	return shimPath, recordPath, envPath
+}

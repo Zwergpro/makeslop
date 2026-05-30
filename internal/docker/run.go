@@ -3,6 +3,7 @@ package docker
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 
@@ -34,5 +35,27 @@ func Run(ctx context.Context, s Spec) error {
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+// Build executes `docker build` with the options in o. When o.ContextDir is
+// empty, Build creates an empty temp directory to use as the build context and
+// removes it on return. DOCKER_BUILDKIT=1 is always set in the child
+// environment so cache mounts (--mount=type=cache) work. Build never checks
+// for a TTY and can be used safely in CI/pipes.
+func Build(ctx context.Context, o BuildOptions, stdout, stderr io.Writer) error {
+	if o.ContextDir == "" {
+		dir, err := os.MkdirTemp("", "makeslop-build-*")
+		if err != nil {
+			return err
+		}
+		defer os.RemoveAll(dir)
+		o.ContextDir = dir
+	}
+	cmd := exec.CommandContext(ctx, dockerBinary, BuildArgv(o)...)
+	cmd.Env = append(os.Environ(), "DOCKER_BUILDKIT=1")
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	cmd.Stdin = nil
 	return cmd.Run()
 }
