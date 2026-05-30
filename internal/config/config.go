@@ -17,6 +17,7 @@ import (
 const (
 	SettingsFile   = "settings.json"
 	WorkspacesDir  = "workspaces"
+	DockerfileFile = "Dockerfile"
 	CurrentVersion = 1 // settings schema version — increment when Settings fields change
 
 	// MigrationVersion is distinct from CurrentVersion: it gates the one-shot
@@ -128,8 +129,58 @@ func Save(baseDir string, s *Settings) error {
 	return nil
 }
 
-// Files are created with O_EXCL so concurrent runs and pre-existing user
-// edits both degrade to no-ops rather than clobbering.
+// bootstrapFile writes content to path using a temp-file+rename pattern so
+// that a write failure never leaves a 0-byte or partially written file behind.
+// If path already exists the call is a no-op (idempotent — existing user edits
+// are never overwritten).
+func bootstrapFile(path string, content []byte) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("create temp file for %s: %w", path, err)
+	}
+	tmpName := tmp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpName)
+		}
+	}()
+
+	if _, err := tmp.Write(content); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write temp file for %s: %w", path, err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temp file for %s: %w", path, err)
+	}
+
+	// Rename the temp file to the final path only if it does not exist yet.
+	// os.Rename works on overlayfs and other filesystems where os.Link fails
+	// with EPERM (Docker containers, CI environments, network filesystems).
+	// Check existence first to preserve the idempotent/no-overwrite contract.
+	if _, err := os.Lstat(path); err == nil {
+		// File already present — leave it and discard the temp file.
+		return nil
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		// Lstat failed for a reason other than the file being absent (e.g.
+		// EACCES on the parent directory). Return the real error rather than
+		// falling through to Rename, which would produce a misleading message.
+		return fmt.Errorf("stat %s: %w", path, err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return fmt.Errorf("install %s: %w", path, err)
+	}
+	cleanup = false // rename consumed the temp file
+	// Normalise to 0o644 so the file is readable regardless of the process umask.
+	if err := os.Chmod(path, 0o644); err != nil {
+		return fmt.Errorf("chmod %s: %w", path, err)
+	}
+	return nil
+}
+
+// Concurrent runs and pre-existing user edits both degrade to no-ops rather
+// than clobbering — bootstrapFile checks file existence before the final rename.
 var bootstrapDirs = []string{
 	"",
 	".codex",
@@ -142,7 +193,7 @@ var bootstrapFiles = []struct {
 	content []byte
 }{
 	{".claude.json", []byte("{}\n")},
-	{"Dockerfile", assets.Dockerfile},
+	{DockerfileFile, assets.Dockerfile},
 }
 
 // Bootstrap is idempotent: creates the agent directories and seed files under
@@ -156,20 +207,8 @@ func Bootstrap(baseDir string) error {
 	}
 	for _, f := range bootstrapFiles {
 		path := filepath.Join(baseDir, f.name)
-		file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
-		if err != nil {
-			if errors.Is(err, fs.ErrExist) {
-				continue
-			}
-			return fmt.Errorf("create %s: %w", path, err)
-		}
-		_, writeErr := file.Write(f.content)
-		closeErr := file.Close()
-		if writeErr != nil {
-			return fmt.Errorf("write %s: %w", path, writeErr)
-		}
-		if closeErr != nil {
-			return fmt.Errorf("close %s: %w", path, closeErr)
+		if err := bootstrapFile(path, f.content); err != nil {
+			return err
 		}
 	}
 	return nil

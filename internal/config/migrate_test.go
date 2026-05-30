@@ -121,44 +121,86 @@ func TestMigrate_OverwritesEditedDockerfile(t *testing.T) {
 	}
 }
 
-// TestMigrate_VersionMismatchReRuns verifies that Migrate re-runs (applied ==
-// true) and re-stamps to MigrationVersion when MigratedVersion differs from
-// MigrationVersion (covers both 0 and a hypothetical future value like 999).
-func TestMigrate_VersionMismatchReRuns(t *testing.T) {
-	for _, startVersion := range []int{0, 999} {
-		startVersion := startVersion
-		t.Run("from_version_"+itoa(startVersion), func(t *testing.T) {
-			base := filepath.Join(t.TempDir(), ".makeslop")
-			if err := os.MkdirAll(base, 0o755); err != nil {
-				t.Fatalf("mkdir: %v", err)
-			}
-			s := &Settings{
-				Version:         CurrentVersion,
-				Image:           DefaultImage,
-				Shell:           DefaultShell,
-				Workspaces:      map[string]Workspace{},
-				MigratedVersion: startVersion,
-			}
-			if err := Save(base, s); err != nil {
-				t.Fatalf("Save: %v", err)
-			}
+// TestMigrate_VersionBehindReRuns verifies that Migrate re-runs (applied ==
+// true) and re-stamps to MigrationVersion when MigratedVersion is behind
+// MigrationVersion (e.g. 0 on a fresh directory).
+func TestMigrate_VersionBehindReRuns(t *testing.T) {
+	base := filepath.Join(t.TempDir(), ".makeslop")
+	if err := os.MkdirAll(base, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	s := &Settings{
+		Version:         CurrentVersion,
+		Image:           DefaultImage,
+		Shell:           DefaultShell,
+		Workspaces:      map[string]Workspace{},
+		MigratedVersion: 0,
+	}
+	if err := Save(base, s); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
 
-			applied, err := Migrate(base)
-			if err != nil {
-				t.Fatalf("Migrate: %v", err)
-			}
-			if !applied {
-				t.Errorf("Migrate should return applied == true when MigratedVersion=%d != MigrationVersion=%d", startVersion, MigrationVersion)
-			}
+	applied, err := Migrate(base)
+	if err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	if !applied {
+		t.Errorf("Migrate should return applied == true when MigratedVersion=0 < MigrationVersion=%d", MigrationVersion)
+	}
 
-			loaded, err := Load(base)
-			if err != nil {
-				t.Fatalf("Load: %v", err)
-			}
-			if loaded.MigratedVersion != MigrationVersion {
-				t.Errorf("MigratedVersion = %d, want %d", loaded.MigratedVersion, MigrationVersion)
-			}
-		})
+	// Dockerfile must have been written (mirrors TestMigrate_FreshDir assertion).
+	got, err := os.ReadFile(filepath.Join(base, "Dockerfile"))
+	if err != nil {
+		t.Fatalf("read Dockerfile: %v", err)
+	}
+	if !bytes.Equal(got, assets.Dockerfile) {
+		t.Errorf("Dockerfile content mismatch: got %d bytes, want %d bytes", len(got), len(assets.Dockerfile))
+	}
+
+	loaded, err := Load(base)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if loaded.MigratedVersion != MigrationVersion {
+		t.Errorf("MigratedVersion = %d, want %d", loaded.MigratedVersion, MigrationVersion)
+	}
+}
+
+// TestMigrate_VersionAheadSkips verifies that Migrate is a no-op (applied ==
+// false) when MigratedVersion is ahead of MigrationVersion, e.g. after a
+// binary downgrade. This prevents re-running migrations that the older binary
+// does not know about.
+func TestMigrate_VersionAheadSkips(t *testing.T) {
+	base := filepath.Join(t.TempDir(), ".makeslop")
+	if err := os.MkdirAll(base, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	s := &Settings{
+		Version:         CurrentVersion,
+		Image:           DefaultImage,
+		Shell:           DefaultShell,
+		Workspaces:      map[string]Workspace{},
+		MigratedVersion: 999,
+	}
+	if err := Save(base, s); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	applied, err := Migrate(base)
+	if err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	if applied {
+		t.Errorf("Migrate should return applied == false when MigratedVersion=999 > MigrationVersion=%d (downgrade guard)", MigrationVersion)
+	}
+
+	// Version must remain unchanged (no downgrade stamp).
+	loaded, err := Load(base)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if loaded.MigratedVersion != 999 {
+		t.Errorf("MigratedVersion = %d, want 999 (downgrade must not re-stamp)", loaded.MigratedVersion)
 	}
 }
 
@@ -290,22 +332,3 @@ func TestSaveLoadByteIdenticalForSameSettings_WithMigratedVersion(t *testing.T) 
 	}
 }
 
-// itoa is a tiny helper to avoid importing strconv just for test sub-test names.
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	neg := n < 0
-	if neg {
-		n = -n
-	}
-	buf := make([]byte, 0, 10)
-	for n > 0 {
-		buf = append([]byte{byte('0' + n%10)}, buf...)
-		n /= 10
-	}
-	if neg {
-		buf = append([]byte{'-'}, buf...)
-	}
-	return string(buf)
-}

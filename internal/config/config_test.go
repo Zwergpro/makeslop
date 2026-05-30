@@ -477,8 +477,8 @@ func TestBootstrap_CreatesDockerfile(t *testing.T) {
 	}
 }
 
-// TestBootstrap_DoesNotOverwriteExistingDockerfile verifies that Bootstrap uses
-// the O_EXCL pattern and does not clobber a pre-existing Dockerfile.
+// TestBootstrap_DoesNotOverwriteExistingDockerfile verifies that Bootstrap does
+// not clobber a pre-existing Dockerfile (idempotent no-overwrite behavior).
 func TestBootstrap_DoesNotOverwriteExistingDockerfile(t *testing.T) {
 	base := filepath.Join(t.TempDir(), ".makeslop")
 	if err := os.MkdirAll(base, 0o755); err != nil {

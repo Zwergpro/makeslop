@@ -1,5 +1,3 @@
-// Package config manages global settings (settings.json) and one-shot agent
-// directory bootstrap under ~/.makeslop.
 package config
 
 import (
@@ -20,8 +18,12 @@ type migration struct {
 
 // migrations is the ordered list of migration steps. Append new steps here and
 // bump MigrationVersion in config.go when adding or changing a step.
+//
+// INVARIANT: every step must be idempotent. When MigratedVersion differs from
+// MigrationVersion (including a binary downgrade that later re-upgrades), all
+// steps are re-run in full — there is no per-step skip logic.
 var migrations = []migration{
-	{name: "Dockerfile", run: writeDockerfile},
+	{name: DockerfileFile, run: writeDockerfile},
 }
 
 // writeDockerfile atomically writes the embedded assets.Dockerfile to
@@ -33,7 +35,7 @@ func writeDockerfile(baseDir string) error {
 		return fmt.Errorf("create base dir %s: %w", baseDir, err)
 	}
 
-	tmp, err := os.CreateTemp(baseDir, "Dockerfile.tmp-*")
+	tmp, err := os.CreateTemp(baseDir, DockerfileFile+".tmp-*")
 	if err != nil {
 		return fmt.Errorf("create temp Dockerfile: %w", err)
 	}
@@ -54,15 +56,17 @@ func writeDockerfile(baseDir string) error {
 		return fmt.Errorf("close temp Dockerfile: %w", err)
 	}
 
-	final := filepath.Join(baseDir, "Dockerfile")
+	final := filepath.Join(baseDir, DockerfileFile)
 	if err := os.Rename(tmpName, final); err != nil {
 		return fmt.Errorf("rename Dockerfile into place: %w", err)
 	}
+	// Rename succeeded; the temp path no longer exists, so the deferred
+	// remove must not fire even if Chmod fails.
+	cleanup = false
 	// Ensure final file has the expected permission (temp file inherits umask).
 	if err := os.Chmod(final, 0o644); err != nil {
 		return fmt.Errorf("chmod Dockerfile: %w", err)
 	}
-	cleanup = false
 	return nil
 }
 
@@ -76,7 +80,7 @@ func Migrate(baseDir string) (applied bool, err error) {
 	if err != nil {
 		return false, fmt.Errorf("migrate load settings: %w", err)
 	}
-	if s.MigratedVersion == MigrationVersion {
+	if s.MigratedVersion >= MigrationVersion {
 		return false, nil
 	}
 

@@ -6,6 +6,7 @@
 
 ```
 ~/.makeslop/
+├── Dockerfile
 ├── settings.json
 └── workspaces/
     └── <basename>-<sha256[:6]>/
@@ -154,11 +155,12 @@ The image and shell are configurable via `settings.json`. Defaults are `claudebo
     "version": 1,
     "image": "claudebox",
     "shell": "/bin/zsh",
-    "workspaces": { }
+    "workspaces": { },
+    "migrated_version": 1
 }
 ```
 
-Omitted or empty `image`/`shell` fields fall back to the defaults; existing `settings.json` files predating these keys keep working unchanged.
+Omitted or empty `image`/`shell` fields fall back to the defaults; existing `settings.json` files predating these keys keep working unchanged. `migrated_version` is written by `makeslop migrate` to record which migration generation the directory is at; absent means 0 (pre-migration).
 
 ### Dry run
 
