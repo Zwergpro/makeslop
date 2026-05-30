@@ -197,11 +197,11 @@
 - [x] run `go vet ./...` and `go build ./cmd/makeslop`.
 
 ### Task 5: [Final] Update documentation
-- [ ] add a `makeslop build` entry to the README Usage list and document `--no-cache`
+- [x] add a `makeslop build` entry to the README Usage list and document `--no-cache`
       and `--build-arg`, the empty-context/BuildKit note, and the self-heal behavior;
       update the first-run flow to mention `build`.
-- [ ] update CLAUDE.md if any new pattern was discovered (likely none).
-- [ ] move this plan to `docs/plans/completed/`.
+- [x] update CLAUDE.md if any new pattern was discovered (likely none).
+- [x] move this plan to `docs/plans/completed/`.
 
 ## Post-Completion
 *Items requiring manual intervention or external systems — informational only*

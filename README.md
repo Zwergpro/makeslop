@@ -16,11 +16,12 @@
 
 ## First-run flow
 
-On a fresh machine or after a binary upgrade, run both setup commands in order:
+On a fresh machine or after a binary upgrade, run the setup commands in order:
 
 ```
 makeslop init     # seeds ~/.makeslop/ (Dockerfile, settings.json, etc.) — safe to re-run
 makeslop migrate  # applies any pending migrations (e.g. refreshes the bundled Dockerfile)
+makeslop build    # builds the claudebox docker image from ~/.makeslop/Dockerfile
 ```
 
 `init` seeds files that are absent; it never overwrites. `migrate` force-refreshes managed files
@@ -28,10 +29,18 @@ whenever the binary ships a newer `MigrationVersion` than what is recorded in `s
 subsequent runs `migrate` prints `already up to date` and exits immediately. Running `migrate` without
 a prior `init` is also safe — it creates `~/.makeslop/` if it does not exist.
 
+`build` is also safe to run without a prior `init` — it seeds `~/.makeslop/` if absent (self-heal)
+and then builds the image. After a `migrate` that refreshes the `Dockerfile`, re-run `build` to
+pick up the changes.
+
 ## Usage
 
 - `makeslop init` — registers the current working directory as a workspace and seeds `~/.makeslop/` with initial files (including `Dockerfile`). If pwd is already a subdirectory of a registered workspace, the existing workspace's cache path is returned (idempotent, no mutation). Otherwise a new entry is added to `settings.json`, the cache directory is created, and its absolute path is printed.
 - `makeslop migrate` — brings `~/.makeslop/` up to date with the current binary. Compares the binary's `MigrationVersion` constant against the `migrated_version` stored in `settings.json`. When they differ, runs all migration steps (today: force-overwrites `~/.makeslop/Dockerfile` from the embedded asset) and stamps the new version. When already up to date, exits immediately. Does not require a prior `init` and is not subject to the home-directory guard.
+- `makeslop build` — builds (or rebuilds) the base docker image from `~/.makeslop/Dockerfile` using `docker build`. Self-healing: if `~/.makeslop/` has not been initialised yet, `build` seeds it first (same as `init`) before building — so `makeslop build` works on a fresh machine with no prior `init`. The image tag defaults to `claudebox` (configurable via `settings.json`). Flags:
+  - `--no-cache` — passes `--no-cache` to `docker build` for a clean rebuild, bypassing the layer cache.
+  - `--build-arg K=V` — repeatable; each value is forwarded verbatim as `--build-arg K=V` to docker (use for proxy settings, version pins, etc.).
+  - **Empty context + BuildKit**: `build` passes an empty temporary directory as the docker build context (the Dockerfile downloads everything; no local files need shipping) and sets `DOCKER_BUILDKIT=1` so BuildKit cache mounts (`--mount=type=cache`) work correctly.
 - `makeslop go` — from within a registered workspace, launches an interactive, project-scoped docker container with the workspace source tree and per-workspace + global agent config (`.claude/`, `.codex/`, `CLAUDE.md`, `docs/`) mounted in. Exits with the container's exit code. Refuses to launch when stdin or stdout is not a TTY. If no ancestor is registered, exits non-zero with a hint to run `makeslop init`.
 
 ### Requirements
