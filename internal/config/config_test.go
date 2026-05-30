@@ -37,6 +37,9 @@ func TestLoad_MissingReturnsEmptyDefaults(t *testing.T) {
 	if s.Shell != DefaultShell {
 		t.Errorf("Shell = %q, want %q", s.Shell, DefaultShell)
 	}
+	if s.TmpDirSize != DefaultTmpDirSize {
+		t.Errorf("TmpDirSize = %q, want %q", s.TmpDirSize, DefaultTmpDirSize)
+	}
 
 	if _, err := os.Stat(filepath.Join(base, SettingsFile)); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("settings.json should not exist after load of missing file; stat err=%v", err)
@@ -187,6 +190,7 @@ func TestSaveLoadRoundTrip_PreservesNonDefaultImageAndShell(t *testing.T) {
 		Version:    CurrentVersion,
 		Image:      "myimg:tag",
 		Shell:      "/bin/fish",
+		TmpDirSize: "2g",
 		Workspaces: map[string]Workspace{},
 	}
 	if err := Save(base, want); err != nil {
@@ -201,6 +205,9 @@ func TestSaveLoadRoundTrip_PreservesNonDefaultImageAndShell(t *testing.T) {
 	}
 	if got.Shell != want.Shell {
 		t.Errorf("Shell = %q, want %q", got.Shell, want.Shell)
+	}
+	if got.TmpDirSize != want.TmpDirSize {
+		t.Errorf("TmpDirSize = %q, want %q", got.TmpDirSize, want.TmpDirSize)
 	}
 }
 
@@ -232,6 +239,17 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 
 	if got.Version != want.Version {
 		t.Errorf("Version = %d, want %d", got.Version, want.Version)
+	}
+	// Image, Shell, and TmpDirSize are omitempty — the saved struct has zero
+	// values so they are absent from JSON. Load must default them on read-back.
+	if got.Image != DefaultImage {
+		t.Errorf("Image = %q, want default %q", got.Image, DefaultImage)
+	}
+	if got.Shell != DefaultShell {
+		t.Errorf("Shell = %q, want default %q", got.Shell, DefaultShell)
+	}
+	if got.TmpDirSize != DefaultTmpDirSize {
+		t.Errorf("TmpDirSize = %q, want default %q", got.TmpDirSize, DefaultTmpDirSize)
 	}
 	if len(got.Workspaces) != len(want.Workspaces) {
 		t.Fatalf("Workspaces len = %d, want %d", len(got.Workspaces), len(want.Workspaces))

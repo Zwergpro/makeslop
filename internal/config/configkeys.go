@@ -46,18 +46,20 @@ var configKeys = []configKey{
 }
 
 func setImage(s *Settings, v string) error {
-	if strings.TrimSpace(v) == "" {
+	trimmed := strings.TrimSpace(v)
+	if trimmed == "" {
 		return fmt.Errorf("image: value must not be empty or whitespace-only")
 	}
-	s.Image = v
+	s.Image = trimmed
 	return nil
 }
 
 func setShell(s *Settings, v string) error {
-	if strings.TrimSpace(v) == "" {
+	trimmed := strings.TrimSpace(v)
+	if trimmed == "" {
 		return fmt.Errorf("shell: value must not be empty or whitespace-only")
 	}
-	s.Shell = v
+	s.Shell = trimmed
 	return nil
 }
 
@@ -65,8 +67,25 @@ func setTmpDirSize(s *Settings, v string) error {
 	if !tmpDirSizeRe.MatchString(v) {
 		return fmt.Errorf("tmp_dir_size: invalid value %q — expected digits with optional suffix k/K/m/M/g/G (e.g. 100m, 2g, 512k); a bare number is interpreted as bytes by docker", v)
 	}
+	// Reject "0": docker interprets --tmpfs /tmp:size=0 as unlimited, which
+	// silently removes the size cap rather than setting a zero-byte limit.
+	if v == "0" {
+		return fmt.Errorf("tmp_dir_size: value %q is not allowed; docker interprets size=0 as unlimited (use a positive value, e.g. 100m)", v)
+	}
 	s.TmpDirSize = v
 	return nil
+}
+
+// ConfigGet returns the stored value for key. It returns ("", false) for
+// unknown keys; callers that have already verified the key via ConfigSet can
+// safely ignore the bool.
+func ConfigGet(s *Settings, key string) (string, bool) {
+	for _, ck := range configKeys {
+		if ck.name == key {
+			return ck.get(s), true
+		}
+	}
+	return "", false
 }
 
 // ConfigList returns the current value of every settable key in registry order.
@@ -86,7 +105,7 @@ func ConfigSet(s *Settings, key, val string) error {
 			return ck.set(s, val)
 		}
 	}
-	// Unknown key: list valid keys in registry order.
+	// Unknown key: collect valid key names only when building the error.
 	names := make([]string, len(configKeys))
 	for i, ck := range configKeys {
 		names[i] = ck.name

@@ -2539,3 +2539,335 @@ func TestBuild_DOCKER_BUILDKIT_EndToEnd(t *testing.T) {
 		t.Errorf("DOCKER_BUILDKIT in child env = %q, want %q", got, "1")
 	}
 }
+
+// ── config subcommand tests ───────────────────────────────────────────────────
+
+// TestConfig_BareInvocation_PrintsHelp verifies that bare `makeslop config`
+// prints help (lists subcommands) and exits 0.
+func TestConfig_BareInvocation_PrintsHelp(t *testing.T) {
+	baseDir := t.TempDir()
+
+	stdout, stderr, err := runCmd(t, baseDir, "config")
+	if err != nil {
+		t.Fatalf("bare 'makeslop config' should exit 0, got err: %v; stdout=%q stderr=%q", err, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "list") {
+		t.Errorf("help output missing 'list' subcommand: %q", stdout)
+	}
+	if !strings.Contains(stdout, "set") {
+		t.Errorf("help output missing 'set' subcommand: %q", stdout)
+	}
+}
+
+// TestRoot_BareInvocation_ListsConfigCommand checks that bare makeslop help
+// lists the config subcommand in the Available Commands section.
+func TestRoot_BareInvocation_ListsConfigCommand(t *testing.T) {
+	baseDir := t.TempDir()
+
+	stdout, stderr, err := runCmd(t, baseDir)
+	if err != nil {
+		t.Fatalf("bare makeslop should exit 0, got err: %v; stderr=%q", err, stderr)
+	}
+	if !strings.Contains(stdout, "\n  config ") {
+		t.Errorf("stdout missing '\\n  config ' command entry: %q", stdout)
+	}
+}
+
+// TestConfigList_FreshBaseDir_PrintsThreeDefaults verifies that `config list`
+// on a fresh (empty) baseDir prints the three keys with their default values in
+// registry order (image, shell, tmp_dir_size).
+func TestConfigList_FreshBaseDir_PrintsThreeDefaults(t *testing.T) {
+	baseDir := t.TempDir()
+
+	stdout, stderr, err := runCmd(t, baseDir, "config", "list")
+	if err != nil {
+		t.Fatalf("config list failed: %v; stderr=%q", err, stderr)
+	}
+	if stderr != "" {
+		t.Errorf("expected empty stderr, got %q", stderr)
+	}
+
+	// Verify all three default lines are present.
+	wantLines := []string{
+		"image = " + config.DefaultImage,
+		"shell = " + config.DefaultShell,
+		"tmp_dir_size = " + config.DefaultTmpDirSize,
+	}
+	for _, line := range wantLines {
+		if !strings.Contains(stdout, line) {
+			t.Errorf("stdout missing %q: %q", line, stdout)
+		}
+	}
+
+	// Verify registry order: image appears before shell, shell before tmp_dir_size.
+	idxImage := strings.Index(stdout, "image =")
+	idxShell := strings.Index(stdout, "shell =")
+	idxTmpDir := strings.Index(stdout, "tmp_dir_size =")
+	if idxImage < 0 || idxShell < 0 || idxTmpDir < 0 {
+		t.Fatalf("one or more keys missing from stdout: %q", stdout)
+	}
+	if !(idxImage < idxShell && idxShell < idxTmpDir) {
+		t.Errorf("registry order violated: image@%d shell@%d tmp_dir_size@%d", idxImage, idxShell, idxTmpDir)
+	}
+}
+
+// TestConfigSet_ThenList_ShowsNewValue verifies that `config set` persists
+// changes for all three keys (image, shell, tmp_dir_size) and `config list`
+// reflects each updated value.
+func TestConfigSet_ThenList_ShowsNewValue(t *testing.T) {
+	baseDir := t.TempDir()
+
+	cases := []struct {
+		key, val, wantLine string
+		check              func(*config.Settings) string
+	}{
+		{"image", "foo", "image = foo", func(s *config.Settings) string { return s.Image }},
+		{"shell", "/bin/bash", "shell = /bin/bash", func(s *config.Settings) string { return s.Shell }},
+		{"tmp_dir_size", "512m", "tmp_dir_size = 512m", func(s *config.Settings) string { return s.TmpDirSize }},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.key, func(t *testing.T) {
+			// Set the value.
+			stdout, stderr, err := runCmd(t, baseDir, "config", "set", tc.key, tc.val)
+			if err != nil {
+				t.Fatalf("config set %s %s failed: %v; stderr=%q", tc.key, tc.val, err, stderr)
+			}
+			if !strings.Contains(stdout, tc.wantLine) {
+				t.Errorf("config set stdout missing %q: %q", tc.wantLine, stdout)
+			}
+
+			// List should now show the updated value.
+			listOut, listErr, err := runCmd(t, baseDir, "config", "list")
+			if err != nil {
+				t.Fatalf("config list failed: %v; stderr=%q", err, listErr)
+			}
+			if !strings.Contains(listOut, tc.wantLine) {
+				t.Errorf("config list output missing %q: %q", tc.wantLine, listOut)
+			}
+
+			// Verify it is persisted to settings.json.
+			s, loadErr := config.Load(baseDir)
+			if loadErr != nil {
+				t.Fatalf("load settings: %v", loadErr)
+			}
+			if got := tc.check(s); got != tc.val {
+				t.Errorf("settings.%s = %q, want %q", tc.key, got, tc.val)
+			}
+		})
+	}
+}
+
+// TestConfigSet_InvalidTmpDirSize_ExitsOneAndFileUnchanged verifies that an
+// invalid tmp_dir_size value is rejected (exit 1, error on stderr) without
+// mutating the settings file.
+func TestConfigSet_InvalidTmpDirSize_ExitsOneAndFileUnchanged(t *testing.T) {
+	baseDir := t.TempDir()
+
+	// Take a snapshot of settings before the invalid set.
+	snapBefore := snapshotTree(t, baseDir)
+
+	var stdout, stderr bytes.Buffer
+	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"config", "set", "tmp_dir_size", "9z"})
+	if code != 1 {
+		t.Errorf("exit code = %d, want 1", code)
+	}
+	if !strings.Contains(stderr.String(), "tmp_dir_size") {
+		t.Errorf("stderr missing 'tmp_dir_size'; got %q", stderr.String())
+	}
+	if stdout.String() != "" {
+		t.Errorf("expected empty stdout, got %q", stdout.String())
+	}
+
+	// File tree must be unchanged.
+	snapAfter := snapshotTree(t, baseDir)
+	assertSnapshotsEqual(t, snapBefore, snapAfter)
+}
+
+// TestConfigSet_UnknownKey_ExitsOneAndListsValidKeys verifies that an unknown
+// key is rejected (exit 1) and the error on stderr mentions all valid keys.
+func TestConfigSet_UnknownKey_ExitsOneAndListsValidKeys(t *testing.T) {
+	baseDir := t.TempDir()
+
+	var stdout, stderr bytes.Buffer
+	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"config", "set", "bogus", "x"})
+	if code != 1 {
+		t.Errorf("exit code = %d, want 1", code)
+	}
+	stderrStr := stderr.String()
+	for _, key := range []string{"image", "shell", "tmp_dir_size"} {
+		if !strings.Contains(stderrStr, key) {
+			t.Errorf("stderr missing valid key %q: %q", key, stderrStr)
+		}
+	}
+	if stdout.String() != "" {
+		t.Errorf("expected empty stdout, got %q", stdout.String())
+	}
+}
+
+// TestConfigSet_WithoutPriorInit_SelfHeals verifies that `config set` works
+// without a prior `makeslop init` (Save's MkdirAll heals the missing dir).
+func TestConfigSet_WithoutPriorInit_SelfHeals(t *testing.T) {
+	// Use a non-existing subdirectory so config.Save must create it.
+	parent := t.TempDir()
+	baseDir := filepath.Join(parent, "brand-new-makeslop-dir")
+
+	stdout, stderr, err := runCmd(t, baseDir, "config", "set", "shell", "/bin/bash")
+	if err != nil {
+		t.Fatalf("config set without prior init failed: %v; stderr=%q", err, stderr)
+	}
+	if !strings.Contains(stdout, "shell = /bin/bash") {
+		t.Errorf("config set stdout missing 'shell = /bin/bash': %q", stdout)
+	}
+
+	// settings.json must have been created.
+	settingsPath := filepath.Join(baseDir, config.SettingsFile)
+	if _, statErr := os.Stat(settingsPath); statErr != nil {
+		t.Errorf("settings.json not created by config set: %v", statErr)
+	}
+
+	// Reload and verify value persisted.
+	s, loadErr := config.Load(baseDir)
+	if loadErr != nil {
+		t.Fatalf("load settings: %v", loadErr)
+	}
+	if s.Shell != "/bin/bash" {
+		t.Errorf("settings.Shell = %q, want %q", s.Shell, "/bin/bash")
+	}
+}
+
+// TestConfigSet_ExistingFileByteStableUntilSet verifies that an on-disk
+// settings.json without a tmp_dir_size field is not modified by `config list`
+// (read-only — omitempty keeps the file byte-stable).
+func TestConfigSet_ExistingFileByteStableUntilSet(t *testing.T) {
+	baseDir := t.TempDir()
+
+	// Write a minimal settings.json with no tmp_dir_size field.
+	minimal := []byte(`{"version":1,"workspaces":{}}` + "\n")
+	settingsPath := filepath.Join(baseDir, config.SettingsFile)
+	if err := os.WriteFile(settingsPath, minimal, 0o644); err != nil {
+		t.Fatalf("write minimal settings: %v", err)
+	}
+
+	// `config list` must not touch the file.
+	if _, _, err := runCmd(t, baseDir, "config", "list"); err != nil {
+		t.Fatalf("config list failed: %v", err)
+	}
+
+	after, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("read settings after list: %v", err)
+	}
+	if string(after) != string(minimal) {
+		t.Errorf("settings.json was modified by config list (byte-stable violated)\nbefore: %q\nafter:  %q", minimal, after)
+	}
+}
+
+// TestConfigSet_CorruptSettings_ReportsError verifies that `config set` with a
+// corrupt settings.json exits non-zero and surfaces an error mentioning "settings".
+func TestConfigSet_CorruptSettings_ReportsError(t *testing.T) {
+	baseDir := t.TempDir()
+
+	if err := os.WriteFile(filepath.Join(baseDir, config.SettingsFile), []byte("{not json"), 0o644); err != nil {
+		t.Fatalf("seed corrupt settings: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"config", "set", "image", "foo"})
+	if code == 0 {
+		t.Fatalf("expected non-zero exit from config set with corrupt settings; stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "settings") {
+		t.Errorf("expected stderr to mention 'settings', got %q", stderr.String())
+	}
+}
+
+// TestConfigList_CorruptSettings_ReportsError mirrors the set variant above for
+// config list.
+func TestConfigList_CorruptSettings_ReportsError(t *testing.T) {
+	baseDir := t.TempDir()
+
+	if err := os.WriteFile(filepath.Join(baseDir, config.SettingsFile), []byte("{not json"), 0o644); err != nil {
+		t.Fatalf("seed corrupt settings: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"config", "list"})
+	if code == 0 {
+		t.Fatalf("expected non-zero exit from config list with corrupt settings; stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "settings") {
+		t.Errorf("expected stderr to mention 'settings', got %q", stderr.String())
+	}
+}
+
+// TestConfigSet_WrongArgCount_ExitsOne verifies that cobra's ExactArgs(2)
+// enforcement is exercised: too few args or too many args both exit non-zero.
+func TestConfigSet_WrongArgCount_ExitsOne(t *testing.T) {
+	baseDir := t.TempDir()
+
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"no args", []string{"config", "set"}},
+		{"one arg", []string{"config", "set", "image"}},
+		{"three args", []string{"config", "set", "image", "foo", "extra"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			code := runWithExitCode(baseDir, &stdout, &stderr, tc.args)
+			if code == 0 {
+				t.Errorf("%s: expected non-zero exit, got 0; stdout=%q stderr=%q", tc.name, stdout.String(), stderr.String())
+			}
+		})
+	}
+}
+
+// TestGo_CustomTmpDirSize_FlowsIntoDockerArgv verifies that a tmp_dir_size set
+// in settings.json is threaded all the way into the docker run argv emitted by
+// `makeslop go`, matching the existing TestGo_CustomImageAndShell_FlowFromSettings
+// pattern.
+func TestGo_CustomTmpDirSize_FlowsIntoDockerArgv(t *testing.T) {
+	docker.SkipNonPOSIX(t, "docker shim requires POSIX shell; makeslop is POSIX-only")
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	s, err := config.Load(baseDir)
+	if err != nil {
+		t.Fatalf("load settings: %v", err)
+	}
+	s.TmpDirSize = "1000m"
+	if err := config.Save(baseDir, s); err != nil {
+		t.Fatalf("save settings: %v", err)
+	}
+
+	installFdShim(t, nil)
+	record := installDockerShim(t, 0)
+	stubTTY(t, true)
+
+	if _, _, err := runCmd(t, baseDir, "go"); err != nil {
+		t.Fatalf("makeslop go failed: %v", err)
+	}
+	argv := readArgv(t, record)
+
+	// Find the --tmpfs argument and verify the size.
+	found := false
+	for i, arg := range argv {
+		if arg == "--tmpfs" && i+1 < len(argv) {
+			if argv[i+1] == "/tmp:size=1000m" {
+				found = true
+				break
+			}
+		}
+	}
+	if !found {
+		t.Errorf("docker argv missing '--tmpfs /tmp:size=1000m'; full argv: %v", argv)
+	}
+}

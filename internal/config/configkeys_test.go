@@ -29,7 +29,7 @@ func TestConfigSet_ValidShell(t *testing.T) {
 
 // TestConfigSet_TmpDirSize_AcceptedValues verifies the accepted patterns for tmp_dir_size.
 func TestConfigSet_TmpDirSize_AcceptedValues(t *testing.T) {
-	accepted := []string{"1000m", "2g", "512k", "1048576", "100M", "1G", "1K", "0"}
+	accepted := []string{"1000m", "2g", "512k", "1048576", "100M", "1G", "1K"}
 	for _, v := range accepted {
 		t.Run(v, func(t *testing.T) {
 			s := defaultSettings()
@@ -45,14 +45,28 @@ func TestConfigSet_TmpDirSize_AcceptedValues(t *testing.T) {
 
 // TestConfigSet_TmpDirSize_RejectedValues verifies that invalid patterns are rejected.
 func TestConfigSet_TmpDirSize_RejectedValues(t *testing.T) {
-	rejected := []string{"10mb", "abc", "", "50%", "-1", "1 m", "1.5m", "10mb", " 100m"}
-	for _, v := range rejected {
-		t.Run(v, func(t *testing.T) {
+	cases := []struct {
+		name   string
+		value  string
+		reason string
+	}{
+		{"two-char suffix", "10mb", "only single-char suffix allowed"},
+		{"letters only", "abc", "no digits"},
+		{"empty string", "", "must not be empty"},
+		{"percent suffix", "50%", "invalid suffix character"},
+		{"negative", "-1", "negative values not allowed"},
+		{"space before suffix", "1 m", "embedded space"},
+		{"decimal", "1.5m", "fractional values not allowed"},
+		{"zero", "0", "docker interprets size=0 as unlimited"},
+		{"leading space", " 100m", "leading whitespace"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
 			s := defaultSettings()
 			orig := s.TmpDirSize
-			err := ConfigSet(s, "tmp_dir_size", v)
+			err := ConfigSet(s, "tmp_dir_size", tc.value)
 			if err == nil {
-				t.Errorf("ConfigSet(tmp_dir_size=%q) expected error, got nil", v)
+				t.Errorf("ConfigSet(tmp_dir_size=%q) expected error (%s), got nil", tc.value, tc.reason)
 			}
 			// Settings must not be mutated on validation failure.
 			if s.TmpDirSize != orig {
