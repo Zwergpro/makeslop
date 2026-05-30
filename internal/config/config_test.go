@@ -103,6 +103,84 @@ func TestLoad_ExplicitEmptyImageAndShellGetsDefaults(t *testing.T) {
 	}
 }
 
+func TestLoad_MissingFile_DefaultsTmpDirSize(t *testing.T) {
+	base := t.TempDir()
+
+	s, err := Load(base)
+	if err != nil {
+		t.Fatalf("Load: unexpected error: %v", err)
+	}
+	if s.TmpDirSize != DefaultTmpDirSize {
+		t.Errorf("TmpDirSize = %q, want %q", s.TmpDirSize, DefaultTmpDirSize)
+	}
+}
+
+func TestLoad_FileWithoutTmpDirSize_DefaultsTmpDirSize(t *testing.T) {
+	base := t.TempDir()
+	body := `{"version":1,"workspaces":{}}`
+	if err := os.WriteFile(filepath.Join(base, SettingsFile), []byte(body), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	s, err := Load(base)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if s.TmpDirSize != DefaultTmpDirSize {
+		t.Errorf("TmpDirSize = %q, want %q", s.TmpDirSize, DefaultTmpDirSize)
+	}
+}
+
+func TestSaveLoad_TmpDirSizeRoundTrip(t *testing.T) {
+	base := t.TempDir()
+	want := &Settings{
+		Version:    CurrentVersion,
+		Image:      DefaultImage,
+		Shell:      DefaultShell,
+		TmpDirSize: "1000m",
+		Workspaces: map[string]Workspace{},
+	}
+	if err := Save(base, want); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	got, err := Load(base)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got.TmpDirSize != "1000m" {
+		t.Errorf("TmpDirSize = %q, want %q", got.TmpDirSize, "1000m")
+	}
+}
+
+// TestLoad_TmpDirSizeByteStableWithoutWrite verifies that a settings.json written
+// without tmp_dir_size is read-only byte-stable: the field is absent on disk
+// (omitempty) and Load merely returns the default in memory without touching the file.
+func TestLoad_TmpDirSizeByteStableWithoutWrite(t *testing.T) {
+	base := t.TempDir()
+	original := `{"version":1,"image":"claudebox","shell":"/bin/zsh","workspaces":{}}`
+	if err := os.WriteFile(filepath.Join(base, SettingsFile), []byte(original), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	s, err := Load(base)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	// TmpDirSize must be defaulted in memory.
+	if s.TmpDirSize != DefaultTmpDirSize {
+		t.Errorf("TmpDirSize = %q, want %q", s.TmpDirSize, DefaultTmpDirSize)
+	}
+
+	// The file on disk must be untouched — Load does not write.
+	got, err := os.ReadFile(filepath.Join(base, SettingsFile))
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+	if string(got) != original {
+		t.Errorf("settings.json was modified by Load (read-only operation)\nbefore: %s\nafter:  %s", original, got)
+	}
+}
+
 func TestSaveLoadRoundTrip_PreservesNonDefaultImageAndShell(t *testing.T) {
 	base := t.TempDir()
 	want := &Settings{
@@ -218,10 +296,11 @@ func TestSaveLoadByteIdenticalForSameSettings(t *testing.T) {
 
 	s := &Settings{
 		Version: CurrentVersion,
-		// Image/Shell included so the post-Load defaulting does not alter the
-		// re-serialized byte sequence on the second save.
-		Image: DefaultImage,
-		Shell: DefaultShell,
+		// Image/Shell/TmpDirSize included so the post-Load defaulting does not
+		// alter the re-serialized byte sequence on the second save.
+		Image:      DefaultImage,
+		Shell:      DefaultShell,
+		TmpDirSize: DefaultTmpDirSize,
 		Workspaces: map[string]Workspace{
 			"/x/y": {
 				Name:      "y-aabbcc",
@@ -334,6 +413,7 @@ func TestSaveLoad_MigratedVersionRoundTrips(t *testing.T) {
 		Version:         CurrentVersion,
 		Image:           DefaultImage,
 		Shell:           DefaultShell,
+		TmpDirSize:      DefaultTmpDirSize,
 		Workspaces:      map[string]Workspace{},
 		MigratedVersion: MigrationVersion,
 	}

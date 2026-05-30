@@ -298,6 +298,7 @@ func TestSaveLoadByteIdenticalForSameSettings_WithMigratedVersion(t *testing.T) 
 		Version:         CurrentVersion,
 		Image:           DefaultImage,
 		Shell:           DefaultShell,
+		TmpDirSize:      DefaultTmpDirSize,
 		Workspaces:      map[string]Workspace{},
 		MigratedVersion: MigrationVersion,
 	}
