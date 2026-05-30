@@ -14,6 +14,7 @@ func sampleOptions() Options {
 		BaseDir:       "/home/me/.makeslop",
 		Image:         "claudebox",
 		Command:       "/bin/zsh",
+		TmpDirSize:    "100m",
 	}
 }
 
@@ -590,6 +591,59 @@ func TestBuildArgv_OrderIsDeterministic(t *testing.T) {
 		if got := BuildArgv(o); !reflect.DeepEqual(got, first) {
 			t.Fatalf("BuildArgv is not deterministic (iteration %d differs)", i+1)
 		}
+	}
+}
+
+// ── TmpDirSize tests ──────────────────────────────────────────────────────────
+
+// TestBuildSpec_TmpDirSize_Custom verifies that a custom TmpDirSize value is
+// reflected verbatim in Spec.Tmpfs and propagated through Args().
+func TestBuildSpec_TmpDirSize_Custom(t *testing.T) {
+	o := sampleOptions()
+	o.TmpDirSize = "1000m"
+	spec := BuildSpec(o)
+
+	want := []string{"/tmp:size=1000m"}
+	if !reflect.DeepEqual(spec.Tmpfs, want) {
+		t.Errorf("Tmpfs = %v, want %v", spec.Tmpfs, want)
+	}
+
+	// Verify Args() contains --tmpfs /tmp:size=1000m.
+	args := spec.Args()
+	found := false
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == "--tmpfs" && args[i+1] == "/tmp:size=1000m" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("Args() missing --tmpfs /tmp:size=1000m; args: %v", args)
+	}
+}
+
+// TestShellCommand_TmpDirSize_Custom verifies that ShellCommand renders a
+// custom tmp_dir_size — the user-facing --dry-run verification path.
+func TestShellCommand_TmpDirSize_Custom(t *testing.T) {
+	o := sampleOptions()
+	o.TmpDirSize = "1000m"
+	spec := BuildSpec(o)
+	out := spec.ShellCommand()
+
+	if !strings.Contains(out, "--tmpfs /tmp:size=1000m") {
+		t.Errorf("ShellCommand missing '--tmpfs /tmp:size=1000m':\n%s", out)
+	}
+}
+
+// TestBuildSpec_TmpDirSize_DefaultPath verifies that the default (100m)
+// supplied by config.Load passes through unchanged when TmpDirSize = "100m".
+func TestBuildSpec_TmpDirSize_DefaultPath(t *testing.T) {
+	// sampleOptions() already sets TmpDirSize: "100m" — simulate Load-supplied default.
+	spec := BuildSpec(sampleOptions())
+
+	want := []string{"/tmp:size=100m"}
+	if !reflect.DeepEqual(spec.Tmpfs, want) {
+		t.Errorf("Tmpfs = %v, want %v (default regression)", spec.Tmpfs, want)
 	}
 }
 

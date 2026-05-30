@@ -33,6 +33,11 @@ type Options struct {
 	// ProxySocketContainer is the in-container socket path; use /tmp (guaranteed
 	// writable via --tmpfs /tmp). The env vars reference it via unix:// URL.
 	ProxySocketContainer string
+
+	// TmpDirSize is the size constraint passed verbatim to --tmpfs /tmp:size=<TmpDirSize>.
+	// config.Load is the single source of the default ("100m"); BuildSpec uses it
+	// verbatim without re-defaulting, matching how Image/Command are handled.
+	TmpDirSize string
 }
 
 // Mount is a single docker mount entry.
@@ -109,7 +114,7 @@ func BuildSpec(o Options) Spec {
 		Command: o.Command,
 		Workdir: workspacePath,
 		Mounts:  mounts,
-		Tmpfs:   []string{"/tmp:size=100m"},
+		Tmpfs:   []string{"/tmp:size=" + o.TmpDirSize},
 		CapDrop: []string{"ALL"},
 		SecOpt:  []string{"no-new-privileges"},
 	}

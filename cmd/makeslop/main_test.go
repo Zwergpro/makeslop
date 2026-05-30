@@ -272,6 +272,7 @@ func TestGo_AfterInit_LaunchesDocker(t *testing.T) {
 		BaseDir:       baseDir,
 		Image:         "claudebox",
 		Command:       "/bin/zsh",
+		TmpDirSize:    config.DefaultTmpDirSize,
 	}).Args()
 	got := readArgv(t, record)
 	if len(got) != len(want) {
@@ -1229,6 +1230,7 @@ func TestGo_DryRun_StdoutEqualsBuildSpecShellCommand(t *testing.T) {
 		BaseDir:       baseDir,
 		Image:         s.Image,
 		Command:       s.Shell,
+		TmpDirSize:    s.TmpDirSize,
 	}).ShellCommand()
 
 	got := strings.TrimSuffix(stdout, "\n")
@@ -1793,6 +1795,7 @@ func TestGo_YamlAbsentIsBitIdenticalArgv(t *testing.T) {
 		BaseDir:       baseDir,
 		Image:         s.Image,
 		Command:       s.Shell,
+		TmpDirSize:    s.TmpDirSize,
 	}).Args()
 
 	if len(got) != len(want) {
@@ -2118,6 +2121,7 @@ func TestGo_DryRun_WithoutProxy_UnchangedArgv(t *testing.T) {
 		BaseDir:       baseDir,
 		Image:         s.Image,
 		Command:       s.Shell,
+		TmpDirSize:    s.TmpDirSize,
 	}).ShellCommand()
 	got := strings.TrimSuffix(stdout, "\n")
 	if got != want {

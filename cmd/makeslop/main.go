@@ -143,6 +143,7 @@ func runGo(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfHo
 		BaseDir:       baseDir,
 		Image:         s.Image,
 		Command:       s.Shell,
+		TmpDirSize:    s.TmpDirSize,
 		MaskedFiles:   maskedFiles,
 		MaskedDirs:    yamlExcludes.Dirs,
 	}
