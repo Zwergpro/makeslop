@@ -3,6 +3,7 @@ package docker
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -47,9 +48,9 @@ func Build(ctx context.Context, o BuildOptions, stdout, stderr io.Writer) error 
 	if o.ContextDir == "" {
 		dir, err := os.MkdirTemp("", "makeslop-build-*")
 		if err != nil {
-			return err
+			return fmt.Errorf("create build context dir: %w", err)
 		}
-		defer os.RemoveAll(dir)
+		defer os.RemoveAll(dir) //nolint:errcheck // best-effort cleanup; failure is non-actionable
 		o.ContextDir = dir
 	}
 	cmd := exec.CommandContext(ctx, dockerBinary, BuildArgv(o)...)

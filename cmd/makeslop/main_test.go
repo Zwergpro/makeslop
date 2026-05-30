@@ -2461,3 +2461,81 @@ func TestRoot_BareInvocation_ListsBuildCommand(t *testing.T) {
 		t.Errorf("expected empty stderr, got %q", stderr)
 	}
 }
+
+// TestBuild_CorruptSettings_ReportsError verifies that `makeslop build` with a
+// corrupt settings.json exits non-zero and surfaces an error mentioning
+// "settings". Mirrors TestMigrate_CorruptSettings_ReportsError and
+// TestInit_CorruptSettings_ReportsError.
+func TestBuild_CorruptSettings_ReportsError(t *testing.T) {
+	baseDir := t.TempDir()
+	// Seed the Dockerfile so Bootstrap doesn't fail before the settings check,
+	// but write a corrupt settings.json that config.Load will reject.
+	if err := os.WriteFile(filepath.Join(baseDir, "settings.json"), []byte("{not json"), 0o644); err != nil {
+		t.Fatalf("seed corrupt settings: %v", err)
+	}
+
+	stdout, stderr, err := runCmd(t, baseDir, "build")
+	if err == nil {
+		t.Fatalf("expected error from build with corrupt settings, got nil; stdout=%q stderr=%q", stdout, stderr)
+	}
+	if !strings.Contains(err.Error(), "settings") {
+		t.Errorf("expected error to mention 'settings' context, got %q", err.Error())
+	}
+}
+
+// TestBuild_MultipleBuildArgs verifies that --build-arg is repeatable and all
+// values are forwarded verbatim to the docker build argv. The plan says it is
+// "repeatable" — this test covers multiple values end-to-end.
+func TestBuild_MultipleBuildArgs(t *testing.T) {
+	baseDir := t.TempDir()
+	record, _ := installBuildShim(t, 0)
+
+	_, stderr, err := runCmd(t, baseDir, "build",
+		"--build-arg", "GO_VERSION=1.26.3",
+		"--build-arg", "HTTP_PROXY=http://proxy.example.com:8080",
+		"--build-arg", "FOO=bar",
+	)
+	if err != nil {
+		t.Fatalf("build --build-arg (multiple) failed: %v; stderr=%q", err, stderr)
+	}
+
+	argv := readArgv(t, record)
+	wantArgs := []string{
+		"GO_VERSION=1.26.3",
+		"HTTP_PROXY=http://proxy.example.com:8080",
+		"FOO=bar",
+	}
+	for _, want := range wantArgs {
+		var found bool
+		for i, a := range argv {
+			if a == "--build-arg" && i+1 < len(argv) && argv[i+1] == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("argv missing --build-arg %s: %v", want, argv)
+		}
+	}
+}
+
+// TestBuild_DOCKER_BUILDKIT_EndToEnd verifies that the CLI-level build path
+// passes DOCKER_BUILDKIT=1 to docker. The env value is recovered from the
+// shim's env.txt (written by WriteBuildShim).
+func TestBuild_DOCKER_BUILDKIT_EndToEnd(t *testing.T) {
+	baseDir := t.TempDir()
+	_, envRecord := installBuildShim(t, 0)
+
+	_, stderr, err := runCmd(t, baseDir, "build")
+	if err != nil {
+		t.Fatalf("build failed: %v; stderr=%q", err, stderr)
+	}
+
+	data, readErr := os.ReadFile(envRecord)
+	if readErr != nil {
+		t.Fatalf("read env record: %v", readErr)
+	}
+	if got := strings.TrimRight(string(data), "\n"); got != "1" {
+		t.Errorf("DOCKER_BUILDKIT in child env = %q, want %q", got, "1")
+	}
+}

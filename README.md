@@ -67,11 +67,13 @@ Security flags inside the container: `--tmpfs /tmp:size=100m`, `--cap-drop ALL`,
 
 ### TTY policy
 
-`makeslop` is interactive-only. When stdin or stdout is not a TTY it exits non-zero with:
+`makeslop go` is interactive-only. When stdin or stdout is not a TTY it exits non-zero with:
 
 ```
 makeslop: stdin/stdout must be a TTY; makeslop is interactive-only
 ```
+
+`makeslop build`, `makeslop init`, and `makeslop migrate` do not require a TTY and work correctly in CI pipelines and non-interactive shells.
 
 ### Secret masking
 
@@ -188,8 +190,9 @@ makeslop go -n > cmd.sh   # capture only the command; masked-file count goes to 
 
 ### Exit codes
 
-- `0` — success (`init` registered/reused a project, or the container exited cleanly).
+- `0` — success (`init` registered/reused a project, or the container exited cleanly, or `build` completed successfully).
 - container's exit code — `makeslop go` propagates `exit N` from the container as the host's exit code.
+- docker's exit code — `makeslop build` propagates the exit code of the `docker build` child process. A failed build (non-zero `docker build` exit) surfaces as the same non-zero code from `makeslop build`.
 - `1` — any other failure: no workspace registered for pwd, no TTY available, corrupt `settings.json`, I/O error, etc. The reason is written to stderr.
 
 ### Home-directory guard
@@ -206,6 +209,8 @@ Pass `--out-of-home` (a persistent flag inherited by all subcommands) to bypass 
 makeslop --out-of-home go
 makeslop --out-of-home init
 ```
+
+`makeslop build`, `makeslop migrate`, and `makeslop` bare invocation are **exempt** from the home-directory guard — they operate on `~/.makeslop/` directly and do not consult the current working directory.
 
 ### Path resolution
 

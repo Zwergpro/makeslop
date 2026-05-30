@@ -208,7 +208,12 @@ func TestBuild_HappyPath_RecordsArgvAndBuildKit(t *testing.T) {
 	}
 }
 
-func TestBuild_EmptyContextDir_UsesGeneratedDir(t *testing.T) {
+// TestBuild_EmptyContextDir_GeneratesAndRemovesDir verifies two invariants:
+// (1) when ContextDir is empty, Build generates a non-empty path and passes it
+// as the last argv token; (2) that dir is removed after Build returns.
+// The two properties are tested together because recovering the generated path
+// requires reading the shim's argv record.
+func TestBuild_EmptyContextDir_GeneratesAndRemovesDir(t *testing.T) {
 	SkipNonPOSIX(t, "shell shim requires POSIX shell; makeslop is POSIX-only")
 	dir := executableTempDir(t)
 	shim, record, _ := WriteBuildShim(t, dir, 0)
@@ -234,41 +239,13 @@ func TestBuild_EmptyContextDir_UsesGeneratedDir(t *testing.T) {
 	}
 	generatedCtxDir := lines[len(lines)-1]
 
-	// The generated context dir must be a non-empty path.
+	// (1) The generated context dir must be a non-empty path.
 	if generatedCtxDir == "" {
 		t.Fatal("last argv token (context dir) is empty")
 	}
-	// The directory was passed in; it exists during the shim run. After Build
-	// returns, defer os.RemoveAll has run, so it must no longer exist.
-	if _, err := os.Stat(generatedCtxDir); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("temp context dir %q still exists after Build returned (want ErrNotExist, got %v)", generatedCtxDir, err)
-	}
-}
-
-func TestBuild_TempContextDir_RemovedAfterReturn(t *testing.T) {
-	SkipNonPOSIX(t, "shell shim requires POSIX shell; makeslop is POSIX-only")
-	dir := executableTempDir(t)
-	shim, record, _ := WriteBuildShim(t, dir, 0)
-	t.Cleanup(SetDockerBinaryForTest(shim))
-
-	o := BuildOptions{
-		Image:          "testimage",
-		DockerfilePath: "/some/Dockerfile",
-		// ContextDir empty: Build will create and remove a temp dir.
-	}
-	if err := Build(context.Background(), o, io.Discard, io.Discard); err != nil {
-		t.Fatalf("Build returned unexpected error: %v", err)
-	}
-
-	data, err := os.ReadFile(record)
-	if err != nil {
-		t.Fatalf("read argv record: %v", err)
-	}
-	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
-	ctxDir := lines[len(lines)-1]
-
-	if _, statErr := os.Stat(ctxDir); !errors.Is(statErr, os.ErrNotExist) {
-		t.Errorf("temp context dir %q not removed: got %v, want ErrNotExist", ctxDir, statErr)
+	// (2) After Build returns, defer os.RemoveAll has run, so it must no longer exist.
+	if _, statErr := os.Stat(generatedCtxDir); !errors.Is(statErr, os.ErrNotExist) {
+		t.Errorf("temp context dir %q still exists after Build returned (want ErrNotExist, got %v)", generatedCtxDir, statErr)
 	}
 }
 
@@ -314,5 +291,54 @@ func TestBuild_DockerNotFound_ReturnsError(t *testing.T) {
 	var pathErr *os.PathError
 	if !errors.As(err, &execErr) && !errors.As(err, &pathErr) {
 		t.Errorf("expected *exec.Error or *os.PathError, got %T: %v", err, err)
+	}
+}
+
+func TestBuild_ContextCancellation_KillsChild(t *testing.T) {
+	SkipNonPOSIX(t, "POSIX-only invariant per CLAUDE.md")
+	// Shim must be in an executable dir (/tmp is noexec in this environment).
+	dir := executableTempDir(t)
+	shim := filepath.Join(dir, "shim")
+	started := filepath.Join(dir, "started")
+	// The shim signals readiness by touching `started`, then busy-loops (no
+	// subprocess) so SIGKILL on the direct child is sufficient to unblock
+	// cmd.Wait — avoiding the pipe-drain issue that arises when a grandchild
+	// (e.g. `sleep`) inherits the stdout/stderr pipes and keeps them open.
+	script := "#!/bin/sh\n: > \"" + started + "\"\nwhile true; do :; done\n"
+	if err := os.WriteFile(shim, []byte(script), 0o755); err != nil {
+		t.Fatalf("write shim: %v", err)
+	}
+	t.Cleanup(SetDockerBinaryForTest(shim))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	o := BuildOptions{
+		Image:          "claudebox",
+		DockerfilePath: "/home/user/.makeslop/Dockerfile",
+		ContextDir:     t.TempDir(),
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- Build(ctx, o, io.Discard, io.Discard)
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(started); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("shim did not signal start within 5s")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatalf("expected error when context cancels mid-build, got nil")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Build did not return within 5s after context cancellation")
 	}
 }
