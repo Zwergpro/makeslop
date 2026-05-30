@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Zwergpro/makeslop/internal/assets"
 )
 
 func TestLoad_MissingReturnsEmptyDefaults(t *testing.T) {
@@ -453,6 +455,64 @@ func TestBootstrap_PartialStateRecovers(t *testing.T) {
 	}
 	if !bytes.Equal(got, []byte("hello")) {
 		t.Errorf("marker content = %q, want %q", got, "hello")
+	}
+}
+
+// TestBootstrap_CreatesDockerfile verifies that Bootstrap seeds Dockerfile with
+// content equal to the embedded assets.Dockerfile on a fresh directory.
+func TestBootstrap_CreatesDockerfile(t *testing.T) {
+	base := filepath.Join(t.TempDir(), ".makeslop")
+
+	if err := Bootstrap(base); err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+
+	path := filepath.Join(base, "Dockerfile")
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read Dockerfile: %v", err)
+	}
+	if !bytes.Equal(got, assets.Dockerfile) {
+		t.Errorf("Dockerfile content mismatch: got %d bytes, want %d bytes", len(got), len(assets.Dockerfile))
+	}
+}
+
+// TestBootstrap_DoesNotOverwriteExistingDockerfile verifies that Bootstrap uses
+// the O_EXCL pattern and does not clobber a pre-existing Dockerfile.
+func TestBootstrap_DoesNotOverwriteExistingDockerfile(t *testing.T) {
+	base := filepath.Join(t.TempDir(), ".makeslop")
+	if err := os.MkdirAll(base, 0o755); err != nil {
+		t.Fatalf("mkdir base: %v", err)
+	}
+	sentinel := []byte("# sentinel — must not be overwritten\n")
+	if err := os.WriteFile(filepath.Join(base, "Dockerfile"), sentinel, 0o644); err != nil {
+		t.Fatalf("seed Dockerfile: %v", err)
+	}
+
+	if err := Bootstrap(base); err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(base, "Dockerfile"))
+	if err != nil {
+		t.Fatalf("read Dockerfile: %v", err)
+	}
+	if !bytes.Equal(got, sentinel) {
+		t.Errorf("Dockerfile was overwritten by Bootstrap\nbefore: %s\nafter:  %s", sentinel, got)
+	}
+}
+
+// TestBootstrap_DoesNotWriteSettingsJSON verifies that Bootstrap does not create
+// or touch settings.json, ensuring migrated_version is never stamped on init.
+func TestBootstrap_DoesNotWriteSettingsJSON(t *testing.T) {
+	base := filepath.Join(t.TempDir(), ".makeslop")
+
+	if err := Bootstrap(base); err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(base, SettingsFile)); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("Bootstrap must not create settings.json; stat err=%v", err)
 	}
 }
 

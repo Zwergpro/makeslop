@@ -98,12 +98,12 @@
 - Modify: `internal/config/config.go`
 - Modify: `internal/config/config_test.go`
 
-- [ ] add `{name: "Dockerfile", content: assets.Dockerfile}` to `bootstrapFiles` (import `internal/assets`)
-- [ ] verify `Bootstrap` writes it with the existing `O_EXCL` loop (create-if-absent, skip-if-exists); no loop change needed
-- [ ] write test: `Bootstrap` on a fresh `t.TempDir()` creates `<base>/Dockerfile` with content equal to `assets.Dockerfile`
-- [ ] write test: `Bootstrap` does NOT clobber a pre-existing `<base>/Dockerfile` (pre-write sentinel bytes, run `Bootstrap`, assert unchanged)
-- [ ] write test: `Bootstrap` leaves `migrated_version` unset (init must not stamp) — assert no `settings.json` written by Bootstrap (matches current behavior)
-- [ ] run tests: `go test ./internal/config/...` — must pass before next task
+- [x] add `{name: "Dockerfile", content: assets.Dockerfile}` to `bootstrapFiles` (import `internal/assets`)
+- [x] verify `Bootstrap` writes it with the existing `O_EXCL` loop (create-if-absent, skip-if-exists); no loop change needed
+- [x] write test: `Bootstrap` on a fresh `t.TempDir()` creates `<base>/Dockerfile` with content equal to `assets.Dockerfile`
+- [x] write test: `Bootstrap` does NOT clobber a pre-existing `<base>/Dockerfile` (pre-write sentinel bytes, run `Bootstrap`, assert unchanged)
+- [x] write test: `Bootstrap` leaves `migrated_version` unset (init must not stamp) — assert no `settings.json` written by Bootstrap (matches current behavior)
+- [x] run tests: `go test ./internal/config/...` — must pass before next task
 
 ### Task 4: Migration runner — `writeDockerfile` and `Migrate`
 

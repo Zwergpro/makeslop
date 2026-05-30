@@ -10,6 +10,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/Zwergpro/makeslop/internal/assets"
 )
 
 const (
@@ -140,6 +142,7 @@ var bootstrapFiles = []struct {
 	content []byte
 }{
 	{".claude.json", []byte("{}\n")},
+	{"Dockerfile", assets.Dockerfile},
 }
 
 // Bootstrap is idempotent: creates the agent directories and seed files under
