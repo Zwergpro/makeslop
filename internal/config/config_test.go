@@ -292,6 +292,62 @@ func TestDefaultBaseDir_HonorsHOME(t *testing.T) {
 	}
 }
 
+// TestLoad_MissingFile_MigratedVersionIsZero guards that Load of a missing
+// settings.json yields MigratedVersion == 0 (not defaulted to MigrationVersion).
+func TestLoad_MissingFile_MigratedVersionIsZero(t *testing.T) {
+	base := t.TempDir()
+
+	s, err := Load(base)
+	if err != nil {
+		t.Fatalf("Load: unexpected error: %v", err)
+	}
+	if s.MigratedVersion != 0 {
+		t.Errorf("MigratedVersion = %d, want 0 for missing file", s.MigratedVersion)
+	}
+}
+
+// TestLoad_LegacyConfig_MigratedVersionIsZero guards backward compat: a
+// settings.json written without migrated_version round-trips with MigratedVersion == 0.
+func TestLoad_LegacyConfig_MigratedVersionIsZero(t *testing.T) {
+	base := t.TempDir()
+	body := `{"version":1,"image":"claudebox","shell":"/bin/zsh","workspaces":{}}`
+	if err := os.WriteFile(filepath.Join(base, SettingsFile), []byte(body), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	s, err := Load(base)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if s.MigratedVersion != 0 {
+		t.Errorf("MigratedVersion = %d, want 0 for legacy file without migrated_version", s.MigratedVersion)
+	}
+}
+
+// TestSaveLoad_MigratedVersionRoundTrips guards that a set MigratedVersion
+// survives a Save → Load cycle intact.
+func TestSaveLoad_MigratedVersionRoundTrips(t *testing.T) {
+	base := t.TempDir()
+	want := &Settings{
+		Version:         CurrentVersion,
+		Image:           DefaultImage,
+		Shell:           DefaultShell,
+		Workspaces:      map[string]Workspace{},
+		MigratedVersion: MigrationVersion,
+	}
+	if err := Save(base, want); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	got, err := Load(base)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got.MigratedVersion != want.MigratedVersion {
+		t.Errorf("MigratedVersion = %d, want %d", got.MigratedVersion, want.MigratedVersion)
+	}
+}
+
 func TestBootstrap_CreatesDirsAndClaudeJSON(t *testing.T) {
 	base := filepath.Join(t.TempDir(), ".makeslop")
 

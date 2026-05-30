@@ -15,7 +15,12 @@ import (
 const (
 	SettingsFile   = "settings.json"
 	WorkspacesDir  = "workspaces"
-	CurrentVersion = 1
+	CurrentVersion = 1 // settings schema version — increment when Settings fields change
+
+	// MigrationVersion is distinct from CurrentVersion: it gates the one-shot
+	// directory migration run by Migrate. Bump when a migration step is
+	// added or changed; Migrate re-runs all (idempotent) steps and re-stamps.
+	MigrationVersion = 1
 )
 
 // omitempty + Load-time defaulting keeps pre-existing files byte-stable until a user overrides.
@@ -32,10 +37,11 @@ type Workspace struct {
 // Settings is the persisted shape of <baseDir>/settings.json. Workspaces is
 // keyed by absolute, symlink-evaluated workspace root paths.
 type Settings struct {
-	Version    int                  `json:"version"`
-	Image      string               `json:"image,omitempty"`
-	Shell      string               `json:"shell,omitempty"`
-	Workspaces map[string]Workspace `json:"workspaces"`
+	Version         int                  `json:"version"`
+	Image           string               `json:"image,omitempty"`
+	Shell           string               `json:"shell,omitempty"`
+	Workspaces      map[string]Workspace `json:"workspaces"`
+	MigratedVersion int                  `json:"migrated_version,omitempty"`
 }
 
 func DefaultBaseDir() (string, error) {
