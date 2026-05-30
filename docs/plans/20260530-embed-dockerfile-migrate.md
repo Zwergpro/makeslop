@@ -128,14 +128,14 @@
 - Modify: `cmd/makeslop/main.go`
 - Modify: `cmd/makeslop/main_test.go`
 
-- [ ] add `migrateCmd` (`Use: "migrate"`, `Args: cobra.NoArgs`, `SilenceUsage: true`) whose `RunE` calls `config.Migrate(baseDir)`
-- [ ] print `makeslop: ~/.makeslop updated` when `applied`, else `makeslop: ~/.makeslop already up to date`, to `cmd.OutOrStdout()`
-- [ ] register via `rootCmd.AddCommand(initCmd, goCmd, migrateCmd)`; do NOT wire `ensureWithinHome`/`--out-of-home` and do NOT call `Bootstrap`
-- [ ] write test (using `runCmd` helper): first `migrate` on a fresh baseDir prints `updated` and creates `<base>/Dockerfile`
-- [ ] write test: second `migrate` prints `already up to date` and leaves the file unchanged
-- [ ] write test: `migrate` works without a prior `init` (no pre-created dirs) — succeeds and writes the Dockerfile
-- [ ] write test: bare-invocation help (extend `TestRoot_BareInvocation_PrintsHelp` or add a case) lists the `migrate` command
-- [ ] run tests: `go test ./cmd/...` — must pass before next task
+- [x] add `migrateCmd` (`Use: "migrate"`, `Args: cobra.NoArgs`, `SilenceUsage: true`) whose `RunE` calls `config.Migrate(baseDir)`
+- [x] print `makeslop: ~/.makeslop updated` when `applied`, else `makeslop: ~/.makeslop already up to date`, to `cmd.OutOrStdout()`
+- [x] register via `rootCmd.AddCommand(initCmd, goCmd, migrateCmd)`; do NOT wire `ensureWithinHome`/`--out-of-home` and do NOT call `Bootstrap`
+- [x] write test (using `runCmd` helper): first `migrate` on a fresh baseDir prints `updated` and creates `<base>/Dockerfile`
+- [x] write test: second `migrate` prints `already up to date` and leaves the file unchanged
+- [x] write test: `migrate` works without a prior `init` (no pre-created dirs) — succeeds and writes the Dockerfile
+- [x] write test: bare-invocation help (extend `TestRoot_BareInvocation_PrintsHelp` or add a case) lists the `migrate` command
+- [x] run tests: `go test ./cmd/...` — must pass before next task
 
 ### Task 6: Verify acceptance criteria
 - [ ] verify `init` seeds Dockerfile if absent and never clobbers an existing one

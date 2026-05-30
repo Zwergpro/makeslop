@@ -249,10 +249,29 @@ func newRootCmd(baseDir string) *cobra.Command {
 	goCmd.Flags().BoolVarP(&dryRun, "dry-run", "n", false,
 		"print the docker run command instead of executing it")
 
+	migrateCmd := &cobra.Command{
+		Use:          "migrate",
+		Short:        "Refresh ~/.makeslop with the latest embedded assets",
+		Args:         cobra.NoArgs,
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			applied, err := config.Migrate(baseDir)
+			if err != nil {
+				return err
+			}
+			if applied {
+				fmt.Fprintln(cmd.OutOrStdout(), "makeslop: ~/.makeslop updated")
+			} else {
+				fmt.Fprintln(cmd.OutOrStdout(), "makeslop: ~/.makeslop already up to date")
+			}
+			return nil
+		},
+	}
+
 	rootCmd.PersistentFlags().BoolVar(&outOfHome, "out-of-home", false,
 		"allow running outside the user's home directory")
 
-	rootCmd.AddCommand(initCmd, goCmd)
+	rootCmd.AddCommand(initCmd, goCmd, migrateCmd)
 	return rootCmd
 }
 

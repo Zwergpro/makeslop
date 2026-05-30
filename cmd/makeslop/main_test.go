@@ -2141,6 +2141,102 @@ func TestGo_SocketPathLength_AtMost108Bytes(t *testing.T) {
 	t.Logf("socket path (%d bytes): %q", len(sockPath), sockPath)
 }
 
+// ── migrate subcommand tests ───────────────────────────────────────────────────
+
+// TestMigrate_FirstRun_PrintsUpdatedAndWritesDockerfile verifies that a fresh
+// migrate on an empty baseDir prints "updated" and creates the Dockerfile.
+func TestMigrate_FirstRun_PrintsUpdatedAndWritesDockerfile(t *testing.T) {
+	baseDir := t.TempDir()
+
+	stdout, stderr, err := runCmd(t, baseDir, "migrate")
+	if err != nil {
+		t.Fatalf("migrate failed: %v; stderr=%q", err, stderr)
+	}
+	if !strings.Contains(stdout, "updated") {
+		t.Errorf("stdout missing 'updated': %q", stdout)
+	}
+	if strings.Contains(stdout, "already up to date") {
+		t.Errorf("stdout must not say 'already up to date' on first run: %q", stdout)
+	}
+
+	dockerfilePath := filepath.Join(baseDir, "Dockerfile")
+	data, err := os.ReadFile(dockerfilePath)
+	if err != nil {
+		t.Fatalf("Dockerfile not created by migrate: %v", err)
+	}
+	if len(data) == 0 {
+		t.Errorf("Dockerfile written by migrate is empty")
+	}
+	if !bytes.HasPrefix(data, []byte("FROM ")) {
+		n := len(data)
+		if n > 40 {
+			n = 40
+		}
+		t.Errorf("Dockerfile written by migrate does not start with 'FROM ': %q", data[:n])
+	}
+}
+
+// TestMigrate_SecondRun_PrintsAlreadyUpToDate verifies idempotence: a second
+// migrate returns "already up to date" and does not re-write the file.
+func TestMigrate_SecondRun_PrintsAlreadyUpToDate(t *testing.T) {
+	baseDir := t.TempDir()
+
+	if _, _, err := runCmd(t, baseDir, "migrate"); err != nil {
+		t.Fatalf("first migrate failed: %v", err)
+	}
+	snapBefore := snapshotTree(t, baseDir)
+
+	stdout, stderr, err := runCmd(t, baseDir, "migrate")
+	if err != nil {
+		t.Fatalf("second migrate failed: %v; stderr=%q", err, stderr)
+	}
+	if !strings.Contains(stdout, "already up to date") {
+		t.Errorf("stdout missing 'already up to date' on second run: %q", stdout)
+	}
+	if strings.Contains(stdout, "updated") && !strings.Contains(stdout, "already up to date") {
+		t.Errorf("stdout must say 'already up to date', not 'updated': %q", stdout)
+	}
+
+	snapAfter := snapshotTree(t, baseDir)
+	assertSnapshotsEqual(t, snapBefore, snapAfter)
+}
+
+// TestMigrate_WithoutPriorInit_SucceedsAndWritesDockerfile verifies that
+// migrate works standalone (no prior init, no pre-created dirs).
+func TestMigrate_WithoutPriorInit_SucceedsAndWritesDockerfile(t *testing.T) {
+	// Use a fresh, non-existing subdirectory inside a TempDir so migrate must
+	// create the directory itself.
+	parent := t.TempDir()
+	baseDir := filepath.Join(parent, "brand-new-dir")
+
+	stdout, stderr, err := runCmd(t, baseDir, "migrate")
+	if err != nil {
+		t.Fatalf("migrate without prior init failed: %v; stderr=%q", err, stderr)
+	}
+	if !strings.Contains(stdout, "updated") {
+		t.Errorf("stdout missing 'updated': %q", stdout)
+	}
+
+	dockerfilePath := filepath.Join(baseDir, "Dockerfile")
+	if _, err := os.Stat(dockerfilePath); err != nil {
+		t.Errorf("Dockerfile not created by migrate without prior init: %v", err)
+	}
+}
+
+// TestRoot_BareInvocation_ListsMigrateCommand checks that the bare help output
+// lists the migrate subcommand in the Available Commands section.
+func TestRoot_BareInvocation_ListsMigrateCommand(t *testing.T) {
+	baseDir := t.TempDir()
+
+	stdout, stderr, err := runCmd(t, baseDir) // no args
+	if err != nil {
+		t.Fatalf("bare makeslop should exit 0, got err: %v; stdout=%q stderr=%q", err, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "\n  migrate ") {
+		t.Errorf("stdout missing '\\n  migrate ' command entry: %q", stdout)
+	}
+}
+
 func TestGo_DryRunIncludesMaskedDirs(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
