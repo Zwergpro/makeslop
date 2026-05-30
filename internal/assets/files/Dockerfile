@@ -1,21 +1,24 @@
+# syntax=docker/dockerfile:1
 FROM debian:trixie-slim
 
 ARG HTTP_PROXY=""
 ARG HTTPS_PROXY=""
 
-ENV GOBIN=/home/user/go/bin \
+ENV GOBIN=/go/bin \
     GOPATH=/go \
     PATH=/usr/local/go/bin:/go/bin:$PATH \
     TZ="UTC" \
     LANG=en_US.UTF-8 \
     LC_ALL=en_US.UTF-8
 
-RUN mkdir -p /go/pkg/mod && chmod -R 0777 /go/pkg/mod
+RUN mkdir -p /go/pkg/mod
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends --no-install-suggests \
     less git sudo procps fzf zsh jq nano tmux gh unzip wget curl ca-certificates gnupg2 ripgrep locales \
+    && curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
     && echo "en_US.UTF-8 UTF-8" > /etc/locale.gen \
     && locale-gen \
     && update-locale LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 \
@@ -25,14 +28,9 @@ ARG GO_VERSION=1.26.3
 RUN curl -fsSL https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz -o /tmp/go.tgz \
     && tar -C /usr/local -xzf /tmp/go.tgz \
     && rm /tmp/go.tgz \
+    && rm -rf /usr/local/go/test /usr/local/go/api /usr/local/go/doc \
+              /usr/local/go/pkg/*/cmd /usr/local/go/.git* \
     && go version
-
-RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
-    --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    apt-get update \
-  && curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - \
-  && apt-get install -y --no-install-recommends nodejs \
-  && rm -rf /tmp/* /var/tmp/*
 
 RUN groupadd --gid 1000 user && \
     useradd --uid 1000 --gid user --create-home --shell /bin/bash user && \
@@ -47,13 +45,13 @@ RUN groupadd --gid 1000 user && \
 WORKDIR /workspace
 USER user
 
-ENV SHELL=/bin/zsh \
-    EDITOR=vim \
-    VISUAL=vim
-
 RUN --mount=type=cache,target=/home/user/.npm,uid=1000,gid=1000 \
     mkdir -p ~/.npm-global && npm config set prefix ~/.npm-global && \
     npm install -g @openai/codex
+
+ENV SHELL=/bin/zsh \
+    EDITOR=vim \
+    VISUAL=vim
 
 ARG ZSH_IN_DOCKER_VERSION=1.2.1
 RUN sh -c "$(wget -O- https://github.com/deluan/zsh-in-docker/releases/download/v${ZSH_IN_DOCKER_VERSION}/zsh-in-docker.sh)" -- \
@@ -63,6 +61,6 @@ RUN sh -c "$(wget -O- https://github.com/deluan/zsh-in-docker/releases/download/
   -a "export PROMPT_COMMAND='history -a' && export HISTFILE=/commandhistory/.bash_history" \
   -x
 
-RUN echo 'export PATH="$HOME/.npm-global/bin:$HOME/go/bin:$HOME/.local/bin:$PATH"' >> ~/.zshrc
+RUN echo 'export PATH="$HOME/.npm-global/bin:/go/bin:$HOME/.local/bin:$PATH"' >> ~/.zshrc
 
 RUN curl -fsSL https://claude.ai/install.sh | bash
