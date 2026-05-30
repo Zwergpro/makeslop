@@ -2288,3 +2288,176 @@ func TestGo_DryRunIncludesMaskedDirs(t *testing.T) {
 		}
 	}
 }
+
+// ── build subcommand tests ─────────────────────────────────────────────────────
+
+// executableTempDirForCmd creates a temp dir under /workspace (which is
+// executable, unlike /tmp in this environment) for use with build shims.
+// The dir is registered for cleanup via t.Cleanup.
+func executableTempDirForCmd(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("/workspace", "makeslop-cmd-test-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp /workspace: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	return dir
+}
+
+// installBuildShim installs a build shim (recording argv + DOCKER_BUILDKIT)
+// that exits with exitCode. Returns the argv record path and env record path.
+func installBuildShim(t *testing.T, exitCode int) (record, envRecord string) {
+	t.Helper()
+	docker.SkipNonPOSIX(t, "docker build shim requires POSIX shell; makeslop is POSIX-only")
+	shim, rec, env := docker.WriteBuildShim(t, executableTempDirForCmd(t), exitCode)
+	t.Cleanup(docker.SetDockerBinaryForTest(shim))
+	return rec, env
+}
+
+// TestBuild_SeedsSelfHealAndInvokesDocker verifies that `makeslop build` on a
+// fresh (empty) baseDir bootstraps the Dockerfile then invokes docker build
+// with -t claudebox and -f <baseDir>/Dockerfile.
+func TestBuild_SeedsSelfHealAndInvokesDocker(t *testing.T) {
+	baseDir := t.TempDir()
+	record, _ := installBuildShim(t, 0)
+
+	stdout, stderr, err := runCmd(t, baseDir, "build")
+	if err != nil {
+		t.Fatalf("build failed: %v; stdout=%q stderr=%q", err, stdout, stderr)
+	}
+
+	// Dockerfile must have been seeded (self-heal).
+	dockerfilePath := filepath.Join(baseDir, config.DockerfileFile)
+	if _, statErr := os.Stat(dockerfilePath); statErr != nil {
+		t.Errorf("Dockerfile not seeded by build: %v", statErr)
+	}
+
+	argv := readArgv(t, record)
+	if len(argv) == 0 {
+		t.Fatal("docker shim was not invoked")
+	}
+	if argv[0] != "build" {
+		t.Errorf("argv[0] = %q, want %q", argv[0], "build")
+	}
+
+	// Must contain -t claudebox.
+	var foundTag bool
+	for i, a := range argv {
+		if a == "-t" && i+1 < len(argv) && argv[i+1] == "claudebox" {
+			foundTag = true
+			break
+		}
+	}
+	if !foundTag {
+		t.Errorf("argv missing -t claudebox: %v", argv)
+	}
+
+	// Must contain -f <baseDir>/Dockerfile.
+	var foundF bool
+	for i, a := range argv {
+		if a == "-f" && i+1 < len(argv) && argv[i+1] == dockerfilePath {
+			foundF = true
+			break
+		}
+	}
+	if !foundF {
+		t.Errorf("argv missing -f %s: %v", dockerfilePath, argv)
+	}
+}
+
+// TestBuild_NoCacheAndBuildArg verifies that --no-cache and --build-arg flags
+// are forwarded verbatim to the docker build argv.
+func TestBuild_NoCacheAndBuildArg(t *testing.T) {
+	baseDir := t.TempDir()
+	record, _ := installBuildShim(t, 0)
+
+	_, stderr, err := runCmd(t, baseDir, "build", "--no-cache", "--build-arg", "GO_VERSION=1.26.3")
+	if err != nil {
+		t.Fatalf("build --no-cache --build-arg failed: %v; stderr=%q", err, stderr)
+	}
+
+	argv := readArgv(t, record)
+	var foundNoCache, foundBuildArg bool
+	for i, a := range argv {
+		if a == "--no-cache" {
+			foundNoCache = true
+		}
+		if a == "--build-arg" && i+1 < len(argv) && argv[i+1] == "GO_VERSION=1.26.3" {
+			foundBuildArg = true
+		}
+	}
+	if !foundNoCache {
+		t.Errorf("argv missing --no-cache: %v", argv)
+	}
+	if !foundBuildArg {
+		t.Errorf("argv missing --build-arg GO_VERSION=1.26.3: %v", argv)
+	}
+}
+
+// TestBuild_NonZeroExit_PropagatesCode verifies that a non-zero shim exit
+// propagates through runWithExitCode as a non-zero exit code.
+func TestBuild_NonZeroExit_PropagatesCode(t *testing.T) {
+	baseDir := t.TempDir()
+	installBuildShim(t, 42)
+
+	var stdout, stderr bytes.Buffer
+	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"build"})
+	if code != 42 {
+		t.Errorf("runWithExitCode = %d, want 42; stderr=%q", code, stderr.String())
+	}
+}
+
+// TestBuild_CustomImage_FromSettings verifies that a custom image name in
+// settings.json is used as the -t tag. config.Bootstrap does NOT create
+// settings.json, so this test writes it explicitly via config.Save.
+func TestBuild_CustomImage_FromSettings(t *testing.T) {
+	baseDir := t.TempDir()
+	record, _ := installBuildShim(t, 0)
+
+	// Bootstrap the baseDir so config.Save has the directory structure in place.
+	if err := config.Bootstrap(baseDir); err != nil {
+		t.Fatalf("bootstrap: %v", err)
+	}
+	s, err := config.Load(baseDir)
+	if err != nil {
+		t.Fatalf("load settings: %v", err)
+	}
+	s.Image = "my-custom-image:v2"
+	if err := config.Save(baseDir, s); err != nil {
+		t.Fatalf("save settings: %v", err)
+	}
+
+	_, stderr, err := runCmd(t, baseDir, "build")
+	if err != nil {
+		t.Fatalf("build failed: %v; stderr=%q", err, stderr)
+	}
+
+	argv := readArgv(t, record)
+	var foundTag bool
+	for i, a := range argv {
+		if a == "-t" && i+1 < len(argv) && argv[i+1] == "my-custom-image:v2" {
+			foundTag = true
+			break
+		}
+	}
+	if !foundTag {
+		t.Errorf("argv missing -t my-custom-image:v2: %v", argv)
+	}
+}
+
+// TestRoot_BareInvocation_ListsBuildCommand checks that the bare help output
+// lists the build subcommand in the Available Commands section.
+func TestRoot_BareInvocation_ListsBuildCommand(t *testing.T) {
+	baseDir := t.TempDir()
+
+	stdout, stderr, err := runCmd(t, baseDir) // no args
+	if err != nil {
+		t.Fatalf("bare makeslop should exit 0, got err: %v; stdout=%q stderr=%q", err, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "\n  build ") {
+		t.Errorf("stdout missing '\\n  build ' command entry: %q", stdout)
+	}
+	if stderr != "" {
+		t.Errorf("expected empty stderr, got %q", stderr)
+	}
+}

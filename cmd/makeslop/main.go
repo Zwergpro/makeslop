@@ -268,10 +268,42 @@ func newRootCmd(baseDir string) *cobra.Command {
 		},
 	}
 
+	var (
+		buildNoCache  bool
+		buildBuildArgs []string
+	)
+
+	buildCmd := &cobra.Command{
+		Use:          "build",
+		Short:        "Build (or rebuild) the base docker image from ~/.makeslop/Dockerfile",
+		Args:         cobra.NoArgs,
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := config.Bootstrap(baseDir); err != nil {
+				return err
+			}
+			s, err := config.Load(baseDir)
+			if err != nil {
+				return err
+			}
+			o := docker.BuildOptions{
+				Image:          s.Image,
+				DockerfilePath: filepath.Join(baseDir, config.DockerfileFile),
+				NoCache:        buildNoCache,
+				BuildArgs:      buildBuildArgs,
+			}
+			return docker.Build(cmd.Context(), o, cmd.OutOrStdout(), cmd.ErrOrStderr())
+		},
+	}
+	buildCmd.Flags().BoolVar(&buildNoCache, "no-cache", false,
+		"do not use cache when building the image")
+	buildCmd.Flags().StringArrayVar(&buildBuildArgs, "build-arg", nil,
+		"set build-time variables (repeatable)")
+
 	rootCmd.PersistentFlags().BoolVar(&outOfHome, "out-of-home", false,
 		"allow running outside the user's home directory")
 
-	rootCmd.AddCommand(initCmd, goCmd, migrateCmd)
+	rootCmd.AddCommand(initCmd, goCmd, migrateCmd, buildCmd)
 	return rootCmd
 }
 
