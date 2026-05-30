@@ -111,16 +111,16 @@
 - Create: `internal/config/migrate.go`
 - Create: `internal/config/migrate_test.go`
 
-- [ ] create `internal/config/migrate.go`: `migration` struct + ordered `migrations` slice with the single `Dockerfile` step
-- [ ] implement `writeDockerfile(baseDir)`: `MkdirAll`, atomic temp-file + rename write of `assets.Dockerfile` to `<baseDir>/Dockerfile` (perm `0o644`, temp cleanup on failure — mirror `Save`); always overwrites
-- [ ] implement `Migrate(baseDir) (applied bool, err error)`: skip when `MigratedVersion == MigrationVersion`; else run all steps (wrap errors `migrate %q: %w`), stamp `MigratedVersion = MigrationVersion`, `Save`
-- [ ] write test: fresh `t.TempDir()` → `Migrate` returns `applied == true`, writes Dockerfile == `assets.Dockerfile`, and persisted `migrated_version == MigrationVersion`
-- [ ] write test: second `Migrate` call on the now-stamped dir returns `applied == false` and leaves the file unchanged (skip path)
-- [ ] write test: `Migrate` overwrites a locally-edited `<base>/Dockerfile` when version is behind (write sentinel + `Save` with `MigratedVersion=0`, run `Migrate`, assert content restored to `assets.Dockerfile`)
-- [ ] write test: with `MigratedVersion` set to a different value than `MigrationVersion` (e.g. 0 or 999), `Migrate` re-runs (`applied == true`) and re-stamps to `MigrationVersion`
-- [ ] write test: `Migrate` on a non-existent baseDir succeeds (writers `MkdirAll`) — covers the standalone `migrate` case
-- [ ] write test: `Migrate` preserves other settings while stamping — pre-`Save` a settings.json with non-default `Image`/`Shell` and a populated `Workspaces` map plus `MigratedVersion=0`, run `Migrate`, then `Load` and assert `Image`/`Shell`/`Workspaces` are unchanged and `MigratedVersion == MigrationVersion` (guards against `Save` dropping fields)
-- [ ] run tests: `go test ./internal/config/...` — must pass before next task; confirm the existing `TestSaveLoadByteIdenticalForSameSettings` still passes
+- [x] create `internal/config/migrate.go`: `migration` struct + ordered `migrations` slice with the single `Dockerfile` step
+- [x] implement `writeDockerfile(baseDir)`: `MkdirAll`, atomic temp-file + rename write of `assets.Dockerfile` to `<baseDir>/Dockerfile` (perm `0o644`, temp cleanup on failure — mirror `Save`); always overwrites
+- [x] implement `Migrate(baseDir) (applied bool, err error)`: skip when `MigratedVersion == MigrationVersion`; else run all steps (wrap errors `migrate %q: %w`), stamp `MigratedVersion = MigrationVersion`, `Save`
+- [x] write test: fresh `t.TempDir()` → `Migrate` returns `applied == true`, writes Dockerfile == `assets.Dockerfile`, and persisted `migrated_version == MigrationVersion`
+- [x] write test: second `Migrate` call on the now-stamped dir returns `applied == false` and leaves the file unchanged (skip path)
+- [x] write test: `Migrate` overwrites a locally-edited `<base>/Dockerfile` when version is behind (write sentinel + `Save` with `MigratedVersion=0`, run `Migrate`, assert content restored to `assets.Dockerfile`)
+- [x] write test: with `MigratedVersion` set to a different value than `MigrationVersion` (e.g. 0 or 999), `Migrate` re-runs (`applied == true`) and re-stamps to `MigrationVersion`
+- [x] write test: `Migrate` on a non-existent baseDir succeeds (writers `MkdirAll`) — covers the standalone `migrate` case
+- [x] write test: `Migrate` preserves other settings while stamping — pre-`Save` a settings.json with non-default `Image`/`Shell` and a populated `Workspaces` map plus `MigratedVersion=0`, run `Migrate`, then `Load` and assert `Image`/`Shell`/`Workspaces` are unchanged and `MigratedVersion == MigrationVersion` (guards against `Save` dropping fields)
+- [x] run tests: `go test ./internal/config/...` — must pass before next task; confirm the existing `TestSaveLoadByteIdenticalForSameSettings` still passes
 
 ### Task 5: Add the `migrate` CLI subcommand
 
