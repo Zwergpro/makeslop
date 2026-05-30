@@ -42,6 +42,8 @@ pick up the changes.
   - `--build-arg K=V` — repeatable; each value is forwarded verbatim as `--build-arg K=V` to docker (use for proxy settings, version pins, etc.).
   - **Empty context + BuildKit**: `build` passes an empty temporary directory as the docker build context (the Dockerfile downloads everything; no local files need shipping) and sets `DOCKER_BUILDKIT=1` so BuildKit cache mounts (`--mount=type=cache`) work correctly.
 - `makeslop go` — from within a registered workspace, launches an interactive, project-scoped docker container with the workspace source tree and per-workspace + global agent config (`.claude/`, `.codex/`, `CLAUDE.md`, `docs/`) mounted in. Exits with the container's exit code. Refuses to launch when stdin or stdout is not a TTY. If no ancestor is registered, exits non-zero with a hint to run `makeslop init`.
+- `makeslop config list` — print all current effective settings as `key = value` lines. Works without a prior `init`.
+- `makeslop config set <key> <value>` — validate and persist a setting. Keys: `image` (docker image tag), `shell` (shell to exec in the container), `tmp_dir_size` (size of the `/tmp` tmpfs). Accepted `tmp_dir_size` forms: `100m`, `2g`, `512k`, `1048576` (bare number = bytes). Works without a prior `init` (self-heals via `Save`'s `MkdirAll`).
 
 ### Requirements
 
@@ -63,7 +65,7 @@ pick up the changes.
 | `~/.makeslop/workspaces/<name>/docs/`                 | `/workspace/<name>/docs/`          |
 | `~/.makeslop/workspaces/<name>/CLAUDE.md`             | `/workspace/<name>/CLAUDE.md`      |
 
-Security flags inside the container: `--tmpfs /tmp:size=100m`, `--cap-drop ALL`, `--security-opt no-new-privileges`. Mounts are emitted as `--mount type=bind,source=...,target=...` so paths containing `:` do not break parsing.
+Security flags inside the container: `--tmpfs /tmp:size=<tmp_dir_size>` (default `100m`, configurable via `makeslop config set tmp_dir_size`), `--cap-drop ALL`, `--security-opt no-new-privileges`. Mounts are emitted as `--mount type=bind,source=...,target=...` so paths containing `:` do not break parsing.
 
 ### TTY policy
 
@@ -73,7 +75,7 @@ Security flags inside the container: `--tmpfs /tmp:size=100m`, `--cap-drop ALL`,
 makeslop: stdin/stdout must be a TTY; makeslop is interactive-only
 ```
 
-`makeslop build`, `makeslop init`, and `makeslop migrate` do not require a TTY and work correctly in CI pipelines and non-interactive shells.
+`makeslop build`, `makeslop init`, `makeslop migrate`, and `makeslop config` do not require a TTY and work correctly in CI pipelines and non-interactive shells.
 
 ### Secret masking
 
@@ -159,19 +161,22 @@ makeslop go --dry-run
 
 ### Docker container settings
 
-The image and shell are configurable via `settings.json`. Defaults are `claudebox` and `/bin/zsh`:
+The image, shell, and `/tmp` tmpfs size are configurable via `makeslop config set` or by editing `~/.makeslop/settings.json` directly. Defaults are `claudebox`, `/bin/zsh`, and `100m`:
 
 ```json
 {
     "version": 1,
     "image": "claudebox",
     "shell": "/bin/zsh",
+    "tmp_dir_size": "100m",
     "workspaces": { },
     "migrated_version": 1
 }
 ```
 
-Omitted or empty `image`/`shell` fields fall back to the defaults; existing `settings.json` files predating these keys keep working unchanged. `migrated_version` is written by `makeslop migrate` to record which migration generation the directory is at; absent means 0 (pre-migration).
+Omitted or empty fields fall back to their defaults; existing `settings.json` files predating these keys keep working unchanged. `migrated_version` is written by `makeslop migrate` to record which migration generation the directory is at; absent means 0 (pre-migration).
+
+`tmp_dir_size` accepts a positive integer with an optional suffix: `k`/`K` (kibibytes), `m`/`M` (mebibytes), `g`/`G` (gibibytes), or no suffix (bytes). Example: `100m`, `2g`, `512k`, `1048576`. A bare number without a suffix is interpreted by docker as **bytes** — `512` means 512 bytes, not 512 MB.
 
 ### Dry run
 
@@ -210,7 +215,7 @@ makeslop --out-of-home go
 makeslop --out-of-home init
 ```
 
-`makeslop build`, `makeslop migrate`, and `makeslop` bare invocation are **exempt** from the home-directory guard — they operate on `~/.makeslop/` directly and do not consult the current working directory.
+`makeslop build`, `makeslop migrate`, `makeslop config`, and `makeslop` bare invocation are **exempt** from the home-directory guard — they operate on `~/.makeslop/` directly and do not consult the current working directory.
 
 ### Path resolution
 
