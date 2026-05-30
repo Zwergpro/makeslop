@@ -100,12 +100,12 @@
 - Create: `internal/config/configkeys.go`
 - Create: `internal/config/configkeys_test.go`
 
-- [ ] define `type configKey struct { name string; get func(*Settings) string; set func(*Settings, string) error }`, `type ConfigEntry struct { Name, Value string }`, and `var configKeys` in order: `image`→`setImage`, `shell`→`setShell`, `tmp_dir_size`→`setTmpDirSize`
-- [ ] implement `setImage`/`setShell` (reject whitespace-only) and `setTmpDirSize` (regex `^[0-9]+[kKmMgG]?$`; error names the expected form AND states a bare number is bytes); validation runs before mutation
-- [ ] implement `ConfigList(*Settings) []ConfigEntry` (registry order) and `ConfigSet(*Settings, key, val string) error` (unknown key → error listing valid keys in registry order, derived from `configKeys`)
-- [ ] write tests (table-driven): valid sets per key; `tmp_dir_size` accept (`1000m`,`2g`,`512k`,`1048576`,`100M`) / reject (`10mb`,`abc`,``,`50%`,negative); empty image/shell rejected
-- [ ] write tests: unknown key error mentions valid keys; `Settings` left unmutated on any validation failure; `ConfigList` returns the 3 keys in order with effective values
-- [ ] run tests — must pass before next task
+- [x] define `type configKey struct { name string; get func(*Settings) string; set func(*Settings, string) error }`, `type ConfigEntry struct { Name, Value string }`, and `var configKeys` in order: `image`→`setImage`, `shell`→`setShell`, `tmp_dir_size`→`setTmpDirSize`
+- [x] implement `setImage`/`setShell` (reject whitespace-only) and `setTmpDirSize` (regex `^[0-9]+[kKmMgG]?$`; error names the expected form AND states a bare number is bytes); validation runs before mutation
+- [x] implement `ConfigList(*Settings) []ConfigEntry` (registry order) and `ConfigSet(*Settings, key, val string) error` (unknown key → error listing valid keys in registry order, derived from `configKeys`)
+- [x] write tests (table-driven): valid sets per key; `tmp_dir_size` accept (`1000m`,`2g`,`512k`,`1048576`,`100M`) / reject (`10mb`,`abc`,``,`50%`,negative); empty image/shell rejected
+- [x] write tests: unknown key error mentions valid keys; `Settings` left unmutated on any validation failure; `ConfigList` returns the 3 keys in order with effective values
+- [x] run tests — must pass before next task
 
 ### Task 4: Wire `config` cobra command (list + set)
 
