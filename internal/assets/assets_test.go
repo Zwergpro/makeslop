@@ -12,7 +12,11 @@ func TestDockerfile_NotEmpty(t *testing.T) {
 }
 
 func TestDockerfile_StartsWithFROM(t *testing.T) {
-	if !bytes.HasPrefix(Dockerfile, []byte("FROM ")) {
-		t.Fatalf("assets.Dockerfile does not start with \"FROM \"; got prefix %q", Dockerfile[:min(20, len(Dockerfile))])
+	// A valid Dockerfile may begin with a BuildKit syntax directive
+	// (# syntax=docker/...) before the first FROM instruction.
+	hasFROM := bytes.Contains(Dockerfile, []byte("\nFROM ")) ||
+		bytes.HasPrefix(Dockerfile, []byte("FROM "))
+	if !hasFROM {
+		t.Fatalf("assets.Dockerfile does not contain a FROM instruction; got prefix %q", Dockerfile[:min(40, len(Dockerfile))])
 	}
 }
