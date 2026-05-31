@@ -15,6 +15,16 @@
 //     dropped (masking a symlink has ambiguous semantics: the symlink itself or its
 //     target?). Reserved agent paths (.claude, .codex, docs, CLAUDE.md) are a hard
 //     error because a user overlay would shadow the agent mount.
+//
+// The network block controls egress:
+//   - network.proxy.address ("host:port"): when set, the Gateway tunnels all
+//     container traffic to this upstream HTTP CONNECT proxy. When absent (the
+//     default), the Gateway acts as a direct HTTP(S) forward proxy.
+//   - network.log (relative path): when set, Load resolves it to an absolute
+//     path under the project root and returns it as Network.LogPath. The
+//     networks.Gateway opens this file for append-only request logging. The
+//     file need not exist at config-load time (no stat-drop). Absolute paths,
+//     escaping paths (../), and reserved agent paths are errors.
 package projectconfig
 
 import (

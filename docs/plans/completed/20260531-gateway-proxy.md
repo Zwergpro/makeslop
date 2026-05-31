@@ -185,10 +185,10 @@ Rejected: a single unified forward-proxy handler with a pluggable dialer — it 
 - [x] confirm gated integration test still compiles: `go test -tags integration ./internal/docker/` (skips without daemon)
 
 ### Task 9: [Final] Update documentation
-- [ ] update `CLAUDE.md` "Proxy probe-dial invariant" section: probe-dial is **upstream-mode-only** now; document the gateway default, `--no-proxy` → bridge, and request logging (`network.log`, both modes, keep-alive limitation, fail-loud on unopenable path)
-- [ ] update the `--out-of-home flag scope` and `TTY requirement`/home-guard notes only if affected (they are not — `--no-proxy` is `run`-only like `--out-of-home`); add a one-line note that `--no-proxy` is `run`-only and rejected elsewhere
-- [ ] update the `internal/projectconfig` doc/comment for the new `network.log` field
-- [ ] move this plan to `docs/plans/completed/`
+- [x] update `CLAUDE.md` "Proxy probe-dial invariant" section: probe-dial is **upstream-mode-only** now; document the gateway default, `--no-proxy` → bridge, and request logging (`network.log`, both modes, keep-alive limitation, fail-loud on unopenable path)
+- [x] update the `--out-of-home flag scope` and `TTY requirement`/home-guard notes only if affected (they are not — `--no-proxy` is `run`-only like `--out-of-home`); add a one-line note that `--no-proxy` is `run`-only and rejected elsewhere
+- [x] update the `internal/projectconfig` doc/comment for the new `network.log` field
+- [x] move this plan to `docs/plans/completed/`
 
 ## Post-Completion
 *Items requiring manual intervention or external systems — no checkboxes, informational only*
