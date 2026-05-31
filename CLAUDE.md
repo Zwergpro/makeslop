@@ -41,5 +41,22 @@ Do not add Windows compatibility paths.
 
 ### Home-directory guard exemptions
 `makeslop go` and `makeslop init` enforce the home-directory guard.
-`makeslop build`, `makeslop migrate`, and `makeslop config` are exempt — they operate on `~/.makeslop/` directly
+`makeslop build`, `makeslop migrate`, `makeslop config`, and `makeslop version` are exempt — they operate on `~/.makeslop/` directly
 and do not care about the current working directory.
+
+### MigrationVersion-on-Dockerfile-change rule
+Whenever `internal/assets/files/Dockerfile` is modified (e.g. multi-arch support), bump
+`MigrationVersion` in `internal/config/config.go` so that existing installs pick up the new
+Dockerfile on the next `makeslop migrate`. `CurrentVersion` (settings schema version) is separate
+and only changes when the `Settings` struct fields change. The two constants serve different
+purposes: `CurrentVersion` gates JSON schema compatibility; `MigrationVersion` gates the one-shot
+directory refresh.
+
+### Proxy probe-dial invariant
+`Proxy.Start` performs a single TCP probe-dial of the upstream address before accepting any
+connections. If the upstream is unreachable, `Start` tears down the listener and socket and returns
+the error — the caller (`runGo`) must abort the container launch. This "fail loud" invariant prevents
+silent black-holing of container traffic when the upstream proxy is misconfigured. The probe checks
+TCP reachability only; it does not validate HTTP CONNECT protocol. Tests that call `Start` must use
+a live fake upstream (a `net.Listen("tcp", "127.0.0.1:0")` helper) — passing a dead address such as
+`127.0.0.1:1` will cause `Start` to return an error.
