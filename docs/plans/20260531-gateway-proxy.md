@@ -80,11 +80,11 @@ Rejected: a single unified forward-proxy handler with a pluggable dialer — it 
 - Modify: `internal/networks/proxy_test.go`
 - Modify: `cmd/makeslop/main.go`
 
-- [ ] rename type `Proxy` → `Gateway` and method receivers `p *Proxy` → `g *Gateway` in `internal/networks/proxy.go`
-- [ ] rename constructor `NewProxy` → `NewGateway` (keep the current 2-arg signature for now: `(socketPath, upstream string)`); rename the `upstream` field to `proxy`
-- [ ] update all references in `cmd/makeslop/main.go` (`var proxy *networks.Proxy` → `var gw *networks.Gateway`, `networks.NewProxy(...)` → `networks.NewGateway(...)`)
-- [ ] update all `Proxy`/`NewProxy` references in `internal/networks/proxy_test.go`
-- [ ] run `go build ./... && go test ./...` — must pass before task 2 (pure rename, all existing tests green)
+- [x] rename type `Proxy` → `Gateway` and method receivers `p *Proxy` → `g *Gateway` in `internal/networks/proxy.go`
+- [x] rename constructor `NewProxy` → `NewGateway` (keep the current 2-arg signature for now: `(socketPath, upstream string)`); rename the `upstream` field to `proxy`
+- [x] update all references in `cmd/makeslop/main.go` (`var proxy *networks.Proxy` → `var gw *networks.Gateway`, `networks.NewProxy(...)` → `networks.NewGateway(...)`)
+- [x] update all `Proxy`/`NewProxy` references in `internal/networks/proxy_test.go`
+- [x] run `go build ./... && go test ./...` — must pass before task 2 (pure rename, all existing tests green)
 
 ### Task 2: Extract `splice` helper from `handle`
 

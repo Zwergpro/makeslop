@@ -61,11 +61,11 @@ func startFakeUpstream(t *testing.T) string {
 func TestStart_BindsAndChmodSocket(t *testing.T) {
 	sock := tempSockPath(t)
 	upstreamAddr := startFakeUpstream(t)
-	p := NewProxy(sock, upstreamAddr)
-	if err := p.Start(context.Background()); err != nil {
+	g := NewGateway(sock, upstreamAddr)
+	if err := g.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	t.Cleanup(func() { p.Close() })
+	t.Cleanup(func() { g.Close() })
 
 	info, err := os.Stat(sock)
 	if err != nil {
@@ -81,8 +81,8 @@ func TestSocketPath_Accessor(t *testing.T) {
 		t.Skip("POSIX-only per CLAUDE.md")
 	}
 	const want = "/tmp/makeslop-abc123-999.sock"
-	p := NewProxy(want, "10.0.0.1:8888")
-	if got := p.SocketPath(); got != want {
+	g := NewGateway(want, "10.0.0.1:8888")
+	if got := g.SocketPath(); got != want {
 		t.Errorf("SocketPath() = %q, want %q", got, want)
 	}
 }
@@ -91,11 +91,11 @@ func TestCONNECT_TunnelRelaysBytesViaBothDirections(t *testing.T) {
 	sock := tempSockPath(t)
 	upstreamAddr := startFakeUpstream(t)
 
-	p := NewProxy(sock, upstreamAddr)
-	if err := p.Start(context.Background()); err != nil {
+	g := NewGateway(sock, upstreamAddr)
+	if err := g.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer p.Close()
+	defer g.Close()
 
 	conn, err := net.Dial("unix", sock)
 	if err != nil {
@@ -122,11 +122,11 @@ func TestHandle_HalfCloseTerminatesGoroutines(t *testing.T) {
 	sock := tempSockPath(t)
 	upstreamAddr := startFakeUpstream(t)
 
-	p := NewProxy(sock, upstreamAddr)
-	if err := p.Start(context.Background()); err != nil {
+	g := NewGateway(sock, upstreamAddr)
+	if err := g.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer p.Close()
+	defer g.Close()
 
 	conn, err := net.Dial("unix", sock)
 	if err != nil {
@@ -183,11 +183,11 @@ func TestHandle_DialFailureClosesClientCleanly(t *testing.T) {
 		close(closed)
 	}()
 
-	p := NewProxy(sock, upstreamAddr)
-	if err := p.Start(context.Background()); err != nil {
+	g := NewGateway(sock, upstreamAddr)
+	if err := g.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer p.Close()
+	defer g.Close()
 
 	// Wait until the probe listener is closed before dialling so that the
 	// handle goroutine's DialContext is guaranteed to fail immediately.
@@ -214,8 +214,8 @@ func TestHandle_DialFailureClosesClientCleanly(t *testing.T) {
 func TestClose_UnlinksSocket(t *testing.T) {
 	sock := tempSockPath(t)
 	upstreamAddr := startFakeUpstream(t)
-	p := NewProxy(sock, upstreamAddr)
-	if err := p.Start(context.Background()); err != nil {
+	g := NewGateway(sock, upstreamAddr)
+	if err := g.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 
@@ -223,7 +223,7 @@ func TestClose_UnlinksSocket(t *testing.T) {
 		t.Fatalf("socket file missing before Close: %v", err)
 	}
 
-	p.Close()
+	g.Close()
 
 	if _, err := os.Stat(sock); !os.IsNotExist(err) {
 		t.Errorf("socket file still exists after Close (err=%v)", err)
@@ -233,16 +233,16 @@ func TestClose_UnlinksSocket(t *testing.T) {
 func TestClose_IsIdempotent(t *testing.T) {
 	sock := tempSockPath(t)
 	upstreamAddr := startFakeUpstream(t)
-	p := NewProxy(sock, upstreamAddr)
-	if err := p.Start(context.Background()); err != nil {
+	g := NewGateway(sock, upstreamAddr)
+	if err := g.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 
 	done := make(chan struct{})
 	go func() {
-		p.Close()
-		p.Close()
-		p.Close()
+		g.Close()
+		g.Close()
+		g.Close()
 		close(done)
 	}()
 	select {
@@ -256,8 +256,8 @@ func TestClose_BeforeStart(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX-only per CLAUDE.md")
 	}
-	p := NewProxy("/tmp/nonexistent-makeslop-test.sock", "127.0.0.1:1")
-	if err := p.Close(); err != nil {
+	g := NewGateway("/tmp/nonexistent-makeslop-test.sock", "127.0.0.1:1")
+	if err := g.Close(); err != nil {
 		t.Errorf("Close before Start returned error: %v", err)
 	}
 }
@@ -289,8 +289,8 @@ func TestClose_DoesNotHangWithInFlightConnection(t *testing.T) {
 		}
 	}()
 
-	p := NewProxy(sock, blockLn.Addr().String())
-	if err := p.Start(context.Background()); err != nil {
+	g := NewGateway(sock, blockLn.Addr().String())
+	if err := g.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 
@@ -310,7 +310,7 @@ func TestClose_DoesNotHangWithInFlightConnection(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		p.Close()
+		g.Close()
 		close(done)
 	}()
 	select {
@@ -325,8 +325,8 @@ func TestCtxCancellation_StopsAcceptLoop(t *testing.T) {
 	upstreamAddr := startFakeUpstream(t)
 	ctx, cancel := context.WithCancel(context.Background())
 
-	p := NewProxy(sock, upstreamAddr)
-	if err := p.Start(ctx); err != nil {
+	g := NewGateway(sock, upstreamAddr)
+	if err := g.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 
@@ -334,7 +334,7 @@ func TestCtxCancellation_StopsAcceptLoop(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		p.Close()
+		g.Close()
 		close(done)
 	}()
 	select {
@@ -348,11 +348,11 @@ func TestCtxCancellation_StopsAcceptLoop(t *testing.T) {
 // leaves no socket file behind when the upstream is not reachable.
 func TestStart_UnreachableUpstreamReturnsError(t *testing.T) {
 	sock := tempSockPath(t)
-	p := NewProxy(sock, "127.0.0.1:1") // port 1 is never open
+	g := NewGateway(sock, "127.0.0.1:1") // port 1 is never open
 
-	err := p.Start(context.Background())
+	err := g.Start(context.Background())
 	if err == nil {
-		p.Close()
+		g.Close()
 		t.Fatal("Start: expected error for unreachable upstream, got nil")
 	}
 
@@ -365,17 +365,17 @@ func TestStart_UnreachableUpstreamReturnsError(t *testing.T) {
 // deadlock when called after Start returned an error (i.e. nothing was set up).
 func TestClose_IdempotentAfterFailedStart(t *testing.T) {
 	sock := tempSockPath(t)
-	p := NewProxy(sock, "127.0.0.1:1") // unreachable — Start will fail
+	g := NewGateway(sock, "127.0.0.1:1") // unreachable — Start will fail
 
-	if err := p.Start(context.Background()); err == nil {
-		p.Close()
+	if err := g.Start(context.Background()); err == nil {
+		g.Close()
 		t.Fatal("expected Start to fail; got nil")
 	}
 
 	done := make(chan struct{})
 	go func() {
-		p.Close()
-		p.Close()
+		g.Close()
+		g.Close()
 		close(done)
 	}()
 	select {
@@ -392,11 +392,11 @@ func TestStart_ReachableUpstreamSucceedsAndTunnels(t *testing.T) {
 	sock := tempSockPath(t)
 	upstreamAddr := startFakeUpstream(t)
 
-	p := NewProxy(sock, upstreamAddr)
-	if err := p.Start(context.Background()); err != nil {
+	g := NewGateway(sock, upstreamAddr)
+	if err := g.Start(context.Background()); err != nil {
 		t.Fatalf("Start with reachable upstream: %v", err)
 	}
-	defer p.Close()
+	defer g.Close()
 
 	conn, err := net.Dial("unix", sock)
 	if err != nil {
@@ -427,11 +427,11 @@ func TestStart_RemovesStaleSocket(t *testing.T) {
 		t.Fatalf("create stale file: %v", err)
 	}
 
-	p := NewProxy(sock, upstreamAddr)
-	if err := p.Start(context.Background()); err != nil {
+	g := NewGateway(sock, upstreamAddr)
+	if err := g.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer p.Close()
+	defer g.Close()
 
 	info, err := os.Stat(sock)
 	if err != nil {

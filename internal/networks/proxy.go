@@ -3,9 +3,9 @@
 //
 // # Data path
 //
-//	Container app ──unix socket──► Proxy ──TCP──► upstream proxy ──► internet
+//	Container app ──unix socket──► Gateway ──TCP──► upstream proxy ──► internet
 //
-// The proxy forwards CONNECT tunnels verbatim without HTTP parsing — the
+// The gateway forwards CONNECT tunnels verbatim without HTTP parsing — the
 // payload is opaque TLS and cannot be inspected.
 //
 // When one copy direction finishes, halfCloseWrite signals EOF to the peer so
@@ -27,11 +27,11 @@ import (
 	"time"
 )
 
-// Proxy listens on a unix socket and tunnels CONNECT requests to an upstream
+// Gateway listens on a unix socket and tunnels CONNECT requests to an upstream
 // TCP proxy. Call Start/Close to manage the lifecycle; Close is idempotent.
-type Proxy struct {
+type Gateway struct {
 	socketPath string
-	upstream   string
+	proxy      string
 
 	mu       sync.Mutex
 	listener net.Listener
@@ -40,19 +40,19 @@ type Proxy struct {
 	wg       sync.WaitGroup
 }
 
-// NewProxy constructs a Proxy; neither socketPath nor upstream is validated —
+// NewGateway constructs a Gateway; neither socketPath nor proxy is validated —
 // Start surfaces bind/listen errors.
-func NewProxy(socketPath, upstream string) *Proxy {
-	return &Proxy{
+func NewGateway(socketPath, proxy string) *Gateway {
+	return &Gateway{
 		socketPath: socketPath,
-		upstream:   upstream,
+		proxy:      proxy,
 	}
 }
 
 // SocketPath returns the unix socket path Start will bind; use it as the
 // source for the container bind mount.
-func (p *Proxy) SocketPath() string {
-	return p.socketPath
+func (g *Gateway) SocketPath() string {
+	return g.socketPath
 }
 
 // Start binds the unix socket (removing any stale file first), chmod 0666,
@@ -73,20 +73,20 @@ func (p *Proxy) SocketPath() string {
 // timeout; it checks TCP reachability only (a listening socket at the far end)
 // and does not validate that the upstream speaks a valid HTTP CONNECT proxy
 // protocol.
-func (p *Proxy) Start(ctx context.Context) error {
+func (g *Gateway) Start(ctx context.Context) error {
 	// Remove any stale socket left by a previous (crashed) run.
-	_ = os.Remove(p.socketPath)
+	_ = os.Remove(g.socketPath)
 
 	// Set umask 0 before Listen to avoid a race window on socket mode, then restore.
 	oldUmask := syscall.Umask(0)
-	ln, err := net.Listen("unix", p.socketPath)
+	ln, err := net.Listen("unix", g.socketPath)
 	syscall.Umask(oldUmask)
 	if err != nil {
 		return err
 	}
-	if err := os.Chmod(p.socketPath, 0o666); err != nil {
+	if err := os.Chmod(g.socketPath, 0o666); err != nil {
 		_ = ln.Close()
-		_ = os.Remove(p.socketPath)
+		_ = os.Remove(g.socketPath)
 		return err
 	}
 
@@ -95,60 +95,60 @@ func (p *Proxy) Start(ctx context.Context) error {
 	// launch for a prolonged period on a bad address.
 	probeCtx, probeCancel := context.WithTimeout(ctx, 5*time.Second)
 	defer probeCancel()
-	probe, err := (&net.Dialer{}).DialContext(probeCtx, "tcp", p.upstream)
+	probe, err := (&net.Dialer{}).DialContext(probeCtx, "tcp", g.proxy)
 	if err != nil {
 		_ = ln.Close()
-		_ = os.Remove(p.socketPath)
+		_ = os.Remove(g.socketPath)
 		return err
 	}
 	_ = probe.Close()
 
 	proxyCtx, cancel := context.WithCancel(ctx)
 
-	p.mu.Lock()
-	p.listener = ln
-	p.cancel = cancel
-	p.mu.Unlock()
+	g.mu.Lock()
+	g.listener = ln
+	g.cancel = cancel
+	g.mu.Unlock()
 
-	p.wg.Add(1)
+	g.wg.Add(1)
 	go func() {
-		defer p.wg.Done()
-		p.acceptLoop(proxyCtx, ln)
+		defer g.wg.Done()
+		g.acceptLoop(proxyCtx, ln)
 	}()
 
 	return nil
 }
 
 // acceptLoop accepts connections from ln until it is closed or ctx is done.
-func (p *Proxy) acceptLoop(ctx context.Context, ln net.Listener) {
+func (g *Gateway) acceptLoop(ctx context.Context, ln net.Listener) {
 	for {
 		client, err := ln.Accept()
 		if err != nil {
 			// Listener closed by Close() — stop.
 			return
 		}
-		p.trackConn(client)
-		p.wg.Add(1)
+		g.trackConn(client)
+		g.wg.Add(1)
 		go func() {
-			defer p.wg.Done()
-			defer p.untrackConn(client)
-			p.handle(ctx, client)
+			defer g.wg.Done()
+			defer g.untrackConn(client)
+			g.handle(ctx, client)
 		}()
 	}
 }
 
 // handle splices bytes between client and upstream. When one direction
 // finishes, halfCloseWrite lets the opposite direction drain rather than block.
-func (p *Proxy) handle(ctx context.Context, client net.Conn) {
+func (g *Gateway) handle(ctx context.Context, client net.Conn) {
 	defer client.Close()
 
-	up, err := (&net.Dialer{}).DialContext(ctx, "tcp", p.upstream)
+	up, err := (&net.Dialer{}).DialContext(ctx, "tcp", g.proxy)
 	if err != nil {
 		return
 	}
 	defer up.Close()
-	p.trackConn(up)
-	defer p.untrackConn(up)
+	g.trackConn(up)
+	defer g.untrackConn(up)
 
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -173,37 +173,37 @@ func halfCloseWrite(c net.Conn) {
 	}
 }
 
-func (p *Proxy) trackConn(c net.Conn) {
-	p.mu.Lock()
-	p.conns = append(p.conns, c)
-	p.mu.Unlock()
+func (g *Gateway) trackConn(c net.Conn) {
+	g.mu.Lock()
+	g.conns = append(g.conns, c)
+	g.mu.Unlock()
 }
 
-func (p *Proxy) untrackConn(c net.Conn) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	for i, tracked := range p.conns {
+func (g *Gateway) untrackConn(c net.Conn) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for i, tracked := range g.conns {
 		if tracked == c {
-			p.conns[i] = p.conns[len(p.conns)-1]
-			p.conns = p.conns[:len(p.conns)-1]
+			g.conns[i] = g.conns[len(g.conns)-1]
+			g.conns = g.conns[:len(g.conns)-1]
 			return
 		}
 	}
 }
 
 // Close is idempotent: safe to call before Start or after a failed Start.
-func (p *Proxy) Close() error {
-	p.mu.Lock()
-	cancel := p.cancel
-	ln := p.listener
-	conns := make([]net.Conn, len(p.conns))
-	copy(conns, p.conns)
+func (g *Gateway) Close() error {
+	g.mu.Lock()
+	cancel := g.cancel
+	ln := g.listener
+	conns := make([]net.Conn, len(g.conns))
+	copy(conns, g.conns)
 	// Clear stored state while holding the lock so concurrent Close calls are
 	// harmless.
-	p.cancel = nil
-	p.listener = nil
-	p.conns = nil
-	p.mu.Unlock()
+	g.cancel = nil
+	g.listener = nil
+	g.conns = nil
+	g.mu.Unlock()
 
 	if cancel != nil {
 		cancel()
@@ -215,7 +215,7 @@ func (p *Proxy) Close() error {
 		_ = c.Close()
 	}
 
-	p.wg.Wait()
-	_ = os.Remove(p.socketPath)
+	g.wg.Wait()
+	_ = os.Remove(g.socketPath)
 	return nil
 }

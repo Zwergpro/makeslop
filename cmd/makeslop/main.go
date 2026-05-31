@@ -152,13 +152,13 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfH
 
 	// sha256(workspaceDir)[:12] + PID: unique across projects and concurrent runs,
 	// ~39 bytes (safely under the 108-byte sockaddr_un limit).
-	var proxy *networks.Proxy
+	var gw *networks.Gateway
 	if netCfg.ProxyAddress != "" {
 		h := sha256.Sum256([]byte(workspaceDir))
 		sockPath := filepath.Join("/tmp", fmt.Sprintf("makeslop-%x-%d.sock", h[:6], os.Getpid()))
 		opts.ProxySocketHost = sockPath
 		opts.ProxySocketContainer = "/tmp/makeslop-proxy.sock"
-		proxy = networks.NewProxy(sockPath, netCfg.ProxyAddress)
+		gw = networks.NewGateway(sockPath, netCfg.ProxyAddress)
 	}
 
 	// ProjectRoot must be the registered ancestor (workspaceRoot), not pwd:
@@ -192,12 +192,12 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfH
 		return errSilent
 	}
 
-	// Proxy must exist before the container starts; a Start failure aborts the launch.
-	if proxy != nil {
-		if err := proxy.Start(cmd.Context()); err != nil {
+	// Gateway must exist before the container starts; a Start failure aborts the launch.
+	if gw != nil {
+		if err := gw.Start(cmd.Context()); err != nil {
 			return err
 		}
-		defer proxy.Close() //nolint:errcheck // teardown; error not actionable here
+		defer gw.Close() //nolint:errcheck // teardown; error not actionable here
 	}
 
 	if err := docker.Run(cmd.Context(), spec); err != nil {
