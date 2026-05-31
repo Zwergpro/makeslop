@@ -1,10 +1,13 @@
 package networks
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"runtime"
 	"strings"
@@ -61,7 +64,7 @@ func startFakeUpstream(t *testing.T) string {
 func TestStart_BindsAndChmodSocket(t *testing.T) {
 	sock := tempSockPath(t)
 	upstreamAddr := startFakeUpstream(t)
-	g := NewGateway(sock, upstreamAddr)
+	g := NewGateway(sock, upstreamAddr, "")
 	if err := g.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -81,7 +84,7 @@ func TestSocketPath_Accessor(t *testing.T) {
 		t.Skip("POSIX-only per CLAUDE.md")
 	}
 	const want = "/tmp/makeslop-abc123-999.sock"
-	g := NewGateway(want, "10.0.0.1:8888")
+	g := NewGateway(want, "10.0.0.1:8888", "")
 	if got := g.SocketPath(); got != want {
 		t.Errorf("SocketPath() = %q, want %q", got, want)
 	}
@@ -91,7 +94,7 @@ func TestCONNECT_TunnelRelaysBytesViaBothDirections(t *testing.T) {
 	sock := tempSockPath(t)
 	upstreamAddr := startFakeUpstream(t)
 
-	g := NewGateway(sock, upstreamAddr)
+	g := NewGateway(sock, upstreamAddr, "")
 	if err := g.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -122,7 +125,7 @@ func TestHandle_HalfCloseTerminatesGoroutines(t *testing.T) {
 	sock := tempSockPath(t)
 	upstreamAddr := startFakeUpstream(t)
 
-	g := NewGateway(sock, upstreamAddr)
+	g := NewGateway(sock, upstreamAddr, "")
 	if err := g.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -183,7 +186,7 @@ func TestHandle_DialFailureClosesClientCleanly(t *testing.T) {
 		close(closed)
 	}()
 
-	g := NewGateway(sock, upstreamAddr)
+	g := NewGateway(sock, upstreamAddr, "")
 	if err := g.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -214,7 +217,7 @@ func TestHandle_DialFailureClosesClientCleanly(t *testing.T) {
 func TestClose_UnlinksSocket(t *testing.T) {
 	sock := tempSockPath(t)
 	upstreamAddr := startFakeUpstream(t)
-	g := NewGateway(sock, upstreamAddr)
+	g := NewGateway(sock, upstreamAddr, "")
 	if err := g.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -233,7 +236,7 @@ func TestClose_UnlinksSocket(t *testing.T) {
 func TestClose_IsIdempotent(t *testing.T) {
 	sock := tempSockPath(t)
 	upstreamAddr := startFakeUpstream(t)
-	g := NewGateway(sock, upstreamAddr)
+	g := NewGateway(sock, upstreamAddr, "")
 	if err := g.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -256,7 +259,7 @@ func TestClose_BeforeStart(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX-only per CLAUDE.md")
 	}
-	g := NewGateway("/tmp/nonexistent-makeslop-test.sock", "127.0.0.1:1")
+	g := NewGateway("/tmp/nonexistent-makeslop-test.sock", "127.0.0.1:1", "")
 	if err := g.Close(); err != nil {
 		t.Errorf("Close before Start returned error: %v", err)
 	}
@@ -289,7 +292,7 @@ func TestClose_DoesNotHangWithInFlightConnection(t *testing.T) {
 		}
 	}()
 
-	g := NewGateway(sock, blockLn.Addr().String())
+	g := NewGateway(sock, blockLn.Addr().String(), "")
 	if err := g.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -325,7 +328,7 @@ func TestCtxCancellation_StopsAcceptLoop(t *testing.T) {
 	upstreamAddr := startFakeUpstream(t)
 	ctx, cancel := context.WithCancel(context.Background())
 
-	g := NewGateway(sock, upstreamAddr)
+	g := NewGateway(sock, upstreamAddr, "")
 	if err := g.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -348,7 +351,7 @@ func TestCtxCancellation_StopsAcceptLoop(t *testing.T) {
 // leaves no socket file behind when the upstream is not reachable.
 func TestStart_UnreachableUpstreamReturnsError(t *testing.T) {
 	sock := tempSockPath(t)
-	g := NewGateway(sock, "127.0.0.1:1") // port 1 is never open
+	g := NewGateway(sock, "127.0.0.1:1", "") // port 1 is never open
 
 	err := g.Start(context.Background())
 	if err == nil {
@@ -365,7 +368,7 @@ func TestStart_UnreachableUpstreamReturnsError(t *testing.T) {
 // deadlock when called after Start returned an error (i.e. nothing was set up).
 func TestClose_IdempotentAfterFailedStart(t *testing.T) {
 	sock := tempSockPath(t)
-	g := NewGateway(sock, "127.0.0.1:1") // unreachable — Start will fail
+	g := NewGateway(sock, "127.0.0.1:1", "") // unreachable — Start will fail
 
 	if err := g.Start(context.Background()); err == nil {
 		g.Close()
@@ -392,7 +395,7 @@ func TestStart_ReachableUpstreamSucceedsAndTunnels(t *testing.T) {
 	sock := tempSockPath(t)
 	upstreamAddr := startFakeUpstream(t)
 
-	g := NewGateway(sock, upstreamAddr)
+	g := NewGateway(sock, upstreamAddr, "")
 	if err := g.Start(context.Background()); err != nil {
 		t.Fatalf("Start with reachable upstream: %v", err)
 	}
@@ -539,7 +542,7 @@ func TestStart_RemovesStaleSocket(t *testing.T) {
 		t.Fatalf("create stale file: %v", err)
 	}
 
-	g := NewGateway(sock, upstreamAddr)
+	g := NewGateway(sock, upstreamAddr, "")
 	if err := g.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -551,5 +554,267 @@ func TestStart_RemovesStaleSocket(t *testing.T) {
 	}
 	if info.Mode()&os.ModeSocket == 0 {
 		t.Errorf("expected socket file, got mode %v", info.Mode())
+	}
+}
+
+// ── gateway mode tests ────────────────────────────────────────────────────────
+
+// startFakeTCPTarget starts a minimal TCP server that echoes everything it
+// receives back to the caller. This simulates a direct TCP target for CONNECT
+// tunnels.
+func startFakeTCPTarget(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen fake TCP target: %v", err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer c.Close()
+				io.Copy(c, c) //nolint:errcheck // echo server
+			}()
+		}
+	}()
+	return ln.Addr().String()
+}
+
+// dialUnixHTTP dials the unix socket and wraps it with an http.Transport so we
+// can use http.Client for testing gateway mode without an actual network call.
+func dialUnixHTTP(sock string) *http.Client {
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, "unix", sock)
+		},
+	}
+	return &http.Client{Transport: transport}
+}
+
+// TestGatewayMode_Start_NoProbeDial verifies that gateway mode (proxy == "")
+// starts without requiring any upstream — no probe-dial.
+func TestGatewayMode_Start_NoProbeDial(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX-only per CLAUDE.md")
+	}
+	sock := tempSockPath(t)
+	g := NewGateway(sock, "", "") // gateway mode: no upstream
+	if err := g.Start(context.Background()); err != nil {
+		t.Fatalf("Start (gateway mode): %v", err)
+	}
+	t.Cleanup(func() { g.Close() })
+
+	// Verify socket exists and has the right permissions.
+	info, err := os.Stat(sock)
+	if err != nil {
+		t.Fatalf("socket file not found after gateway Start: %v", err)
+	}
+	if info.Mode()&0o777 != 0o666 {
+		t.Errorf("socket permissions = %o, want 0666", info.Mode()&0o777)
+	}
+}
+
+// TestGatewayMode_CONNECT_TunnelToDirectTarget verifies that a CONNECT request
+// over the unix socket is forwarded directly to a local TCP target and that
+// bytes round-trip correctly.
+func TestGatewayMode_CONNECT_TunnelToDirectTarget(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX-only per CLAUDE.md")
+	}
+	sock := tempSockPath(t)
+	targetAddr := startFakeTCPTarget(t)
+
+	g := NewGateway(sock, "", "")
+	if err := g.Start(context.Background()); err != nil {
+		t.Fatalf("Start (gateway mode): %v", err)
+	}
+	defer g.Close()
+
+	// Open a raw connection to the unix socket.
+	conn, err := net.Dial("unix", sock)
+	if err != nil {
+		t.Fatalf("dial unix socket: %v", err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(5 * time.Second))
+
+	// Send a CONNECT request to the gateway.
+	fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", targetAddr, targetAddr)
+
+	// Read the 200 response.
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("read CONNECT response: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("CONNECT response status = %d, want 200", resp.StatusCode)
+	}
+
+	// The tunnel is established. Write some data and read the echo.
+	payload := "hello gateway CONNECT\n"
+	if _, err := fmt.Fprint(conn, payload); err != nil {
+		t.Fatalf("write payload: %v", err)
+	}
+
+	buf := make([]byte, len(payload))
+	if _, err := io.ReadFull(conn, buf); err != nil {
+		t.Fatalf("read echo: %v", err)
+	}
+	if string(buf) != payload {
+		t.Errorf("got %q, want %q", buf, payload)
+	}
+}
+
+// TestGatewayMode_PlainHTTP_AbsoluteForm verifies that absolute-form HTTP
+// requests are forwarded to the target httptest server and the response is
+// returned to the caller.
+func TestGatewayMode_PlainHTTP_AbsoluteForm(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX-only per CLAUDE.md")
+	}
+	sock := tempSockPath(t)
+
+	// Start a local HTTP server that serves a known response.
+	const wantBody = "hello from origin"
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, wantBody)
+	}))
+	defer origin.Close()
+
+	g := NewGateway(sock, "", "")
+	if err := g.Start(context.Background()); err != nil {
+		t.Fatalf("Start (gateway mode): %v", err)
+	}
+	defer g.Close()
+
+	// Configure an http.Client that sends all requests through the unix socket.
+	client := dialUnixHTTP(sock)
+	client.Timeout = 5 * time.Second
+
+	// Make a request to the origin using the proxy.
+	resp, err := client.Get(origin.URL + "/test")
+	if err != nil {
+		t.Fatalf("GET via gateway: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200", resp.StatusCode)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if string(body) != wantBody {
+		t.Errorf("body = %q, want %q", body, wantBody)
+	}
+}
+
+// TestGatewayMode_Close_RemovesSocket verifies that Close removes the socket
+// file in gateway mode.
+func TestGatewayMode_Close_RemovesSocket(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX-only per CLAUDE.md")
+	}
+	sock := tempSockPath(t)
+	g := NewGateway(sock, "", "")
+	if err := g.Start(context.Background()); err != nil {
+		t.Fatalf("Start (gateway mode): %v", err)
+	}
+
+	if _, err := os.Stat(sock); err != nil {
+		t.Fatalf("socket file missing before Close: %v", err)
+	}
+
+	g.Close()
+
+	if _, err := os.Stat(sock); !os.IsNotExist(err) {
+		t.Errorf("socket file still exists after Close (err=%v)", err)
+	}
+}
+
+// TestGatewayMode_Close_TearDownInFlightTunnel verifies that Close tears down
+// an in-flight CONNECT tunnel (the hijacked conn is tracked and force-closed)
+// and that Close does not hang.
+func TestGatewayMode_Close_TearDownInFlightTunnel(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX-only per CLAUDE.md")
+	}
+	sock := tempSockPath(t)
+
+	// blockLn simulates a slow target that accepts a connection but blocks.
+	blockLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen block target: %v", err)
+	}
+	defer blockLn.Close()
+
+	targetAccepted := make(chan struct{})
+	go func() {
+		c, err := blockLn.Accept()
+		if err != nil {
+			return
+		}
+		close(targetAccepted)
+		// Block until the connection is closed by Close().
+		buf := make([]byte, 64)
+		for {
+			if _, err := c.Read(buf); err != nil {
+				c.Close()
+				return
+			}
+		}
+	}()
+
+	g := NewGateway(sock, "", "")
+	if err := g.Start(context.Background()); err != nil {
+		t.Fatalf("Start (gateway mode): %v", err)
+	}
+
+	// Establish a CONNECT tunnel.
+	conn, err := net.Dial("unix", sock)
+	if err != nil {
+		t.Fatalf("dial unix: %v", err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(5 * time.Second))
+
+	targetAddr := blockLn.Addr().String()
+	fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", targetAddr, targetAddr)
+
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("read CONNECT response: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("CONNECT response = %d, want 200", resp.StatusCode)
+	}
+
+	// Wait for the target to accept the connection (tunnel is in-flight).
+	select {
+	case <-targetAccepted:
+	case <-time.After(3 * time.Second):
+		t.Fatal("target never accepted connection")
+	}
+
+	// Close must tear down the tunnel and not hang.
+	done := make(chan struct{})
+	go func() {
+		g.Close()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close hung with an in-flight CONNECT tunnel")
+	}
+
+	if _, err := os.Stat(sock); !os.IsNotExist(err) {
+		t.Errorf("socket file still exists after Close (err=%v)", err)
 	}
 }

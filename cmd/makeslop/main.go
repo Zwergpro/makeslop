@@ -158,7 +158,7 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfH
 		sockPath := filepath.Join("/tmp", fmt.Sprintf("makeslop-%x-%d.sock", h[:6], os.Getpid()))
 		opts.ProxySocketHost = sockPath
 		opts.ProxySocketContainer = "/tmp/makeslop-proxy.sock"
-		gw = networks.NewGateway(sockPath, netCfg.ProxyAddress)
+		gw = networks.NewGateway(sockPath, netCfg.ProxyAddress, "")
 	}
 
 	// ProjectRoot must be the registered ancestor (workspaceRoot), not pwd:
