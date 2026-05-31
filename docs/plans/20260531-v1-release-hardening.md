@@ -259,13 +259,13 @@ the basics (LICENSE, CI, version stamping) plus carries a committed build artifa
 
 ### Task 8: Verify acceptance criteria
 
-- [ ] Verify all Phase 1 + Phase 2 items from Overview are implemented.
-- [ ] Verify backward compatibility: an old `settings.json` (no `tmp_dir_size`, `migrated_version: 1`)
+- [x] Verify all Phase 1 + Phase 2 items from Overview are implemented.
+- [x] Verify backward compatibility: an old `settings.json` (no `tmp_dir_size`, `migrated_version: 1`)
       still loads and `migrate` upgrades it to version 2.
-- [ ] Verify pure/impure split intact: `internal/docker/spec.go` unchanged and still pure.
-- [ ] Run the full suite: `GOTMPDIR=/home/user go test ./...`.
-- [ ] Run `golangci-lint run` locally.
-- [ ] Build for arm64 sanity (optional local check): `GOOS=linux GOARCH=arm64 go build ./cmd/makeslop`.
+- [x] Verify pure/impure split intact: `internal/docker/spec.go` unchanged and still pure.
+- [x] Run the full suite: `GOTMPDIR=/home/user go test ./...`.
+- [x] Run `golangci-lint run` locally.
+- [x] Build for arm64 sanity (optional local check): `GOOS=linux GOARCH=arm64 go build ./cmd/makeslop`.
 
 ### Task 9: [Final] Update documentation and close out
 

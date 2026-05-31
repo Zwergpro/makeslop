@@ -2606,7 +2606,7 @@ func TestConfigList_FreshBaseDir_PrintsThreeDefaults(t *testing.T) {
 	if idxImage < 0 || idxShell < 0 || idxTmpDir < 0 {
 		t.Fatalf("one or more keys missing from stdout: %q", stdout)
 	}
-	if !(idxImage < idxShell && idxShell < idxTmpDir) {
+	if idxImage >= idxShell || idxShell >= idxTmpDir {
 		t.Errorf("registry order violated: image@%d shell@%d tmp_dir_size@%d", idxImage, idxShell, idxTmpDir)
 	}
 }

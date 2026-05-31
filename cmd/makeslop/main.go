@@ -396,7 +396,7 @@ func runWithExitCode(baseDir string, stdout, stderr io.Writer, args []string) in
 		if code >= 0 {
 			return code
 		}
-		if wstat, ok := ee.ProcessState.Sys().(syscall.WaitStatus); ok && wstat.Signaled() {
+		if wstat, ok := ee.Sys().(syscall.WaitStatus); ok && wstat.Signaled() {
 			return 128 + int(wstat.Signal())
 		}
 		return 255

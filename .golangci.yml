@@ -1,0 +1,19 @@
+version: "2"
+
+linters:
+  default: standard
+  settings:
+    errcheck:
+      # These Close/Remove/SetDeadline calls appear in defer, t.Cleanup, or teardown
+      # paths where an error cannot be meaningfully handled or propagated.
+      # fmt.Fprint* write errors to stderr/stdout are also not actionable.
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintln
+        - fmt.Fprintf
+        - (net.Conn).Close
+        - (net.Listener).Close
+        - (*os.File).Close
+        - (*github.com/Zwergpro/makeslop/internal/networks.Proxy).Close
+        - os.Remove
+        - (net.Conn).SetDeadline

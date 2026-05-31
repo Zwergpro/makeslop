@@ -132,7 +132,7 @@ func TestWorkspaceName(t *testing.T) {
 				t.Errorf("hash suffix %q length = %d, want 6", suffix, len(suffix))
 			}
 			for _, r := range suffix {
-				if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')) {
+				if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
 					t.Errorf("hash suffix %q contains non-hex char %q", suffix, r)
 					break
 				}
