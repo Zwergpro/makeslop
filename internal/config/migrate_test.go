@@ -365,6 +365,68 @@ func TestMigrate_UpgradeFromVersion1(t *testing.T) {
 	}
 }
 
+// TestMigrationStatus_Fresh verifies that a Settings with MigratedVersion == 0
+// (fresh, never migrated) is reported as stale.
+func TestMigrationStatus_Fresh(t *testing.T) {
+	s := &Settings{MigratedVersion: 0}
+	current, latest, stale := MigrationStatus(s)
+	if current != 0 {
+		t.Errorf("current = %d, want 0", current)
+	}
+	if latest != MigrationVersion {
+		t.Errorf("latest = %d, want MigrationVersion (%d)", latest, MigrationVersion)
+	}
+	if !stale {
+		t.Errorf("stale = false, want true when MigratedVersion=0 < MigrationVersion=%d", MigrationVersion)
+	}
+}
+
+// TestMigrationStatus_Equal verifies that a Settings at the current
+// MigrationVersion is reported as NOT stale.
+func TestMigrationStatus_Equal(t *testing.T) {
+	s := &Settings{MigratedVersion: MigrationVersion}
+	current, latest, stale := MigrationStatus(s)
+	if current != MigrationVersion {
+		t.Errorf("current = %d, want %d", current, MigrationVersion)
+	}
+	if latest != MigrationVersion {
+		t.Errorf("latest = %d, want %d", latest, MigrationVersion)
+	}
+	if stale {
+		t.Errorf("stale = true, want false when MigratedVersion == MigrationVersion")
+	}
+}
+
+// TestMigrationStatus_Behind verifies that a Settings at a version strictly
+// below the current MigrationVersion is reported as stale.
+func TestMigrationStatus_Behind(t *testing.T) {
+	// Guard: this test only makes sense when MigrationVersion > 1.
+	if MigrationVersion <= 1 {
+		t.Skipf("MigrationVersion=%d is not > 1; stale-behind-1 path is vacuous", MigrationVersion)
+	}
+	s := &Settings{MigratedVersion: MigrationVersion - 1}
+	current, latest, stale := MigrationStatus(s)
+	if current != MigrationVersion-1 {
+		t.Errorf("current = %d, want %d", current, MigrationVersion-1)
+	}
+	if latest != MigrationVersion {
+		t.Errorf("latest = %d, want %d", latest, MigrationVersion)
+	}
+	if !stale {
+		t.Errorf("stale = false, want true when MigratedVersion=%d < MigrationVersion=%d", MigrationVersion-1, MigrationVersion)
+	}
+}
+
+// TestMigrationStatus_Ahead verifies that a Settings at a version strictly
+// above MigrationVersion (e.g. after a binary downgrade) reports stale = false.
+func TestMigrationStatus_Ahead(t *testing.T) {
+	s := &Settings{MigratedVersion: MigrationVersion + 10}
+	_, _, stale := MigrationStatus(s)
+	if stale {
+		t.Errorf("stale = true, want false when MigratedVersion=%d > MigrationVersion=%d (downgrade scenario)", MigrationVersion+10, MigrationVersion)
+	}
+}
+
 // TestSaveLoadByteIdenticalForSameSettings_WithMigratedVersion ensures the
 // existing byte-identical invariant still holds when MigratedVersion is set.
 func TestSaveLoadByteIdenticalForSameSettings_WithMigratedVersion(t *testing.T) {

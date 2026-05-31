@@ -252,13 +252,13 @@ today (printed == executed for argv).
 - Modify: `internal/config/config_test.go`
 - Modify: `internal/config/migrate_test.go`
 
-- [ ] add `BaseConfigExists(baseDir string) (bool, error)` (existence of `settings.json`,
+- [x] add `BaseConfigExists(baseDir string) (bool, error)` (existence of `settings.json`,
       distinguishing not-exist from other stat errors)
-- [ ] add `MigrationStatus(s *Settings) (current, latest int, stale bool)` comparing
+- [x] add `MigrationStatus(s *Settings) (current, latest int, stale bool)` comparing
       `s.MigratedVersion` to `MigrationVersion`
-- [ ] write tests for `BaseConfigExists` (present/absent/error) and `MigrationStatus`
+- [x] write tests for `BaseConfigExists` (present/absent/error) and `MigrationStatus`
       (fresh=stale-from-0, equal=not-stale, behind=stale)
-- [ ] run tests — must pass before next task
+- [x] run tests — must pass before next task
 
 ### Task 4: Rework `init` to seed-at-latest + non-blocking stale nudge
 

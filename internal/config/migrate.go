@@ -70,6 +70,17 @@ func writeDockerfile(baseDir string) error {
 	return nil
 }
 
+// MigrationStatus returns the current migrated version stored in s, the latest
+// known MigrationVersion constant, and whether the config is stale (current <
+// latest). A freshly-loaded Settings with MigratedVersion == 0 is always stale
+// when MigrationVersion > 0.
+func MigrationStatus(s *Settings) (current, latest int, stale bool) {
+	current = s.MigratedVersion
+	latest = MigrationVersion
+	stale = current < latest
+	return current, latest, stale
+}
+
 // Migrate runs all migration steps when the persisted migrated_version in
 // <baseDir>/settings.json differs from MigrationVersion. It returns
 // (true, nil) when migrations were applied and (false, nil) when already
