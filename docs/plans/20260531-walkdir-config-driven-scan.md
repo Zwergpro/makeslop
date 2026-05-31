@@ -203,12 +203,12 @@ func Scan(ctx context.Context, root string, patterns, skipDirs []string) ([]stri
 **Files:**
 - Modify: `cmd/makeslop/main_test.go`
 
-- [ ] remove `WriteFdShim` usages, fd-missing assertions, and `SkipNonPOSIX("fd shim…")` gates that only existed for fd
-- [ ] **delete the `init`-with-fd-shim tests** (~lines 1017-1028 and ~1604-1614): they asserted "init must succeed regardless of fd shim" but `init` never scanned, and they reference symbols deleted in Task 4 — they become moot and would otherwise break the `go test ./cmd/...` compile
-- [ ] update `go`-command masking tests to write a real `.makeslop.yaml` (with `exclude.scan.patterns`) plus on-disk secret files, then assert those files are masked in the docker argv
-- [ ] add a test asserting that an empty/absent `exclude.scan` ⇒ no files masked (the opt-in rule), and that `go` no longer errors when fd is absent
-- [ ] keep `SkipNonPOSIX` only where docker-shim POSIX behavior is still required
-- [ ] run tests: `GOTMPDIR=/home/user go test ./cmd/...` — must pass before next task
+- [x] remove `WriteFdShim` usages, fd-missing assertions, and `SkipNonPOSIX("fd shim…")` gates that only existed for fd
+- [x] **delete the `init`-with-fd-shim tests** (~lines 1017-1028 and ~1604-1614): they asserted "init must succeed regardless of fd shim" but `init` never scanned, and they reference symbols deleted in Task 4 — they become moot and would otherwise break the `go test ./cmd/...` compile
+- [x] update `go`-command masking tests to write a real `.makeslop.yaml` (with `exclude.scan.patterns`) plus on-disk secret files, then assert those files are masked in the docker argv
+- [x] add a test asserting that an empty/absent `exclude.scan` ⇒ no files masked (the opt-in rule), and that `go` no longer errors when fd is absent
+- [x] keep `SkipNonPOSIX` only where docker-shim POSIX behavior is still required
+- [x] run tests: `GOTMPDIR=/home/user go test ./cmd/...` — must pass before next task
 
 ### Task 7: Verify acceptance criteria
 - [ ] verify all Overview requirements implemented: no `fd`/`os/exec` in `internal/security`; scan driven by `exclude.scan`; empty patterns ⇒ nothing masked; scaffold seeds active defaults

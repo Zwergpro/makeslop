@@ -17,7 +17,6 @@ import (
 	"github.com/Zwergpro/makeslop/internal/config"
 	"github.com/Zwergpro/makeslop/internal/docker"
 	"github.com/Zwergpro/makeslop/internal/projectconfig"
-	"github.com/Zwergpro/makeslop/internal/security"
 	"github.com/Zwergpro/makeslop/internal/workspace"
 )
 
@@ -250,8 +249,7 @@ func TestGo_AfterInit_LaunchesDocker(t *testing.T) {
 	}
 	workspaceDir := strings.TrimSpace(initOut)
 
-	installFdShim(t, nil)
-	record := installDockerShim(t, 0)
+record := installDockerShim(t, 0)
 	stubTTY(t, true)
 
 	snapBefore := snapshotTree(t, baseDir)
@@ -302,8 +300,7 @@ func TestGo_FromSubdirectory_MountsRegisteredAncestor(t *testing.T) {
 	}
 	t.Chdir(sub)
 
-	installFdShim(t, nil)
-	record := installDockerShim(t, 0)
+record := installDockerShim(t, 0)
 	stubTTY(t, true)
 
 	if _, _, err := runCmd(t, baseDir, "go"); err != nil {
@@ -357,7 +354,6 @@ func TestGo_NoTTY_FailsBeforeDocker(t *testing.T) {
 	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
 		t.Fatalf("init failed: %v", err)
 	}
-	installFdShim(t, nil)
 	record := installDockerShim(t, 0)
 	// Do NOT stub ttyCheck — the real predicate returns false under go test.
 
@@ -385,7 +381,6 @@ func TestGo_ExitCodePropagation(t *testing.T) {
 	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
 		t.Fatalf("init failed: %v", err)
 	}
-	installFdShim(t, nil)
 	installDockerShim(t, 42)
 	stubTTY(t, true)
 
@@ -407,8 +402,6 @@ func TestRunWithExitCode_SignalKilledMapsTo128PlusSignum(t *testing.T) {
 	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
 		t.Fatalf("init failed: %v", err)
 	}
-
-	installFdShim(t, nil)
 
 	// SIGKILL -> 128 + 9 = 137.
 	dir := t.TempDir()
@@ -447,8 +440,7 @@ func TestGo_CustomImageAndShell_FlowFromSettings(t *testing.T) {
 		t.Fatalf("save settings: %v", err)
 	}
 
-	installFdShim(t, nil)
-	record := installDockerShim(t, 0)
+record := installDockerShim(t, 0)
 	stubTTY(t, true)
 
 	if _, _, err := runCmd(t, baseDir, "go"); err != nil {
@@ -833,8 +825,7 @@ func TestOutOfHomeFlag_Bypasses(t *testing.T) {
 		t.Errorf("init --out-of-home: stderr unexpectedly contains 'refusing to run': %q", stderr)
 	}
 
-	installFdShim(t, nil)
-	record := installDockerShim(t, 0)
+record := installDockerShim(t, 0)
 	stubTTY(t, true)
 
 	_, stderr, err = runCmd(t, baseDir, "--out-of-home", "go")
@@ -849,53 +840,6 @@ func TestOutOfHomeFlag_Bypasses(t *testing.T) {
 	}
 }
 
-// installFdShim installs a shim that emits the given paths null-separated;
-// active for the test duration via SetFdBinaryForTest.
-func installFdShim(t *testing.T, paths []string) string {
-	t.Helper()
-	docker.SkipNonPOSIX(t, "fd shim requires POSIX shell; makeslop is POSIX-only")
-	shim, record := security.WriteFdShim(t, t.TempDir(), paths)
-	t.Cleanup(security.SetFdBinaryForTest(shim))
-	return record
-}
-
-func TestGo_FdMissing_RefusesAndDoesNotInvokeDocker(t *testing.T) {
-	docker.SkipNonPOSIX(t, "docker shim requires POSIX shell; makeslop is POSIX-only")
-	setHomeToTestParent(t)
-	baseDir := t.TempDir()
-	pwd := t.TempDir()
-	t.Chdir(pwd)
-
-	// Register workspace so we get past ws.Lookup.
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
-
-	t.Cleanup(security.SetFdBinaryForTest("/nonexistent/fd-binary-that-does-not-exist"))
-
-	record := installDockerShim(t, 0)
-	stubTTY(t, true)
-
-	snapBefore := snapshotTree(t, baseDir)
-	_, stderr, err := runCmd(t, baseDir, "go")
-	if err == nil {
-		t.Fatalf("expected error when fd is missing, got nil")
-	}
-	if !errors.Is(err, errSilent) {
-		t.Errorf("expected errSilent, got %v", err)
-	}
-	if !strings.Contains(stderr, "fd/fdfind CLI required") {
-		t.Errorf("stderr missing install hint: %q", stderr)
-	}
-	if !strings.Contains(stderr, "https://github.com/sharkdp/fd") {
-		t.Errorf("stderr missing install URL: %q", stderr)
-	}
-	if argv := readArgv(t, record); argv != nil {
-		t.Errorf("docker shim must not be invoked when fd is missing; got argv=%v", argv)
-	}
-	snapAfter := snapshotTree(t, baseDir)
-	assertSnapshotsEqual(t, snapBefore, snapAfter)
-}
 
 func TestGo_MasksFoundEnvFiles_ArgvContainsDevNullMounts(t *testing.T) {
 	setHomeToTestParent(t)
@@ -923,7 +867,11 @@ func TestGo_MasksFoundEnvFiles_ArgvContainsDevNullMounts(t *testing.T) {
 		t.Fatalf("write local.env: %v", err)
 	}
 
-	installFdShim(t, []string{envFile1, envFile2})
+	// Config-driven scan: write .makeslop.yaml with patterns that match the files above.
+	yamlContent := "exclude:\n  scan:\n    patterns:\n      - \"*.env\"\n      - \".env.*\"\n  files: []\n  dirs: []\n"
+	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(yamlContent), 0o644); err != nil {
+		t.Fatalf("write yaml: %v", err)
+	}
 
 	record := installDockerShim(t, 0)
 	stubTTY(t, true)
@@ -988,8 +936,6 @@ func TestGo_NoEnvFiles_PrintsNothingExtraOnStderr(t *testing.T) {
 		t.Fatalf("init failed: %v", err)
 	}
 
-	installFdShim(t, nil)
-
 	record := installDockerShim(t, 0)
 	stubTTY(t, true)
 
@@ -1005,27 +951,6 @@ func TestGo_NoEnvFiles_PrintsNothingExtraOnStderr(t *testing.T) {
 		if strings.Contains(a, "/dev/null") {
 			t.Errorf("argv must not contain /dev/null mounts when no .env files found: %q", a)
 		}
-	}
-}
-
-func TestInit_DoesNotInvokeFd(t *testing.T) {
-	setHomeToTestParent(t)
-	baseDir := t.TempDir()
-	pwd := t.TempDir()
-	t.Chdir(pwd)
-
-	// Install an fd shim that exits 1; if init invokes it, init will fail.
-	docker.SkipNonPOSIX(t, "fd shim requires POSIX shell; makeslop is POSIX-only")
-	shimDir := t.TempDir()
-	shimPath := filepath.Join(shimDir, "fd-shim")
-	if err := os.WriteFile(shimPath, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
-		t.Fatalf("write failing fd shim: %v", err)
-	}
-	t.Cleanup(security.SetFdBinaryForTest(shimPath))
-
-	_, stderr, err := runCmd(t, baseDir, "init")
-	if err != nil {
-		t.Fatalf("init must succeed regardless of fd shim; got: %v; stderr=%q", err, stderr)
 	}
 }
 
@@ -1181,8 +1106,7 @@ func TestGo_DryRun_SkipsDocker(t *testing.T) {
 		t.Fatalf("init failed: %v", err)
 	}
 
-	installFdShim(t, nil)
-	record := installDockerShim(t, 0)
+record := installDockerShim(t, 0)
 	stubTTY(t, false)
 
 	stdout, stderr, err := runCmd(t, baseDir, "go", "--dry-run")
@@ -1211,8 +1135,7 @@ func TestGo_DryRun_StdoutEqualsBuildSpecShellCommand(t *testing.T) {
 	}
 	workspaceDir := strings.TrimSpace(initOut)
 
-	installFdShim(t, nil)
-	stubTTY(t, false)
+stubTTY(t, false)
 
 	stdout, stderr, err := runCmd(t, baseDir, "go", "--dry-run")
 	if err != nil {
@@ -1249,7 +1172,6 @@ func TestGo_DryRun_ShortFlag(t *testing.T) {
 		t.Fatalf("init failed: %v", err)
 	}
 
-	installFdShim(t, nil)
 	stubTTY(t, false)
 
 	stdoutLong, stderrLong, errLong := runCmd(t, baseDir, "go", "--dry-run")
@@ -1270,7 +1192,6 @@ func TestGo_DryRun_ShortFlag(t *testing.T) {
 // TTY-bypass guard: --dry-run succeeds even when real ttyCheck returns false
 // because docker.Run (the only ttyCheck caller) is never invoked.
 func TestGo_DryRun_NoTTY_Succeeds(t *testing.T) {
-	docker.SkipNonPOSIX(t, "fd shim requires POSIX shell; makeslop is POSIX-only")
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
@@ -1280,8 +1201,7 @@ func TestGo_DryRun_NoTTY_Succeeds(t *testing.T) {
 		t.Fatalf("init failed: %v", err)
 	}
 
-	// Scan runs before the dry-run branch, so fd must be available.
-	installFdShim(t, nil)
+	// Scan is config-driven (WalkDir); no fd shim needed.
 	// Do NOT stub ttyCheck — the real predicate returns false under go test.
 	// Do NOT install docker shim — docker.Run must never be called.
 
@@ -1340,8 +1260,6 @@ func TestGo_DryRun_OutsideHome_StillRefuses(t *testing.T) {
 }
 
 func TestGo_DryRun_OutOfHomeBypasses(t *testing.T) {
-	docker.SkipNonPOSIX(t, "fd shim requires POSIX shell; makeslop is POSIX-only")
-
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 
@@ -1356,7 +1274,6 @@ func TestGo_DryRun_OutOfHomeBypasses(t *testing.T) {
 
 	t.Chdir(insidePwd)
 
-	installFdShim(t, nil)
 	stubTTY(t, false)
 
 	// --out-of-home flag comes before the subcommand (it is a persistent flag).
@@ -1369,33 +1286,6 @@ func TestGo_DryRun_OutOfHomeBypasses(t *testing.T) {
 	}
 	if stdout == "" {
 		t.Errorf("--out-of-home --dry-run must print command to stdout")
-	}
-}
-
-func TestGo_DryRun_FdMissing_StillRefuses(t *testing.T) {
-	setHomeToTestParent(t)
-	baseDir := t.TempDir()
-	pwd := t.TempDir()
-	t.Chdir(pwd)
-
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
-
-	t.Cleanup(security.SetFdBinaryForTest("/nonexistent/fd-binary-that-does-not-exist"))
-
-	stdout, stderr, err := runCmd(t, baseDir, "go", "--dry-run")
-	if err == nil {
-		t.Fatalf("expected error when fd is missing, got nil; stdout=%q", stdout)
-	}
-	if !errors.Is(err, errSilent) {
-		t.Errorf("expected errSilent, got %v", err)
-	}
-	if !strings.Contains(stderr, "fd/fdfind CLI required") {
-		t.Errorf("stderr missing fd install hint: %q", stderr)
-	}
-	if stdout != "" {
-		t.Errorf("stdout must be empty when fd is missing; got %q", stdout)
 	}
 }
 
@@ -1414,7 +1304,6 @@ func TestGo_DryRun_CorruptSettings(t *testing.T) {
 		t.Fatalf("corrupt settings: %v", err)
 	}
 
-	installFdShim(t, nil)
 	stubTTY(t, false)
 
 	stdout, _, err := runCmd(t, baseDir, "go", "--dry-run")
@@ -1456,7 +1345,11 @@ func TestGo_DryRun_MasksEnvFiles_StdoutContainsDevNullMounts(t *testing.T) {
 		t.Fatalf("write local.env: %v", err)
 	}
 
-	installFdShim(t, []string{envFile1, envFile2})
+	// Config-driven scan: write .makeslop.yaml with patterns that match the files above.
+	yamlContent := "exclude:\n  scan:\n    patterns:\n      - \"*.env\"\n      - \".env.*\"\n  files: []\n  dirs: []\n"
+	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(yamlContent), 0o644); err != nil {
+		t.Fatalf("write yaml: %v", err)
+	}
 	stubTTY(t, false)
 
 	stdout, stderr, err := runCmd(t, baseDir, "go", "--dry-run")
@@ -1512,7 +1405,6 @@ func TestGo_DryRun_FromSubdir_MountsAncestor(t *testing.T) {
 	}
 	t.Chdir(sub)
 
-	installFdShim(t, nil)
 	stubTTY(t, false)
 
 	stdout, stderr, err := runCmd(t, baseDir, "go", "--dry-run")
@@ -1593,34 +1485,52 @@ func TestInit_PreservesExistingProjectConfig(t *testing.T) {
 	}
 }
 
-// Re-verifies the init-does-not-invoke-Scan invariant after Scaffold wiring.
-// If init calls the shim (which exits 1), init will fail.
-func TestInit_DoesNotInvokeScan_StillHolds(t *testing.T) {
+// ── projectconfig.Load wiring tests ───────────────────────────────────────────
+
+// TestGo_EmptyScanPatterns_NoFilesMasked asserts the opt-in rule: when
+// exclude.scan.patterns is absent (or the .makeslop.yaml is absent entirely),
+// no files are masked and go succeeds even when secret files exist on disk.
+// This also verifies that the absence of fd/fdfind is no longer an issue.
+func TestGo_EmptyScanPatterns_NoFilesMasked(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	docker.SkipNonPOSIX(t, "fd shim requires POSIX shell; makeslop is POSIX-only")
-	shimDir := t.TempDir()
-	shimPath := filepath.Join(shimDir, "fd-shim")
-	if err := os.WriteFile(shimPath, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
-		t.Fatalf("write failing fd shim: %v", err)
+	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
+		t.Fatalf("init failed: %v", err)
 	}
-	t.Cleanup(security.SetFdBinaryForTest(shimPath))
-
-	_, stderr, err := runCmd(t, baseDir, "init")
-	if err != nil {
-		t.Fatalf("init must succeed regardless of fd shim; got: %v; stderr=%q", err, stderr)
-	}
-
 	resolvedPwd := evalSymlinks(t, pwd)
-	if _, err := os.Stat(filepath.Join(resolvedPwd, projectconfig.Filename)); err != nil {
-		t.Errorf("%s not created by init: %v", projectconfig.Filename, err)
+
+	// Write a "secret" file that would have been caught by the old fd scan.
+	envFile := filepath.Join(resolvedPwd, ".env")
+	if err := os.WriteFile(envFile, []byte("SECRET=1"), 0o644); err != nil {
+		t.Fatalf("write .env: %v", err)
+	}
+
+	// Overwrite .makeslop.yaml with an empty scan block (no patterns).
+	yamlContent := "exclude:\n  scan:\n    patterns: []\n  files: []\n  dirs: []\n"
+	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(yamlContent), 0o644); err != nil {
+		t.Fatalf("write yaml: %v", err)
+	}
+
+	record := installDockerShim(t, 0)
+	stubTTY(t, true)
+
+	_, stderr, err := runCmd(t, baseDir, "go")
+	if err != nil {
+		t.Fatalf("go must succeed when exclude.scan.patterns is empty; err=%v; stderr=%q", err, stderr)
+	}
+	if strings.Contains(stderr, "masked") {
+		t.Errorf("stderr must not mention 'masked' when exclude.scan.patterns is empty: %q", stderr)
+	}
+	argv := readArgv(t, record)
+	for _, a := range argv {
+		if strings.Contains(a, "/dev/null") {
+			t.Errorf("argv must not contain /dev/null mounts when patterns is empty: %q", a)
+		}
 	}
 }
-
-// ── projectconfig.Load wiring tests ───────────────────────────────────────────
 
 func TestGo_LoadsYamlAndMergesMaskedFiles(t *testing.T) {
 	setHomeToTestParent(t)
@@ -1647,8 +1557,9 @@ func TestGo_LoadsYamlAndMergesMaskedFiles(t *testing.T) {
 		t.Fatalf("write token.txt: %v", err)
 	}
 
-	installFdShim(t, []string{envFile})
-	yamlContent := "exclude:\n  dirs: []\n  files: [private/token.txt]\n"
+	// Config-driven scan: write .makeslop.yaml with patterns (scan finds .env) and
+	// an explicit file mask (private/token.txt goes via exclude.files).
+	yamlContent := "exclude:\n  scan:\n    patterns:\n      - \"*.env\"\n  files: [private/token.txt]\n  dirs: []\n"
 	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(yamlContent), 0o644); err != nil {
 		t.Fatalf("write yaml: %v", err)
 	}
@@ -1715,8 +1626,7 @@ func TestGo_LoadsYamlMaskedDirs_TmpfsMountInArgv(t *testing.T) {
 		t.Fatalf("mkdir node_modules: %v", err)
 	}
 
-	installFdShim(t, nil)
-	yamlContent := "exclude:\n  dirs: [node_modules]\n  files: []\n"
+yamlContent := "exclude:\n  dirs: [node_modules]\n  files: []\n"
 	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(yamlContent), 0o644); err != nil {
 		t.Fatalf("write yaml: %v", err)
 	}
@@ -1775,8 +1685,7 @@ func TestGo_YamlAbsentIsBitIdenticalArgv(t *testing.T) {
 		t.Fatalf("remove yaml: %v", err)
 	}
 
-	installFdShim(t, nil)
-	record := installDockerShim(t, 0)
+record := installDockerShim(t, 0)
 	stubTTY(t, true)
 
 	_, stderr, err := runCmd(t, baseDir, "go")
@@ -1826,8 +1735,9 @@ func TestGo_YamlDedupsAgainstScan(t *testing.T) {
 		t.Fatalf("write .env: %v", err)
 	}
 
-	installFdShim(t, []string{envFile})
-	yamlContent := "exclude:\n  dirs: []\n  files: [.env]\n"
+	// Config-driven scan finds .env AND explicit files list also includes .env —
+	// mergeUniqueSorted must deduplicate so only one /dev/null mount appears.
+	yamlContent := "exclude:\n  scan:\n    patterns:\n      - \"*.env\"\n  dirs: []\n  files: [.env]\n"
 	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(yamlContent), 0o644); err != nil {
 		t.Fatalf("write yaml: %v", err)
 	}
@@ -1874,7 +1784,6 @@ func TestGo_YamlMalformedAbortsBeforeDocker(t *testing.T) {
 		t.Fatalf("write bad yaml: %v", err)
 	}
 
-	installFdShim(t, nil)
 	record := installDockerShim(t, 0)
 	stubTTY(t, true)
 
@@ -1908,8 +1817,7 @@ func TestGo_YamlReservedPathAbortsBeforeDocker(t *testing.T) {
 		t.Fatalf("write yaml: %v", err)
 	}
 
-	installFdShim(t, nil)
-	record := installDockerShim(t, 0)
+record := installDockerShim(t, 0)
 	stubTTY(t, true)
 
 	var stdout, stderr bytes.Buffer
@@ -1942,8 +1850,7 @@ func TestGo_YamlDirAndFileDupAborts(t *testing.T) {
 		t.Fatalf("write yaml: %v", err)
 	}
 
-	installFdShim(t, nil)
-	record := installDockerShim(t, 0)
+record := installDockerShim(t, 0)
 	stubTTY(t, true)
 
 	var stdout, stderr bytes.Buffer
@@ -1977,8 +1884,7 @@ func TestGo_YamlMissingPathSkippedSilently(t *testing.T) {
 	// Explicitly ensure the file does not exist.
 	_ = os.Remove(filepath.Join(resolvedPwd, "secrets", "api.key"))
 
-	installFdShim(t, nil)
-	record := installDockerShim(t, 0)
+record := installDockerShim(t, 0)
 	stubTTY(t, true)
 
 	_, stderr, err := runCmd(t, baseDir, "go")
@@ -2020,8 +1926,7 @@ func TestGo_DryRun_WithProxy_PrintsProxyArgvNoSocket(t *testing.T) {
 		t.Fatalf("write yaml: %v", err)
 	}
 
-	installFdShim(t, nil)
-	stubTTY(t, false)
+stubTTY(t, false)
 
 	stdout, stderr, err := runCmd(t, baseDir, "go", "--dry-run")
 	if err != nil {
@@ -2075,7 +1980,6 @@ func TestGo_DryRun_WithProxy_PrintsProxyArgvNoSocket(t *testing.T) {
 }
 
 func TestGo_DryRun_WithoutProxy_UnchangedArgv(t *testing.T) {
-	docker.SkipNonPOSIX(t, "fd shim requires POSIX shell; makeslop is POSIX-only")
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
@@ -2090,7 +1994,6 @@ func TestGo_DryRun_WithoutProxy_UnchangedArgv(t *testing.T) {
 
 	_ = os.Remove(filepath.Join(resolvedPwd, projectconfig.Filename))
 
-	installFdShim(t, nil)
 	stubTTY(t, false)
 
 	stdout, stderr, err := runCmd(t, baseDir, "go", "--dry-run")
@@ -2268,8 +2171,7 @@ func TestGo_DryRunIncludesMaskedDirs(t *testing.T) {
 		t.Fatalf("mkdir secrets: %v", err)
 	}
 
-	installFdShim(t, nil)
-	yamlContent := "exclude:\n  dirs: [secrets]\n  files: []\n"
+yamlContent := "exclude:\n  dirs: [secrets]\n  files: []\n"
 	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(yamlContent), 0o644); err != nil {
 		t.Fatalf("write yaml: %v", err)
 	}
@@ -2848,8 +2750,7 @@ func TestGo_CustomTmpDirSize_FlowsIntoDockerArgv(t *testing.T) {
 		t.Fatalf("save settings: %v", err)
 	}
 
-	installFdShim(t, nil)
-	record := installDockerShim(t, 0)
+record := installDockerShim(t, 0)
 	stubTTY(t, true)
 
 	if _, _, err := runCmd(t, baseDir, "go"); err != nil {
