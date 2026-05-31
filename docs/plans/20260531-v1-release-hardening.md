@@ -151,22 +151,22 @@ the basics (LICENSE, CI, version stamping) plus carries a committed build artifa
 - Modify: `internal/networks/proxy.go`
 - Modify: `internal/networks/proxy_test.go`
 
-- [ ] In `Proxy.Start`, after the listener is bound and chmod'd, perform a single probe dial of
+- [x] In `Proxy.Start`, after the listener is bound and chmod'd, perform a single probe dial of
       `p.upstream` via `(&net.Dialer{}).DialContext(ctx, "tcp", p.upstream)` with a short timeout;
       close the probe conn immediately on success.
-- [ ] On probe failure: close the listener, `os.Remove` the socket, and return the dial error so the
+- [x] On probe failure: close the listener, `os.Remove` the socket, and return the dial error so the
       launch aborts (mirror the existing chmod-failure cleanup path).
-- [ ] Update the `Start` doc comment to state that an unreachable upstream aborts the launch, and
+- [x] Update the `Start` doc comment to state that an unreachable upstream aborts the launch, and
       that the probe checks TCP reachability only (not HTTP CONNECT protocol validity).
-- [ ] **Repoint existing dead-upstream tests**: change the `NewProxy(sock, "127.0.0.1:1")` calls at
+- [x] **Repoint existing dead-upstream tests**: change the `NewProxy(sock, "127.0.0.1:1")` calls at
       proxy_test.go lines 64, 159, 181, 199, 290, 316 to use a live fake upstream (reuse the existing
       TCP helper from lines 93/124/254) so `Start` still succeeds for the socket-lifecycle assertions.
       The bind-error test at line 221 (path-too-long) does not reach the probe, so leave its upstream.
-- [ ] Add a test: `Start` against an unreachable upstream returns an error and leaves no socket file.
-- [ ] Add a test: `Start` against a reachable (test-spawned `net.Listen("tcp")`) upstream succeeds and
+- [x] Add a test: `Start` against an unreachable upstream returns an error and leaves no socket file.
+- [x] Add a test: `Start` against a reachable (test-spawned `net.Listen("tcp")`) upstream succeeds and
       the accept loop still tunnels bytes end-to-end (extend/keep existing tunneling test).
-- [ ] Verify `Close` remains idempotent after a failed `Start` (existing behavior; assert in test).
-- [ ] Run `GOTMPDIR=/home/user go test ./internal/networks/...` — must pass before Task 3.
+- [x] Verify `Close` remains idempotent after a failed `Start` (existing behavior; assert in test).
+- [x] Run `GOTMPDIR=/home/user go test ./internal/networks/...` — must pass before Task 3.
 
 ### Task 3: Multi-arch Dockerfile + MigrationVersion bump
 

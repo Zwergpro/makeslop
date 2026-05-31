@@ -60,7 +60,8 @@ func startFakeUpstream(t *testing.T) string {
 // 0666 so container processes with a different UID can connect.
 func TestStart_BindsAndChmodSocket(t *testing.T) {
 	sock := tempSockPath(t)
-	p := NewProxy(sock, "127.0.0.1:1") // upstream address irrelevant for this test
+	upstreamAddr := startFakeUpstream(t)
+	p := NewProxy(sock, upstreamAddr)
 	if err := p.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -155,7 +156,25 @@ func TestHandle_HalfCloseTerminatesGoroutines(t *testing.T) {
 
 func TestHandle_DialFailureClosesClientCleanly(t *testing.T) {
 	sock := tempSockPath(t)
-	p := NewProxy(sock, "127.0.0.1:1")
+
+	// Start a real upstream so the probe-dial in Start succeeds, then close it
+	// immediately so that per-connection dials from the handle goroutine fail.
+	probeLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen probe upstream: %v", err)
+	}
+	upstreamAddr := probeLn.Addr().String()
+	// Accept the probe connection in the background to unblock Start.
+	go func() {
+		c, err := probeLn.Accept()
+		if err != nil {
+			return
+		}
+		c.Close()
+		probeLn.Close() // stop accepting so subsequent dials fail
+	}()
+
+	p := NewProxy(sock, upstreamAddr)
 	if err := p.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -177,7 +196,8 @@ func TestHandle_DialFailureClosesClientCleanly(t *testing.T) {
 
 func TestClose_UnlinksSocket(t *testing.T) {
 	sock := tempSockPath(t)
-	p := NewProxy(sock, "127.0.0.1:1")
+	upstreamAddr := startFakeUpstream(t)
+	p := NewProxy(sock, upstreamAddr)
 	if err := p.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -195,7 +215,8 @@ func TestClose_UnlinksSocket(t *testing.T) {
 
 func TestClose_IsIdempotent(t *testing.T) {
 	sock := tempSockPath(t)
-	p := NewProxy(sock, "127.0.0.1:1")
+	upstreamAddr := startFakeUpstream(t)
+	p := NewProxy(sock, upstreamAddr)
 	if err := p.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -284,9 +305,10 @@ func TestClose_DoesNotHangWithInFlightConnection(t *testing.T) {
 
 func TestCtxCancellation_StopsAcceptLoop(t *testing.T) {
 	sock := tempSockPath(t)
+	upstreamAddr := startFakeUpstream(t)
 	ctx, cancel := context.WithCancel(context.Background())
 
-	p := NewProxy(sock, "127.0.0.1:1")
+	p := NewProxy(sock, upstreamAddr)
 	if err := p.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -305,14 +327,90 @@ func TestCtxCancellation_StopsAcceptLoop(t *testing.T) {
 	}
 }
 
+// TestStart_UnreachableUpstreamReturnsError verifies that Start fails fast and
+// leaves no socket file behind when the upstream is not reachable.
+func TestStart_UnreachableUpstreamReturnsError(t *testing.T) {
+	sock := tempSockPath(t)
+	p := NewProxy(sock, "127.0.0.1:1") // port 1 is never open
+
+	err := p.Start(context.Background())
+	if err == nil {
+		p.Close()
+		t.Fatal("Start: expected error for unreachable upstream, got nil")
+	}
+
+	if _, statErr := os.Stat(sock); !os.IsNotExist(statErr) {
+		t.Errorf("socket file should not exist after failed Start (stat err=%v)", statErr)
+	}
+}
+
+// TestClose_IdempotentAfterFailedStart verifies that Close does not panic or
+// deadlock when called after Start returned an error (i.e. nothing was set up).
+func TestClose_IdempotentAfterFailedStart(t *testing.T) {
+	sock := tempSockPath(t)
+	p := NewProxy(sock, "127.0.0.1:1") // unreachable — Start will fail
+
+	if err := p.Start(context.Background()); err == nil {
+		p.Close()
+		t.Fatal("expected Start to fail; got nil")
+	}
+
+	done := make(chan struct{})
+	go func() {
+		p.Close()
+		p.Close()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Close deadlocked after failed Start")
+	}
+}
+
+// TestStart_ReachableUpstreamSucceedsAndTunnels verifies that Start succeeds
+// when the upstream is reachable and that bytes are tunnelled end-to-end.
+// (This complements the existing tunnel test with an explicit reachability focus.)
+func TestStart_ReachableUpstreamSucceedsAndTunnels(t *testing.T) {
+	sock := tempSockPath(t)
+	upstreamAddr := startFakeUpstream(t)
+
+	p := NewProxy(sock, upstreamAddr)
+	if err := p.Start(context.Background()); err != nil {
+		t.Fatalf("Start with reachable upstream: %v", err)
+	}
+	defer p.Close()
+
+	conn, err := net.Dial("unix", sock)
+	if err != nil {
+		t.Fatalf("dial unix socket: %v", err)
+	}
+	defer conn.Close()
+
+	payload := "probe-ok\n"
+	if _, err := fmt.Fprint(conn, payload); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	buf := make([]byte, len(payload))
+	conn.SetDeadline(time.Now().Add(3 * time.Second))
+	if _, err := io.ReadFull(conn, buf); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(buf) != payload {
+		t.Errorf("got %q, want %q", buf, payload)
+	}
+}
+
 func TestStart_RemovesStaleSocket(t *testing.T) {
 	sock := tempSockPath(t)
+	upstreamAddr := startFakeUpstream(t)
 
 	if err := os.WriteFile(sock, []byte("stale"), 0o600); err != nil {
 		t.Fatalf("create stale file: %v", err)
 	}
 
-	p := NewProxy(sock, "127.0.0.1:1")
+	p := NewProxy(sock, upstreamAddr)
 	if err := p.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}

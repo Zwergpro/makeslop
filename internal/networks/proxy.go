@@ -24,6 +24,7 @@ import (
 	"os"
 	"sync"
 	"syscall"
+	"time"
 )
 
 // Proxy listens on a unix socket and tunnels CONNECT requests to an upstream
@@ -64,6 +65,13 @@ func (p *Proxy) SocketPath() string {
 // bind-mount flags.
 //
 // A bind error (e.g. path too long) should abort the container launch.
+//
+// Start performs a single probe dial of the upstream address before accepting
+// any connections. If the upstream is unreachable, Start tears down the
+// listener and socket and returns the error so the container launch aborts
+// loudly rather than silently black-holing traffic. The probe checks TCP
+// reachability only (a listening socket at the far end); it does not validate
+// that the upstream speaks a valid HTTP CONNECT proxy protocol.
 func (p *Proxy) Start(ctx context.Context) error {
 	// Remove any stale socket left by a previous (crashed) run.
 	_ = os.Remove(p.socketPath)
@@ -80,6 +88,19 @@ func (p *Proxy) Start(ctx context.Context) error {
 		_ = os.Remove(p.socketPath)
 		return err
 	}
+
+	// Probe-dial the upstream to catch misconfiguration before any container
+	// traffic is routed through the socket. A short timeout avoids blocking the
+	// launch for a prolonged period on a bad address.
+	probeCtx, probeCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer probeCancel()
+	probe, err := (&net.Dialer{}).DialContext(probeCtx, "tcp", p.upstream)
+	if err != nil {
+		_ = ln.Close()
+		_ = os.Remove(p.socketPath)
+		return err
+	}
+	_ = probe.Close()
 
 	proxyCtx, cancel := context.WithCancel(ctx)
 
