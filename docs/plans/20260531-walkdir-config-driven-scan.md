@@ -150,12 +150,12 @@ func Scan(ctx context.Context, root string, patterns, skipDirs []string) ([]stri
 - Modify: `internal/projectconfig/projectconfig_test.go`
 - Modify: `.makeslop.yaml` (repo root)
 
-- [ ] replace the `Stub` var with the populated default schema (patterns + skip-dirs as active values, empty `files`/`dirs`, `network.proxy.address: ""`) — see Technical Details target
-- [ ] ensure the new `Stub` round-trips through `Load` without error (defaults are valid input)
-- [ ] update the repo's own `.makeslop.yaml` to the populated defaults
-- [ ] update tests: `Scaffold` golden compares against new `Stub`; add a test asserting `Load` of the scaffolded stub yields the expected default `Patterns`/`SkipDirs`
-- [ ] confirm `Scaffold` idempotency test still holds (O_EXCL: existing files not clobbered)
-- [ ] run tests: `GOTMPDIR=/home/user go test ./internal/projectconfig/...` — must pass before next task
+- [x] replace the `Stub` var with the populated default schema (patterns + skip-dirs as active values, empty `files`/`dirs`, `network.proxy.address: ""`) — see Technical Details target
+- [x] ensure the new `Stub` round-trips through `Load` without error (defaults are valid input)
+- [x] update the repo's own `.makeslop.yaml` to the populated defaults
+- [x] update tests: `Scaffold` golden compares against new `Stub`; add a test asserting `Load` of the scaffolded stub yields the expected default `Patterns`/`SkipDirs`
+- [x] confirm `Scaffold` idempotency test still holds (O_EXCL: existing files not clobbered)
+- [x] run tests: `GOTMPDIR=/home/user go test ./internal/projectconfig/...` — must pass before next task
 
 ### Task 3: Rewrite security.Scan as a WalkDir walk
 

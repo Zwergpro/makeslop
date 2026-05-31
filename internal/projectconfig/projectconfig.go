@@ -35,7 +35,31 @@ import (
 const Filename = ".makeslop.yaml"
 
 // Stub is the content Scaffold writes. Exported so tests can compare without hardcoding.
-var Stub = []byte("exclude:\n  dirs: []\n  files: []\n")
+// It seeds the default scan filters (patterns + skip-dirs) as active values so that
+// new projects get secret masking out of the box without requiring manual configuration.
+var Stub = []byte(`exclude:
+  scan:
+    patterns:
+      - "*.env"
+      - ".env.*"
+      - "*.pem"
+      - "*.key"
+      - "id_rsa*"
+      - "id_ed25519*"
+      - ".npmrc"
+      - ".netrc"
+      - ".git-credentials"
+    skip-dirs:
+      - .git
+      - node_modules
+      - vendor
+      - .venv
+  files: []
+  dirs: []
+network:
+  proxy:
+    address: ""
+`)
 
 // Already mounted by docker.BuildSpec; user overlays would silently shadow them.
 var reservedPaths = map[string]struct{}{

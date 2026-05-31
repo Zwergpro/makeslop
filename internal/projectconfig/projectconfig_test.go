@@ -72,7 +72,7 @@ func TestLoad_MissingFile(t *testing.T) {
 	}
 }
 
-func TestLoad_EmptyStub(t *testing.T) {
+func TestLoad_DefaultStub_RoundTrips(t *testing.T) {
 	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
@@ -80,12 +80,37 @@ func TestLoad_EmptyStub(t *testing.T) {
 		t.Fatalf("write stub: %v", err)
 	}
 
-	excl, _, err := Load(root)
+	excl, netCfg, err := Load(root)
 	if err != nil {
-		t.Fatalf("Load on stub: %v", err)
+		t.Fatalf("Load on default stub: %v", err)
 	}
+	// explicit path lists remain empty
 	if len(excl.Files) != 0 || len(excl.Dirs) != 0 {
-		t.Errorf("expected zero Excludes from empty stub, got %+v", excl)
+		t.Errorf("expected zero Files/Dirs from default stub, got files=%v dirs=%v", excl.Files, excl.Dirs)
+	}
+	// network proxy address is empty
+	if netCfg.ProxyAddress != "" {
+		t.Errorf("expected empty ProxyAddress, got %q", netCfg.ProxyAddress)
+	}
+	// default scan patterns are seeded
+	wantPatterns := []string{
+		"*.env",
+		"*.key",
+		"*.pem",
+		".env.*",
+		".git-credentials",
+		".netrc",
+		".npmrc",
+		"id_ed25519*",
+		"id_rsa*",
+	}
+	if !stringSlicesEqual(excl.Patterns, wantPatterns) {
+		t.Errorf("Patterns: got %v, want %v", excl.Patterns, wantPatterns)
+	}
+	// default skip-dirs are seeded
+	wantSkipDirs := []string{".git", ".venv", "node_modules", "vendor"}
+	if !stringSlicesEqual(excl.SkipDirs, wantSkipDirs) {
+		t.Errorf("SkipDirs: got %v, want %v", excl.SkipDirs, wantSkipDirs)
 	}
 }
 
