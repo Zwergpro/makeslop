@@ -227,16 +227,16 @@ the basics (LICENSE, CI, version stamping) plus carries a committed build artifa
 **Files:**
 - Create: `.github/workflows/ci.yml`
 
-- [ ] Create a CI workflow triggered on push + pull_request: checkout, `setup-go` (1.26.x).
-- [ ] Add a step exporting `GOTMPDIR` to an executable workspace path (e.g.
+- [x] Create a CI workflow triggered on push + pull_request: checkout, `setup-go` (1.26.x).
+- [x] Add a step exporting `GOTMPDIR` to an executable workspace path (e.g.
       `${{ github.workspace }}/gotmp`, `mkdir -p` first) with an inline comment explaining the
       noexec-/tmp shim constraint from CLAUDE.md.
-- [ ] Steps: `go build ./cmd/makeslop`, `go test ./...` (with `GOTMPDIR` set), and
+- [x] Steps: `go build ./cmd/makeslop`, `go test ./...` (with `GOTMPDIR` set), and
       `golangci-lint` (via the official action).
-- [ ] Install the `fd-find` apt package in CI (Debian installs the binary as `fdfind`, which `Scan`
+- [x] Install the `fd-find` apt package in CI (Debian installs the binary as `fdfind`, which `Scan`
       already handles) so `TestScan_RealFd_MatchesExpectedFiles` actually runs instead of skipping —
       the real-binary coverage matters precisely because this release hardens the secret scanner.
-- [ ] (No unit tests — CI config; validated by the workflow running green on the PR.)
+- [x] (No unit tests — CI config; validated by the workflow running green on the PR.)
 
 ### Task 7: README rewrite
 

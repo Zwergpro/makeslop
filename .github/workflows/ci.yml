@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+
+      - name: Install fd-find
+        # fd-find provides the 'fdfind' binary (Debian/Ubuntu package name).
+        # security.Scan already handles both 'fd' and 'fdfind' on PATH, so this
+        # is enough for TestScan_RealFd_MatchesExpectedFiles to run (instead of skip).
+        run: sudo apt-get update && sudo apt-get install -y fd-find
+
+      - name: Set GOTMPDIR
+        # /tmp is mounted noexec in this CI environment (and mirrored in the
+        # project's CLAUDE.md). Shell shims (fake docker binaries used by
+        # run_test.go / main_test.go) must land on an executable filesystem.
+        # Using $GITHUB_WORKSPACE/gotmp satisfies that requirement because the
+        # workspace is checked out on the runner's regular disk, not a noexec tmpfs.
+        run: |
+          mkdir -p "${{ github.workspace }}/gotmp"
+          echo "GOTMPDIR=${{ github.workspace }}/gotmp" >> "$GITHUB_ENV"
+
+      - name: Build
+        run: go build ./cmd/makeslop
+
+      - name: Test
+        run: go test ./...
+
+  lint:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
