@@ -317,15 +317,15 @@ today (printed == executed for argv).
 - Modify: `cmd/makeslop/main_test.go`
 - Modify: `README.md` (command references touched here; full rewrite in Task 9)
 
-- [ ] rename the cobra command `Use: "go"` → `"run"` and update `Short`; rename `runGo` → `runRun`
+- [x] rename the cobra command `Use: "go"` → `"run"` and update `Short`; rename `runGo` → `runRun`
       (and the closure wiring) — no alias kept
-- [ ] insert pre-flight before `docker.Run`: `CheckDaemon` (`— is docker running?`) then
+- [x] insert pre-flight before `docker.Run`: `CheckDaemon` (`— is docker running?`) then
       `ImageExists` (`makeslop: image '<image>' not built — run 'makeslop build'`, no auto-build),
       preserving existing order (home → workspace → daemon → image → proxy → TTY)
-- [ ] ensure `--dry-run` still skips daemon/image/TTY (printed == executed invariant intact)
-- [ ] update all tests referencing the `go` subcommand to `run`; add tests for daemon-down and
+- [x] ensure `--dry-run` still skips daemon/image/TTY (printed == executed invariant intact)
+- [x] update all tests referencing the `go` subcommand to `run`; add tests for daemon-down and
       image-missing pre-flight errors (exact remedy strings) and the happy path via `FakeRunClient`
-- [ ] run tests — must pass before next task
+- [x] run tests — must pass before next task
 
 ### Task 7: `config` bare shows settings; scope `--out-of-home`; add `--quiet`
 

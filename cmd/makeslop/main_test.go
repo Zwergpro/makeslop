@@ -120,7 +120,7 @@ func setHomeToTestParent(t *testing.T) {
 	t.Setenv("HOME", parent)
 }
 
-func TestGo_NotRegistered_NoMutation(t *testing.T) {
+func TestRun_NotRegistered_NoMutation(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
@@ -131,7 +131,7 @@ func TestGo_NotRegistered_NoMutation(t *testing.T) {
 		t.Fatalf("baseDir not empty before run: %v", beforeFiles)
 	}
 
-	stdout, stderr, err := runCmd(t, baseDir, "go")
+	stdout, stderr, err := runCmd(t, baseDir, "run")
 	if err == nil {
 		t.Fatalf("expected error from makeslop go, got nil; stdout=%q stderr=%q", stdout, stderr)
 	}
@@ -239,7 +239,7 @@ func installFakeBuildClient(t *testing.T, exitCode int) *docker.FakeBuildClient 
 }
 
 // Milestone-1 regression guard: makeslop go must not print the cache path on stdout.
-func TestGo_AfterInit_LaunchesDocker(t *testing.T) {
+func TestRun_AfterInit_LaunchesDocker(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
@@ -255,7 +255,7 @@ func TestGo_AfterInit_LaunchesDocker(t *testing.T) {
 	stubTTY(t, true)
 
 	snapBefore := snapshotTree(t, baseDir)
-	stdout, stderr, err := runCmd(t, baseDir, "go")
+	stdout, stderr, err := runCmd(t, baseDir, "run")
 	if err != nil {
 		t.Fatalf("root failed: %v; stderr=%q", err, stderr)
 	}
@@ -286,7 +286,7 @@ func TestGo_AfterInit_LaunchesDocker(t *testing.T) {
 	_ = want // spec correctness is covered by spec_test.go drift-guard
 }
 
-func TestGo_FromSubdirectory_MountsRegisteredAncestor(t *testing.T) {
+func TestRun_FromSubdirectory_MountsRegisteredAncestor(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	parent := t.TempDir()
@@ -306,7 +306,7 @@ func TestGo_FromSubdirectory_MountsRegisteredAncestor(t *testing.T) {
 	fc := installFakeRunClient(t, 0)
 	stubTTY(t, true)
 
-	if _, _, err := runCmd(t, baseDir, "go"); err != nil {
+	if _, _, err := runCmd(t, baseDir, "run"); err != nil {
 		t.Fatalf("root failed: %v", err)
 	}
 
@@ -342,7 +342,7 @@ func TestGo_FromSubdirectory_MountsRegisteredAncestor(t *testing.T) {
 	}
 }
 
-func TestGo_Unregistered_DoesNotInvokeDocker(t *testing.T) {
+func TestRun_Unregistered_DoesNotInvokeDocker(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
@@ -351,7 +351,7 @@ func TestGo_Unregistered_DoesNotInvokeDocker(t *testing.T) {
 	fc := installFakeRunClient(t, 0)
 	stubTTY(t, true)
 
-	_, stderr, err := runCmd(t, baseDir, "go")
+	_, stderr, err := runCmd(t, baseDir, "run")
 	if err == nil {
 		t.Fatalf("expected error from unregistered makeslop go, got nil")
 	}
@@ -364,7 +364,7 @@ func TestGo_Unregistered_DoesNotInvokeDocker(t *testing.T) {
 }
 
 // Exercises the production ttyCheck (pipes in `go test` are not TTYs).
-func TestGo_NoTTY_FailsBeforeDocker(t *testing.T) {
+func TestRun_NoTTY_FailsBeforeDocker(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
@@ -376,7 +376,7 @@ func TestGo_NoTTY_FailsBeforeDocker(t *testing.T) {
 	fc := installFakeRunClient(t, 0)
 	// Do NOT stub ttyCheck — the real predicate returns false under go test.
 
-	_, stderr, err := runCmd(t, baseDir, "go")
+	_, stderr, err := runCmd(t, baseDir, "run")
 	if err == nil {
 		t.Fatalf("expected error when stdin/stdout are not TTYs, got nil")
 	}
@@ -391,7 +391,7 @@ func TestGo_NoTTY_FailsBeforeDocker(t *testing.T) {
 	}
 }
 
-func TestGo_ExitCodePropagation(t *testing.T) {
+func TestRun_ExitCodePropagation(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
@@ -405,7 +405,7 @@ func TestGo_ExitCodePropagation(t *testing.T) {
 	stubTTY(t, true)
 
 	var stdout, stderr bytes.Buffer
-	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"go"})
+	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"run"})
 	if code != 42 {
 		t.Errorf("runWithExitCode = %d, want 42; stderr=%q", code, stderr.String())
 	}
@@ -432,14 +432,14 @@ func TestRunWithExitCode_DaemonReports137_MapsTo137(t *testing.T) {
 	stubTTY(t, true)
 
 	var stdout, stderr bytes.Buffer
-	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"go"})
+	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"run"})
 	if code != 137 {
 		t.Errorf("runWithExitCode = %d, want 137 (daemon-reported 128+SIGKILL); stderr=%q", code, stderr.String())
 	}
 }
 
 // Guards that settings.json values reach the docker invocation, not just compiled-in defaults.
-func TestGo_CustomImageAndShell_FlowFromSettings(t *testing.T) {
+func TestRun_CustomImageAndShell_FlowFromSettings(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
@@ -461,7 +461,7 @@ func TestGo_CustomImageAndShell_FlowFromSettings(t *testing.T) {
 	// Use --dry-run to capture the argv without actually running docker, so
 	// we can verify the image and shell flow from settings.json into the spec.
 	stubTTY(t, false)
-	stdout, stderr, err := runCmd(t, baseDir, "go", "--dry-run")
+	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
 	if err != nil {
 		t.Fatalf("go --dry-run failed: %v; stderr=%q", err, stderr)
 	}
@@ -485,7 +485,7 @@ func TestRunWithExitCode_NonExitErrorPrintsPrefix(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"go"})
+	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"run"})
 	if code != 1 {
 		t.Errorf("exit code = %d, want 1", code)
 	}
@@ -635,7 +635,7 @@ func TestInit_SymlinkInvariant(t *testing.T) {
 }
 
 // Guards that non-ErrNotRegistered errors from Lookup surface through cobra's SilenceErrors.
-func TestGo_CorruptSettings_ReportsError(t *testing.T) {
+func TestRun_CorruptSettings_ReportsError(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
@@ -645,7 +645,7 @@ func TestGo_CorruptSettings_ReportsError(t *testing.T) {
 		t.Fatalf("seed corrupt settings: %v", err)
 	}
 
-	stdout, _, err := runCmd(t, baseDir, "go")
+	stdout, _, err := runCmd(t, baseDir, "run")
 	if err == nil {
 		t.Fatalf("expected error from makeslop go with corrupt settings, got nil; stdout=%q", stdout)
 	}
@@ -729,13 +729,13 @@ func TestInit_BootstrapsAgentArtifacts(t *testing.T) {
 	assertSnapshotsEqual(t, snapBefore, snapAfter)
 }
 
-func TestGo_NotRegistered_ReturnsErrSilent(t *testing.T) {
+func TestRun_NotRegistered_ReturnsErrSilent(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	_, stderr, err := runCmd(t, baseDir, "go")
+	_, stderr, err := runCmd(t, baseDir, "run")
 	if err == nil {
 		t.Fatalf("expected error from makeslop go, got nil")
 	}
@@ -748,7 +748,7 @@ func TestGo_NotRegistered_ReturnsErrSilent(t *testing.T) {
 }
 
 // Guards that docker is never invoked when cwd is outside HOME.
-func TestGo_OutsideHome_Refuses(t *testing.T) {
+func TestRun_OutsideHome_Refuses(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", evalSymlinks(t, tmpHome))
 
@@ -760,7 +760,7 @@ func TestGo_OutsideHome_Refuses(t *testing.T) {
 	stubTTY(t, true)
 
 	snapBefore := snapshotTree(t, baseDir)
-	_, stderr, err := runCmd(t, baseDir, "go")
+	_, stderr, err := runCmd(t, baseDir, "run")
 	if err == nil {
 		t.Fatalf("expected error from makeslop go outside HOME, got nil")
 	}
@@ -840,7 +840,7 @@ func TestOutOfHomeFlag_Bypasses(t *testing.T) {
 	fc := installFakeRunClient(t, 0)
 	stubTTY(t, true)
 
-	_, stderr, err = runCmd(t, baseDir, "--out-of-home", "go")
+	_, stderr, err = runCmd(t, baseDir, "--out-of-home", "run")
 	if err != nil {
 		t.Fatalf("makeslop --out-of-home go should succeed outside HOME, got: %v; stderr=%q", err, stderr)
 	}
@@ -852,7 +852,7 @@ func TestOutOfHomeFlag_Bypasses(t *testing.T) {
 	}
 }
 
-func TestGo_MasksFoundEnvFiles_ArgvContainsDevNullMounts(t *testing.T) {
+func TestRun_MasksFoundEnvFiles_ArgvContainsDevNullMounts(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
@@ -888,7 +888,7 @@ func TestGo_MasksFoundEnvFiles_ArgvContainsDevNullMounts(t *testing.T) {
 	// actually running docker. The same spec is passed to docker.Run in the
 	// non-dry-run path (verified by the pure spec drift-guard in spec_test.go).
 	stubTTY(t, false)
-	stdout, stderr, err := runCmd(t, baseDir, "go", "--dry-run")
+	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
 	if err != nil {
 		t.Fatalf("--dry-run failed: %v; stderr=%q", err, stderr)
 	}
@@ -922,7 +922,7 @@ func TestGo_MasksFoundEnvFiles_ArgvContainsDevNullMounts(t *testing.T) {
 	}
 }
 
-func TestGo_NoEnvFiles_PrintsNothingExtraOnStderr(t *testing.T) {
+func TestRun_NoEnvFiles_PrintsNothingExtraOnStderr(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
@@ -934,7 +934,7 @@ func TestGo_NoEnvFiles_PrintsNothingExtraOnStderr(t *testing.T) {
 
 	// Use --dry-run: no docker needed, and we can verify no /dev/null mounts in output.
 	stubTTY(t, false)
-	stdout, stderr, err := runCmd(t, baseDir, "go", "--dry-run")
+	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
 	if err != nil {
 		t.Fatalf("--dry-run failed: %v; stderr=%q", err, stderr)
 	}
@@ -965,8 +965,8 @@ func TestRoot_BareInvocation_PrintsHelp(t *testing.T) {
 		t.Errorf("stdout missing 'Available Commands:': %q", stdout)
 	}
 	// cobra indents subcommands two spaces in the Available Commands block.
-	if !strings.Contains(stdout, "\n  go ") {
-		t.Errorf("stdout missing '\\n  go ' command entry: %q", stdout)
+	if !strings.Contains(stdout, "\n  run ") {
+		t.Errorf("stdout missing '\\n  run ' command entry: %q", stdout)
 	}
 	if !strings.Contains(stdout, "\n  init ") {
 		t.Errorf("stdout missing '\\n  init ' command entry: %q", stdout)
@@ -1090,7 +1090,7 @@ func TestMergeUniqueSorted(t *testing.T) {
 }
 
 // "no exec" contract: --dry-run succeeds even when TTY is false (no docker exec).
-func TestGo_DryRun_SkipsDocker(t *testing.T) {
+func TestRun_DryRun_SkipsDocker(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
@@ -1103,7 +1103,7 @@ func TestGo_DryRun_SkipsDocker(t *testing.T) {
 	fc := installFakeRunClient(t, 0)
 	stubTTY(t, false)
 
-	stdout, stderr, err := runCmd(t, baseDir, "go", "--dry-run")
+	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
 	if err != nil {
 		t.Fatalf("--dry-run should succeed, got err: %v; stderr=%q", err, stderr)
 	}
@@ -1117,7 +1117,7 @@ func TestGo_DryRun_SkipsDocker(t *testing.T) {
 
 // Single source of truth: --dry-run stdout must equal BuildSpec(opts).ShellCommand()
 // (after stripping the trailing newline from fmt.Fprintln).
-func TestGo_DryRun_StdoutEqualsBuildSpecShellCommand(t *testing.T) {
+func TestRun_DryRun_StdoutEqualsBuildSpecShellCommand(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
@@ -1131,7 +1131,7 @@ func TestGo_DryRun_StdoutEqualsBuildSpecShellCommand(t *testing.T) {
 
 	stubTTY(t, false)
 
-	stdout, stderr, err := runCmd(t, baseDir, "go", "--dry-run")
+	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
 	if err != nil {
 		t.Fatalf("--dry-run failed: %v; stderr=%q", err, stderr)
 	}
@@ -1156,7 +1156,7 @@ func TestGo_DryRun_StdoutEqualsBuildSpecShellCommand(t *testing.T) {
 	}
 }
 
-func TestGo_DryRun_ShortFlag(t *testing.T) {
+func TestRun_DryRun_ShortFlag(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
@@ -1168,12 +1168,12 @@ func TestGo_DryRun_ShortFlag(t *testing.T) {
 
 	stubTTY(t, false)
 
-	stdoutLong, stderrLong, errLong := runCmd(t, baseDir, "go", "--dry-run")
+	stdoutLong, stderrLong, errLong := runCmd(t, baseDir, "run", "--dry-run")
 	if errLong != nil {
 		t.Fatalf("--dry-run failed: %v; stderr=%q", errLong, stderrLong)
 	}
 
-	stdoutShort, stderrShort, errShort := runCmd(t, baseDir, "go", "-n")
+	stdoutShort, stderrShort, errShort := runCmd(t, baseDir, "run", "-n")
 	if errShort != nil {
 		t.Fatalf("-n failed: %v; stderr=%q", errShort, stderrShort)
 	}
@@ -1185,7 +1185,7 @@ func TestGo_DryRun_ShortFlag(t *testing.T) {
 
 // TTY-bypass guard: --dry-run succeeds even when real ttyCheck returns false
 // because docker.Run (the only ttyCheck caller) is never invoked.
-func TestGo_DryRun_NoTTY_Succeeds(t *testing.T) {
+func TestRun_DryRun_NoTTY_Succeeds(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
@@ -1199,7 +1199,7 @@ func TestGo_DryRun_NoTTY_Succeeds(t *testing.T) {
 	// Do NOT stub ttyCheck — the real predicate returns false under go test.
 	// Do NOT install docker shim — docker.Run must never be called.
 
-	stdout, stderr, err := runCmd(t, baseDir, "go", "--dry-run")
+	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
 	if err != nil {
 		t.Fatalf("--dry-run must succeed with no TTY (TTY check lives in docker.Run which is skipped); err=%v; stderr=%q", err, stderr)
 	}
@@ -1208,14 +1208,14 @@ func TestGo_DryRun_NoTTY_Succeeds(t *testing.T) {
 	}
 }
 
-func TestGo_DryRun_Unregistered_StillRefuses(t *testing.T) {
+func TestRun_DryRun_Unregistered_StillRefuses(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 	// No init — workspace is not registered.
 
-	stdout, stderr, err := runCmd(t, baseDir, "go", "--dry-run")
+	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
 	if err == nil {
 		t.Fatalf("expected error for unregistered workspace, got nil; stdout=%q", stdout)
 	}
@@ -1230,7 +1230,7 @@ func TestGo_DryRun_Unregistered_StillRefuses(t *testing.T) {
 	}
 }
 
-func TestGo_DryRun_OutsideHome_StillRefuses(t *testing.T) {
+func TestRun_DryRun_OutsideHome_StillRefuses(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", evalSymlinks(t, tmpHome))
 
@@ -1238,7 +1238,7 @@ func TestGo_DryRun_OutsideHome_StillRefuses(t *testing.T) {
 	outsidePwd := t.TempDir()
 	t.Chdir(outsidePwd)
 
-	stdout, stderr, err := runCmd(t, baseDir, "go", "--dry-run")
+	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
 	if err == nil {
 		t.Fatalf("expected error from --dry-run outside HOME, got nil; stdout=%q", stdout)
 	}
@@ -1253,7 +1253,7 @@ func TestGo_DryRun_OutsideHome_StillRefuses(t *testing.T) {
 	}
 }
 
-func TestGo_DryRun_OutOfHomeBypasses(t *testing.T) {
+func TestRun_DryRun_OutOfHomeBypasses(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 
@@ -1271,7 +1271,7 @@ func TestGo_DryRun_OutOfHomeBypasses(t *testing.T) {
 	stubTTY(t, false)
 
 	// --out-of-home flag comes before the subcommand (it is a persistent flag).
-	stdout, stderr, err := runCmd(t, baseDir, "--out-of-home", "go", "--dry-run")
+	stdout, stderr, err := runCmd(t, baseDir, "--out-of-home", "run", "--dry-run")
 	if err != nil {
 		t.Fatalf("--out-of-home --dry-run should succeed; err=%v; stderr=%q", err, stderr)
 	}
@@ -1284,7 +1284,7 @@ func TestGo_DryRun_OutOfHomeBypasses(t *testing.T) {
 }
 
 // Guards that precondition errors (ws.Lookup → config.Load) propagate under --dry-run.
-func TestGo_DryRun_CorruptSettings(t *testing.T) {
+func TestRun_DryRun_CorruptSettings(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
@@ -1300,7 +1300,7 @@ func TestGo_DryRun_CorruptSettings(t *testing.T) {
 
 	stubTTY(t, false)
 
-	stdout, _, err := runCmd(t, baseDir, "go", "--dry-run")
+	stdout, _, err := runCmd(t, baseDir, "run", "--dry-run")
 	if err == nil {
 		t.Fatalf("expected error for corrupt settings under --dry-run, got nil; stdout=%q", stdout)
 	}
@@ -1313,7 +1313,7 @@ func TestGo_DryRun_CorruptSettings(t *testing.T) {
 	}
 }
 
-func TestGo_DryRun_MasksEnvFiles_StdoutContainsDevNullMounts(t *testing.T) {
+func TestRun_DryRun_MasksEnvFiles_StdoutContainsDevNullMounts(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
@@ -1346,7 +1346,7 @@ func TestGo_DryRun_MasksEnvFiles_StdoutContainsDevNullMounts(t *testing.T) {
 	}
 	stubTTY(t, false)
 
-	stdout, stderr, err := runCmd(t, baseDir, "go", "--dry-run")
+	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
 	if err != nil {
 		t.Fatalf("--dry-run failed: %v; stderr=%q", err, stderr)
 	}
@@ -1381,7 +1381,7 @@ func TestGo_DryRun_MasksEnvFiles_StdoutContainsDevNullMounts(t *testing.T) {
 	}
 }
 
-func TestGo_DryRun_FromSubdir_MountsAncestor(t *testing.T) {
+func TestRun_DryRun_FromSubdir_MountsAncestor(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	parent := t.TempDir()
@@ -1401,7 +1401,7 @@ func TestGo_DryRun_FromSubdir_MountsAncestor(t *testing.T) {
 
 	stubTTY(t, false)
 
-	stdout, stderr, err := runCmd(t, baseDir, "go", "--dry-run")
+	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
 	if err != nil {
 		t.Fatalf("--dry-run from subdir failed: %v; stderr=%q", err, stderr)
 	}
@@ -1485,7 +1485,7 @@ func TestInit_PreservesExistingProjectConfig(t *testing.T) {
 // exclude.scan.patterns is absent (or the .makeslop.yaml is absent entirely),
 // no files are masked and go succeeds even when secret files exist on disk.
 // This also verifies that the absence of fd/fdfind is no longer an issue.
-func TestGo_EmptyScanPatterns_NoFilesMasked(t *testing.T) {
+func TestRun_EmptyScanPatterns_NoFilesMasked(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
@@ -1511,7 +1511,7 @@ func TestGo_EmptyScanPatterns_NoFilesMasked(t *testing.T) {
 	installFakeRunClient(t, 0)
 	stubTTY(t, true)
 
-	_, stderr, err := runCmd(t, baseDir, "go")
+	_, stderr, err := runCmd(t, baseDir, "run")
 	if err != nil {
 		t.Fatalf("go must succeed when exclude.scan.patterns is empty; err=%v; stderr=%q", err, stderr)
 	}
@@ -1520,7 +1520,7 @@ func TestGo_EmptyScanPatterns_NoFilesMasked(t *testing.T) {
 	}
 }
 
-func TestGo_LoadsYamlAndMergesMaskedFiles(t *testing.T) {
+func TestRun_LoadsYamlAndMergesMaskedFiles(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
@@ -1554,7 +1554,7 @@ func TestGo_LoadsYamlAndMergesMaskedFiles(t *testing.T) {
 
 	// Use --dry-run to verify spec content without running docker.
 	stubTTY(t, false)
-	stdout, stderr, err := runCmd(t, baseDir, "go", "--dry-run")
+	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
 	if err != nil {
 		t.Fatalf("go --dry-run failed: %v; stderr=%q", err, stderr)
 	}
@@ -1584,7 +1584,7 @@ func TestGo_LoadsYamlAndMergesMaskedFiles(t *testing.T) {
 
 // TestGo_BadScanPattern_AbortsBeforeDocker verifies that a malformed glob pattern in
 // exclude.scan.patterns causes makeslop go to abort with an error before invoking docker.
-func TestGo_BadScanPattern_AbortsBeforeDocker(t *testing.T) {
+func TestRun_BadScanPattern_AbortsBeforeDocker(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
@@ -1601,13 +1601,13 @@ func TestGo_BadScanPattern_AbortsBeforeDocker(t *testing.T) {
 		t.Fatalf("write yaml: %v", err)
 	}
 
-	_, _, err := runCmd(t, baseDir, "go")
+	_, _, err := runCmd(t, baseDir, "run")
 	if err == nil {
 		t.Fatal("makeslop go must fail with a bad scan pattern, got nil error")
 	}
 }
 
-func TestGo_LoadsYamlMaskedDirs_TmpfsMountInArgv(t *testing.T) {
+func TestRun_LoadsYamlMaskedDirs_TmpfsMountInArgv(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
@@ -1633,7 +1633,7 @@ func TestGo_LoadsYamlMaskedDirs_TmpfsMountInArgv(t *testing.T) {
 
 	// Use --dry-run to verify spec contains the tmpfs mount without running docker.
 	stubTTY(t, false)
-	stdout, stderr, err := runCmd(t, baseDir, "go", "--dry-run")
+	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
 	if err != nil {
 		t.Fatalf("go --dry-run failed: %v; stderr=%q", err, stderr)
 	}
@@ -1658,7 +1658,7 @@ func TestGo_LoadsYamlMaskedDirs_TmpfsMountInArgv(t *testing.T) {
 	}
 }
 
-func TestGo_YamlAbsentIsBitIdenticalArgv(t *testing.T) {
+func TestRun_YamlAbsentIsBitIdenticalArgv(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
@@ -1677,7 +1677,7 @@ func TestGo_YamlAbsentIsBitIdenticalArgv(t *testing.T) {
 
 	// Use --dry-run: yaml absent → spec must equal what BuildSpec produces directly.
 	stubTTY(t, false)
-	stdout, stderr, err := runCmd(t, baseDir, "go", "--dry-run")
+	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
 	if err != nil {
 		t.Fatalf("go --dry-run failed: %v; stderr=%q", err, stderr)
 	}
@@ -1701,7 +1701,7 @@ func TestGo_YamlAbsentIsBitIdenticalArgv(t *testing.T) {
 	}
 }
 
-func TestGo_YamlDedupsAgainstScan(t *testing.T) {
+func TestRun_YamlDedupsAgainstScan(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
@@ -1728,7 +1728,7 @@ func TestGo_YamlDedupsAgainstScan(t *testing.T) {
 
 	// Use --dry-run to verify dedup without running docker.
 	stubTTY(t, false)
-	stdout, stderr, err := runCmd(t, baseDir, "go", "--dry-run")
+	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
 	if err != nil {
 		t.Fatalf("go --dry-run failed: %v; stderr=%q", err, stderr)
 	}
@@ -1745,7 +1745,7 @@ func TestGo_YamlDedupsAgainstScan(t *testing.T) {
 
 // Guards the secret-masking invariant: docker must never start when yaml parse fails.
 // Uses runWithExitCode (not runCmd) so non-errSilent errors appear on stderr.
-func TestGo_YamlMalformedAbortsBeforeDocker(t *testing.T) {
+func TestRun_YamlMalformedAbortsBeforeDocker(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
@@ -1765,7 +1765,7 @@ func TestGo_YamlMalformedAbortsBeforeDocker(t *testing.T) {
 	stubTTY(t, true)
 
 	var stdout, stderr bytes.Buffer
-	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"go"})
+	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"run"})
 	if code == 0 {
 		t.Fatalf("expected non-zero exit from malformed yaml, got 0; stderr=%q", stderr.String())
 	}
@@ -1778,7 +1778,7 @@ func TestGo_YamlMalformedAbortsBeforeDocker(t *testing.T) {
 }
 
 // Uses runWithExitCode (not runCmd) so the error appears on stderr.
-func TestGo_YamlReservedPathAbortsBeforeDocker(t *testing.T) {
+func TestRun_YamlReservedPathAbortsBeforeDocker(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
@@ -1798,7 +1798,7 @@ func TestGo_YamlReservedPathAbortsBeforeDocker(t *testing.T) {
 	stubTTY(t, true)
 
 	var stdout, stderr bytes.Buffer
-	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"go"})
+	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"run"})
 	if code == 0 {
 		t.Fatalf("expected non-zero exit from reserved path, got 0; stderr=%q", stderr.String())
 	}
@@ -1811,7 +1811,7 @@ func TestGo_YamlReservedPathAbortsBeforeDocker(t *testing.T) {
 }
 
 // Uses runWithExitCode (not runCmd) so the error appears on stderr.
-func TestGo_YamlDirAndFileDupAborts(t *testing.T) {
+func TestRun_YamlDirAndFileDupAborts(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
@@ -1831,7 +1831,7 @@ func TestGo_YamlDirAndFileDupAborts(t *testing.T) {
 	stubTTY(t, true)
 
 	var stdout, stderr bytes.Buffer
-	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"go"})
+	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"run"})
 	if code == 0 {
 		t.Fatalf("expected non-zero exit from cross-list dup, got 0; stderr=%q", stderr.String())
 	}
@@ -1843,7 +1843,7 @@ func TestGo_YamlDirAndFileDupAborts(t *testing.T) {
 	}
 }
 
-func TestGo_YamlMissingPathSkippedSilently(t *testing.T) {
+func TestRun_YamlMissingPathSkippedSilently(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
@@ -1863,7 +1863,7 @@ func TestGo_YamlMissingPathSkippedSilently(t *testing.T) {
 
 	// Use --dry-run to verify spec without running docker.
 	stubTTY(t, false)
-	stdout, stderr, err := runCmd(t, baseDir, "go", "--dry-run")
+	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
 	if err != nil {
 		t.Fatalf("expected success when missing path is silently skipped, got: %v; stderr=%q", err, stderr)
 	}
@@ -1879,7 +1879,7 @@ func TestGo_YamlMissingPathSkippedSilently(t *testing.T) {
 
 // Guards the dry-run contract: no socket is created on disk even though
 // the argv includes proxy plumbing (--network none, env vars, socket mount).
-func TestGo_DryRun_WithProxy_PrintsProxyArgvNoSocket(t *testing.T) {
+func TestRun_DryRun_WithProxy_PrintsProxyArgvNoSocket(t *testing.T) {
 	docker.SkipNonPOSIX(t, "proxy socket tests are POSIX-only; makeslop is POSIX-only")
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -1900,7 +1900,7 @@ func TestGo_DryRun_WithProxy_PrintsProxyArgvNoSocket(t *testing.T) {
 
 	stubTTY(t, false)
 
-	stdout, stderr, err := runCmd(t, baseDir, "go", "--dry-run")
+	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
 	if err != nil {
 		t.Fatalf("--dry-run with proxy failed: %v; stderr=%q", err, stderr)
 	}
@@ -1951,7 +1951,7 @@ func TestGo_DryRun_WithProxy_PrintsProxyArgvNoSocket(t *testing.T) {
 	}
 }
 
-func TestGo_DryRun_WithoutProxy_UnchangedArgv(t *testing.T) {
+func TestRun_DryRun_WithoutProxy_UnchangedArgv(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
@@ -1968,7 +1968,7 @@ func TestGo_DryRun_WithoutProxy_UnchangedArgv(t *testing.T) {
 
 	stubTTY(t, false)
 
-	stdout, stderr, err := runCmd(t, baseDir, "go", "--dry-run")
+	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
 	if err != nil {
 		t.Fatalf("--dry-run without proxy failed: %v; stderr=%q", err, stderr)
 	}
@@ -2004,7 +2004,7 @@ func TestGo_DryRun_WithoutProxy_UnchangedArgv(t *testing.T) {
 	}
 }
 
-func TestGo_SocketPathLength_AtMost108Bytes(t *testing.T) {
+func TestRun_SocketPathLength_AtMost108Bytes(t *testing.T) {
 	// Simulates computeSocketPath with an extreme workspace dir name to verify
 	// the path stays within the 108-byte sockaddr_un limit.
 	const sockaddrUnLimit = 108
@@ -2125,7 +2125,7 @@ func TestRoot_BareInvocation_ListsMigrateCommand(t *testing.T) {
 	}
 }
 
-func TestGo_DryRunIncludesMaskedDirs(t *testing.T) {
+func TestRun_DryRunIncludesMaskedDirs(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
@@ -2150,7 +2150,7 @@ func TestGo_DryRunIncludesMaskedDirs(t *testing.T) {
 
 	stubTTY(t, false)
 
-	stdout, stderr, err := runCmd(t, baseDir, "go", "--dry-run")
+	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
 	if err != nil {
 		t.Fatalf("--dry-run failed: %v; stderr=%q", err, stderr)
 	}
@@ -2639,7 +2639,7 @@ func TestConfigSet_WrongArgCount_ExitsOne(t *testing.T) {
 // in settings.json is threaded all the way into the docker run argv emitted by
 // `makeslop go`, matching the existing TestGo_CustomImageAndShell_FlowFromSettings
 // pattern.
-func TestGo_CustomTmpDirSize_FlowsIntoDockerArgv(t *testing.T) {
+func TestRun_CustomTmpDirSize_FlowsIntoDockerArgv(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
@@ -2659,7 +2659,7 @@ func TestGo_CustomTmpDirSize_FlowsIntoDockerArgv(t *testing.T) {
 
 	// Use --dry-run to verify the tmpfs size flows into the spec.
 	stubTTY(t, false)
-	stdout, stderr, err := runCmd(t, baseDir, "go", "--dry-run")
+	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
 	if err != nil {
 		t.Fatalf("makeslop go --dry-run failed: %v; stderr=%q", err, stderr)
 	}
@@ -2947,5 +2947,138 @@ func TestInit_UpToDateConfig_NoNudge(t *testing.T) {
 	}
 	if strings.Contains(stderr, "note: base config is") {
 		t.Errorf("stale-config nudge must not appear when config is up to date; stderr=%q", stderr)
+	}
+}
+
+// ── Task 6: run pre-flight tests ─────────────────────────────────────────────
+
+// TestRun_DaemonDown_AbortsWithRemedy verifies that when the Docker daemon is
+// unreachable, `makeslop run` exits non-zero with a remedy hint and does NOT
+// invoke the container lifecycle (fc.Started must remain false).
+func TestRun_DaemonDown_AbortsWithRemedy(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	fc := docker.NewFakeRunClient(0)
+	fc.PingErr = errors.New("connection refused")
+	t.Cleanup(docker.SetClientForTest(fc))
+	t.Cleanup(docker.SetTermMakeRawForTest(func(_ int) (*term.State, error) { return nil, nil }))
+	stubTTY(t, true)
+
+	_, stderr, err := runCmd(t, baseDir, "run")
+	if err == nil {
+		t.Fatalf("expected error when daemon is down, got nil; stderr=%q", stderr)
+	}
+	if !errors.Is(err, errSilent) {
+		t.Errorf("expected errSilent (tailored message written to stderr), got %v", err)
+	}
+	if !strings.Contains(stderr, "is docker running") {
+		t.Errorf("stderr missing 'is docker running' remedy: %q", stderr)
+	}
+	if fc.Started {
+		t.Errorf("docker container must not be started when daemon is unreachable")
+	}
+}
+
+// TestRun_ImageMissing_AbortsWithRemedy verifies that when the image is absent
+// locally, `makeslop run` exits non-zero with an exact remedy string
+// "run 'makeslop build'" and does NOT auto-build or invoke the container.
+func TestRun_ImageMissing_AbortsWithRemedy(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	fc := docker.NewFakeRunClient(0)
+	fc.ImageMissing = true
+	t.Cleanup(docker.SetClientForTest(fc))
+	t.Cleanup(docker.SetTermMakeRawForTest(func(_ int) (*term.State, error) { return nil, nil }))
+	stubTTY(t, true)
+
+	_, stderr, err := runCmd(t, baseDir, "run")
+	if err == nil {
+		t.Fatalf("expected error when image is missing, got nil; stderr=%q", stderr)
+	}
+	if !errors.Is(err, errSilent) {
+		t.Errorf("expected errSilent (tailored message written to stderr), got %v", err)
+	}
+	if !strings.Contains(stderr, "not built") {
+		t.Errorf("stderr missing 'not built': %q", stderr)
+	}
+	if !strings.Contains(stderr, "makeslop build") {
+		t.Errorf("stderr missing 'makeslop build' remedy: %q", stderr)
+	}
+	if fc.Started {
+		t.Errorf("docker container must not be started when image is missing")
+	}
+}
+
+// TestRun_DryRun_SkipsDaemonAndImageCheck verifies that --dry-run bypasses
+// the daemon and image pre-flight checks entirely (printed == executed, but no
+// daemon contact is made). The fake client has PingErr set and ImageMissing=true
+// to confirm neither is consulted.
+func TestRun_DryRun_SkipsDaemonAndImageCheck(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	// Both daemon-down and image-missing are set — --dry-run must ignore both.
+	fc := docker.NewFakeRunClient(0)
+	fc.PingErr = errors.New("connection refused")
+	fc.ImageMissing = true
+	t.Cleanup(docker.SetClientForTest(fc))
+	stubTTY(t, false)
+
+	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
+	if err != nil {
+		t.Fatalf("--dry-run must succeed even when daemon is down and image is missing; err=%v; stderr=%q", err, stderr)
+	}
+	if stdout == "" {
+		t.Errorf("--dry-run must print the command to stdout; got empty")
+	}
+	if fc.Started {
+		t.Errorf("docker container must not be started on --dry-run")
+	}
+}
+
+// TestRun_HappyPath_LaunchesDocker verifies the end-to-end happy path:
+// daemon ok, image present, workspace registered → container is started.
+// This mirrors the existing TestRun_AfterInit_LaunchesDocker test but
+// explicitly names the pre-flight success conditions.
+func TestRun_HappyPath_LaunchesDocker(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	// Default FakeRunClient: Ping ok, image found, exit 0.
+	fc := installFakeRunClient(t, 0)
+	stubTTY(t, true)
+
+	_, stderr, err := runCmd(t, baseDir, "run")
+	if err != nil {
+		t.Fatalf("run must succeed when daemon is ok and image exists; err=%v; stderr=%q", err, stderr)
+	}
+	if !fc.Started {
+		t.Error("docker container must be started on happy path")
 	}
 }

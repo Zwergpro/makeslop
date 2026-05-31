@@ -9,7 +9,7 @@ container with controlled mounts, secret masking, and optional egress filtering.
 makeslop init     # register the project and seed ~/.makeslop/ (Dockerfile, settings.json)
 makeslop migrate  # apply any pending migrations (e.g. refresh the bundled Dockerfile)
 makeslop build    # build the claudebox docker image from ~/.makeslop/Dockerfile
-makeslop go       # launch the interactive container from your project root
+makeslop run      # launch the interactive container from your project root
 ```
 
 ## Cache layout
@@ -60,7 +60,7 @@ the changes.
     context (the Dockerfile downloads everything; no local files need shipping) and uses the
     BuildKit API (`Version: "2"` via the moby SDK) so cache mounts (`--mount=type=cache`) work
     correctly. No `DOCKER_BUILDKIT` environment variable is needed.
-- `makeslop go` — from within a registered workspace, launches an interactive, project-scoped docker
+- `makeslop run` — from within a registered workspace, launches an interactive, project-scoped docker
   container with the workspace source tree and per-workspace + global agent config (`.claude/`,
   `.codex/`, `CLAUDE.md`, `docs/`) mounted in. Exits with the container's exit code. Refuses to
   launch when stdin or stdout is not a TTY. If no ancestor is registered, exits non-zero with a hint
@@ -83,7 +83,7 @@ the changes.
 
 ### Container layout
 
-`makeslop go` runs (workdir `/workspace/<name>`, where `<name>` is the registered workspace's
+`makeslop run` runs (workdir `/workspace/<name>`, where `<name>` is the registered workspace's
 cache-dir basename):
 
 | Host                                                  | Container                          |
@@ -109,14 +109,14 @@ hosts where the running user is uid 1000. Full uid remapping is deferred to post
 
 ### TTY policy
 
-`makeslop go` is interactive-only. When stdin or stdout is not a TTY it exits non-zero with:
+`makeslop run` is interactive-only. When stdin or stdout is not a TTY it exits non-zero with:
 
 ```
 makeslop: stdin/stdout must be a TTY; makeslop is interactive-only
 ```
 
-`makeslop build`, `makeslop init`, `makeslop migrate`, `makeslop version`, and `makeslop config`
-do not require a TTY and work correctly in CI pipelines and non-interactive shells.
+`makeslop build`, `makeslop init`, `makeslop migrate`, `makeslop version`, `makeslop config`, and
+`makeslop status` do not require a TTY and work correctly in CI pipelines and non-interactive shells.
 
 ### Secret masking
 
@@ -202,7 +202,7 @@ network:
 ```
 
 Edit this file to control scanning and hide additional directories and files from the container on
-every `makeslop go` invocation:
+every `makeslop run` invocation:
 
 - Entries under `exclude.scan.patterns` are basename globs; files whose name matches are masked
   with `/dev/null`. Remove all patterns to disable secret masking entirely.
@@ -244,12 +244,12 @@ and listed in `exclude.files`, only one overlay mount is emitted. A YAML parse e
 launch before docker is invoked.
 
 **Reserved paths.** The paths `.claude`, `.codex`, `docs`, and `CLAUDE.md` are already mounted by
-`makeslop go` for agent state. Listing them in `.makeslop.yaml` is rejected with an error
+`makeslop run` for agent state. Listing them in `.makeslop.yaml` is rejected with an error
 (`projectconfig: path %q collides with a reserved agent path`).
 
 ### Controlled network access via a remote proxy
 
-By default `makeslop go` uses Docker's default bridge networking, giving the container unrestricted
+By default `makeslop run` uses Docker's default bridge networking, giving the container unrestricted
 outbound access. You can restrict outbound access to a controlled egress proxy by adding a
 `network:` section to `.makeslop.yaml`:
 
@@ -259,7 +259,7 @@ network:
     address: 10.0.0.5:8888   # host:port of your upstream HTTP forward proxy
 ```
 
-When `network.proxy.address` is set, `makeslop go`:
+When `network.proxy.address` is set, `makeslop run`:
 
 1. Starts a host-side forward proxy listening on a per-invocation unix socket under `/tmp`.
    The upstream address is **probe-dialed at launch time** — if it is not reachable, `makeslop`
@@ -285,7 +285,7 @@ Use `--dry-run` to preview the resulting container launch command (printed as an
 `docker run` invocation), including all exclusion mounts, before launching:
 
 ```
-makeslop go --dry-run
+makeslop run --dry-run
 ```
 
 ### Docker container settings
@@ -319,24 +319,25 @@ Pass `--dry-run` (short: `-n`) to print the equivalent shell command for the con
 makeslop would execute and then exit without launching the container. The output is a multi-line, backslash-continued,
 paste-ready shell command on stdout. All pre-launch checks still run (home-dir guard, workspace
 lookup, secret scan, settings load), so the printed command equals the real invocation byte-for-byte.
+Daemon and image pre-flight checks are skipped on `--dry-run`.
 
 ```
-makeslop go --dry-run
-makeslop go -n
+makeslop run --dry-run
+makeslop run -n
 ```
 
 Because the TTY check is skipped on dry-run, `--dry-run` succeeds even when stdin/stdout are pipes.
 This makes it suitable for CI inspection:
 
 ```
-makeslop go -n > cmd.sh   # capture only the command; masked-file count goes to stderr
+makeslop run -n > cmd.sh   # capture only the command; masked-file count goes to stderr
 ```
 
 ### Exit codes
 
 - `0` — success (`init` registered/reused a project, or the container exited cleanly, or `build`
   completed successfully).
-- container's exit code — `makeslop go` propagates `exit N` from the container as the host's
+- container's exit code — `makeslop run` propagates `exit N` from the container as the host's
   exit code.
 - `1` — `makeslop build` exits 1 on any build failure (the docker SDK returns an error; there is no
   child docker process to propagate an exit code from).
@@ -345,7 +346,7 @@ makeslop go -n > cmd.sh   # capture only the command; masked-file count goes to 
 
 ### Home-directory guard
 
-By default, `makeslop go` and `makeslop init` refuse to run from any directory outside the user's
+By default, `makeslop run` and `makeslop init` refuse to run from any directory outside the user's
 home directory. This prevents accidentally registering sensitive system paths (e.g. `/`, `/etc`)
 as workspaces and mounting them into a container. On violation the tool prints:
 
@@ -356,13 +357,13 @@ makeslop: refusing to run from <pwd> (outside <home>); pass --out-of-home to ove
 Pass `--out-of-home` (a persistent flag inherited by all subcommands) to bypass this check:
 
 ```
-makeslop --out-of-home go
+makeslop --out-of-home run
 makeslop --out-of-home init
 ```
 
-`makeslop build`, `makeslop migrate`, `makeslop config`, `makeslop version`, and bare `makeslop`
-invocation are **exempt** from the home-directory guard — they operate on `~/.makeslop/` directly
-and do not consult the current working directory.
+`makeslop build`, `makeslop migrate`, `makeslop config`, `makeslop version`, `makeslop status`,
+and bare `makeslop` invocation are **exempt** from the home-directory guard — they operate on
+`~/.makeslop/` directly and do not consult the current working directory.
 
 ### Path resolution
 

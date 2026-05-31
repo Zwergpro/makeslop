@@ -1,5 +1,5 @@
 // Command makeslop is the CLI entry point: bare `makeslop` prints help;
-// `go` launches docker; `init` registers the cwd. Container `exit N` propagates as host `exit N`.
+// `run` launches docker; `init` registers the cwd. Container `exit N` propagates as host `exit N`.
 package main
 
 import (
@@ -97,8 +97,8 @@ func mergeUniqueSorted(a, b []string) []string {
 	return out
 }
 
-// runGo implements the docker-launch logic for the "go" subcommand.
-func runGo(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfHome, dryRun bool) error {
+// runRun implements the docker-launch logic for the "run" subcommand.
+func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfHome, dryRun bool) error {
 	pwd, err := resolvePwd()
 	if err != nil {
 		return err
@@ -160,15 +160,34 @@ func runGo(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfHo
 	}
 
 	// ProjectRoot must be the registered ancestor (workspaceRoot), not pwd:
-	// running 'makeslop go' from a subdir must still mount the whole project.
+	// running 'makeslop run' from a subdir must still mount the whole project.
 	spec := docker.BuildSpec(opts)
 
 	// Dry-run: print the argv (including proxy plumbing when configured) and
-	// return WITHOUT starting the proxy — no socket is bound. The printed argv
-	// matches what would execute, satisfying the "printed == executed" invariant.
+	// return WITHOUT running pre-flight or starting the proxy — no socket is bound.
+	// The printed argv matches what would execute, satisfying the "printed == executed" invariant.
 	if dryRun {
 		fmt.Fprintln(cmd.OutOrStdout(), spec.ShellCommand())
 		return nil
+	}
+
+	// Pre-flight: daemon reachability. Must happen after workspace/config resolution
+	// (so we have the image name) but before proxy start.
+	if err := docker.CheckDaemon(cmd.Context()); err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(),
+			"makeslop: %v — is docker running?\n", err)
+		return errSilent
+	}
+
+	// Pre-flight: image existence. No auto-build; a clear remedy is provided.
+	imageFound, imageErr := docker.ImageExists(cmd.Context(), s.Image)
+	if imageErr != nil {
+		return imageErr
+	}
+	if !imageFound {
+		fmt.Fprintf(cmd.ErrOrStderr(),
+			"makeslop: image %q not built — run 'makeslop build'\n", s.Image)
+		return errSilent
 	}
 
 	// Proxy must exist before the container starts; a Start failure aborts the launch.
@@ -280,15 +299,15 @@ func newRootCmd(baseDir string) *cobra.Command {
 		},
 	}
 
-	goCmd := &cobra.Command{
-		Use:          "go",
+	runCmd := &cobra.Command{
+		Use:          "run",
 		Short:        "Launch the docker container for this workspace",
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
-		RunE:         func(cmd *cobra.Command, _ []string) error { return runGo(cmd, ws, baseDir, outOfHome, dryRun) },
+		RunE:         func(cmd *cobra.Command, _ []string) error { return runRun(cmd, ws, baseDir, outOfHome, dryRun) },
 	}
 
-	goCmd.Flags().BoolVarP(&dryRun, "dry-run", "n", false,
+	runCmd.Flags().BoolVarP(&dryRun, "dry-run", "n", false,
 		"print the docker run command instead of executing it")
 
 	migrateCmd := &cobra.Command{
@@ -410,13 +429,13 @@ func newRootCmd(baseDir string) *cobra.Command {
 	rootCmd.PersistentFlags().BoolVar(&outOfHome, "out-of-home", false,
 		"allow running outside the user's home directory")
 
-	rootCmd.AddCommand(initCmd, goCmd, migrateCmd, buildCmd, configCmd, versionCmd, statusCmd)
+	rootCmd.AddCommand(initCmd, runCmd, migrateCmd, buildCmd, configCmd, versionCmd, statusCmd)
 	return rootCmd
 }
 
 // runWithExitCode maps an Execute() error to a host exit code:
 //   - *docker.ExitError passes through its Code (the daemon-reported exit status,
-//     e.g. 137 for SIGKILL); this is the primary path for `makeslop go`.
+//     e.g. 137 for SIGKILL); this is the primary path for `makeslop run`.
 //   - errSilent -> 1 with no reprint.
 //   - other errors -> 1 prefixed "makeslop: ".
 func runWithExitCode(baseDir string, stdout, stderr io.Writer, args []string) int {
