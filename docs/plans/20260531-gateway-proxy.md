@@ -169,11 +169,11 @@ Rejected: a single unified forward-proxy handler with a pluggable dialer — it 
 - Modify: `cmd/makeslop/status.go`
 - Modify: `cmd/makeslop/status_test.go`
 
-- [ ] in check #6, when `netCfg.ProxyAddress == ""` set proxy `Detail` to `gateway (direct egress)` (state stays `checkInfo`); when set, keep showing the address
-- [ ] append ` (logging → <LogPath>)` to the proxy `Detail` when `netCfg.LogPath != ""` (both gateway and upstream cases)
-- [ ] note in a comment that `status` is config-derived and has no `--no-proxy` knowledge
-- [ ] update `status_test.go`: assert `gateway (direct egress)` for no-address; address still shown; logging suffix present when `network.log` set; JSON `detail` matches
-- [ ] run `go test ./...` — must pass before task 8
+- [x] in check #6, when `netCfg.ProxyAddress == ""` set proxy `Detail` to `gateway (direct egress)` (state stays `checkInfo`); when set, keep showing the address
+- [x] append ` (logging → <LogPath>)` to the proxy `Detail` when `netCfg.LogPath != ""` (both gateway and upstream cases)
+- [x] note in a comment that `status` is config-derived and has no `--no-proxy` knowledge
+- [x] update `status_test.go`: assert `gateway (direct egress)` for no-address; address still shown; logging suffix present when `network.log` set; JSON `detail` matches
+- [x] run `go test ./...` — must pass before task 8
 
 ### Task 8: Verify acceptance criteria
 - [ ] verify the three-state model: gateway default (socket + `--network none`), upstream unchanged, `--no-proxy` → bridge
