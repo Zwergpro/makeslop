@@ -405,10 +405,12 @@ func newRootCmd(baseDir string) *cobra.Command {
 		},
 	}
 
+	statusCmd := newStatusCmd(ws, baseDir, defaultIsTTY)
+
 	rootCmd.PersistentFlags().BoolVar(&outOfHome, "out-of-home", false,
 		"allow running outside the user's home directory")
 
-	rootCmd.AddCommand(initCmd, goCmd, migrateCmd, buildCmd, configCmd, versionCmd)
+	rootCmd.AddCommand(initCmd, goCmd, migrateCmd, buildCmd, configCmd, versionCmd, statusCmd)
 	return rootCmd
 }
 

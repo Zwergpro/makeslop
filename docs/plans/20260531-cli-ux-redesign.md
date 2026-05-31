@@ -289,22 +289,22 @@ today (printed == executed for argv).
 - Modify: `cmd/makeslop/main.go` (register command, wire into `newRootCmd`)
 - Create: `cmd/makeslop/status_test.go`
 
-- [ ] implement an ordered check pipeline: daemon (`CheckDaemon`) → base config present + staleness
+- [x] implement an ordered check pipeline: daemon (`CheckDaemon`) → base config present + staleness
       (`BaseConfigExists`/`MigrationStatus`) → image (`ImageExists`) → workspace (`ws.Lookup`) →
       secret scan summary (`security.Scan` count) → proxy (`projectconfig.Load`)
-- [ ] add a small `cmd/makeslop`-local rendering helper (e.g. `glyphStyle(w io.Writer) styler`) that
+- [x] add a small `cmd/makeslop`-local rendering helper (e.g. `glyphStyle(w io.Writer) styler`) that
       decides color/glyph use from an injectable `isTTY(w)` predicate AND `NO_COLOR`; keep the TTY
       check injectable so the renderer is unit-testable without a real PTY (per the POSIX-only /
       `SkipNonPOSIX` convention). Do NOT couple the branch directly to `os.Stderr`.
-- [ ] render aligned lines with glyphs `✓/✗/–/!`; final verdict line = state + single next action
-- [ ] add `--json` flag emitting `{checks:[{name,state,detail}], ready:bool}` (JSON path bypasses the
+- [x] render aligned lines with glyphs `✓/✗/–/!`; final verdict line = state + single next action
+- [x] add `--json` flag emitting `{checks:[{name,state,detail}], ready:bool}` (JSON path bypasses the
       glyph/color renderer entirely)
-- [ ] exit non-zero when any blocking check (daemon, image, workspace) fails; mark `status` exempt
+- [x] exit non-zero when any blocking check (daemon, image, workspace) fails; mark `status` exempt
       from the home guard and TTY requirement
-- [ ] write tests using fakes: all-green ready path (exit 0); daemon-down and image-missing
+- [x] write tests using fakes: all-green ready path (exit 0); daemon-down and image-missing
       (exit non-zero, correct verdict); stale-config emits `!` but stays ready; `--json` shape;
       renderer test with a forced non-TTY predicate asserting plain (no-glyph/no-color) output
-- [ ] run tests — must pass before next task
+- [x] run tests — must pass before next task
 
 > Note (client lifecycle): `CheckDaemon` and `ImageExists` each build+close their own client, so a
 > `status` run constructs the client twice. Accepted for DRY/simplicity (no shared-client coupling);
