@@ -194,17 +194,17 @@ the basics (LICENSE, CI, version stamping) plus carries a committed build artifa
 - Modify: `cmd/makeslop/main_test.go`
 - Modify: `Makefile`
 
-- [ ] Add `var version = "dev"` at package scope in `main.go`.
-- [ ] Add a `versionCmd` (cobra, `Args: cobra.NoArgs`, CI/pipe-safe — no TTY/home guard) that prints
+- [x] Add `var version = "dev"` at package scope in `main.go`.
+- [x] Add a `versionCmd` (cobra, `Args: cobra.NoArgs`, CI/pipe-safe — no TTY/home guard) that prints
       `version` to stdout; register it on the root command.
-- [ ] Update the `Makefile` build target to (a) build the package `./cmd/makeslop` instead of the
+- [x] Update the `Makefile` build target to (a) build the package `./cmd/makeslop` instead of the
       single file `cmd/makeslop/main.go` (consistency with CI/acceptance), and (b) pass
       `-ldflags "-X main.version=$(shell git describe --tags --always --dirty)"`.
-- [ ] Add a test (in `package main`): set `version = "test-1.2.3"` in-test, run `makeslop version`,
+- [x] Add a test (in `package main`): set `version = "test-1.2.3"` in-test, run `makeslop version`,
       assert exit 0 and stdout equals `test-1.2.3\n` (deterministic — do not assert the ldflags value).
-- [ ] Confirm `version` is exempt from the home-directory guard and TTY check (assert it runs from a
+- [x] Confirm `version` is exempt from the home-directory guard and TTY check (assert it runs from a
       pipe / outside home).
-- [ ] Run `GOTMPDIR=/home/user go test ./cmd/...` — must pass before Task 5.
+- [x] Run `GOTMPDIR=/home/user go test ./cmd/...` — must pass before Task 5.
 
 ### Task 5: Add MIT LICENSE and remove the committed binary
 

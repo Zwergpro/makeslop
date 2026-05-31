@@ -2871,3 +2871,85 @@ func TestGo_CustomTmpDirSize_FlowsIntoDockerArgv(t *testing.T) {
 		t.Errorf("docker argv missing '--tmpfs /tmp:size=1000m'; full argv: %v", argv)
 	}
 }
+
+// ── version subcommand tests ──────────────────────────────────────────────────
+
+// TestVersion_PrintsVersionAndExitsZero verifies that `makeslop version` prints
+// the current version string followed by a newline and exits 0.
+func TestVersion_PrintsVersionAndExitsZero(t *testing.T) {
+	// Override the package-level version to a deterministic value so the test
+	// does not depend on ldflags or git state.
+	orig := version
+	version = "test-1.2.3"
+	t.Cleanup(func() { version = orig })
+
+	baseDir := t.TempDir()
+
+	stdout, stderr, err := runCmd(t, baseDir, "version")
+	if err != nil {
+		t.Fatalf("makeslop version failed: %v; stderr=%q", err, stderr)
+	}
+	if stdout != "test-1.2.3\n" {
+		t.Errorf("stdout = %q, want %q", stdout, "test-1.2.3\n")
+	}
+	if stderr != "" {
+		t.Errorf("expected empty stderr, got %q", stderr)
+	}
+}
+
+// TestVersion_ExemptFromHomeDirGuard verifies that `makeslop version` succeeds
+// even when cwd is outside the user's home directory (no home-dir guard applied).
+func TestVersion_ExemptFromHomeDirGuard(t *testing.T) {
+	// Set HOME to a temp dir, then chdir somewhere outside it.
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", evalSymlinks(t, tmpHome))
+
+	outsidePwd := t.TempDir()
+	t.Chdir(outsidePwd)
+
+	baseDir := t.TempDir()
+
+	stdout, stderr, err := runCmd(t, baseDir, "version")
+	if err != nil {
+		t.Fatalf("makeslop version must succeed outside HOME; err=%v; stderr=%q", err, stderr)
+	}
+	if strings.Contains(stderr, "refusing to run") {
+		t.Errorf("version must not trigger the home-dir guard: stderr=%q", stderr)
+	}
+	if stdout == "" {
+		t.Errorf("version must print a non-empty version string; stdout=%q", stdout)
+	}
+}
+
+// TestVersion_ExemptFromTTYCheck verifies that `makeslop version` succeeds
+// even when stdin/stdout are not TTYs (pipe-safe, no ttyCheck consulted).
+func TestVersion_ExemptFromTTYCheck(t *testing.T) {
+	baseDir := t.TempDir()
+
+	// Do NOT stub ttyCheck — the real predicate returns false under go test.
+	// If version consulted ttyCheck it would fail here.
+	stdout, stderr, err := runCmd(t, baseDir, "version")
+	if err != nil {
+		t.Fatalf("makeslop version must succeed without a TTY; err=%v; stderr=%q", err, stderr)
+	}
+	if stdout == "" {
+		t.Errorf("version must print a non-empty version string; stdout=%q", stdout)
+	}
+	if stderr != "" {
+		t.Errorf("expected empty stderr, got %q", stderr)
+	}
+}
+
+// TestRoot_BareInvocation_ListsVersionCommand checks that bare `makeslop` help
+// lists the version subcommand in the Available Commands section.
+func TestRoot_BareInvocation_ListsVersionCommand(t *testing.T) {
+	baseDir := t.TempDir()
+
+	stdout, stderr, err := runCmd(t, baseDir)
+	if err != nil {
+		t.Fatalf("bare makeslop should exit 0, got err: %v; stderr=%q", err, stderr)
+	}
+	if !strings.Contains(stdout, "\n  version ") {
+		t.Errorf("stdout missing '\\n  version ' command entry: %q", stdout)
+	}
+}

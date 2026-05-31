@@ -24,6 +24,13 @@ import (
 	"github.com/Zwergpro/makeslop/internal/workspace"
 )
 
+// version is set at build time via ldflags:
+//
+//	go build -ldflags "-X main.version=$(git describe --tags --always --dirty)"
+//
+// The default "dev" value is used when the binary is built without ldflags.
+var version = "dev"
+
 // errSilent signals that a RunE has already written a tailored message to
 // stderr; main() should exit non-zero without reprinting.
 var errSilent = errors.New("makeslop: silent error already reported")
@@ -353,10 +360,21 @@ func newRootCmd(baseDir string) *cobra.Command {
 
 	configCmd.AddCommand(configListCmd, configSetCmd)
 
+	versionCmd := &cobra.Command{
+		Use:          "version",
+		Short:        "Print the makeslop version and exit",
+		Args:         cobra.NoArgs,
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			fmt.Fprintln(cmd.OutOrStdout(), version)
+			return nil
+		},
+	}
+
 	rootCmd.PersistentFlags().BoolVar(&outOfHome, "out-of-home", false,
 		"allow running outside the user's home directory")
 
-	rootCmd.AddCommand(initCmd, goCmd, migrateCmd, buildCmd, configCmd)
+	rootCmd.AddCommand(initCmd, goCmd, migrateCmd, buildCmd, configCmd, versionCmd)
 	return rootCmd
 }
 
