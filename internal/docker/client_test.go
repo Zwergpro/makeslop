@@ -1,8 +1,11 @@
 package docker
 
 import (
+	"context"
+	"errors"
 	"testing"
 
+	cerrdefs "github.com/containerd/errdefs"
 	moby "github.com/moby/moby/client"
 )
 
@@ -34,4 +37,130 @@ func TestNewClientReturnsNonNil(t *testing.T) {
 	}
 	// Close is a no-op when no connection has been established.
 	_ = c.Close()
+}
+
+// TestNoopClientPingOK verifies the noopClient Ping returns success.
+func TestNoopClientPingOK(t *testing.T) {
+	var n noopClient
+	_, err := n.Ping(context.Background(), moby.PingOptions{})
+	if err != nil {
+		t.Fatalf("noopClient.Ping() returned error: %v", err)
+	}
+}
+
+// TestNoopClientImageInspectFound verifies the noopClient ImageInspect returns
+// a result (image "found") with no error.
+func TestNoopClientImageInspectFound(t *testing.T) {
+	var n noopClient
+	_, err := n.ImageInspect(context.Background(), "myimage")
+	if err != nil {
+		t.Fatalf("noopClient.ImageInspect() returned error: %v", err)
+	}
+}
+
+// TestFakeRunClientPingScripting verifies that FakeRunClient returns the
+// scripted PingErr when set, and success otherwise.
+func TestFakeRunClientPingScripting(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		f := NewFakeRunClient(0)
+		_, err := f.Ping(context.Background(), moby.PingOptions{})
+		if err != nil {
+			t.Fatalf("expected ping success, got: %v", err)
+		}
+	})
+	t.Run("daemon-down", func(t *testing.T) {
+		f := NewFakeRunClient(0)
+		f.PingErr = errors.New("connection refused")
+		_, err := f.Ping(context.Background(), moby.PingOptions{})
+		if err == nil {
+			t.Fatal("expected ping error, got nil")
+		}
+	})
+}
+
+// TestFakeRunClientImageInspectScripting verifies the image-present,
+// image-missing, and other-error cases.
+func TestFakeRunClientImageInspectScripting(t *testing.T) {
+	t.Run("image-present", func(t *testing.T) {
+		f := NewFakeRunClient(0)
+		_, err := f.ImageInspect(context.Background(), "myimage")
+		if err != nil {
+			t.Fatalf("expected image found, got: %v", err)
+		}
+	})
+	t.Run("image-missing returns not-found", func(t *testing.T) {
+		f := NewFakeRunClient(0)
+		f.ImageMissing = true
+		_, err := f.ImageInspect(context.Background(), "myimage")
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !cerrdefs.IsNotFound(err) {
+			t.Fatalf("expected cerrdefs.IsNotFound to be true, got error: %v", err)
+		}
+	})
+	t.Run("image other-error propagates", func(t *testing.T) {
+		f := NewFakeRunClient(0)
+		f.ImageErr = errors.New("permission denied")
+		_, err := f.ImageInspect(context.Background(), "myimage")
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if cerrdefs.IsNotFound(err) {
+			t.Fatal("other-error should NOT be classified as not-found")
+		}
+	})
+}
+
+// TestFakeBuildClientPingScripting verifies FakeBuildClient ping scripting.
+func TestFakeBuildClientPingScripting(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		f := NewFakeBuildClient(0)
+		_, err := f.Ping(context.Background(), moby.PingOptions{})
+		if err != nil {
+			t.Fatalf("expected ping success, got: %v", err)
+		}
+	})
+	t.Run("daemon-down", func(t *testing.T) {
+		f := NewFakeBuildClient(0)
+		f.PingErr = errors.New("connection refused")
+		_, err := f.Ping(context.Background(), moby.PingOptions{})
+		if err == nil {
+			t.Fatal("expected ping error, got nil")
+		}
+	})
+}
+
+// TestFakeBuildClientImageInspectScripting verifies image scripting on
+// FakeBuildClient: present, missing (not-found), and other-error cases.
+func TestFakeBuildClientImageInspectScripting(t *testing.T) {
+	t.Run("image-present", func(t *testing.T) {
+		f := NewFakeBuildClient(0)
+		_, err := f.ImageInspect(context.Background(), "myimage")
+		if err != nil {
+			t.Fatalf("expected image found, got: %v", err)
+		}
+	})
+	t.Run("image-missing returns not-found", func(t *testing.T) {
+		f := NewFakeBuildClient(0)
+		f.ImageMissing = true
+		_, err := f.ImageInspect(context.Background(), "myimage")
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !cerrdefs.IsNotFound(err) {
+			t.Fatalf("expected cerrdefs.IsNotFound to be true, got error: %v", err)
+		}
+	})
+	t.Run("image other-error propagates", func(t *testing.T) {
+		f := NewFakeBuildClient(0)
+		f.ImageErr = errors.New("permission denied")
+		_, err := f.ImageInspect(context.Background(), "myimage")
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if cerrdefs.IsNotFound(err) {
+			t.Fatal("other-error should NOT be classified as not-found")
+		}
+	})
 }

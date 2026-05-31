@@ -1,5 +1,5 @@
 // Command makeslop is the CLI entry point: bare `makeslop` prints help;
-// `go` launches docker; `init` registers the cwd. Container `exit N` propagates as host `exit N`.
+// `run` launches docker; `init` registers the cwd. Container `exit N` propagates as host `exit N`.
 package main
 
 import (
@@ -69,7 +69,7 @@ func ensureWithinHome(stderr io.Writer, pwd string, outOfHome bool) error {
 	}
 	if !filepath.IsLocal(rel) {
 		fmt.Fprintf(stderr,
-			"makeslop: refusing to run from %s (outside %s); pass --out-of-home to override\n",
+			"makeslop: refusing to run from %s (outside %s) — pass --out-of-home to override\n",
 			pwd, resolvedHome)
 		return errSilent
 	}
@@ -97,8 +97,8 @@ func mergeUniqueSorted(a, b []string) []string {
 	return out
 }
 
-// runGo implements the docker-launch logic for the "go" subcommand.
-func runGo(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfHome, dryRun bool) error {
+// runRun implements the docker-launch logic for the "run" subcommand.
+func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfHome, dryRun, quiet bool) error {
 	pwd, err := resolvePwd()
 	if err != nil {
 		return err
@@ -109,7 +109,7 @@ func runGo(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfHo
 	workspaceRoot, workspaceDir, err := ws.Lookup(pwd)
 	if errors.Is(err, workspace.ErrNotRegistered) {
 		fmt.Fprintf(cmd.ErrOrStderr(),
-			"makeslop: no workspace registered for %s; run 'makeslop init' to register it\n",
+			"makeslop: no workspace registered for %s — run 'makeslop init' to register it\n",
 			pwd)
 		return errSilent
 	}
@@ -127,7 +127,9 @@ func runGo(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfHo
 		return err
 	}
 	if len(masked) > 0 {
-		fmt.Fprintf(cmd.ErrOrStderr(), "makeslop: masked %d secret file(s)\n", len(masked))
+		// "masked N" is stderr chrome — gated by --quiet.
+		chrome := &quietWriter{w: cmd.ErrOrStderr(), quiet: quiet}
+		fmt.Fprintf(chrome, "makeslop: masked %d secret file(s)\n", len(masked))
 	}
 	maskedFiles := mergeUniqueSorted(masked, yamlExcludes.Files)
 
@@ -160,15 +162,34 @@ func runGo(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfHo
 	}
 
 	// ProjectRoot must be the registered ancestor (workspaceRoot), not pwd:
-	// running 'makeslop go' from a subdir must still mount the whole project.
+	// running 'makeslop run' from a subdir must still mount the whole project.
 	spec := docker.BuildSpec(opts)
 
 	// Dry-run: print the argv (including proxy plumbing when configured) and
-	// return WITHOUT starting the proxy — no socket is bound. The printed argv
-	// matches what would execute, satisfying the "printed == executed" invariant.
+	// return WITHOUT running pre-flight or starting the proxy — no socket is bound.
+	// The printed argv matches what would execute, satisfying the "printed == executed" invariant.
 	if dryRun {
 		fmt.Fprintln(cmd.OutOrStdout(), spec.ShellCommand())
 		return nil
+	}
+
+	// Pre-flight: daemon reachability. Must happen after workspace/config resolution
+	// (so we have the image name) but before proxy start.
+	if err := docker.CheckDaemon(cmd.Context()); err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(),
+			"makeslop: %v — is docker running?\n", err)
+		return errSilent
+	}
+
+	// Pre-flight: image existence. No auto-build; a clear remedy is provided.
+	imageFound, imageErr := docker.ImageExists(cmd.Context(), s.Image)
+	if imageErr != nil {
+		return imageErr
+	}
+	if !imageFound {
+		fmt.Fprintf(cmd.ErrOrStderr(),
+			"makeslop: image %q not built — run 'makeslop build'\n", s.Image)
+		return errSilent
 	}
 
 	// Proxy must exist before the container starts; a Start failure aborts the launch.
@@ -182,7 +203,7 @@ func runGo(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfHo
 	if err := docker.Run(cmd.Context(), spec); err != nil {
 		if errors.Is(err, docker.ErrNoTTY) {
 			fmt.Fprintln(cmd.ErrOrStderr(),
-				"makeslop: stdin/stdout must be a TTY; makeslop is interactive-only")
+				"makeslop: stdin/stdout must be a TTY — run in an interactive terminal")
 			return errSilent
 		}
 		return err
@@ -190,12 +211,30 @@ func runGo(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfHo
 	return nil
 }
 
+// quietWriter wraps an io.Writer and discards writes when quiet is true.
+// It is used to gate stderr chrome (notices, nudges, progress) while letting
+// callers that write to the underlying writer (e.g. cobra's SetErr) use the
+// real writer for actual errors.
+type quietWriter struct {
+	w     io.Writer
+	quiet bool
+}
+
+func (q *quietWriter) Write(p []byte) (int, error) {
+	if q.quiet {
+		return len(p), nil
+	}
+	return q.w.Write(p)
+}
+
 func newRootCmd(baseDir string) *cobra.Command {
 	ws := workspace.New(baseDir)
 
 	var (
-		outOfHome bool
-		dryRun    bool
+		outOfHomeInit bool
+		outOfHomeRun  bool
+		dryRun        bool
+		quiet         bool
 	)
 
 	rootCmd := &cobra.Command{
@@ -204,6 +243,10 @@ func newRootCmd(baseDir string) *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
+
+	// --quiet is persistent so all subcommands inherit it.
+	rootCmd.PersistentFlags().BoolVar(&quiet, "quiet", false,
+		"suppress stderr chrome (notices, nudges, progress); errors still print")
 
 	initCmd := &cobra.Command{
 		Use:          "init",
@@ -215,9 +258,18 @@ func newRootCmd(baseDir string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := ensureWithinHome(cmd.ErrOrStderr(), pwd, outOfHome); err != nil {
+			if err := ensureWithinHome(cmd.ErrOrStderr(), pwd, outOfHomeInit); err != nil {
 				return err
 			}
+
+			// Record fresh vs existing BEFORE Bootstrap so we can decide whether
+			// to stamp MigratedVersion and whether to emit a stale-config nudge.
+			freshSeed, err := config.BaseConfigExists(baseDir)
+			if err != nil {
+				return err
+			}
+			freshSeed = !freshSeed // BaseConfigExists returns true when present; we want "absent = fresh"
+
 			if err := config.Bootstrap(baseDir); err != nil {
 				return err
 			}
@@ -234,21 +286,62 @@ func newRootCmd(baseDir string) *cobra.Command {
 			if err := projectconfig.Scaffold(workspaceRoot); err != nil {
 				return err
 			}
+
+			// Fresh seed: stamp MigratedVersion so a newly-init'd dir is never
+			// reported stale. ws.Init already called Save once; reload and re-save
+			// with the stamp so we don't race against any field changes.
+			if freshSeed {
+				s, loadErr := config.Load(baseDir)
+				if loadErr != nil {
+					return loadErr
+				}
+				s.MigratedVersion = config.MigrationVersion
+				if saveErr := config.Save(baseDir, s); saveErr != nil {
+					return saveErr
+				}
+			} else {
+				// Existing base config: check for staleness and nudge if behind.
+				s, loadErr := config.Load(baseDir)
+				if loadErr != nil {
+					return loadErr
+				}
+				current, latest, stale := config.MigrationStatus(s)
+				if stale {
+					// Nudge is chrome (non-blocking), gated by --quiet.
+					chrome := &quietWriter{w: cmd.ErrOrStderr(), quiet: quiet}
+					fmt.Fprintf(chrome,
+						"note: your base config is v%d, latest is v%d — run 'makeslop migrate'\n",
+						current, latest)
+				}
+			}
+
+			// Success: stderr chrome is gated by --quiet; stdout keeps the bare path.
+			// The "registered" line is human notice (chrome), so route through quietWriter.
+			chrome := &quietWriter{w: cmd.ErrOrStderr(), quiet: quiet}
+			fmt.Fprintf(chrome,
+				"registered %s — run 'makeslop build' then 'makeslop run'\n",
+				filepath.Base(pwd))
 			fmt.Fprintln(cmd.OutOrStdout(), workspaceDir)
 			return nil
 		},
 	}
+	// --out-of-home is scoped to init only (not a persistent flag on root).
+	initCmd.Flags().BoolVar(&outOfHomeInit, "out-of-home", false,
+		"allow running outside the user's home directory")
 
-	goCmd := &cobra.Command{
-		Use:          "go",
+	runCmd := &cobra.Command{
+		Use:          "run",
 		Short:        "Launch the docker container for this workspace",
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
-		RunE:         func(cmd *cobra.Command, _ []string) error { return runGo(cmd, ws, baseDir, outOfHome, dryRun) },
+		RunE:         func(cmd *cobra.Command, _ []string) error { return runRun(cmd, ws, baseDir, outOfHomeRun, dryRun, quiet) },
 	}
 
-	goCmd.Flags().BoolVarP(&dryRun, "dry-run", "n", false,
+	runCmd.Flags().BoolVarP(&dryRun, "dry-run", "n", false,
 		"print the docker run command instead of executing it")
+	// --out-of-home is scoped to run only (not a persistent flag on root).
+	runCmd.Flags().BoolVar(&outOfHomeRun, "out-of-home", false,
+		"allow running outside the user's home directory")
 
 	migrateCmd := &cobra.Command{
 		Use:          "migrate",
@@ -301,11 +394,25 @@ func newRootCmd(baseDir string) *cobra.Command {
 	buildCmd.Flags().StringArrayVar(&buildArgs, "build-arg", nil,
 		"set build-time variables (repeatable)")
 
+	// runConfigList is the shared implementation for `config` (bare) and
+	// `config list` — both print key = value lines from ConfigList.
+	runConfigList := func(cmd *cobra.Command, _ []string) error {
+		s, err := config.Load(baseDir)
+		if err != nil {
+			return err
+		}
+		for _, e := range config.ConfigList(s) {
+			fmt.Fprintf(cmd.OutOrStdout(), "%s = %s\n", e.Name, e.Value)
+		}
+		return nil
+	}
+
 	configCmd := &cobra.Command{
 		Use:          "config",
 		Short:        "View or change makeslop settings",
+		Args:         cobra.NoArgs,
 		SilenceUsage: true,
-		RunE:         func(cmd *cobra.Command, _ []string) error { return cmd.Help() },
+		RunE:         runConfigList,
 	}
 
 	configListCmd := &cobra.Command{
@@ -313,16 +420,7 @@ func newRootCmd(baseDir string) *cobra.Command {
 		Short:        "Print current effective settings as key = value lines",
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			s, err := config.Load(baseDir)
-			if err != nil {
-				return err
-			}
-			for _, e := range config.ConfigList(s) {
-				fmt.Fprintf(cmd.OutOrStdout(), "%s = %s\n", e.Name, e.Value)
-			}
-			return nil
-		},
+		RunE:         runConfigList,
 	}
 
 	configSetCmd := &cobra.Command{
@@ -364,16 +462,15 @@ func newRootCmd(baseDir string) *cobra.Command {
 		},
 	}
 
-	rootCmd.PersistentFlags().BoolVar(&outOfHome, "out-of-home", false,
-		"allow running outside the user's home directory")
+	statusCmd := newStatusCmd(ws, baseDir, defaultIsTTY)
 
-	rootCmd.AddCommand(initCmd, goCmd, migrateCmd, buildCmd, configCmd, versionCmd)
+	rootCmd.AddCommand(initCmd, runCmd, migrateCmd, buildCmd, configCmd, versionCmd, statusCmd)
 	return rootCmd
 }
 
 // runWithExitCode maps an Execute() error to a host exit code:
 //   - *docker.ExitError passes through its Code (the daemon-reported exit status,
-//     e.g. 137 for SIGKILL); this is the primary path for `makeslop go`.
+//     e.g. 137 for SIGKILL); this is the primary path for `makeslop run`.
 //   - errSilent -> 1 with no reprint.
 //   - other errors -> 1 prefixed "makeslop: ".
 func runWithExitCode(baseDir string, stdout, stderr io.Writer, args []string) int {

@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"testing"
 
+	"github.com/containerd/errdefs"
 	"github.com/moby/moby/api/types/container"
 	moby "github.com/moby/moby/client"
 	"golang.org/x/term"
@@ -99,6 +100,17 @@ func (noopClient) DialHijack(_ context.Context, _, _ string, _ map[string][]stri
 	return nil, nil
 }
 
+// Ping returns a successful ping result by default.
+func (noopClient) Ping(_ context.Context, _ moby.PingOptions) (moby.PingResult, error) {
+	return moby.PingResult{}, nil
+}
+
+// ImageInspect returns a non-empty result (image "found") by default.
+// The variadic opts are accepted and ignored.
+func (noopClient) ImageInspect(_ context.Context, _ string, _ ...moby.ImageInspectOption) (moby.ImageInspectResult, error) {
+	return moby.ImageInspectResult{}, nil
+}
+
 func (noopClient) Close() error { return nil }
 
 // FakeRunClient is an exported fake apiClient for use in cmd/makeslop tests.
@@ -109,16 +121,42 @@ func (noopClient) Close() error { return nil }
 // Callers register the fake with:
 //
 //	t.Cleanup(docker.SetClientForTest(docker.NewFakeRunClient(exitCode)))
+//
+// To simulate daemon-down, set PingErr. To simulate a missing image, set
+// ImageMissing = true. To simulate another image error, set ImageErr.
 type FakeRunClient struct {
 	noopClient
-	ExitCode int
-	Started  bool
+	ExitCode     int
+	Started      bool
+	PingErr      error // if non-nil, Ping returns this error
+	ImageMissing bool  // if true, ImageInspect returns a not-found error
+	ImageErr     error // if non-nil (and ImageMissing false), ImageInspect returns this error
 }
 
 // NewFakeRunClient creates a FakeRunClient that will return the given exit code
 // from ContainerWait.
 func NewFakeRunClient(exitCode int) *FakeRunClient {
 	return &FakeRunClient{ExitCode: exitCode}
+}
+
+// Ping returns PingErr if set, otherwise delegates to noopClient (success).
+func (f *FakeRunClient) Ping(_ context.Context, _ moby.PingOptions) (moby.PingResult, error) {
+	if f.PingErr != nil {
+		return moby.PingResult{}, f.PingErr
+	}
+	return moby.PingResult{}, nil
+}
+
+// ImageInspect returns a not-found error when ImageMissing is true, ImageErr
+// when ImageErr is set, or a found result otherwise.
+func (f *FakeRunClient) ImageInspect(_ context.Context, imageID string, _ ...moby.ImageInspectOption) (moby.ImageInspectResult, error) {
+	if f.ImageMissing {
+		return moby.ImageInspectResult{}, fmt.Errorf("image %q: %w", imageID, errdefs.ErrNotFound)
+	}
+	if f.ImageErr != nil {
+		return moby.ImageInspectResult{}, f.ImageErr
+	}
+	return moby.ImageInspectResult{}, nil
 }
 
 func (f *FakeRunClient) ContainerCreate(_ context.Context, _ moby.ContainerCreateOptions) (moby.ContainerCreateResult, error) {
@@ -155,6 +193,9 @@ func (f *FakeRunClient) ContainerWait(_ context.Context, _ string, _ moby.Contai
 //	t.Cleanup(docker.SetClientForTest(fbc))
 //	// ... call Build ...
 //	opts := fbc.LastBuildOptions  // inspect what was passed
+//
+// To simulate daemon-down, set PingErr. To simulate a missing image, set
+// ImageMissing = true. To simulate another image error, set ImageErr.
 type FakeBuildClient struct {
 	noopClient
 	// ExitCode is returned as an error from ImageBuild when non-zero.
@@ -164,11 +205,34 @@ type FakeBuildClient struct {
 	// LastBuildOptions records the ImageBuildOptions from the most recent
 	// ImageBuild call.
 	LastBuildOptions moby.ImageBuildOptions
+	PingErr          error // if non-nil, Ping returns this error
+	ImageMissing     bool  // if true, ImageInspect returns a not-found error
+	ImageErr         error // if non-nil (and ImageMissing false), ImageInspect returns this error
 }
 
 // NewFakeBuildClient creates a FakeBuildClient. exitCode 0 means success.
 func NewFakeBuildClient(exitCode int) *FakeBuildClient {
 	return &FakeBuildClient{ExitCode: exitCode}
+}
+
+// Ping returns PingErr if set, otherwise delegates to noopClient (success).
+func (f *FakeBuildClient) Ping(_ context.Context, _ moby.PingOptions) (moby.PingResult, error) {
+	if f.PingErr != nil {
+		return moby.PingResult{}, f.PingErr
+	}
+	return moby.PingResult{}, nil
+}
+
+// ImageInspect returns a not-found error when ImageMissing is true, ImageErr
+// when ImageErr is set, or a found result otherwise.
+func (f *FakeBuildClient) ImageInspect(_ context.Context, imageID string, _ ...moby.ImageInspectOption) (moby.ImageInspectResult, error) {
+	if f.ImageMissing {
+		return moby.ImageInspectResult{}, fmt.Errorf("image %q: %w", imageID, errdefs.ErrNotFound)
+	}
+	if f.ImageErr != nil {
+		return moby.ImageInspectResult{}, f.ImageErr
+	}
+	return moby.ImageInspectResult{}, nil
 }
 
 func (f *FakeBuildClient) ImageBuild(_ context.Context, _ io.Reader, opts moby.ImageBuildOptions) (moby.ImageBuildResult, error) {

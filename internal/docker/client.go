@@ -20,6 +20,8 @@ type apiClient interface {
 	ContainerRemove(ctx context.Context, container string, options moby.ContainerRemoveOptions) (moby.ContainerRemoveResult, error)
 	ImageBuild(ctx context.Context, buildContext io.Reader, options moby.ImageBuildOptions) (moby.ImageBuildResult, error)
 	DialHijack(ctx context.Context, url, proto string, meta map[string][]string) (net.Conn, error)
+	Ping(ctx context.Context, options moby.PingOptions) (moby.PingResult, error)
+	ImageInspect(ctx context.Context, imageID string, opts ...moby.ImageInspectOption) (moby.ImageInspectResult, error)
 	Close() error
 }
 
@@ -30,7 +32,7 @@ var _ apiClient = (*moby.Client)(nil)
 // (DOCKER_HOST, DOCKER_TLS_VERIFY, DOCKER_CERT_PATH, DOCKER_API_VERSION).
 // It does not dial — the connection is lazy.
 func newClient() (apiClient, error) {
-	return moby.NewClientWithOpts(moby.FromEnv, moby.WithAPIVersionNegotiation())
+	return moby.New(moby.FromEnv)
 }
 
 // newClientFn is the swap point used by tests to inject a fake apiClient.

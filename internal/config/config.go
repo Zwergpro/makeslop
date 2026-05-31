@@ -202,6 +202,22 @@ var bootstrapFiles = []struct {
 	{DockerfileFile, assets.Dockerfile},
 }
 
+// BaseConfigExists reports whether <baseDir>/settings.json exists.
+// It returns (false, nil) when the file is absent (fs.ErrNotExist) and
+// (false, err) for any other stat failure so callers can distinguish
+// "not yet initialised" from "permission denied / unreadable filesystem".
+func BaseConfigExists(baseDir string) (bool, error) {
+	path := filepath.Join(baseDir, SettingsFile)
+	_, err := os.Stat(path)
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	return false, fmt.Errorf("stat %s: %w", path, err)
+}
+
 // Bootstrap is idempotent: creates the agent directories and seed files under
 // baseDir, never overwriting existing content. settings.json is not touched.
 func Bootstrap(baseDir string) error {
