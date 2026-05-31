@@ -266,21 +266,21 @@ today (printed == executed for argv).
 - Modify: `cmd/makeslop/main.go`
 - Modify: `cmd/makeslop/main_test.go`
 
-- [ ] in the `init` RunE, call `BaseConfigExists` **before** `Bootstrap` to record fresh-vs-existing
-- [ ] on fresh seed: after `Bootstrap`, set `s.MigratedVersion = MigrationVersion` and `Save` (so a
+- [x] in the `init` RunE, call `BaseConfigExists` **before** `Bootstrap` to record fresh-vs-existing
+- [x] on fresh seed: after `Bootstrap`, set `s.MigratedVersion = MigrationVersion` and `Save` (so a
       freshly-init'd dir is never reported stale)
-- [ ] on existing-but-stale (`MigrationStatus.stale`): print non-blocking nudge to stderr
+- [x] on existing-but-stale (`MigrationStatus.stale`): print non-blocking nudge to stderr
       `note: base config is v<latest>, yours is v<current> — run 'makeslop migrate'` and continue
-- [ ] change `init` success output: stderr `registered <name> — run 'makeslop build' then 'makeslop run'`,
+- [x] change `init` success output: stderr `registered <name> — run 'makeslop build' then 'makeslop run'`,
       stdout keeps the bare cache path
-- [ ] write tests: fresh init stamps MigratedVersion and prints registered/next-step; second init on
+- [x] write tests: fresh init stamps MigratedVersion and prints registered/next-step; second init on
       stale dir prints the nudge and does not stamp; stdout still carries the bare path
-- [ ] write edge-case test: `build` then `init`. `build` calls `Bootstrap` (seeds dirs + Dockerfile)
+- [x] write edge-case test: `build` then `init`. `build` calls `Bootstrap` (seeds dirs + Dockerfile)
       but never writes `settings.json`, so `BaseConfigExists` keys off `settings.json` presence and
       this path must be handled deliberately — decide and assert whether such a dir is treated as
       fresh (stamps latest) or stale-detectable, so init does not falsely stamp-as-latest over an
       already-seeded older Dockerfile
-- [ ] run tests — must pass before next task
+- [x] run tests — must pass before next task
 
 ### Task 5: Add the `status` command (human + --json)
 

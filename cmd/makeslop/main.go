@@ -218,6 +218,15 @@ func newRootCmd(baseDir string) *cobra.Command {
 			if err := ensureWithinHome(cmd.ErrOrStderr(), pwd, outOfHome); err != nil {
 				return err
 			}
+
+			// Record fresh vs existing BEFORE Bootstrap so we can decide whether
+			// to stamp MigratedVersion and whether to emit a stale-config nudge.
+			freshSeed, err := config.BaseConfigExists(baseDir)
+			if err != nil {
+				return err
+			}
+			freshSeed = !freshSeed // BaseConfigExists returns true when present; we want "absent = fresh"
+
 			if err := config.Bootstrap(baseDir); err != nil {
 				return err
 			}
@@ -234,6 +243,38 @@ func newRootCmd(baseDir string) *cobra.Command {
 			if err := projectconfig.Scaffold(workspaceRoot); err != nil {
 				return err
 			}
+
+			// Fresh seed: stamp MigratedVersion so a newly-init'd dir is never
+			// reported stale. ws.Init already called Save once; reload and re-save
+			// with the stamp so we don't race against any field changes.
+			if freshSeed {
+				s, loadErr := config.Load(baseDir)
+				if loadErr != nil {
+					return loadErr
+				}
+				s.MigratedVersion = config.MigrationVersion
+				if saveErr := config.Save(baseDir, s); saveErr != nil {
+					return saveErr
+				}
+			} else {
+				// Existing base config: check for staleness and nudge if behind.
+				s, loadErr := config.Load(baseDir)
+				if loadErr != nil {
+					return loadErr
+				}
+				_, _, stale := config.MigrationStatus(s)
+				if stale {
+					current, latest, _ := config.MigrationStatus(s)
+					fmt.Fprintf(cmd.ErrOrStderr(),
+						"note: base config is v%d, yours is v%d — run 'makeslop migrate'\n",
+						latest, current)
+				}
+			}
+
+			// Success: stderr gets the human-readable message; stdout keeps the bare path.
+			fmt.Fprintf(cmd.ErrOrStderr(),
+				"registered %s — run 'makeslop build' then 'makeslop run'\n",
+				filepath.Base(pwd))
 			fmt.Fprintln(cmd.OutOrStdout(), workspaceDir)
 			return nil
 		},

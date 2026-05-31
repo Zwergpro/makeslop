@@ -2752,3 +2752,200 @@ func TestRoot_BareInvocation_ListsVersionCommand(t *testing.T) {
 		t.Errorf("stdout missing '\\n  version ' command entry: %q", stdout)
 	}
 }
+
+// ── Task 4: init seed-at-latest and stale-nudge tests ────────────────────────
+
+// TestInit_FreshSeed_StampsMigratedVersion verifies that a brand-new init
+// (no prior settings.json) stamps MigratedVersion = MigrationVersion and
+// emits the "registered … run 'makeslop build' then 'makeslop run'" message on
+// stderr while keeping the bare workspace path on stdout.
+func TestInit_FreshSeed_StampsMigratedVersion(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	stdout, stderr, err := runCmd(t, baseDir, "init")
+	if err != nil {
+		t.Fatalf("init failed: %v; stderr=%q", err, stderr)
+	}
+
+	// stdout must contain only the bare workspace path (no extra lines).
+	workspacePath := strings.TrimSpace(stdout)
+	if workspacePath == "" {
+		t.Fatalf("init produced empty stdout")
+	}
+	if strings.Contains(workspacePath, "\n") {
+		t.Errorf("stdout must be a single bare path; got %q", stdout)
+	}
+
+	// stderr must carry the "registered" success message.
+	if !strings.Contains(stderr, "registered") {
+		t.Errorf("stderr missing 'registered': %q", stderr)
+	}
+	if !strings.Contains(stderr, "makeslop build") {
+		t.Errorf("stderr missing 'makeslop build' hint: %q", stderr)
+	}
+	if !strings.Contains(stderr, "makeslop run") {
+		t.Errorf("stderr missing 'makeslop run' hint: %q", stderr)
+	}
+
+	// MigratedVersion must be stamped to MigrationVersion.
+	s, loadErr := config.Load(baseDir)
+	if loadErr != nil {
+		t.Fatalf("load settings after init: %v", loadErr)
+	}
+	if s.MigratedVersion != config.MigrationVersion {
+		t.Errorf("MigratedVersion = %d, want %d (MigrationVersion)", s.MigratedVersion, config.MigrationVersion)
+	}
+}
+
+// TestInit_StaleConfig_NudgesWithoutStamping verifies that when an existing
+// settings.json has a MigratedVersion below the current MigrationVersion, init
+// emits the non-blocking nudge on stderr but does NOT overwrite MigratedVersion.
+func TestInit_StaleConfig_NudgesWithoutStamping(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	// Seed a settings.json with MigratedVersion = 0 (stale) directly so that
+	// BaseConfigExists returns true and we exercise the "existing-but-stale" path.
+	staleMigrated := 0
+	if config.MigrationVersion == 0 {
+		t.Skip("MigrationVersion is 0; nothing would be stale")
+	}
+	s := &config.Settings{
+		Version:         config.CurrentVersion,
+		Image:           config.DefaultImage,
+		Shell:           config.DefaultShell,
+		TmpDirSize:      config.DefaultTmpDirSize,
+		Workspaces:      map[string]config.Workspace{},
+		MigratedVersion: staleMigrated,
+	}
+	if err := config.Save(baseDir, s); err != nil {
+		t.Fatalf("seed stale settings: %v", err)
+	}
+
+	_, stderr, err := runCmd(t, baseDir, "init")
+	if err != nil {
+		t.Fatalf("init on stale config failed: %v; stderr=%q", err, stderr)
+	}
+
+	// Nudge must appear on stderr.
+	if !strings.Contains(stderr, "note: base config is") {
+		t.Errorf("stderr missing stale-config nudge: %q", stderr)
+	}
+	if !strings.Contains(stderr, "makeslop migrate") {
+		t.Errorf("stderr missing 'makeslop migrate' in nudge: %q", stderr)
+	}
+
+	// MigratedVersion must NOT have been stamped — that would skip the real migration.
+	after, loadErr := config.Load(baseDir)
+	if loadErr != nil {
+		t.Fatalf("load settings after init: %v", loadErr)
+	}
+	if after.MigratedVersion != staleMigrated {
+		t.Errorf("init must not stamp MigratedVersion on stale dir; got %d, want %d",
+			after.MigratedVersion, staleMigrated)
+	}
+}
+
+// TestInit_FreshSeed_StdoutIsBarePathOnly verifies that stdout contains only
+// the bare workspace path (no labels, no extra lines).
+func TestInit_FreshSeed_StdoutIsBarePathOnly(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	stdout, _, err := runCmd(t, baseDir, "init")
+	if err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	line := strings.TrimSpace(stdout)
+	if line == "" {
+		t.Fatalf("stdout is empty; expected workspace path")
+	}
+	// Must be a single token (no spaces/newlines inside the path).
+	if strings.ContainsAny(line, " \t\n") {
+		t.Errorf("stdout must be a bare path with no extra whitespace; got %q", stdout)
+	}
+	// Path must be under baseDir/workspaces/.
+	workspacesRoot := filepath.Join(baseDir, "workspaces")
+	if !strings.HasPrefix(line, workspacesRoot+string(filepath.Separator)) {
+		t.Errorf("workspace path %q not under %q", line, workspacesRoot)
+	}
+}
+
+// TestInit_AfterBuild_TreatedAsFresh verifies the edge case:
+// `makeslop build` calls Bootstrap (creates dirs + Dockerfile) but never writes
+// settings.json. A subsequent `makeslop init` must detect no settings.json and
+// treat the directory as a fresh seed — stamping MigratedVersion to MigrationVersion
+// rather than (incorrectly) treating it as an older stale config.
+func TestInit_AfterBuild_TreatedAsFresh(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	// Simulate build: Bootstrap seeds dirs + Dockerfile but leaves no settings.json.
+	if err := config.Bootstrap(baseDir); err != nil {
+		t.Fatalf("Bootstrap (simulating build): %v", err)
+	}
+
+	// Verify no settings.json exists (pre-condition for the edge case).
+	exists, err := config.BaseConfigExists(baseDir)
+	if err != nil {
+		t.Fatalf("BaseConfigExists: %v", err)
+	}
+	if exists {
+		t.Fatal("pre-condition failed: settings.json must not exist after Bootstrap alone")
+	}
+
+	// Now init — must treat as fresh and stamp latest.
+	_, stderr, err := runCmd(t, baseDir, "init")
+	if err != nil {
+		t.Fatalf("init after build failed: %v; stderr=%q", err, stderr)
+	}
+
+	// MigratedVersion must be stamped — not treated as stale-detectable.
+	s, loadErr := config.Load(baseDir)
+	if loadErr != nil {
+		t.Fatalf("load settings after init: %v", loadErr)
+	}
+	if s.MigratedVersion != config.MigrationVersion {
+		t.Errorf("MigratedVersion = %d after build+init, want %d; stderr was %q",
+			s.MigratedVersion, config.MigrationVersion, stderr)
+	}
+
+	// The nudge must NOT appear — this is a fresh seed path, not stale.
+	if strings.Contains(stderr, "note: base config is") {
+		t.Errorf("stale-config nudge must not appear after build+init (fresh seed); stderr=%q", stderr)
+	}
+}
+
+// TestInit_UpToDateConfig_NoNudge verifies that when an existing settings.json
+// already has MigratedVersion == MigrationVersion, init emits the "registered"
+// message but does NOT emit the stale-config nudge.
+func TestInit_UpToDateConfig_NoNudge(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	// First init seeds at MigrationVersion.
+	_, _, err := runCmd(t, baseDir, "init")
+	if err != nil {
+		t.Fatalf("first init failed: %v", err)
+	}
+
+	// Second init — up-to-date config, must not nudge.
+	_, stderr, err := runCmd(t, baseDir, "init")
+	if err != nil {
+		t.Fatalf("second init failed: %v", err)
+	}
+	if strings.Contains(stderr, "note: base config is") {
+		t.Errorf("stale-config nudge must not appear when config is up to date; stderr=%q", stderr)
+	}
+}
