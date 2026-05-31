@@ -12,7 +12,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
-	"syscall"
 
 	"github.com/spf13/cobra"
 
@@ -373,9 +372,13 @@ func newRootCmd(baseDir string) *cobra.Command {
 	return rootCmd
 }
 
-// runWithExitCode maps an Execute() error to a host exit code: *exec.ExitError
-// passes through (signal-killed -> 128+signum), errSilent -> 1 with no
-// reprint, other errors -> 1 prefixed "makeslop: ".
+// runWithExitCode maps an Execute() error to a host exit code:
+//   - *docker.ExitError passes through its Code (the daemon-reported exit status,
+//     e.g. 137 for SIGKILL); this is the primary path for `makeslop go`.
+//   - *exec.ExitError passes through its ExitCode(); this remains temporarily
+//     for `makeslop build` which still uses the CLI exec path until Task 4.
+//   - errSilent -> 1 with no reprint.
+//   - other errors -> 1 prefixed "makeslop: ".
 func runWithExitCode(baseDir string, stdout, stderr io.Writer, args []string) int {
 	cmd := newRootCmd(baseDir)
 	cmd.SetArgs(args)
@@ -385,14 +388,15 @@ func runWithExitCode(baseDir string, stdout, stderr io.Writer, args []string) in
 	if err == nil {
 		return 0
 	}
+	var de *docker.ExitError
+	if errors.As(err, &de) {
+		return de.Code
+	}
+	// Temporary: exec.ExitError from the CLI-based Build path (removed in Task 4).
 	var ee *exec.ExitError
 	if errors.As(err, &ee) {
-		code := ee.ExitCode()
-		if code >= 0 {
+		if code := ee.ExitCode(); code >= 0 {
 			return code
-		}
-		if wstat, ok := ee.Sys().(syscall.WaitStatus); ok && wstat.Signaled() {
-			return 128 + int(wstat.Signal())
 		}
 		return 255
 	}

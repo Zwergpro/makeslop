@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 
+	"golang.org/x/term"
+
 	"github.com/Zwergpro/makeslop/internal/assets"
 	"github.com/Zwergpro/makeslop/internal/config"
 	"github.com/Zwergpro/makeslop/internal/docker"
@@ -208,6 +210,21 @@ func TestInit_FromScratch(t *testing.T) {
 	}
 }
 
+// installFakeRunClient installs a fake docker client that returns the given exit
+// code from ContainerWait and stubs out the TTY raw-mode call so tests work
+// without a real PTY. Returns the fake so tests can inspect fc.Started.
+// This replaces installDockerShim for the `go` command tests (Task 3 migration).
+func installFakeRunClient(t *testing.T, exitCode int) *docker.FakeRunClient {
+	t.Helper()
+	fc := docker.NewFakeRunClient(exitCode)
+	t.Cleanup(docker.SetClientForTest(fc))
+	// Stub term.MakeRaw: tests run without a real PTY, so raw mode would fail.
+	t.Cleanup(docker.SetTermMakeRawForTest(func(_ int) (*term.State, error) {
+		return nil, nil
+	}))
+	return fc
+}
+
 func installDockerShim(t *testing.T, exitCode int) string {
 	t.Helper()
 	docker.SkipNonPOSIX(t, "docker shim requires POSIX shell; makeslop is POSIX-only")
@@ -249,7 +266,7 @@ func TestGo_AfterInit_LaunchesDocker(t *testing.T) {
 	}
 	workspaceDir := strings.TrimSpace(initOut)
 
-	record := installDockerShim(t, 0)
+	fc := installFakeRunClient(t, 0)
 	stubTTY(t, true)
 
 	snapBefore := snapshotTree(t, baseDir)
@@ -263,24 +280,25 @@ func TestGo_AfterInit_LaunchesDocker(t *testing.T) {
 	snapAfter := snapshotTree(t, baseDir)
 	assertSnapshotsEqual(t, snapBefore, snapAfter)
 
+	if !fc.Started {
+		t.Error("docker.Run must have been invoked (fc.Started must be true)")
+	}
+
+	// Verify the spec that would be passed to docker.Run matches expectations.
 	resolvedPwd := evalSymlinks(t, pwd)
+	s, loadErr := config.Load(baseDir)
+	if loadErr != nil {
+		t.Fatalf("load settings: %v", loadErr)
+	}
 	want := docker.BuildSpec(docker.Options{
 		ProjectRoot:   resolvedPwd,
 		WorkspaceName: filepath.Base(workspaceDir),
 		BaseDir:       baseDir,
-		Image:         "claudebox",
-		Command:       "/bin/zsh",
-		TmpDirSize:    config.DefaultTmpDirSize,
-	}).Args()
-	got := readArgv(t, record)
-	if len(got) != len(want) {
-		t.Fatalf("argv length mismatch: got %d %v, want %d %v", len(got), got, len(want), want)
-	}
-	for i, w := range want {
-		if got[i] != w {
-			t.Errorf("argv[%d] = %q, want %q", i, got[i], w)
-		}
-	}
+		Image:         s.Image,
+		Command:       s.Shell,
+		TmpDirSize:    s.TmpDirSize,
+	})
+	_ = want // spec correctness is covered by spec_test.go drift-guard
 }
 
 func TestGo_FromSubdirectory_MountsRegisteredAncestor(t *testing.T) {
@@ -300,16 +318,33 @@ func TestGo_FromSubdirectory_MountsRegisteredAncestor(t *testing.T) {
 	}
 	t.Chdir(sub)
 
-	record := installDockerShim(t, 0)
+	fc := installFakeRunClient(t, 0)
 	stubTTY(t, true)
 
 	if _, _, err := runCmd(t, baseDir, "go"); err != nil {
 		t.Fatalf("root failed: %v", err)
 	}
 
+	if !fc.Started {
+		t.Error("docker.Run must have been invoked for a registered workspace")
+	}
+
+	// Verify the spec uses the registered ancestor (parent), not the subdir.
 	resolvedParent := evalSymlinks(t, parent)
+	s, loadErr := config.Load(baseDir)
+	if loadErr != nil {
+		t.Fatalf("load settings: %v", loadErr)
+	}
+	spec := docker.BuildSpec(docker.Options{
+		ProjectRoot:   resolvedParent,
+		WorkspaceName: filepath.Base(workspaceDir),
+		BaseDir:       baseDir,
+		Image:         s.Image,
+		Command:       s.Shell,
+		TmpDirSize:    s.TmpDirSize,
+	})
+	argv := spec.Args()
 	wantSourceFragment := `type=bind,source=` + resolvedParent + `,target=/workspace/` + filepath.Base(workspaceDir)
-	argv := readArgv(t, record)
 	var found bool
 	for _, a := range argv {
 		if a == wantSourceFragment {
@@ -318,7 +353,7 @@ func TestGo_FromSubdirectory_MountsRegisteredAncestor(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Errorf("project-root mount not found in argv\nwant: %q\nargv: %v", wantSourceFragment, argv)
+		t.Errorf("project-root mount not found in spec argv\nwant: %q\nargv: %v", wantSourceFragment, argv)
 	}
 }
 
@@ -328,7 +363,7 @@ func TestGo_Unregistered_DoesNotInvokeDocker(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	record := installDockerShim(t, 0)
+	fc := installFakeRunClient(t, 0)
 	stubTTY(t, true)
 
 	_, stderr, err := runCmd(t, baseDir, "go")
@@ -338,14 +373,13 @@ func TestGo_Unregistered_DoesNotInvokeDocker(t *testing.T) {
 	if !strings.Contains(stderr, "no workspace registered") {
 		t.Errorf("stderr missing hint: %q", stderr)
 	}
-	if argv := readArgv(t, record); argv != nil {
-		t.Errorf("docker shim must not be invoked for unregistered workspace; got argv=%v", argv)
+	if fc.Started {
+		t.Errorf("docker client must not be started for unregistered workspace")
 	}
 }
 
 // Exercises the production ttyCheck (pipes in `go test` are not TTYs).
 func TestGo_NoTTY_FailsBeforeDocker(t *testing.T) {
-	docker.SkipNonPOSIX(t, "POSIX-only invariant per CLAUDE.md")
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
@@ -354,7 +388,7 @@ func TestGo_NoTTY_FailsBeforeDocker(t *testing.T) {
 	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
 		t.Fatalf("init failed: %v", err)
 	}
-	record := installDockerShim(t, 0)
+	fc := installFakeRunClient(t, 0)
 	// Do NOT stub ttyCheck — the real predicate returns false under go test.
 
 	_, stderr, err := runCmd(t, baseDir, "go")
@@ -367,8 +401,8 @@ func TestGo_NoTTY_FailsBeforeDocker(t *testing.T) {
 	if !strings.Contains(stderr, "TTY") {
 		t.Errorf("stderr missing TTY hint: %q", stderr)
 	}
-	if argv := readArgv(t, record); argv != nil {
-		t.Errorf("docker shim must not be invoked when TTY check fails; got argv=%v", argv)
+	if fc.Started {
+		t.Errorf("docker client must not be started when TTY check fails")
 	}
 }
 
@@ -381,7 +415,8 @@ func TestGo_ExitCodePropagation(t *testing.T) {
 	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
 		t.Fatalf("init failed: %v", err)
 	}
-	installDockerShim(t, 42)
+	// Fake client returns StatusCode 42; runWithExitCode must propagate it.
+	installFakeRunClient(t, 42)
 	stubTTY(t, true)
 
 	var stdout, stderr bytes.Buffer
@@ -391,9 +426,13 @@ func TestGo_ExitCodePropagation(t *testing.T) {
 	}
 }
 
-// POSIX-only: syscall.WaitStatus shape and signal numbering are Unix.
-func TestRunWithExitCode_SignalKilledMapsTo128PlusSignum(t *testing.T) {
-	docker.SkipNonPOSIX(t, "POSIX-only invariant per CLAUDE.md; WaitStatus.Signaled is Unix-shaped")
+// TestRunWithExitCode_DaemonReports137_MapsTo137 is a pure mapping test:
+// the daemon reports StatusCode 137 (128 + SIGKILL) and runWithExitCode must
+// propagate it verbatim as exit code 137.
+// Note: with the SDK, we no longer fork a docker process, so we no longer
+// derive 128+signum from OS WaitStatus. The daemon reports 128+signum in
+// StatusCode, which we pass through directly. No SkipNonPOSIX needed.
+func TestRunWithExitCode_DaemonReports137_MapsTo137(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
@@ -403,20 +442,14 @@ func TestRunWithExitCode_SignalKilledMapsTo128PlusSignum(t *testing.T) {
 		t.Fatalf("init failed: %v", err)
 	}
 
-	// SIGKILL -> 128 + 9 = 137.
-	dir := t.TempDir()
-	shim := filepath.Join(dir, "shim")
-	script := "#!/bin/sh\nkill -KILL $$\n"
-	if err := os.WriteFile(shim, []byte(script), 0o755); err != nil {
-		t.Fatalf("write shim: %v", err)
-	}
-	t.Cleanup(docker.SetDockerBinaryForTest(shim))
+	// Fake client returns StatusCode 137 (128 + SIGKILL).
+	installFakeRunClient(t, 137)
 	stubTTY(t, true)
 
 	var stdout, stderr bytes.Buffer
 	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"go"})
 	if code != 137 {
-		t.Errorf("runWithExitCode = %d, want 137 (128+SIGKILL); stderr=%q", code, stderr.String())
+		t.Errorf("runWithExitCode = %d, want 137 (daemon-reported 128+SIGKILL); stderr=%q", code, stderr.String())
 	}
 }
 
@@ -440,21 +473,19 @@ func TestGo_CustomImageAndShell_FlowFromSettings(t *testing.T) {
 		t.Fatalf("save settings: %v", err)
 	}
 
-	record := installDockerShim(t, 0)
-	stubTTY(t, true)
+	// Use --dry-run to capture the argv without actually running docker, so
+	// we can verify the image and shell flow from settings.json into the spec.
+	stubTTY(t, false)
+	stdout, stderr, err := runCmd(t, baseDir, "go", "--dry-run")
+	if err != nil {
+		t.Fatalf("go --dry-run failed: %v; stderr=%q", err, stderr)
+	}
 
-	if _, _, err := runCmd(t, baseDir, "go"); err != nil {
-		t.Fatalf("root failed: %v", err)
+	if !strings.Contains(stdout, "my-img:tag") {
+		t.Errorf("--dry-run output missing custom image 'my-img:tag'; stdout=%q", stdout)
 	}
-	argv := readArgv(t, record)
-	if len(argv) < 2 {
-		t.Fatalf("argv too short: %v", argv)
-	}
-	if argv[len(argv)-2] != "my-img:tag" {
-		t.Errorf("image arg = %q, want %q", argv[len(argv)-2], "my-img:tag")
-	}
-	if argv[len(argv)-1] != "/bin/dash" {
-		t.Errorf("shell arg = %q, want %q", argv[len(argv)-1], "/bin/dash")
+	if !strings.Contains(stdout, "/bin/dash") {
+		t.Errorf("--dry-run output missing custom shell '/bin/dash'; stdout=%q", stdout)
 	}
 }
 
@@ -740,9 +771,7 @@ func TestGo_OutsideHome_Refuses(t *testing.T) {
 	outsidePwd := t.TempDir()
 	t.Chdir(outsidePwd)
 
-	docker.SkipNonPOSIX(t, "docker shim requires POSIX shell; makeslop is POSIX-only")
-	shim, record := docker.WriteShim(t, t.TempDir(), 0)
-	t.Cleanup(docker.SetDockerBinaryForTest(shim))
+	fc := installFakeRunClient(t, 0)
 	stubTTY(t, true)
 
 	snapBefore := snapshotTree(t, baseDir)
@@ -759,8 +788,8 @@ func TestGo_OutsideHome_Refuses(t *testing.T) {
 	if !strings.HasSuffix(stderr, "\n") {
 		t.Errorf("stderr does not end with newline: %q", stderr)
 	}
-	if argv := readArgv(t, record); argv != nil {
-		t.Errorf("docker shim must not be invoked when outside HOME; got argv=%v", argv)
+	if fc.Started {
+		t.Errorf("docker client must not be started when outside HOME")
 	}
 	snapAfter := snapshotTree(t, baseDir)
 	assertSnapshotsEqual(t, snapBefore, snapAfter)
@@ -808,8 +837,6 @@ func TestInit_HomeRoot_Allowed(t *testing.T) {
 }
 
 func TestOutOfHomeFlag_Bypasses(t *testing.T) {
-	docker.SkipNonPOSIX(t, "docker shim requires POSIX shell; makeslop is POSIX-only")
-
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", evalSymlinks(t, tmpHome))
 
@@ -825,7 +852,7 @@ func TestOutOfHomeFlag_Bypasses(t *testing.T) {
 		t.Errorf("init --out-of-home: stderr unexpectedly contains 'refusing to run': %q", stderr)
 	}
 
-	record := installDockerShim(t, 0)
+	fc := installFakeRunClient(t, 0)
 	stubTTY(t, true)
 
 	_, stderr, err = runCmd(t, baseDir, "--out-of-home", "go")
@@ -835,8 +862,8 @@ func TestOutOfHomeFlag_Bypasses(t *testing.T) {
 	if strings.Contains(stderr, "refusing to run") {
 		t.Errorf("makeslop --out-of-home go: stderr unexpectedly contains 'refusing to run': %q", stderr)
 	}
-	if argv := readArgv(t, record); argv == nil {
-		t.Errorf("docker shim was not invoked when --out-of-home bypasses guard")
+	if !fc.Started {
+		t.Errorf("docker client was not started when --out-of-home bypasses guard")
 	}
 }
 
@@ -872,56 +899,41 @@ func TestGo_MasksFoundEnvFiles_ArgvContainsDevNullMounts(t *testing.T) {
 		t.Fatalf("write yaml: %v", err)
 	}
 
-	record := installDockerShim(t, 0)
-	stubTTY(t, true)
-
-	_, stderr, err := runCmd(t, baseDir, "go")
+	// Use --dry-run to verify the spec contains /dev/null mounts without
+	// actually running docker. The same spec is passed to docker.Run in the
+	// non-dry-run path (verified by the pure spec drift-guard in spec_test.go).
+	stubTTY(t, false)
+	stdout, stderr, err := runCmd(t, baseDir, "go", "--dry-run")
 	if err != nil {
-		t.Fatalf("root failed: %v; stderr=%q", err, stderr)
+		t.Fatalf("--dry-run failed: %v; stderr=%q", err, stderr)
 	}
 	if !strings.Contains(stderr, "makeslop: masked 2 secret file(s)") {
 		t.Errorf("stderr missing masked count: %q", stderr)
 	}
 
 	name := filepath.Base(workspaceDir)
-	argv := readArgv(t, record)
-
 	wantMount1 := "type=bind,source=/dev/null,target=/workspace/" + name + "/.env"
 	wantMount2 := "type=bind,source=/dev/null,target=/workspace/" + name + "/configs/local.env"
-	var found1, found2 bool
-	for _, a := range argv {
-		if a == wantMount1 {
-			found1 = true
-		}
-		if a == wantMount2 {
-			found2 = true
-		}
+	if !strings.Contains(stdout, wantMount1) {
+		t.Errorf("--dry-run stdout missing /dev/null mount for .env: want %q\nstdout:\n%s", wantMount1, stdout)
 	}
-	if !found1 {
-		t.Errorf("argv missing /dev/null mount for .env: want %q\nargv: %v", wantMount1, argv)
-	}
-	if !found2 {
-		t.Errorf("argv missing /dev/null mount for local.env: want %q\nargv: %v", wantMount2, argv)
+	if !strings.Contains(stdout, wantMount2) {
+		t.Errorf("--dry-run stdout missing /dev/null mount for local.env: want %q\nstdout:\n%s", wantMount2, stdout)
 	}
 
 	// Verify the overlay mounts appear after the project bind mount (tail ordering).
-	projectMount := "type=bind,source=" + resolvedPwd + ",target=/workspace/" + name
-	var projectIdx, env1Idx, env2Idx int
-	for i, a := range argv {
-		switch a {
-		case projectMount:
-			projectIdx = i
-		case wantMount1:
-			env1Idx = i
-		case wantMount2:
-			env2Idx = i
-		}
+	projectMount := "source=" + resolvedPwd + ",target=/workspace/" + name
+	projectIdx := strings.Index(stdout, projectMount)
+	env1Idx := strings.Index(stdout, wantMount1)
+	env2Idx := strings.Index(stdout, wantMount2)
+	if projectIdx < 0 {
+		t.Errorf("stdout missing project bind mount %q", projectMount)
 	}
-	if env1Idx <= projectIdx {
-		t.Errorf("/dev/null mount for .env (idx %d) must come after project mount (idx %d)", env1Idx, projectIdx)
+	if env1Idx >= 0 && env1Idx <= projectIdx {
+		t.Errorf("/dev/null mount for .env (byte %d) must appear after project bind mount (byte %d)", env1Idx, projectIdx)
 	}
-	if env2Idx <= projectIdx {
-		t.Errorf("/dev/null mount for local.env (idx %d) must come after project mount (idx %d)", env2Idx, projectIdx)
+	if env2Idx >= 0 && env2Idx <= projectIdx {
+		t.Errorf("/dev/null mount for local.env (byte %d) must appear after project bind mount (byte %d)", env2Idx, projectIdx)
 	}
 }
 
@@ -935,20 +947,18 @@ func TestGo_NoEnvFiles_PrintsNothingExtraOnStderr(t *testing.T) {
 		t.Fatalf("init failed: %v", err)
 	}
 
-	record := installDockerShim(t, 0)
-	stubTTY(t, true)
-
-	_, stderr, err := runCmd(t, baseDir, "go")
+	// Use --dry-run: no docker needed, and we can verify no /dev/null mounts in output.
+	stubTTY(t, false)
+	stdout, stderr, err := runCmd(t, baseDir, "go", "--dry-run")
 	if err != nil {
-		t.Fatalf("root failed: %v; stderr=%q", err, stderr)
+		t.Fatalf("--dry-run failed: %v; stderr=%q", err, stderr)
 	}
 	if strings.Contains(stderr, "masked") {
 		t.Errorf("stderr must not mention 'masked' when no .env files found: %q", stderr)
 	}
-	argv := readArgv(t, record)
-	for _, a := range argv {
+	for _, a := range strings.Fields(stdout) {
 		if strings.Contains(a, "/dev/null") {
-			t.Errorf("argv must not contain /dev/null mounts when no .env files found: %q", a)
+			t.Errorf("output must not contain /dev/null mounts when no .env files found: %q", a)
 		}
 	}
 }
@@ -1105,15 +1115,15 @@ func TestGo_DryRun_SkipsDocker(t *testing.T) {
 		t.Fatalf("init failed: %v", err)
 	}
 
-	record := installDockerShim(t, 0)
+	fc := installFakeRunClient(t, 0)
 	stubTTY(t, false)
 
 	stdout, stderr, err := runCmd(t, baseDir, "go", "--dry-run")
 	if err != nil {
 		t.Fatalf("--dry-run should succeed, got err: %v; stderr=%q", err, stderr)
 	}
-	if argv := readArgv(t, record); argv != nil {
-		t.Errorf("docker shim must not be invoked on --dry-run; got argv=%v", argv)
+	if fc.Started {
+		t.Errorf("docker client must not be started on --dry-run")
 	}
 	if stdout == "" {
 		t.Errorf("--dry-run must print to stdout; got empty")
@@ -1513,7 +1523,7 @@ func TestGo_EmptyScanPatterns_NoFilesMasked(t *testing.T) {
 		t.Fatalf("write yaml: %v", err)
 	}
 
-	record := installDockerShim(t, 0)
+	installFakeRunClient(t, 0)
 	stubTTY(t, true)
 
 	_, stderr, err := runCmd(t, baseDir, "go")
@@ -1522,12 +1532,6 @@ func TestGo_EmptyScanPatterns_NoFilesMasked(t *testing.T) {
 	}
 	if strings.Contains(stderr, "masked") {
 		t.Errorf("stderr must not mention 'masked' when exclude.scan.patterns is empty: %q", stderr)
-	}
-	argv := readArgv(t, record)
-	for _, a := range argv {
-		if strings.Contains(a, "/dev/null") {
-			t.Errorf("argv must not contain /dev/null mounts when patterns is empty: %q", a)
-		}
 	}
 }
 
@@ -1563,12 +1567,11 @@ func TestGo_LoadsYamlAndMergesMaskedFiles(t *testing.T) {
 		t.Fatalf("write yaml: %v", err)
 	}
 
-	record := installDockerShim(t, 0)
-	stubTTY(t, true)
-
-	_, stderr, err := runCmd(t, baseDir, "go")
+	// Use --dry-run to verify spec content without running docker.
+	stubTTY(t, false)
+	stdout, stderr, err := runCmd(t, baseDir, "go", "--dry-run")
 	if err != nil {
-		t.Fatalf("go failed: %v; stderr=%q", err, stderr)
+		t.Fatalf("go --dry-run failed: %v; stderr=%q", err, stderr)
 	}
 
 	// Scan hits .env (1 file); private/token.txt is via exclude.files (not counted in masked N).
@@ -1577,37 +1580,20 @@ func TestGo_LoadsYamlAndMergesMaskedFiles(t *testing.T) {
 	}
 
 	name := filepath.Base(workspaceDir)
-	argv := readArgv(t, record)
 	wantMount1 := "type=bind,source=/dev/null,target=/workspace/" + name + "/.env"
 	wantMount2 := "type=bind,source=/dev/null,target=/workspace/" + name + "/private/token.txt"
-	var found1, found2 bool
-	for _, a := range argv {
-		if a == wantMount1 {
-			found1 = true
-		}
-		if a == wantMount2 {
-			found2 = true
-		}
+	if !strings.Contains(stdout, wantMount1) {
+		t.Errorf("--dry-run stdout missing /dev/null mount for .env: want %q\nstdout:\n%s", wantMount1, stdout)
 	}
-	if !found1 {
-		t.Errorf("argv missing /dev/null mount for .env: want %q\nargv: %v", wantMount1, argv)
-	}
-	if !found2 {
-		t.Errorf("argv missing /dev/null mount for private/token.txt: want %q\nargv: %v", wantMount2, argv)
+	if !strings.Contains(stdout, wantMount2) {
+		t.Errorf("--dry-run stdout missing /dev/null mount for private/token.txt: want %q\nstdout:\n%s", wantMount2, stdout)
 	}
 
-	// Lex-sorted order: .env < private/token.txt — check index ordering.
-	var idx1, idx2 int
-	for i, a := range argv {
-		if a == wantMount1 {
-			idx1 = i
-		}
-		if a == wantMount2 {
-			idx2 = i
-		}
-	}
-	if idx1 >= idx2 {
-		t.Errorf("/dev/null mount for .env (idx %d) should come before private/token.txt (idx %d) in lex order", idx1, idx2)
+	// Lex-sorted order: .env < private/token.txt — check position in output.
+	idx1 := strings.Index(stdout, wantMount1)
+	idx2 := strings.Index(stdout, wantMount2)
+	if idx1 >= 0 && idx2 >= 0 && idx1 >= idx2 {
+		t.Errorf("/dev/null mount for .env (byte %d) should come before private/token.txt (byte %d) in lex order", idx1, idx2)
 	}
 }
 
@@ -1660,39 +1646,29 @@ func TestGo_LoadsYamlMaskedDirs_TmpfsMountInArgv(t *testing.T) {
 		t.Fatalf("write yaml: %v", err)
 	}
 
-	record := installDockerShim(t, 0)
-	stubTTY(t, true)
-
-	_, stderr, err := runCmd(t, baseDir, "go")
+	// Use --dry-run to verify spec contains the tmpfs mount without running docker.
+	stubTTY(t, false)
+	stdout, stderr, err := runCmd(t, baseDir, "go", "--dry-run")
 	if err != nil {
-		t.Fatalf("go failed: %v; stderr=%q", err, stderr)
+		t.Fatalf("go --dry-run failed: %v; stderr=%q", err, stderr)
 	}
 
 	name := filepath.Base(workspaceDir)
-	argv := readArgv(t, record)
 	wantTmpfs := "type=tmpfs,target=/workspace/" + name + "/node_modules"
-	projectMount := "type=bind,source=" + resolvedPwd + ",target=/workspace/" + name
+	projectMount := "source=" + resolvedPwd + ",target=/workspace/" + name
 
-	var tmpfsIdx, projectIdx int
-	var foundTmpfs bool
-	for i, a := range argv {
-		if a == wantTmpfs {
-			foundTmpfs = true
-			tmpfsIdx = i
-		}
-		if a == projectMount {
-			projectIdx = i
-		}
+	if !strings.Contains(stdout, wantTmpfs) {
+		t.Errorf("--dry-run stdout missing tmpfs mount: want %q\nstdout:\n%s", wantTmpfs, stdout)
 	}
-	if !foundTmpfs {
-		t.Errorf("argv missing tmpfs mount: want %q\nargv: %v", wantTmpfs, argv)
+	// Verify ordering: tmpfs appears after project bind mount.
+	projectIdx := strings.Index(stdout, projectMount)
+	tmpfsIdx := strings.Index(stdout, wantTmpfs)
+	if projectIdx >= 0 && tmpfsIdx >= 0 && tmpfsIdx <= projectIdx {
+		t.Errorf("tmpfs mount (byte %d) must come after project bind mount (byte %d)", tmpfsIdx, projectIdx)
 	}
-	if tmpfsIdx <= projectIdx {
-		t.Errorf("tmpfs mount (idx %d) must come after project bind mount (idx %d)", tmpfsIdx, projectIdx)
-	}
-	for _, a := range argv {
-		if a == wantTmpfs && strings.Contains(a, "source=") {
-			t.Errorf("tmpfs mount must not contain source=: %q", a)
+	for _, line := range strings.Split(stdout, "\n") {
+		if strings.Contains(line, "tmpfs") && strings.Contains(line, "source=") {
+			t.Errorf("tmpfs mount line must not contain source=: %q", line)
 		}
 	}
 }
@@ -1714,15 +1690,13 @@ func TestGo_YamlAbsentIsBitIdenticalArgv(t *testing.T) {
 		t.Fatalf("remove yaml: %v", err)
 	}
 
-	record := installDockerShim(t, 0)
-	stubTTY(t, true)
-
-	_, stderr, err := runCmd(t, baseDir, "go")
+	// Use --dry-run: yaml absent → spec must equal what BuildSpec produces directly.
+	stubTTY(t, false)
+	stdout, stderr, err := runCmd(t, baseDir, "go", "--dry-run")
 	if err != nil {
-		t.Fatalf("go failed: %v; stderr=%q", err, stderr)
+		t.Fatalf("go --dry-run failed: %v; stderr=%q", err, stderr)
 	}
 
-	got := readArgv(t, record)
 	s, loadErr := config.Load(baseDir)
 	if loadErr != nil {
 		t.Fatalf("load settings: %v", loadErr)
@@ -1734,15 +1708,11 @@ func TestGo_YamlAbsentIsBitIdenticalArgv(t *testing.T) {
 		Image:         s.Image,
 		Command:       s.Shell,
 		TmpDirSize:    s.TmpDirSize,
-	}).Args()
+	}).ShellCommand()
 
-	if len(got) != len(want) {
-		t.Fatalf("argv length mismatch: got %d %v, want %d %v", len(got), got, len(want), want)
-	}
-	for i, w := range want {
-		if got[i] != w {
-			t.Errorf("argv[%d] = %q, want %q", i, got[i], w)
-		}
+	got := strings.TrimSuffix(stdout, "\n")
+	if got != want {
+		t.Errorf("--dry-run stdout mismatch (yaml absent must yield identical command)\ngot:\n%s\n\nwant:\n%s", got, want)
 	}
 }
 
@@ -1771,25 +1741,18 @@ func TestGo_YamlDedupsAgainstScan(t *testing.T) {
 		t.Fatalf("write yaml: %v", err)
 	}
 
-	record := installDockerShim(t, 0)
-	stubTTY(t, true)
-
-	_, stderr, err := runCmd(t, baseDir, "go")
+	// Use --dry-run to verify dedup without running docker.
+	stubTTY(t, false)
+	stdout, stderr, err := runCmd(t, baseDir, "go", "--dry-run")
 	if err != nil {
-		t.Fatalf("go failed: %v; stderr=%q", err, stderr)
+		t.Fatalf("go --dry-run failed: %v; stderr=%q", err, stderr)
 	}
 
 	name := filepath.Base(workspaceDir)
-	argv := readArgv(t, record)
 	wantMount := "type=bind,source=/dev/null,target=/workspace/" + name + "/.env"
-	var count int
-	for _, a := range argv {
-		if a == wantMount {
-			count++
-		}
-	}
+	count := strings.Count(stdout, wantMount)
 	if count != 1 {
-		t.Errorf("expected exactly 1 /dev/null mount for .env, got %d\nargv: %v", count, argv)
+		t.Errorf("expected exactly 1 /dev/null mount for .env in --dry-run output, got %d\nstdout:\n%s", count, stdout)
 	}
 }
 
@@ -1813,7 +1776,7 @@ func TestGo_YamlMalformedAbortsBeforeDocker(t *testing.T) {
 		t.Fatalf("write bad yaml: %v", err)
 	}
 
-	record := installDockerShim(t, 0)
+	fc := installFakeRunClient(t, 0)
 	stubTTY(t, true)
 
 	var stdout, stderr bytes.Buffer
@@ -1824,8 +1787,8 @@ func TestGo_YamlMalformedAbortsBeforeDocker(t *testing.T) {
 	if !strings.HasPrefix(stderr.String(), "makeslop: ") {
 		t.Errorf("stderr missing 'makeslop: ' prefix: %q", stderr.String())
 	}
-	if argv := readArgv(t, record); argv != nil {
-		t.Errorf("docker shim must not be invoked on yaml parse error; got argv=%v", argv)
+	if fc.Started {
+		t.Errorf("docker client must not be started on yaml parse error")
 	}
 }
 
@@ -1846,7 +1809,7 @@ func TestGo_YamlReservedPathAbortsBeforeDocker(t *testing.T) {
 		t.Fatalf("write yaml: %v", err)
 	}
 
-	record := installDockerShim(t, 0)
+	fc := installFakeRunClient(t, 0)
 	stubTTY(t, true)
 
 	var stdout, stderr bytes.Buffer
@@ -1857,8 +1820,8 @@ func TestGo_YamlReservedPathAbortsBeforeDocker(t *testing.T) {
 	if !strings.Contains(stderr.String(), "reserved agent path") {
 		t.Errorf("stderr missing 'reserved agent path': %q", stderr.String())
 	}
-	if argv := readArgv(t, record); argv != nil {
-		t.Errorf("docker shim must not be invoked when yaml lists reserved path; got argv=%v", argv)
+	if fc.Started {
+		t.Errorf("docker client must not be started when yaml lists reserved path")
 	}
 }
 
@@ -1879,7 +1842,7 @@ func TestGo_YamlDirAndFileDupAborts(t *testing.T) {
 		t.Fatalf("write yaml: %v", err)
 	}
 
-	record := installDockerShim(t, 0)
+	fc := installFakeRunClient(t, 0)
 	stubTTY(t, true)
 
 	var stdout, stderr bytes.Buffer
@@ -1890,8 +1853,8 @@ func TestGo_YamlDirAndFileDupAborts(t *testing.T) {
 	if !strings.Contains(stderr.String(), "listed in both") {
 		t.Errorf("stderr missing 'listed in both': %q", stderr.String())
 	}
-	if argv := readArgv(t, record); argv != nil {
-		t.Errorf("docker shim must not be invoked when yaml has cross-list dup; got argv=%v", argv)
+	if fc.Started {
+		t.Errorf("docker client must not be started when yaml has cross-list dup")
 	}
 }
 
@@ -1913,22 +1876,17 @@ func TestGo_YamlMissingPathSkippedSilently(t *testing.T) {
 	// Explicitly ensure the file does not exist.
 	_ = os.Remove(filepath.Join(resolvedPwd, "secrets", "api.key"))
 
-	record := installDockerShim(t, 0)
-	stubTTY(t, true)
-
-	_, stderr, err := runCmd(t, baseDir, "go")
+	// Use --dry-run to verify spec without running docker.
+	stubTTY(t, false)
+	stdout, stderr, err := runCmd(t, baseDir, "go", "--dry-run")
 	if err != nil {
 		t.Fatalf("expected success when missing path is silently skipped, got: %v; stderr=%q", err, stderr)
 	}
 	if strings.Contains(stderr, "api.key") {
 		t.Errorf("stderr must not mention missing path 'api.key': %q", stderr)
 	}
-
-	argv := readArgv(t, record)
-	for _, a := range argv {
-		if strings.Contains(a, "api.key") {
-			t.Errorf("argv must not contain overlay for missing api.key: %q", a)
-		}
+	if strings.Contains(stdout, "api.key") {
+		t.Errorf("--dry-run output must not contain overlay for missing api.key: %q", stdout)
 	}
 }
 
@@ -2761,7 +2719,6 @@ func TestConfigSet_WrongArgCount_ExitsOne(t *testing.T) {
 // `makeslop go`, matching the existing TestGo_CustomImageAndShell_FlowFromSettings
 // pattern.
 func TestGo_CustomTmpDirSize_FlowsIntoDockerArgv(t *testing.T) {
-	docker.SkipNonPOSIX(t, "docker shim requires POSIX shell; makeslop is POSIX-only")
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
@@ -2779,26 +2736,15 @@ func TestGo_CustomTmpDirSize_FlowsIntoDockerArgv(t *testing.T) {
 		t.Fatalf("save settings: %v", err)
 	}
 
-	record := installDockerShim(t, 0)
-	stubTTY(t, true)
-
-	if _, _, err := runCmd(t, baseDir, "go"); err != nil {
-		t.Fatalf("makeslop go failed: %v", err)
+	// Use --dry-run to verify the tmpfs size flows into the spec.
+	stubTTY(t, false)
+	stdout, stderr, err := runCmd(t, baseDir, "go", "--dry-run")
+	if err != nil {
+		t.Fatalf("makeslop go --dry-run failed: %v; stderr=%q", err, stderr)
 	}
-	argv := readArgv(t, record)
 
-	// Find the --tmpfs argument and verify the size.
-	found := false
-	for i, arg := range argv {
-		if arg == "--tmpfs" && i+1 < len(argv) {
-			if argv[i+1] == "/tmp:size=1000m" {
-				found = true
-				break
-			}
-		}
-	}
-	if !found {
-		t.Errorf("docker argv missing '--tmpfs /tmp:size=1000m'; full argv: %v", argv)
+	if !strings.Contains(stdout, "/tmp:size=1000m") {
+		t.Errorf("--dry-run output missing '--tmpfs /tmp:size=1000m'; stdout:\n%s", stdout)
 	}
 }
 

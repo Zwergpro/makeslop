@@ -264,40 +264,43 @@
 - Modify: `cmd/makeslop/main.go`
 - Modify: `cmd/makeslop/main_test.go`
 
-- [ ] add exported `type ExitError struct{ Code int }` with `Error()` in `run.go` (or `errors.go`).
-- [ ] rewrite `Run(ctx, s Spec)`: keep `ErrNoTTY` guard; obtain client via
+- [x] add exported `type ExitError struct{ Code int }` with `Error()` in `run.go` (or `errors.go`).
+- [x] rewrite `Run(ctx, s Spec)`: keep `ErrNoTTY` guard; obtain client via
       `newClientFn()`; orchestrate create→attach→`term.MakeRaw`→start→initial
       resize + SIGWINCH→stdin/stdout pumps→`ContainerWait`; map non-zero
       `StatusCode` → `&ExitError{Code}`; deferred best-effort force-remove guarded
       by `startedCleanly`/ctx-cancel; `defer client.Close()`.
-- [ ] add internal `run(ctx, cli apiClient, s Spec)` so tests inject a fake; the
+- [x] add internal `run(ctx, cli apiClient, s Spec)` so tests inject a fake; the
       exported `Run` is a thin wrapper that builds the default client.
-- [ ] in `testing.go`: add `SetClientForTest(c apiClient) (restore func())`
+- [x] in `testing.go`: add `SetClientForTest(c apiClient) (restore func())`
       swapping `newClientFn`. **Leave ALL build-side shim machinery untouched in
       this task** — `WriteShim`, `WriteBuildShim`, `SetDockerBinaryForTest`,
       `dockerBinary`, and `executableTempDir` all stay, because the exec-based
       `Build` and its `run_test.go`/`main_test.go` build tests still use them
       until Task 4. (Removing any of these now breaks the Task 3 green boundary.)
-- [ ] add a fake `apiClient` test helper (records calls; scripted
+- [x] add a fake `apiClient` test helper (records calls; scripted
       `ContainerAttach` stream + `ContainerWait` result/error; toggleable
       `ContainerStart` error).
-- [ ] rewrite the **run** tests in `run_test.go` using the fake: clean exit (0,
+- [x] rewrite the **run** tests in `run_test.go` using the fake: clean exit (0,
       no explicit remove), non-zero ⇒ `*docker.ExitError` with `Code`, `ttyCheck`
       false ⇒ `ErrNoTTY` before any client call, start-failure ⇒ force-remove
       fires, ctx cancel ⇒ no leak; `SkipNonPOSIX` on raw-mode/SIGWINCH cases.
       Remove `executableTempDir` if now unused.
-- [ ] repoint `runWithExitCode` in `main.go` to `errors.As(err, &*docker.ExitError)`
+- [x] repoint `runWithExitCode` in `main.go` to `errors.As(err, &*docker.ExitError)`
       → `return ee.Code`; delete the `exec.ExitError`/`syscall.WaitStatus` branch
       and now-unused imports; update the doc comment.
-- [ ] update `cmd/makeslop/main_test.go` `go`-command tests to inject a fake via
+      NOTE: `exec.ExitError` handling is kept temporarily for the Build exec path
+      (Task 4 removes it when Build migrates to SDK). `syscall.WaitStatus`/signal
+      branch removed.
+- [x] update `cmd/makeslop/main_test.go` `go`-command tests to inject a fake via
       `docker.SetClientForTest` instead of `WriteShim`/`SetDockerBinaryForTest`;
       rework `TestGo_ExitCodePropagation` (fake returns StatusCode 42 ⇒ exit 42)
       and rename `TestRunWithExitCode_SignalKilledMapsTo128PlusSignum` to a pure
       mapping test (fake returns StatusCode 137 ⇒ exit 137; drop the
       `SkipNonPOSIX`/`WaitStatus` rationale — no OS wait status anymore).
-- [ ] note: only the **`go`-command** main tests migrate here; build-command
+- [x] note: only the **`go`-command** main tests migrate here; build-command
       main tests stay on shims until Task 4.
-- [ ] run `GOTMPDIR=/home/user go test ./...` — must pass before Task 4.
+- [x] run `GOTMPDIR=/home/user go test ./...` — must pass before Task 4.
 
 ### Task 4: Migrate Build to BuildKit via session + progressui
 

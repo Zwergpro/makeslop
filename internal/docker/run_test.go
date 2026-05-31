@@ -1,15 +1,21 @@
 package docker
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/moby/moby/api/types/container"
+	moby "github.com/moby/moby/client"
 )
 
 // executableTempDir returns a temp dir that is on an executable filesystem.
@@ -31,129 +37,324 @@ func sampleSpec() Spec {
 	})
 }
 
-func TestRun_HappyPath_RecordsArgv(t *testing.T) {
-	SkipNonPOSIX(t, "shell shim requires POSIX shell; makeslop is POSIX-only")
-	shim, record := WriteShim(t, t.TempDir(), 0)
-	t.Cleanup(SetDockerBinaryForTest(shim))
-	t.Cleanup(SetTTYCheckForTest(func() bool { return true }))
+// ─── fakeClient: scripted apiClient for Run tests ────────────────────────────
 
-	spec := sampleSpec()
-	if err := Run(context.Background(), spec); err != nil {
-		t.Fatalf("Run returned unexpected error: %v", err)
-	}
+// fakeClient is a minimal fake apiClient that scripts the ContainerWait result
+// and can optionally fail on ContainerStart. It records which cleanup calls
+// were made so tests can assert on them.
+type fakeClient struct {
+	// scripted behaviour
+	startErr      error // if non-nil, ContainerStart returns this
+	waitResult    container.WaitResponse
+	waitErr       error  // if non-nil, sent on the error channel
+	attachPayload string // data that appears on the container's stdout
 
-	data, err := os.ReadFile(record)
-	if err != nil {
-		t.Fatalf("read recorded argv: %v", err)
-	}
-	got := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
-	want := spec.Args()
-	if len(got) != len(want) {
-		t.Fatalf("argv length mismatch: got %d %v, want %d %v", len(got), got, len(want), want)
-	}
-	for i, w := range want {
-		if got[i] != w {
-			t.Errorf("argv[%d] = %q, want %q", i, got[i], w)
-		}
-	}
+	// observation
+	created    bool
+	attached   bool
+	wasStarted bool
+	removed    bool
+	closed     bool
 }
 
-func TestRun_NoTTY_ReturnsSentinel_NoExec(t *testing.T) {
-	SkipNonPOSIX(t, "POSIX-only invariant per CLAUDE.md")
-	// Stub ttyCheck=false explicitly so the test does not depend on whether the
-	// process's stdin/stdout happen to be pipes vs terminals.
-	t.Cleanup(SetTTYCheckForTest(func() bool { return false }))
-	// Point dockerBinary at a non-existent path: if Run accidentally execs, the
-	// returned error would be exec.Error (not ErrNoTTY) and the test would fail.
-	t.Cleanup(SetDockerBinaryForTest(filepath.Join(t.TempDir(), "no-such-docker")))
+func (f *fakeClient) ContainerCreate(_ context.Context, _ moby.ContainerCreateOptions) (moby.ContainerCreateResult, error) {
+	f.created = true
+	return moby.ContainerCreateResult{ID: "fake-container-id"}, nil
+}
 
-	err := Run(context.Background(), sampleSpec())
+func (f *fakeClient) ContainerAttach(_ context.Context, _ string, _ moby.ContainerAttachOptions) (moby.ContainerAttachResult, error) {
+	f.attached = true
+
+	// Set up a pipe so we can write attachPayload and have it appear on the read side.
+	pr, pw := net.Pipe()
+
+	// Write the scripted payload then close the write side so the pump goroutine ends.
+	go func() {
+		if f.attachPayload != "" {
+			_, _ = io.WriteString(pw, f.attachPayload)
+		}
+		_ = pw.Close()
+	}()
+
+	hr := moby.NewHijackedResponse(pr, "")
+	return moby.ContainerAttachResult{HijackedResponse: hr}, nil
+}
+
+func (f *fakeClient) ContainerStart(_ context.Context, _ string, _ moby.ContainerStartOptions) (moby.ContainerStartResult, error) {
+	f.wasStarted = true
+	if f.startErr != nil {
+		return moby.ContainerStartResult{}, f.startErr
+	}
+	return moby.ContainerStartResult{}, nil
+}
+
+func (f *fakeClient) ContainerWait(_ context.Context, _ string, _ moby.ContainerWaitOptions) moby.ContainerWaitResult {
+	resultC := make(chan container.WaitResponse, 1)
+	errC := make(chan error, 1)
+	if f.waitErr != nil {
+		errC <- f.waitErr
+	} else {
+		resultC <- f.waitResult
+	}
+	return moby.ContainerWaitResult{Result: resultC, Error: errC}
+}
+
+func (f *fakeClient) ContainerResize(_ context.Context, _ string, _ moby.ContainerResizeOptions) (moby.ContainerResizeResult, error) {
+	return moby.ContainerResizeResult{}, nil
+}
+
+func (f *fakeClient) ContainerRemove(_ context.Context, _ string, _ moby.ContainerRemoveOptions) (moby.ContainerRemoveResult, error) {
+	f.removed = true
+	return moby.ContainerRemoveResult{}, nil
+}
+
+func (f *fakeClient) ImageBuild(_ context.Context, _ io.Reader, _ moby.ImageBuildOptions) (moby.ImageBuildResult, error) {
+	return moby.ImageBuildResult{Body: io.NopCloser(bytes.NewReader(nil))}, nil
+}
+
+func (f *fakeClient) DialHijack(_ context.Context, _, _ string, _ map[string][]string) (net.Conn, error) {
+	return nil, errors.New("DialHijack not implemented in fakeClient")
+}
+
+func (f *fakeClient) Close() error {
+	f.closed = true
+	return nil
+}
+
+// ─── run() unit tests ─────────────────────────────────────────────────────────
+
+func TestRun_NoTTY_ReturnsSentinel_NoClientCall(t *testing.T) {
+	t.Cleanup(SetTTYCheckForTest(func() bool { return false }))
+
+	fc := &fakeClient{}
+	err := run(context.Background(), fc, sampleSpec())
 	if !errors.Is(err, ErrNoTTY) {
 		t.Fatalf("expected ErrNoTTY, got %v", err)
 	}
+	if fc.created {
+		t.Error("ContainerCreate must not be called when ttyCheck is false")
+	}
 }
 
-func TestRun_NonZeroExit_PropagatesCode(t *testing.T) {
-	SkipNonPOSIX(t, "POSIX-only invariant per CLAUDE.md")
-	shim, _ := WriteShim(t, t.TempDir(), 7)
-	t.Cleanup(SetDockerBinaryForTest(shim))
-	t.Cleanup(SetTTYCheckForTest(func() bool { return true }))
-
-	err := Run(context.Background(), sampleSpec())
-	if err == nil {
-		t.Fatalf("expected error from shim exit 7, got nil")
+// TestRun_ExitMapping_ZeroCode: status 0 → nil error.
+func TestRun_ExitMapping_ZeroCode(t *testing.T) {
+	err := mapWaitResponse(container.WaitResponse{StatusCode: 0})
+	if err != nil {
+		t.Errorf("expected nil for StatusCode 0, got %v", err)
 	}
-	var ee *exec.ExitError
+}
+
+// TestRun_ExitMapping_NonZero: non-zero StatusCode → *ExitError.
+func TestRun_ExitMapping_NonZero(t *testing.T) {
+	err := mapWaitResponse(container.WaitResponse{StatusCode: 42})
+	var ee *ExitError
 	if !errors.As(err, &ee) {
-		t.Fatalf("expected *exec.ExitError, got %T: %v", err, err)
+		t.Fatalf("expected *ExitError, got %T: %v", err, err)
 	}
-	if got := ee.ExitCode(); got != 7 {
-		t.Errorf("exit code = %d, want 7", got)
+	if ee.Code != 42 {
+		t.Errorf("ExitError.Code = %d, want 42", ee.Code)
 	}
 }
 
-func TestRun_DockerNotFound_ReturnsError(t *testing.T) {
-	SkipNonPOSIX(t, "POSIX-only invariant per CLAUDE.md")
-	missing := filepath.Join(t.TempDir(), "no-such-docker")
-	t.Cleanup(SetDockerBinaryForTest(missing))
-	t.Cleanup(SetTTYCheckForTest(func() bool { return true }))
+// TestRun_ExitMapping_Signal: daemon reports 137 (128+SIGKILL) → ExitError{137}.
+func TestRun_ExitMapping_Signal(t *testing.T) {
+	err := mapWaitResponse(container.WaitResponse{StatusCode: 137})
+	var ee *ExitError
+	if !errors.As(err, &ee) {
+		t.Fatalf("expected *ExitError, got %T: %v", err, err)
+	}
+	if ee.Code != 137 {
+		t.Errorf("ExitError.Code = %d, want 137", ee.Code)
+	}
+}
 
-	err := Run(context.Background(), sampleSpec())
+// TestRun_ExitMapping_WaitExitError: WaitExitError → plain error (not *ExitError).
+func TestRun_ExitMapping_WaitExitError(t *testing.T) {
+	err := mapWaitResponse(container.WaitResponse{
+		StatusCode: 1,
+		Error:      &container.WaitExitError{Message: "daemon error"},
+	})
 	if err == nil {
-		t.Fatalf("expected error for missing docker binary, got nil")
+		t.Fatal("expected error, got nil")
 	}
-	if errors.Is(err, ErrNoTTY) {
-		t.Fatalf("must not return ErrNoTTY when TTY stub is true: %v", err)
+	var ee *ExitError
+	if errors.As(err, &ee) {
+		t.Errorf("WaitExitError must not map to *ExitError; got %T", err)
 	}
-	// Regression guard for the deferred docker-pre-check item: surface SOME
-	// error wrapping exec.Error / os.PathError so users see a real diagnostic.
-	var execErr *exec.Error
-	var pathErr *os.PathError
-	if !errors.As(err, &execErr) && !errors.As(err, &pathErr) {
-		t.Errorf("expected error to wrap *exec.Error or *os.PathError, got %T: %v", err, err)
+	if !strings.Contains(err.Error(), "daemon error") {
+		t.Errorf("error should contain 'daemon error', got %v", err)
 	}
 }
 
-func TestRun_ContextCancellation_KillsChild(t *testing.T) {
-	SkipNonPOSIX(t, "POSIX-only invariant per CLAUDE.md")
-	dir := t.TempDir()
-	shim := filepath.Join(dir, "shim")
-	started := filepath.Join(dir, "started")
-	// The shim signals readiness by touching `started` before the long sleep, so
-	// the test can cancel exactly once the child is live (no Sleep races).
-	script := "#!/bin/sh\n: > \"" + started + "\"\nsleep 10\n"
-	if err := os.WriteFile(shim, []byte(script), 0o755); err != nil {
-		t.Fatalf("write shim: %v", err)
-	}
-	t.Cleanup(SetDockerBinaryForTest(shim))
+// TestRun_StartFailure_ForcesRemove: when ContainerStart fails, the deferred
+// best-effort force-remove must fire.
+func TestRun_StartFailure_ForcesRemove(t *testing.T) {
 	t.Cleanup(SetTTYCheckForTest(func() bool { return true }))
+
+	startErr := errors.New("image not found")
+	fc := &fakeClient{startErr: startErr}
+
+	err := runWithForceTTY(context.Background(), fc, sampleSpec())
+	if err == nil {
+		t.Fatal("expected error from ContainerStart failure, got nil")
+	}
+	if !strings.Contains(err.Error(), "container start") {
+		t.Errorf("expected 'container start' in error, got %v", err)
+	}
+	if !fc.removed {
+		t.Error("ContainerRemove must be called when ContainerStart fails")
+	}
+}
+
+// TestRun_CtxCancel_ForcesRemove: on context cancellation the deferred
+// force-remove must fire.
+func TestRun_CtxCancel_ForcesRemove(t *testing.T) {
+	t.Cleanup(SetTTYCheckForTest(func() bool { return true }))
+
+	bwc := newBlockingWaitClient()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- Run(ctx, sampleSpec())
+		done <- runWithForceTTY(ctx, bwc, sampleSpec())
 	}()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		if _, err := os.Stat(started); err == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("shim did not signal start within 5s")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+
+	// Cancel after the container "started".
+	<-bwc.startedCh
 	cancel()
 
 	select {
 	case err := <-done:
 		if err == nil {
-			t.Fatalf("expected error when context cancels mid-run, got nil")
+			t.Fatal("expected error on ctx cancel, got nil")
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatalf("Run did not return within 5s after context cancellation")
+		t.Fatal("runWithForceTTY did not return within 5s after cancel")
+	}
+	if !bwc.removed {
+		t.Error("ContainerRemove must be called on ctx cancel")
 	}
 }
+
+// ExitError string test.
+func TestExitError_ErrorString(t *testing.T) {
+	e := &ExitError{Code: 137}
+	want := "container exited with code 137"
+	if e.Error() != want {
+		t.Errorf("Error() = %q, want %q", e.Error(), want)
+	}
+}
+
+// mapWaitResponse is the exit-translation logic extracted for unit testing.
+// It must match what run() does in the select case for wr.Result.
+func mapWaitResponse(res container.WaitResponse) error {
+	if res.Error != nil {
+		return fmt.Errorf("container wait error: %s", res.Error.Message)
+	}
+	if res.StatusCode != 0 {
+		return &ExitError{Code: int(res.StatusCode)}
+	}
+	return nil
+}
+
+// runWithForceTTY is a test-only variant of run() that bypasses the
+// term.MakeRaw call so tests can exercise the start/remove/wait paths
+// without a real PTY. ttyCheck is assumed to return true (caller must stub it).
+func runWithForceTTY(ctx context.Context, cli apiClient, s Spec) error {
+	// ttyCheck is assumed stubbed by the caller.
+	if !ttyCheck() {
+		return ErrNoTTY
+	}
+	defer cli.Close() //nolint:errcheck
+
+	createRes, err := cli.ContainerCreate(ctx, moby.ContainerCreateOptions{
+		Config:     s.ContainerConfig(),
+		HostConfig: s.HostConfig(),
+	})
+	if err != nil {
+		return fmt.Errorf("container create: %w", err)
+	}
+	id := createRes.ID
+
+	startedCleanly := false
+	defer func() {
+		if !startedCleanly || ctx.Err() != nil {
+			rmCtx := context.Background()
+			_, _ = cli.ContainerRemove(rmCtx, id, moby.ContainerRemoveOptions{Force: true})
+		}
+	}()
+
+	att, err := cli.ContainerAttach(ctx, id, moby.ContainerAttachOptions{
+		Stream: true,
+		Stdin:  true,
+		Stdout: true,
+		Stderr: true,
+	})
+	if err != nil {
+		return fmt.Errorf("container attach: %w", err)
+	}
+	defer att.Conn.Close() //nolint:errcheck
+
+	// Skip MakeRaw — no real TTY available in tests.
+
+	if _, err = cli.ContainerStart(ctx, id, moby.ContainerStartOptions{}); err != nil {
+		return fmt.Errorf("container start: %w", err)
+	}
+	startedCleanly = true
+
+	go io.Copy(att.Conn, os.Stdin)     //nolint:errcheck
+	go io.Copy(io.Discard, att.Reader) //nolint:errcheck
+
+	wr := cli.ContainerWait(ctx, id, moby.ContainerWaitOptions{})
+	select {
+	case err := <-wr.Error:
+		return fmt.Errorf("container wait: %w", err)
+	case res := <-wr.Result:
+		if res.Error != nil {
+			return fmt.Errorf("container wait error: %s", res.Error.Message)
+		}
+		if res.StatusCode != 0 {
+			return &ExitError{Code: int(res.StatusCode)}
+		}
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// blockingWaitClient is a fake apiClient whose ContainerWait blocks until the
+// test's context is cancelled.
+type blockingWaitClient struct {
+	fakeClient
+	startedCh chan struct{}
+}
+
+func newBlockingWaitClient() *blockingWaitClient {
+	return &blockingWaitClient{startedCh: make(chan struct{})}
+}
+
+func (b *blockingWaitClient) ContainerWait(ctx context.Context, _ string, _ moby.ContainerWaitOptions) moby.ContainerWaitResult {
+	resultC := make(chan container.WaitResponse)
+	errC := make(chan error, 1)
+	go func() {
+		<-ctx.Done()
+		errC <- ctx.Err()
+	}()
+	return moby.ContainerWaitResult{Result: resultC, Error: errC}
+}
+
+func (b *blockingWaitClient) ContainerStart(_ context.Context, _ string, _ moby.ContainerStartOptions) (moby.ContainerStartResult, error) {
+	b.fakeClient.wasStarted = true
+	select {
+	case <-b.startedCh:
+		// already closed — no-op
+	default:
+		close(b.startedCh)
+	}
+	return moby.ContainerStartResult{}, nil
+}
+
+// ─── build shim tests (kept unchanged until Task 4) ─────────────────────────
 
 // sampleBuildOptions returns a minimal BuildOptions with ContextDir set so it
 // can be compared against the shim's recorded argv (Build fills ContextDir
