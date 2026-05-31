@@ -162,13 +162,13 @@ func Scan(ctx context.Context, root string, patterns, skipDirs []string) ([]stri
 **Files:**
 - Modify: `internal/security/security.go`
 
-- [ ] change signature to `Scan(ctx context.Context, root string, patterns, skipDirs []string) ([]string, error)`
-- [ ] early-return `nil, nil` when `len(patterns) == 0`
-- [ ] implement `filepath.WalkDir` walk: ctx cancellation check, propagate walk errors, prune skip-dirs (non-root, by base name), drop symlinks, glob-match regular-file basenames, collect abs paths
-- [ ] `sort.Strings` results before returning
-- [ ] remove `fdBinary` var, `ErrFdMissing`, the `os/exec` import, and the PATH-lookup/argv/subprocess block
-- [ ] rewrite the package doc header: config-driven glob walk (no fd, no in-code denylist)
-- [ ] run build: `go build ./...` — must compile before writing tests (Scan tests come in Task 4 after callers/helpers settle)
+- [x] change signature to `Scan(ctx context.Context, root string, patterns, skipDirs []string) ([]string, error)`
+- [x] early-return `nil, nil` when `len(patterns) == 0`
+- [x] implement `filepath.WalkDir` walk: ctx cancellation check, propagate walk errors, prune skip-dirs (non-root, by base name), drop symlinks, glob-match regular-file basenames, collect abs paths
+- [x] `sort.Strings` results before returning
+- [x] remove `fdBinary` var, `ErrFdMissing`, the `os/exec` import, and the PATH-lookup/argv/subprocess block
+- [x] rewrite the package doc header: config-driven glob walk (no fd, no in-code denylist)
+- [x] run build: `go build ./...` — must compile before writing tests (Scan tests come in Task 4 after callers/helpers settle)
 
 ### Task 4: Replace security tests with WalkDir table tests
 

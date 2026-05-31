@@ -1,103 +1,83 @@
 // Package security scans for secret-bearing files under a project root so they
 // can be overlaid with /dev/null mounts, preventing container access to host
-// secrets. The denylist (basename-scoped fd --regex) covers:
-//   - .env files: names ending in .env (\.env$) or starting with .env. (^\.env\.)
-//   - PEM/key material: *.pem (\.pem$), *.key (\.key$)
-//   - SSH keys: id_rsa* (^id_rsa), id_ed25519* (^id_ed25519)
-//   - Credential files: .npmrc (^\.npmrc$), .netrc (^\.netrc$), .git-credentials (^\.git-credentials$)
+// secrets. Scanning is config-driven: the caller supplies basename glob patterns
+// (matched with filepath.Match) and directory names to prune during the walk.
+// No in-code denylist or default patterns exist — if the caller passes empty
+// patterns, nothing is scanned and the function returns nil immediately.
 //
-// NOT matched: .envrc, environment, keyfile (no extension), keyboard.txt.
+// Symlinks encountered during the walk are silently dropped; WalkDir does not
+// follow them, so the walk stays within the tree rooted at root.
+//
+// Walk errors (e.g. unreadable subdirectory) are propagated immediately. This
+// "fail-loud" behavior matches the no-.env-leak invariant: if we cannot prove a
+// directory is secret-free, we must not proceed.
 package security
 
 import (
 	"context"
-	"errors"
-	"fmt"
-	"os/exec"
+	"io/fs"
 	"path/filepath"
 	"sort"
-	"strings"
 )
 
-// fdBinary is a test-only swap point for the fd binary; empty means discover from PATH.
-var fdBinary = ""
-
-// ErrFdMissing is returned when neither fd nor fdfind is on PATH.
-var ErrFdMissing = errors.New("security: fd CLI not found on PATH")
-
-// Scan returns the absolute, sorted paths of every secret-bearing file under
-// root. The denylist is basename-scoped (fd matches basenames by default):
+// Scan returns the absolute, sorted paths of every file under root whose
+// basename matches at least one of the given glob patterns. Directories named
+// in skipDirs are pruned from the walk (matched by bare name, not full path).
 //
-//	\.env$|^\.env\.|\.pem$|\.key$|^id_rsa|^id_ed25519|^\.npmrc$|^\.netrc$|^\.git-credentials$
+// When patterns is empty Scan returns nil immediately without walking root.
 //
-// Precondition: root must be absolute and EvalSymlinks-evaluated; any direct
-// caller must enforce this.
-// Returned paths are guaranteed to be under root (trust boundary for the fd
-// process; paths outside root are silently dropped).
-// Returns ErrFdMissing when fd/fdfind is not on PATH; other exec errors are
-// wrapped with "security: run fd: ".
-func Scan(ctx context.Context, root string) ([]string, error) {
-	var bin string
-	if fdBinary != "" {
-		resolved, err := exec.LookPath(fdBinary)
-		if err != nil {
-			return nil, ErrFdMissing
-		}
-		bin = resolved
-	} else {
-		for _, name := range []string{"fd", "fdfind"} {
-			if resolved, err := exec.LookPath(name); err == nil {
-				bin = resolved
-				break
-			}
-		}
-		if bin == "" {
-			return nil, ErrFdMissing
-		}
-	}
-
-	argv := []string{
-		"--hidden",
-		"--no-ignore",
-		"--type", "f",
-		"--exclude", ".git",
-		"--exclude", "node_modules",
-		"--exclude", "vendor",
-		"--exclude", ".venv",
-		"--print0",
-		"--regex", `\.env$|^\.env\.|\.pem$|\.key$|^id_rsa|^id_ed25519|^\.npmrc$|^\.netrc$|^\.git-credentials$`,
-		"--",
-		root,
-	}
-
-	cmd := exec.CommandContext(ctx, bin, argv...)
-	out, err := cmd.Output()
-	if err != nil {
-		return nil, fmt.Errorf("security: run fd: %w", err)
-	}
-
-	if len(out) == 0 {
+// Precondition: root must be absolute and filepath.EvalSymlinks-evaluated.
+// Patterns must be valid filepath.Match patterns (validated by projectconfig.Load).
+func Scan(ctx context.Context, root string, patterns, skipDirs []string) ([]string, error) {
+	if len(patterns) == 0 {
 		return nil, nil
 	}
 
-	// fd's NUL-separated output ends with a trailing NUL; drop the empty token it produces.
-	raw := strings.Split(string(out), "\x00")
-	if len(raw) > 0 && raw[len(raw)-1] == "" {
-		raw = raw[:len(raw)-1]
+	skip := make(map[string]struct{}, len(skipDirs))
+	for _, d := range skipDirs {
+		skip[d] = struct{}{}
 	}
 
 	var paths []string
-	for _, p := range raw {
-		if p == "" {
-			continue
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
+		if err := ctx.Err(); err != nil {
+			return err
 		}
-		// Trust boundary: drop paths outside root. filepath.Rel never errors on
-		// POSIX; IsLocal catches ..-escapes.
-		rel, err := filepath.Rel(root, p)
-		if err != nil || !filepath.IsLocal(rel) {
-			continue
+		if walkErr != nil {
+			return walkErr
 		}
-		paths = append(paths, p)
+
+		if d.IsDir() {
+			if path != root {
+				if _, pruned := skip[d.Name()]; pruned {
+					return filepath.SkipDir
+				}
+			}
+			return nil
+		}
+
+		// Drop symlinks; WalkDir does not follow them.
+		if d.Type()&fs.ModeSymlink != 0 {
+			return nil
+		}
+
+		// Match regular files by basename.
+		name := d.Name()
+		for _, pat := range patterns {
+			matched, err := filepath.Match(pat, name)
+			if err != nil {
+				// Pattern was validated at Load time; this should not occur.
+				continue
+			}
+			if matched {
+				paths = append(paths, path)
+				break
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 
 	sort.Strings(paths)

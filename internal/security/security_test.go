@@ -2,13 +2,9 @@ package security
 
 import (
 	"context"
-	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
-	"sort"
-	"strings"
 	"testing"
 )
 
@@ -31,227 +27,85 @@ func evalSymlinks(t *testing.T, dir string) string {
 	return resolved
 }
 
-func TestScan_FdMissing_ReturnsErrFdMissing(t *testing.T) {
-	skipNonPOSIX(t, "shim scripts require POSIX shell; security package is POSIX-only per CLAUDE.md")
-	t.Cleanup(SetFdBinaryForTest("/nonexistent/fd-binary"))
-
-	root := evalSymlinks(t, t.TempDir())
-	_, err := Scan(context.Background(), root)
-	if !errors.Is(err, ErrFdMissing) {
-		t.Errorf("Scan with missing fd binary: got err=%v, want errors.Is(err, ErrFdMissing)", err)
+// mustWriteFile creates parent directories and writes a file with the given content.
+func mustWriteFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
 	}
 }
 
-func TestScan_TwoPaths_ReturnsSorted(t *testing.T) {
-	skipNonPOSIX(t, "shim scripts require POSIX shell; security package is POSIX-only per CLAUDE.md")
+// defaultPatterns are the glob patterns seeded by Scaffold; used across tests.
+var defaultPatterns = []string{
+	"*.env",
+	".env.*",
+	"*.pem",
+	"*.key",
+	"id_rsa*",
+	"id_ed25519*",
+	".npmrc",
+	".netrc",
+	".git-credentials",
+}
+
+var defaultSkipDirs = []string{".git", "node_modules", "vendor", ".venv"}
+
+// TestScan_EmptyPatterns_ReturnsNil verifies the opt-in invariant: when no patterns
+// are provided, Scan returns nil without walking the tree.
+func TestScan_EmptyPatterns_ReturnsNil(t *testing.T) {
 	root := evalSymlinks(t, t.TempDir())
+	mustWriteFile(t, filepath.Join(root, ".env"), "SECRET=1\n")
 
-	// Emit paths in reverse alphabetical order; Scan must sort them.
-	pathB := filepath.Join(root, "z.env")
-	pathA := filepath.Join(root, "a.env")
-
-	shimDir := t.TempDir()
-	shim, _ := WriteFdShim(t, shimDir, []string{pathB, pathA})
-	t.Cleanup(SetFdBinaryForTest(shim))
-
-	got, err := Scan(context.Background(), root)
+	got, err := Scan(context.Background(), root, nil, nil)
 	if err != nil {
-		t.Fatalf("Scan returned error: %v", err)
+		t.Fatalf("Scan with nil patterns returned error: %v", err)
 	}
-	want := []string{pathA, pathB}
-	if len(got) != len(want) {
-		t.Fatalf("len(got)=%d, want %d; got=%v", len(got), len(want), got)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("got[%d]=%q, want %q", i, got[i], want[i])
-		}
+	if got != nil {
+		t.Errorf("Scan with nil patterns: got %v, want nil", got)
 	}
 }
 
-// Scan is the trust boundary for the external process; paths outside root are silently dropped.
-func TestScan_OutsideRootPathDropped(t *testing.T) {
-	skipNonPOSIX(t, "shim scripts require POSIX shell; security package is POSIX-only per CLAUDE.md")
+// TestScan_DefaultPatterns_PositiveCases verifies each default glob hits its file.
+func TestScan_DefaultPatterns_PositiveCases(t *testing.T) {
 	root := evalSymlinks(t, t.TempDir())
-	outside := evalSymlinks(t, t.TempDir()) // different dir; not under root
-
-	outsidePath := filepath.Join(outside, ".env")
-	insidePath := filepath.Join(root, ".env")
-
-	shimDir := t.TempDir()
-	shim, _ := WriteFdShim(t, shimDir, []string{outsidePath, insidePath})
-	t.Cleanup(SetFdBinaryForTest(shim))
-
-	got, err := Scan(context.Background(), root)
-	if err != nil {
-		t.Fatalf("Scan returned error: %v", err)
-	}
-	if len(got) != 1 {
-		t.Fatalf("expected 1 path (inside root only), got %d: %v", len(got), got)
-	}
-	if got[0] != insidePath {
-		t.Errorf("got[0]=%q, want %q", got[0], insidePath)
-	}
-}
-
-func TestScan_EmptyStdout_ReturnsEmptySlice(t *testing.T) {
-	skipNonPOSIX(t, "shim scripts require POSIX shell; security package is POSIX-only per CLAUDE.md")
-	root := evalSymlinks(t, t.TempDir())
-
-	shimDir := t.TempDir()
-	shim, _ := WriteFdShim(t, shimDir, nil)
-	t.Cleanup(SetFdBinaryForTest(shim))
-
-	got, err := Scan(context.Background(), root)
-	if err != nil {
-		t.Fatalf("Scan returned error for empty output: %v", err)
-	}
-	if len(got) != 0 {
-		t.Errorf("expected empty result, got %v", got)
-	}
-}
-
-// Non-zero exit must produce a wrapped error, not ErrFdMissing.
-func TestScan_NonZeroExit_ReturnsWrappedError(t *testing.T) {
-	skipNonPOSIX(t, "shim scripts require POSIX shell; security package is POSIX-only per CLAUDE.md")
-	root := evalSymlinks(t, t.TempDir())
-
-	// Write a shim that exits 1 — this represents an fd runtime error.
-	shimDir := t.TempDir()
-	shimPath := filepath.Join(shimDir, "fd-fail")
-	script := "#!/bin/sh\nexit 1\n"
-	if err := os.WriteFile(shimPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write failing shim: %v", err)
-	}
-	t.Cleanup(SetFdBinaryForTest(shimPath))
-
-	_, err := Scan(context.Background(), root)
-	if err == nil {
-		t.Fatal("expected error from non-zero exit shim, got nil")
-	}
-	if errors.Is(err, ErrFdMissing) {
-		t.Errorf("non-zero exit error must not be ErrFdMissing; got %v", err)
-	}
-	if !strings.Contains(err.Error(), "security: run fd:") {
-		t.Errorf("error missing expected prefix; got %q", err.Error())
-	}
-}
-
-func TestScan_ArgvShape(t *testing.T) {
-	skipNonPOSIX(t, "shim scripts require POSIX shell; security package is POSIX-only per CLAUDE.md")
-	root := evalSymlinks(t, t.TempDir())
-
-	shimDir := t.TempDir()
-	shim, record := WriteFdShim(t, shimDir, nil)
-	t.Cleanup(SetFdBinaryForTest(shim))
-
-	if _, err := Scan(context.Background(), root); err != nil {
-		t.Fatalf("Scan returned error: %v", err)
-	}
-
-	data, err := os.ReadFile(record)
-	if err != nil {
-		t.Fatalf("read argv record: %v", err)
-	}
-	got := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
-
-	want := []string{
-		"--hidden",
-		"--no-ignore",
-		"--type", "f",
-		"--exclude", ".git",
-		"--exclude", "node_modules",
-		"--exclude", "vendor",
-		"--exclude", ".venv",
-		"--print0",
-		"--regex", `\.env$|^\.env\.|\.pem$|\.key$|^id_rsa|^id_ed25519|^\.npmrc$|^\.netrc$|^\.git-credentials$`,
-		"--",
-		root,
-	}
-	if len(got) != len(want) {
-		t.Fatalf("argv length mismatch: got %d %v, want %d %v", len(got), got, len(want), want)
-	}
-	for i, w := range want {
-		if got[i] != w {
-			t.Errorf("argv[%d] = %q, want %q", i, got[i], w)
-		}
-	}
-}
-
-// TestScan_RealFd_DenylistPatterns verifies that each basename pattern in the
-// broadened denylist is matched (positive cases) and that the well-known
-// non-secret names are NOT matched (negative cases). Requires real fd/fdfind.
-func TestScan_RealFd_DenylistPatterns(t *testing.T) {
-	var fdExe string
-	for _, name := range []string{"fd", "fdfind"} {
-		if resolved, err := exec.LookPath(name); err == nil {
-			fdExe = resolved
-			break
-		}
-	}
-	if fdExe == "" {
-		t.Skip("neither fd nor fdfind found on PATH; skipping denylist pattern test")
-	}
-	t.Cleanup(SetFdBinaryForTest(fdExe))
-
-	root := evalSymlinks(t, t.TempDir())
-
-	mustWriteFile := func(path string) {
-		t.Helper()
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
-		}
-		if err := os.WriteFile(path, []byte("data\n"), 0o644); err != nil {
-			t.Fatalf("write %s: %v", path, err)
-		}
-	}
 
 	positives := []string{
-		// \.env$ pattern
+		// *.env
 		".env",
 		"local.env",
 		"app.env",
-		// ^\.env\. pattern
+		// .env.*
 		".env.local",
 		".env.production",
 		".env.staging",
-		// \.pem$ pattern
+		// *.pem
 		"app.pem",
 		"cert.pem",
-		// \.key$ pattern
+		// *.key
 		"server.key",
 		"private.key",
-		// ^id_rsa pattern
+		// id_rsa*
 		"id_rsa",
 		"id_rsa.pub",
-		// ^id_ed25519 pattern
+		// id_ed25519*
 		"id_ed25519",
 		"id_ed25519.pub",
-		// ^\.npmrc$ pattern
+		// .npmrc
 		".npmrc",
-		// ^\.netrc$ pattern
+		// .netrc
 		".netrc",
-		// ^\.git-credentials$ pattern
+		// .git-credentials
 		".git-credentials",
 	}
 
-	negatives := []string{
-		// .envrc must NOT be matched (no $ after .env, and no dot follows)
-		".envrc",
-		// plain word must NOT be matched
-		"environment",
-		// notes file must NOT be matched
-		"notes.txt",
-		// keyfile with no extension must NOT be matched
-		"keyfile",
+	for _, name := range positives {
+		mustWriteFile(t, filepath.Join(root, name), "data\n")
 	}
 
-	// Write all files.
-	for _, name := range append(positives, negatives...) {
-		mustWriteFile(filepath.Join(root, name))
-	}
-
-	got, err := Scan(context.Background(), root)
+	got, err := Scan(context.Background(), root, defaultPatterns, nil)
 	if err != nil {
 		t.Fatalf("Scan returned error: %v", err)
 	}
@@ -263,100 +117,208 @@ func TestScan_RealFd_DenylistPatterns(t *testing.T) {
 
 	for _, name := range positives {
 		if !gotSet[name] {
-			t.Errorf("positive: %q should be matched by denylist, but was not", name)
-		}
-	}
-	for _, name := range negatives {
-		if gotSet[name] {
-			t.Errorf("negative: %q should NOT be matched by denylist, but was", name)
+			t.Errorf("positive: %q should be matched by default patterns, but was not", name)
 		}
 	}
 }
 
-func TestScan_RealFd_MatchesExpectedFiles(t *testing.T) {
-	var fdExe string
-	for _, name := range []string{"fd", "fdfind"} {
-		if resolved, err := exec.LookPath(name); err == nil {
-			fdExe = resolved
-			break
-		}
-	}
-	if fdExe == "" {
-		t.Skip("neither fd nor fdfind found on PATH; skipping real-binary test")
-	}
-
-	// Pin the resolved binary path so Scan uses it directly, consistent with
-	// the project convention for all tests that exercise the binary swap point.
-	t.Cleanup(SetFdBinaryForTest(fdExe))
-
+// TestScan_DefaultPatterns_NegativeCases verifies well-known non-secret names are NOT matched.
+func TestScan_DefaultPatterns_NegativeCases(t *testing.T) {
 	root := evalSymlinks(t, t.TempDir())
 
-	mustWriteFile := func(path, content string) {
-		t.Helper()
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
-		}
-		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-			t.Fatalf("write %s: %v", path, err)
-		}
+	negatives := []string{
+		".envrc",     // .env without extension separator
+		"environment", // plain word
+		"keyfile",    // no extension
+		"keyboard.txt", // contains "key" but extension is .txt
 	}
 
-	// Included.
-	included := []string{
-		filepath.Join(root, ".env"),
-		filepath.Join(root, "local.env"),
-		filepath.Join(root, "sub", "dir", ".env"),
-		// .env.<suffix> pattern (^\.env\.)
-		filepath.Join(root, ".env.local"),
-		filepath.Join(root, ".env.production"),
-		// PEM/key material
-		filepath.Join(root, "app.pem"),
-		filepath.Join(root, "server.key"),
-		// SSH keys
-		filepath.Join(root, "id_rsa"),
-		filepath.Join(root, "id_rsa.pub"),
-		filepath.Join(root, "id_ed25519"),
-		// Credential files
-		filepath.Join(root, ".npmrc"),
-		filepath.Join(root, ".netrc"),
-		filepath.Join(root, ".git-credentials"),
-	}
-	for _, p := range included {
-		mustWriteFile(p, "SECRET=1\n")
+	for _, name := range negatives {
+		mustWriteFile(t, filepath.Join(root, name), "data\n")
 	}
 
-	// Excluded by --exclude .git.
-	mustWriteFile(filepath.Join(root, ".git", "foo.env"), "SECRET=2\n")
-
-	// Excluded by --exclude node_modules.
-	mustWriteFile(filepath.Join(root, "node_modules", "x.env"), "SECRET=3\n")
-
-	// Included despite .gitignore (load-bearing reason for --no-ignore).
-	mustWriteFile(filepath.Join(root, ".gitignore"), "ignored.env\n")
-	ignored := filepath.Join(root, "ignored.env")
-	mustWriteFile(ignored, "SECRET=4\n")
-	included = append(included, ignored)
-
-	// NOT included: .envrc, environment, keyfile (no extension).
-	mustWriteFile(filepath.Join(root, ".envrc"), "export FOO=bar\n")
-	mustWriteFile(filepath.Join(root, "environment"), "ENV=prod\n")
-	mustWriteFile(filepath.Join(root, "keyfile"), "data\n")
-
-	got, err := Scan(context.Background(), root)
+	got, err := Scan(context.Background(), root, defaultPatterns, nil)
 	if err != nil {
 		t.Fatalf("Scan returned error: %v", err)
 	}
 
-	sortedIncluded := make([]string, len(included))
-	copy(sortedIncluded, included)
-	sort.Strings(sortedIncluded)
-
-	if len(got) != len(sortedIncluded) {
-		t.Fatalf("got %d paths, want %d\ngot:  %v\nwant: %v", len(got), len(sortedIncluded), got, sortedIncluded)
+	gotSet := make(map[string]bool, len(got))
+	for _, p := range got {
+		gotSet[filepath.Base(p)] = true
 	}
-	for i, w := range sortedIncluded {
-		if got[i] != w {
-			t.Errorf("got[%d]=%q, want %q", i, got[i], w)
+
+	for _, name := range negatives {
+		if gotSet[name] {
+			t.Errorf("negative: %q should NOT be matched, but was", name)
+		}
+	}
+}
+
+// TestScan_SkipDirs_PrunesMatchingDirs verifies secrets in skip-dirs are not returned.
+func TestScan_SkipDirs_PrunesMatchingDirs(t *testing.T) {
+	root := evalSymlinks(t, t.TempDir())
+
+	// Plant secrets in skip-dirs — must NOT be returned.
+	mustWriteFile(t, filepath.Join(root, ".git", ".env"), "SECRET=2\n")
+	mustWriteFile(t, filepath.Join(root, "node_modules", "x.env"), "SECRET=3\n")
+	mustWriteFile(t, filepath.Join(root, "vendor", "lib.key"), "SECRET=4\n")
+	mustWriteFile(t, filepath.Join(root, ".venv", "secret.pem"), "SECRET=5\n")
+
+	// Plant a secret outside skip-dirs — MUST be returned.
+	mustWriteFile(t, filepath.Join(root, "app", ".env"), "SECRET=1\n")
+
+	got, err := Scan(context.Background(), root, defaultPatterns, defaultSkipDirs)
+	if err != nil {
+		t.Fatalf("Scan returned error: %v", err)
+	}
+
+	// Only app/.env should be returned.
+	if len(got) != 1 {
+		t.Fatalf("expected 1 result, got %d: %v", len(got), got)
+	}
+	if filepath.Base(filepath.Dir(got[0])) != "app" {
+		t.Errorf("expected file in 'app/', got %q", got[0])
+	}
+}
+
+// TestScan_ResultsSorted verifies returned paths are sorted.
+func TestScan_ResultsSorted(t *testing.T) {
+	root := evalSymlinks(t, t.TempDir())
+
+	// Write files that would come back in reverse order if unsorted.
+	mustWriteFile(t, filepath.Join(root, "z.env"), "data\n")
+	mustWriteFile(t, filepath.Join(root, "a.env"), "data\n")
+	mustWriteFile(t, filepath.Join(root, "m.env"), "data\n")
+
+	got, err := Scan(context.Background(), root, defaultPatterns, nil)
+	if err != nil {
+		t.Fatalf("Scan returned error: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("expected 3 results, got %d: %v", len(got), got)
+	}
+
+	// Verify sorted order.
+	for i := 1; i < len(got); i++ {
+		if got[i] < got[i-1] {
+			t.Errorf("results not sorted: got[%d]=%q < got[%d]=%q", i, got[i], i-1, got[i-1])
+		}
+	}
+}
+
+// TestScan_NestedAndHiddenFiles verifies that dotfiles nested in subdirs are found.
+func TestScan_NestedAndHiddenFiles(t *testing.T) {
+	root := evalSymlinks(t, t.TempDir())
+
+	mustWriteFile(t, filepath.Join(root, "sub", "dir", ".env"), "SECRET=1\n")
+	mustWriteFile(t, filepath.Join(root, ".env"), "SECRET=2\n")
+
+	got, err := Scan(context.Background(), root, defaultPatterns, nil)
+	if err != nil {
+		t.Fatalf("Scan returned error: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 results, got %d: %v", len(got), got)
+	}
+}
+
+// TestScan_GitignoreFileStillFound verifies that .gitignore-d files are still found
+// (the walker does not consult .gitignore — replaces fd's --no-ignore flag).
+func TestScan_GitignoreFileStillFound(t *testing.T) {
+	root := evalSymlinks(t, t.TempDir())
+
+	mustWriteFile(t, filepath.Join(root, ".gitignore"), "ignored.env\n")
+	mustWriteFile(t, filepath.Join(root, "ignored.env"), "SECRET=1\n")
+
+	got, err := Scan(context.Background(), root, defaultPatterns, nil)
+	if err != nil {
+		t.Fatalf("Scan returned error: %v", err)
+	}
+
+	gotSet := make(map[string]bool, len(got))
+	for _, p := range got {
+		gotSet[filepath.Base(p)] = true
+	}
+	if !gotSet["ignored.env"] {
+		t.Error("ignored.env should be found despite .gitignore, but was not")
+	}
+}
+
+// TestScan_Symlink_Dropped verifies that a symlink to a secret file is not returned,
+// and that symlinked directories are not walked.
+func TestScan_Symlink_Dropped(t *testing.T) {
+	skipNonPOSIX(t, "symlink tests require POSIX")
+	root := evalSymlinks(t, t.TempDir())
+
+	// Real secret file outside root.
+	other := evalSymlinks(t, t.TempDir())
+	secretFile := filepath.Join(other, ".env")
+	mustWriteFile(t, secretFile, "SECRET=1\n")
+
+	// Symlink to the secret file inside root — should be dropped.
+	if err := os.Symlink(secretFile, filepath.Join(root, "link.env")); err != nil {
+		t.Fatalf("symlink file: %v", err)
+	}
+
+	// Symlink to a directory that contains a secret — target contents must NOT be walked.
+	secretDir := filepath.Join(other, "dir")
+	mustWriteFile(t, filepath.Join(secretDir, "secret.env"), "SECRET=2\n")
+	if err := os.Symlink(secretDir, filepath.Join(root, "linked-dir")); err != nil {
+		t.Fatalf("symlink dir: %v", err)
+	}
+
+	got, err := Scan(context.Background(), root, defaultPatterns, nil)
+	if err != nil {
+		t.Fatalf("Scan returned error: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("expected no results (only symlinks in root), got %v", got)
+	}
+}
+
+// TestScan_WalkError_Propagated verifies that an unreadable subdirectory causes
+// Scan to return an error (fail-loud invariant).
+func TestScan_WalkError_Propagated(t *testing.T) {
+	skipNonPOSIX(t, "chmod 0000 requires POSIX")
+	if os.Getuid() == 0 {
+		t.Skip("root bypasses permission checks")
+	}
+	root := evalSymlinks(t, t.TempDir())
+
+	locked := filepath.Join(root, "locked")
+	mustWriteFile(t, filepath.Join(locked, "placeholder"), "")
+	if err := os.Chmod(locked, 0o000); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+
+	_, err := Scan(context.Background(), root, defaultPatterns, nil)
+	if err == nil {
+		t.Error("expected error from unreadable subdir, got nil")
+	}
+}
+
+// TestScan_UnderRootInvariant verifies every returned path is local (under) root,
+// pinning the internal/docker/spec.go:95 "host is under ProjectRoot" contract.
+func TestScan_UnderRootInvariant(t *testing.T) {
+	root := evalSymlinks(t, t.TempDir())
+
+	mustWriteFile(t, filepath.Join(root, ".env"), "SECRET=1\n")
+	mustWriteFile(t, filepath.Join(root, "sub", ".env"), "SECRET=2\n")
+
+	got, err := Scan(context.Background(), root, defaultPatterns, nil)
+	if err != nil {
+		t.Fatalf("Scan returned error: %v", err)
+	}
+
+	for _, p := range got {
+		rel, err := filepath.Rel(root, p)
+		if err != nil {
+			t.Errorf("filepath.Rel(%q, %q) error: %v", root, p, err)
+			continue
+		}
+		if !filepath.IsLocal(rel) {
+			t.Errorf("path %q is not local to root %q (rel=%q)", p, root, rel)
 		}
 	}
 }

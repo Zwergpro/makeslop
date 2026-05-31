@@ -118,23 +118,19 @@ func runGo(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfHo
 	if err != nil {
 		return err
 	}
-	masked, err := security.Scan(cmd.Context(), workspaceRoot)
-	if errors.Is(err, security.ErrFdMissing) {
-		fmt.Fprintln(cmd.ErrOrStderr(),
-			"makeslop: fd/fdfind CLI required for secret scanning; install: https://github.com/sharkdp/fd")
-		return errSilent
+	// YAML parse error aborts launch before docker.Run — symmetric with security.Scan
+	// failure to preserve the no-.env-leak invariant.
+	// NOTE: Task 5 will move Load before Scan and pass patterns/skipDirs properly.
+	yamlExcludes, netCfg, err := projectconfig.Load(workspaceRoot)
+	if err != nil {
+		return err
 	}
+	masked, err := security.Scan(cmd.Context(), workspaceRoot, yamlExcludes.Patterns, yamlExcludes.SkipDirs)
 	if err != nil {
 		return err
 	}
 	if len(masked) > 0 {
 		fmt.Fprintf(cmd.ErrOrStderr(), "makeslop: masked %d secret file(s)\n", len(masked))
-	}
-	// YAML parse error aborts launch before docker.Run — symmetric with security.Scan
-	// failure to preserve the no-.env-leak invariant.
-	yamlExcludes, netCfg, err := projectconfig.Load(workspaceRoot)
-	if err != nil {
-		return err
 	}
 	maskedFiles := mergeUniqueSorted(masked, yamlExcludes.Files)
 

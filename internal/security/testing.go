@@ -2,6 +2,10 @@ package security
 
 // Test-only helpers, compiled into the production binary so package-main tests
 // can access them as exported symbols.
+//
+// Deprecated: fd is no longer used. SetFdBinaryForTest and WriteFdShim are
+// retained only for the transition period while tests are updated (Task 4).
+// They will be deleted in Task 4.
 
 import (
 	"os"
@@ -10,18 +14,17 @@ import (
 	"testing"
 )
 
-// SetFdBinaryForTest swaps the fd binary path that Scan will exec, returning a
-// restore function that callers MUST register with t.Cleanup. Concurrent tests
-// that touch this swap point must serialize themselves (the package state is
-// process-global).
-func SetFdBinaryForTest(path string) (restore func()) {
-	prev := fdBinary
-	fdBinary = path
-	return func() { fdBinary = prev }
+// SetFdBinaryForTest is a no-op stub kept for compile compatibility while
+// security_test.go and main_test.go are migrated in Task 4.
+// Deprecated: will be removed in Task 4.
+func SetFdBinaryForTest(_ string) func() {
+	return func() {}
 }
 
 // WriteFdShim writes a POSIX shim at <dir>/fd-shim that emits paths
 // null-separated and records its argv to argv.txt. Returns shim and record paths.
+// Deprecated: fd is no longer used; this helper is retained only for the
+// transition period while security_test.go is updated (Task 4).
 func WriteFdShim(t *testing.T, dir string, paths []string) (shimPath, recordPath string) {
 	t.Helper()
 	shimPath = filepath.Join(dir, "fd-shim")
