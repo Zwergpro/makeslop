@@ -1,0 +1,8 @@
+.idea/
+.gocache/
+.claude/
+.codex/
+.makeslop.yaml
+.gotmp/
+.tmp/
+/makeslop
