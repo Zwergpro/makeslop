@@ -311,18 +311,23 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, jso
 			}
 
 			// ── 6. Proxy config (non-blocking) ───────────────────────────────
+			// Note: status is config-derived and has no --no-proxy knowledge.
+			// When ProxyAddress is empty, the gateway (direct egress) default is in effect.
+			// When ProxyAddress is set, the upstream proxy is used.
+			var proxyDetail string
 			if netCfg.ProxyAddress != "" {
-				checks = append(checks, statusCheck{
-					Name:   "proxy",
-					State:  checkInfo,
-					Detail: netCfg.ProxyAddress,
-				})
+				proxyDetail = netCfg.ProxyAddress
 			} else {
-				checks = append(checks, statusCheck{
-					Name:  "proxy",
-					State: checkInfo,
-				})
+				proxyDetail = "gateway (direct egress)"
 			}
+			if netCfg.LogPath != "" {
+				proxyDetail = fmt.Sprintf("%s (logging → %s)", proxyDetail, netCfg.LogPath)
+			}
+			checks = append(checks, statusCheck{
+				Name:   "proxy",
+				State:  checkInfo,
+				Detail: proxyDetail,
+			})
 		}
 	} else {
 		// Workspace not resolved: report scan/proxy as info only

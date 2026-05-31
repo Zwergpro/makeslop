@@ -29,6 +29,11 @@ import (
 // The default "dev" value is used when the binary is built without ldflags.
 var version = "dev"
 
+// newGatewayFn is the seam used by tests to capture or replace NewGateway calls.
+// It mirrors the docker.newClientFn pattern: swapped via a test helper so tests
+// can assert on (sockPath, proxy, logPath) args without running a real socket.
+var newGatewayFn = networks.NewGateway
+
 // errSilent signals that a RunE has already written a tailored message to
 // stderr; main() should exit non-zero without reprinting.
 var errSilent = errors.New("makeslop: silent error already reported")
@@ -98,7 +103,7 @@ func mergeUniqueSorted(a, b []string) []string {
 }
 
 // runRun implements the docker-launch logic for the "run" subcommand.
-func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfHome, dryRun, quiet bool) error {
+func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfHome, dryRun, quiet, noProxy bool) error {
 	pwd, err := resolvePwd()
 	if err != nil {
 		return err
@@ -152,13 +157,21 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfH
 
 	// sha256(workspaceDir)[:12] + PID: unique across projects and concurrent runs,
 	// ~39 bytes (safely under the 108-byte sockaddr_un limit).
-	var proxy *networks.Proxy
-	if netCfg.ProxyAddress != "" {
+	//
+	// Socket-by-default: UNLESS --no-proxy, always wire the gateway so the
+	// container is locked to --network none and egresses via the host socket.
+	// When network.proxy.address is set, the gateway tunnels to that upstream.
+	// --no-proxy bypasses entirely → docker bridge networking (escape hatch for
+	// non-HTTP traffic such as raw TCP or git+ssh).
+	// logPath comes from netCfg.LogPath (resolved under project root); it is a
+	// NewGateway arg and therefore invisible to --dry-run/ShellCommand().
+	var gw *networks.Gateway
+	if !noProxy {
 		h := sha256.Sum256([]byte(workspaceDir))
 		sockPath := filepath.Join("/tmp", fmt.Sprintf("makeslop-%x-%d.sock", h[:6], os.Getpid()))
 		opts.ProxySocketHost = sockPath
 		opts.ProxySocketContainer = "/tmp/makeslop-proxy.sock"
-		proxy = networks.NewProxy(sockPath, netCfg.ProxyAddress)
+		gw = newGatewayFn(sockPath, netCfg.ProxyAddress, netCfg.LogPath)
 	}
 
 	// ProjectRoot must be the registered ancestor (workspaceRoot), not pwd:
@@ -192,12 +205,12 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfH
 		return errSilent
 	}
 
-	// Proxy must exist before the container starts; a Start failure aborts the launch.
-	if proxy != nil {
-		if err := proxy.Start(cmd.Context()); err != nil {
+	// Gateway must exist before the container starts; a Start failure aborts the launch.
+	if gw != nil {
+		if err := gw.Start(cmd.Context()); err != nil {
 			return err
 		}
-		defer proxy.Close() //nolint:errcheck // teardown; error not actionable here
+		defer gw.Close() //nolint:errcheck // teardown; error not actionable here
 	}
 
 	if err := docker.Run(cmd.Context(), spec); err != nil {
@@ -235,6 +248,7 @@ func newRootCmd(baseDir string) *cobra.Command {
 		outOfHomeRun  bool
 		dryRun        bool
 		quiet         bool
+		noProxy       bool
 	)
 
 	rootCmd := &cobra.Command{
@@ -334,7 +348,7 @@ func newRootCmd(baseDir string) *cobra.Command {
 		Short:        "Launch the docker container for this workspace",
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
-		RunE:         func(cmd *cobra.Command, _ []string) error { return runRun(cmd, ws, baseDir, outOfHomeRun, dryRun, quiet) },
+		RunE:         func(cmd *cobra.Command, _ []string) error { return runRun(cmd, ws, baseDir, outOfHomeRun, dryRun, quiet, noProxy) },
 	}
 
 	runCmd.Flags().BoolVarP(&dryRun, "dry-run", "n", false,
@@ -342,6 +356,11 @@ func newRootCmd(baseDir string) *cobra.Command {
 	// --out-of-home is scoped to run only (not a persistent flag on root).
 	runCmd.Flags().BoolVar(&outOfHomeRun, "out-of-home", false,
 		"allow running outside the user's home directory")
+	// --no-proxy is scoped to run only (not a persistent flag on root).
+	// Disables socket-by-default gateway → docker bridge networking (escape hatch
+	// for non-HTTP traffic). Rejected as unknown by version/config/migrate/build/status.
+	runCmd.Flags().BoolVar(&noProxy, "no-proxy", false,
+		"skip the gateway socket; use docker bridge networking instead (for non-HTTP traffic)")
 
 	migrateCmd := &cobra.Command{
 		Use:          "migrate",

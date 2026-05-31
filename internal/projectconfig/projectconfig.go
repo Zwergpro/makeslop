@@ -15,6 +15,16 @@
 //     dropped (masking a symlink has ambiguous semantics: the symlink itself or its
 //     target?). Reserved agent paths (.claude, .codex, docs, CLAUDE.md) are a hard
 //     error because a user overlay would shadow the agent mount.
+//
+// The network block controls egress:
+//   - network.proxy.address ("host:port"): when set, the Gateway tunnels all
+//     container traffic to this upstream HTTP CONNECT proxy. When absent (the
+//     default), the Gateway acts as a direct HTTP(S) forward proxy.
+//   - network.log (relative path): when set, Load resolves it to an absolute
+//     path under the project root and returns it as Network.LogPath. The
+//     networks.Gateway opens this file for append-only request logging. The
+//     file need not exist at config-load time (no stat-drop). Absolute paths,
+//     escaping paths (../), and reserved agent paths are errors.
 package projectconfig
 
 import (
@@ -60,6 +70,7 @@ var Stub = []byte(`exclude:
 network:
   proxy:
     address: ""
+  log: ""
 `)
 
 // Already mounted by docker.BuildSpec; user overlays would silently shadow them.
@@ -81,8 +92,10 @@ type Excludes struct {
 
 // Network is the parsed network configuration. Empty ProxyAddress means no
 // proxy configured. Load validates only syntax (net.SplitHostPort) — no I/O.
+// LogPath is the absolute, under-root path for request logging; "" when unset.
 type Network struct {
 	ProxyAddress string // "host:port"; "" when unconfigured
+	LogPath      string // absolute path under project root; "" when unset
 }
 
 // yamlSchema is the strict decode target. Using KnownFields(true) means any
@@ -101,6 +114,7 @@ type yamlSchema struct {
 		Proxy struct {
 			Address string `yaml:"address"`
 		} `yaml:"proxy"`
+		Log string `yaml:"log"`
 	} `yaml:"network"`
 }
 
@@ -209,6 +223,17 @@ func Load(root string) (Excludes, Network, error) {
 			return Excludes{}, Network{}, fmt.Errorf("projectconfig: invalid network.proxy.address %q: must be host:port", addr)
 		}
 		netCfg.ProxyAddress = addr
+	}
+
+	if logRel := schema.Network.Log; logRel != "" {
+		// Reuse validateEntries to apply the same rules as exclude.files/dirs:
+		// non-empty, not absolute, filepath.IsLocal, not ".", not a reserved agent path.
+		cleaned, err := validateEntries([]string{logRel}, "network.log")
+		if err != nil {
+			return Excludes{}, Network{}, fmt.Errorf("projectconfig: invalid network.log %q: %s", logRel, strings.TrimPrefix(err.Error(), "projectconfig: "))
+		}
+		// No stat-drop: network.log is an output file and need not exist yet.
+		netCfg.LogPath = filepath.Join(root, cleaned[0])
 	}
 
 	return Excludes{Files: files, Dirs: dirs, Patterns: patterns, SkipDirs: skipDirs}, netCfg, nil

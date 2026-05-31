@@ -79,7 +79,7 @@ pass. `status` is CI-safe and does not require a TTY.
   1. Daemon reachability (`— is docker running?`).
   2. Image existence (`— run 'makeslop build'`). No auto-build.
   `--dry-run` skips both pre-flight checks and the TTY check (printed == executed invariant).
-  Flags: `--dry-run` / `-n`, `--out-of-home`.
+  Flags: `--dry-run` / `-n`, `--out-of-home`, `--no-proxy`.
 - `makeslop status` — ordered readiness report. Checks: daemon, base config (presence + staleness),
   image, workspace, secret scan summary, proxy. Each check emits one aligned line with a glyph
   (`✓ ✗ ! –`); a final verdict line names the next action. Blocking checks (daemon, image,
@@ -240,6 +240,7 @@ exclude:
 network:
   proxy:
     address: ""
+  log: ""
 ```
 
 Edit this file to control scanning and hide additional directories and files from the container on
@@ -288,39 +289,64 @@ launch before docker is invoked.
 `makeslop run` for agent state. Listing them in `.makeslop.yaml` is rejected with an error
 (`projectconfig: path %q collides with a reserved agent path`).
 
-### Controlled network access via a remote proxy
+### Network egress — three-state model
 
-By default `makeslop run` uses Docker's default bridge networking, giving the container unrestricted
-outbound access. You can restrict outbound access to a controlled egress proxy by adding a
-`network:` section to `.makeslop.yaml`:
+`makeslop run` has three network modes:
+
+| Mode | Trigger | Container egress |
+|---|---|---|
+| **Gateway (default)** | no `network.proxy.address`, no `--no-proxy` | `--network none` + unix socket; gateway dials targets directly |
+| **Upstream** | `network.proxy.address` set | `--network none` + unix socket; gateway forwards to upstream proxy |
+| **Off** | `--no-proxy` flag | docker bridge networking (no socket) |
+
+**Gateway mode (default):** `makeslop run` always starts a host-side HTTP(S) forward proxy
+listening on a per-invocation unix socket under `/tmp`, runs the container with `--network none`,
+bind-mounts the socket read-only into the container at `/tmp/makeslop-proxy.sock`, and sets
+`HTTP_PROXY` and `HTTPS_PROXY` to `unix:///tmp/makeslop-proxy.sock`. The container has no direct
+network interface; the only egress path is through the host-controlled socket.
+
+**Upstream mode:** Set `network.proxy.address` in `.makeslop.yaml` to route all container traffic
+through a corporate HTTP forward proxy:
 
 ```yaml
 network:
   proxy:
     address: 10.0.0.5:8888   # host:port of your upstream HTTP forward proxy
+  log: ""
 ```
 
-When `network.proxy.address` is set, `makeslop run`:
+The upstream address is **probe-dialed at launch time** — if it is not reachable, `makeslop`
+aborts with an error before starting docker. The gateway forwards all bytes verbatim to the
+upstream (no re-encoding of HTTP headers).
 
-1. Starts a host-side forward proxy listening on a per-invocation unix socket under `/tmp`.
-   The upstream address is **probe-dialed at launch time** — if it is not reachable, `makeslop`
-   aborts with an error before starting docker. This prevents silent black-holing of requests.
-2. Runs the container with `--network none` (no direct internet access), bind-mounts the socket
-   read-only into the container at `/tmp/makeslop-proxy.sock`, and sets `HTTP_PROXY` and
-   `HTTPS_PROXY` to `unix:///tmp/makeslop-proxy.sock`.
-3. Tears down the proxy (closes listener, unlinks socket) when the container exits.
+**Off (`--no-proxy`):** Disables the socket entirely, restoring docker's default bridge networking.
+Use this when the container needs non-HTTP egress (e.g. raw TCP, git+ssh).
 
-The upstream address (`10.0.0.5:8888`) is a plain HTTP forward proxy such as
-[tinyproxy](https://tinyproxy.github.io/). The container app speaks standard forward-proxy
-protocol (HTTP `CONNECT` for HTTPS, absolute-URL requests for plain HTTP); the unix socket is
-fully transparent.
+**Optional request logging:** Set `network.log` to a relative path (under the project root) to
+log request lines to a file:
 
-**Scope: Node/undici clients only.** Setting `HTTP_PROXY=unix://...` is honored by Node.js
-`undici` (which Claude Code and Codex both use). Other HTTP clients (Python `requests`, Go
-`net/http`, curl without explicit `--proxy`) do not support `unix://` proxy URLs. With
-`--network none`, any client that ignores the env var gets no network access at all — there is no
-fallback to direct internet. Enable this feature only when the container's HTTP clients are
-Node/undici-based.
+```yaml
+network:
+  proxy:
+    address: ""
+  log: "makeslop-requests.log"
+```
+
+Log line format: `<date> <time> <METHOD> <target>` (e.g. `2026/05/31 18:13:19 CONNECT api.example.com:443`,
+`2026/05/31 18:13:19 GET http://host/p`). Each line is prefixed with the standard Go log timestamp
+(`log.LstdFlags`).
+Limitation: plain-HTTP keep-alive connections log only the first request line per connection
+in upstream mode; CONNECT (HTTPS) is exact. If the log file path cannot be opened, `makeslop`
+aborts with an error before starting docker.
+
+**Scope: Node/undici clients only.** The gateway is always-on by default — `makeslop run` always
+starts a unix-socket proxy and runs the container with `--network none`. Setting
+`HTTP_PROXY=unix://...` is honored by Node.js `undici` (which Claude Code and Codex both use).
+Other HTTP clients (Python `requests`, Go `net/http`, curl without explicit `--proxy`) do not
+support `unix://` proxy URLs. With `--network none`, any client that ignores the env var gets no
+network access at all — there is no fallback to direct internet. Use `--no-proxy` to restore
+docker bridge networking when the container needs non-HTTP egress (e.g. raw TCP, git+ssh, or
+clients that cannot be configured to use a unix-socket proxy).
 
 Use `--dry-run` to preview the resulting container launch command (printed as an equivalent
 `docker run` invocation), including all exclusion mounts, before launching:
@@ -385,7 +411,8 @@ makeslop run -n > cmd.sh   # capture only the command; masked-file count goes to
   child docker process to propagate an exit code from).
 - `1` — `makeslop status` exits 1 when any blocking check (daemon, image, workspace) fails.
 - `1` — any other failure: no workspace registered for pwd, no TTY available, corrupt
-  `settings.json`, upstream proxy unreachable, I/O error, etc. The reason is written to stderr.
+  `settings.json`, upstream proxy unreachable, bad `network.log` path (cannot open file), I/O
+  error, etc. The reason is written to stderr.
 
 ### Home-directory guard
 
