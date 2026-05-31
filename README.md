@@ -49,16 +49,17 @@ the changes.
   When they differ, runs all migration steps (force-overwrites `~/.makeslop/Dockerfile` from the
   embedded asset) and stamps the new version. When already up to date, exits immediately. Does not
   require a prior `init` and is not subject to the home-directory guard.
-- `makeslop build` — builds (or rebuilds) the base docker image from `~/.makeslop/Dockerfile` using
-  `docker build`. Self-healing: if `~/.makeslop/` has not been initialised yet, `build` seeds it
+- `makeslop build` — builds (or rebuilds) the base docker image from `~/.makeslop/Dockerfile` via
+  the moby SDK. Self-healing: if `~/.makeslop/` has not been initialised yet, `build` seeds it
   first (same as `init`) before building — so `makeslop build` works on a fresh machine with no
   prior `init`. The image tag defaults to `claudebox` (configurable via `settings.json`). Flags:
-  - `--no-cache` — passes `--no-cache` to `docker build` for a clean rebuild, bypassing the layer cache.
-  - `--build-arg K=V` — repeatable; each value is forwarded verbatim as `--build-arg K=V` to docker
+  - `--no-cache` — bypasses the layer cache (passes `NoCache: true` to the SDK build call).
+  - `--build-arg K=V` — repeatable; each value is forwarded to the daemon as a build argument
     (use for proxy settings, version pins, etc.).
   - **Empty context + BuildKit**: `build` passes an empty temporary directory as the docker build
-    context (the Dockerfile downloads everything; no local files need shipping) and sets
-    `DOCKER_BUILDKIT=1` so BuildKit cache mounts (`--mount=type=cache`) work correctly.
+    context (the Dockerfile downloads everything; no local files need shipping) and uses the
+    BuildKit API (`Version: "2"` via the moby SDK) so cache mounts (`--mount=type=cache`) work
+    correctly. No `DOCKER_BUILDKIT` environment variable is needed.
 - `makeslop go` — from within a registered workspace, launches an interactive, project-scoped docker
   container with the workspace source tree and per-workspace + global agent config (`.claude/`,
   `.codex/`, `CLAUDE.md`, `docs/`) mounted in. Exits with the container's exit code. Refuses to
@@ -76,8 +77,9 @@ the changes.
 
 ### Requirements
 
-- The `docker` CLI must be on `PATH`. `makeslop` shells out to it; there is no Go-side docker SDK
-  dependency.
+- A Docker **daemon** must be reachable (via `DOCKER_HOST` or the default Unix socket
+  `/var/run/docker.sock`). `makeslop` uses the moby/moby Go SDK directly; the `docker` CLI binary
+  is **not** required.
 
 ### Container layout
 
@@ -279,8 +281,8 @@ fully transparent.
 fallback to direct internet. Enable this feature only when the container's HTTP clients are
 Node/undici-based.
 
-Use `--dry-run` to preview the resulting `docker run` command, including all exclusion mounts,
-before launching:
+Use `--dry-run` to preview the resulting container launch command (printed as an equivalent
+`docker run` invocation), including all exclusion mounts, before launching:
 
 ```
 makeslop go --dry-run
@@ -313,8 +315,8 @@ A bare number without a suffix is interpreted by docker as **bytes** — `512` m
 
 ### Dry run
 
-Pass `--dry-run` (short: `-n`) to print the exact `docker run` invocation that makeslop would
-execute and then exit without launching docker. The output is a multi-line, backslash-continued,
+Pass `--dry-run` (short: `-n`) to print the equivalent shell command for the container launch that
+makeslop would execute and then exit without launching the container. The output is a multi-line, backslash-continued,
 paste-ready shell command on stdout. All pre-launch checks still run (home-dir guard, workspace
 lookup, secret scan, settings load), so the printed command equals the real invocation byte-for-byte.
 
@@ -323,8 +325,8 @@ makeslop go --dry-run
 makeslop go -n
 ```
 
-Because the TTY check lives inside `docker run` (which is skipped on dry-run), `--dry-run`
-succeeds even when stdin/stdout are pipes. This makes it suitable for CI inspection:
+Because the TTY check is skipped on dry-run, `--dry-run` succeeds even when stdin/stdout are pipes.
+This makes it suitable for CI inspection:
 
 ```
 makeslop go -n > cmd.sh   # capture only the command; masked-file count goes to stderr
@@ -336,9 +338,8 @@ makeslop go -n > cmd.sh   # capture only the command; masked-file count goes to 
   completed successfully).
 - container's exit code — `makeslop go` propagates `exit N` from the container as the host's
   exit code.
-- docker's exit code — `makeslop build` propagates the exit code of the `docker build` child
-  process. A failed build (non-zero `docker build` exit) surfaces as the same non-zero code from
-  `makeslop build`.
+- `1` — `makeslop build` exits 1 on any build failure (the docker SDK returns an error; there is no
+  child docker process to propagate an exit code from).
 - `1` — any other failure: no workspace registered for pwd, no TTY available, corrupt
   `settings.json`, upstream proxy unreachable, I/O error, etc. The reason is written to stderr.
 
@@ -375,10 +376,9 @@ on Linux hosts.
 
 ```
 go build ./cmd/makeslop
-GOTMPDIR=/home/user go test ./...
+go test ./...
 ```
 
-The `GOTMPDIR` prefix is required on systems where `/tmp` is mounted `noexec` (common in CI and
-some Docker-based environments). Shell shims used in tests must land on an executable filesystem;
-`GOTMPDIR` redirects `t.TempDir()` to a writable, executable path. Use any executable directory
-on your system (e.g. `$HOME`, `/var/tmp`).
+Tests no longer use shell shims, so there is no `noexec`/`GOTMPDIR` constraint. The `GOTMPDIR`
+prefix (`GOTMPDIR=/home/user go test ./...`) remains harmless if you have it in muscle memory, but
+is no longer required.

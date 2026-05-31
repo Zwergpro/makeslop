@@ -7,12 +7,10 @@ package docker
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"net"
-	"os"
-	"path/filepath"
 	"runtime"
-	"strconv"
 	"testing"
 
 	"github.com/moby/moby/api/types/container"
@@ -20,18 +18,8 @@ import (
 	"golang.org/x/term"
 )
 
-// SetDockerBinaryForTest swaps the path Run will exec, returning a restore
-// function that callers MUST register with t.Cleanup. Concurrent tests that
-// touch this swap point must serialize themselves (the package state is
-// process-global).
-func SetDockerBinaryForTest(path string) (restore func()) {
-	prev := dockerBinary
-	dockerBinary = path
-	return func() { dockerBinary = prev }
-}
-
 // SetTTYCheckForTest swaps the TTY-detection predicate Run consults. Same
-// caveats as SetDockerBinaryForTest apply.
+// caveats as SetClientForTest apply.
 func SetTTYCheckForTest(fn func() bool) (restore func()) {
 	prev := ttyCheck
 	ttyCheck = fn
@@ -71,21 +59,47 @@ func SkipNonPOSIX(t *testing.T, why string) {
 	}
 }
 
-// WriteShim drops a POSIX shell script at <dir>/shim that records its argv
-// (one arg per line) to a sibling argv.txt and exits with exitCode. Returns
-// the shim path and the argv record path.
-func WriteShim(t *testing.T, dir string, exitCode int) (shimPath, recordPath string) {
-	t.Helper()
-	shimPath = filepath.Join(dir, "shim")
-	recordPath = filepath.Join(dir, "argv.txt")
-	script := "#!/bin/sh\n" +
-		"for arg in \"$@\"; do printf '%s\\n' \"$arg\" >> \"" + recordPath + "\"; done\n" +
-		"exit " + strconv.Itoa(exitCode) + "\n"
-	if err := os.WriteFile(shimPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write shim: %v", err)
-	}
-	return shimPath, recordPath
+// noopClient provides no-op stub implementations of all apiClient methods.
+// FakeRunClient and FakeBuildClient embed it and override only the methods
+// that carry meaningful test logic.
+type noopClient struct{}
+
+func (noopClient) ContainerCreate(_ context.Context, _ moby.ContainerCreateOptions) (moby.ContainerCreateResult, error) {
+	return moby.ContainerCreateResult{}, nil
 }
+
+func (noopClient) ContainerAttach(_ context.Context, _ string, _ moby.ContainerAttachOptions) (moby.ContainerAttachResult, error) {
+	return moby.ContainerAttachResult{}, nil
+}
+
+func (noopClient) ContainerStart(_ context.Context, _ string, _ moby.ContainerStartOptions) (moby.ContainerStartResult, error) {
+	return moby.ContainerStartResult{}, nil
+}
+
+func (noopClient) ContainerWait(_ context.Context, _ string, _ moby.ContainerWaitOptions) moby.ContainerWaitResult {
+	return moby.ContainerWaitResult{
+		Result: make(chan container.WaitResponse),
+		Error:  make(chan error),
+	}
+}
+
+func (noopClient) ContainerResize(_ context.Context, _ string, _ moby.ContainerResizeOptions) (moby.ContainerResizeResult, error) {
+	return moby.ContainerResizeResult{}, nil
+}
+
+func (noopClient) ContainerRemove(_ context.Context, _ string, _ moby.ContainerRemoveOptions) (moby.ContainerRemoveResult, error) {
+	return moby.ContainerRemoveResult{}, nil
+}
+
+func (noopClient) ImageBuild(_ context.Context, _ io.Reader, _ moby.ImageBuildOptions) (moby.ImageBuildResult, error) {
+	return moby.ImageBuildResult{Body: io.NopCloser(bytes.NewReader(nil))}, nil
+}
+
+func (noopClient) DialHijack(_ context.Context, _, _ string, _ map[string][]string) (net.Conn, error) {
+	return nil, nil
+}
+
+func (noopClient) Close() error { return nil }
 
 // FakeRunClient is an exported fake apiClient for use in cmd/makeslop tests.
 // It instruments Run calls with a scripted exit code and records whether the
@@ -96,6 +110,7 @@ func WriteShim(t *testing.T, dir string, exitCode int) (shimPath, recordPath str
 //
 //	t.Cleanup(docker.SetClientForTest(docker.NewFakeRunClient(exitCode)))
 type FakeRunClient struct {
+	noopClient
 	ExitCode int
 	Started  bool
 }
@@ -129,39 +144,48 @@ func (f *FakeRunClient) ContainerWait(_ context.Context, _ string, _ moby.Contai
 	return moby.ContainerWaitResult{Result: resultC, Error: errC}
 }
 
-func (f *FakeRunClient) ContainerResize(_ context.Context, _ string, _ moby.ContainerResizeOptions) (moby.ContainerResizeResult, error) {
-	return moby.ContainerResizeResult{}, nil
+// FakeBuildClient is an exported fake apiClient for use in cmd/makeslop build
+// tests. It records the ImageBuildOptions passed to ImageBuild and returns a
+// scripted result. Unlike FakeRunClient it does not simulate a TTY or
+// container lifecycle — it only instruments the Build path.
+//
+// Usage:
+//
+//	fbc := docker.NewFakeBuildClient(0)  // 0 = success
+//	t.Cleanup(docker.SetClientForTest(fbc))
+//	// ... call Build ...
+//	opts := fbc.LastBuildOptions  // inspect what was passed
+type FakeBuildClient struct {
+	noopClient
+	// ExitCode is returned as an error from ImageBuild when non-zero.
+	ExitCode int
+	// Err overrides ExitCode if non-nil: ImageBuild returns this error directly.
+	Err error
+	// LastBuildOptions records the ImageBuildOptions from the most recent
+	// ImageBuild call.
+	LastBuildOptions moby.ImageBuildOptions
 }
 
-func (f *FakeRunClient) ContainerRemove(_ context.Context, _ string, _ moby.ContainerRemoveOptions) (moby.ContainerRemoveResult, error) {
-	return moby.ContainerRemoveResult{}, nil
+// NewFakeBuildClient creates a FakeBuildClient. exitCode 0 means success.
+func NewFakeBuildClient(exitCode int) *FakeBuildClient {
+	return &FakeBuildClient{ExitCode: exitCode}
 }
 
-func (f *FakeRunClient) ImageBuild(_ context.Context, _ io.Reader, _ moby.ImageBuildOptions) (moby.ImageBuildResult, error) {
+func (f *FakeBuildClient) ImageBuild(_ context.Context, _ io.Reader, opts moby.ImageBuildOptions) (moby.ImageBuildResult, error) {
+	f.LastBuildOptions = opts
+	if f.Err != nil {
+		return moby.ImageBuildResult{}, f.Err
+	}
+	if f.ExitCode != 0 {
+		return moby.ImageBuildResult{}, fmt.Errorf("build exited with code %d", f.ExitCode)
+	}
+	// Return an empty body so renderBuildOutput completes cleanly.
 	return moby.ImageBuildResult{Body: io.NopCloser(bytes.NewReader(nil))}, nil
 }
 
-func (f *FakeRunClient) DialHijack(_ context.Context, _, _ string, _ map[string][]string) (net.Conn, error) {
-	return nil, nil
-}
-
-func (f *FakeRunClient) Close() error { return nil }
-
-// WriteBuildShim drops a POSIX shell script at <dir>/shim that records its
-// argv (one arg per line) to a sibling argv.txt AND records the value of
-// DOCKER_BUILDKIT to a sibling env.txt, then exits with exitCode.
-// Returns the shim path, argv record path, and env record path.
-func WriteBuildShim(t *testing.T, dir string, exitCode int) (shimPath, recordPath, envPath string) {
-	t.Helper()
-	shimPath = filepath.Join(dir, "shim")
-	recordPath = filepath.Join(dir, "argv.txt")
-	envPath = filepath.Join(dir, "env.txt")
-	script := "#!/bin/sh\n" +
-		"for arg in \"$@\"; do printf '%s\\n' \"$arg\" >> \"" + recordPath + "\"; done\n" +
-		"printf '%s\\n' \"$DOCKER_BUILDKIT\" >> \"" + envPath + "\"\n" +
-		"exit " + strconv.Itoa(exitCode) + "\n"
-	if err := os.WriteFile(shimPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write build shim: %v", err)
-	}
-	return shimPath, recordPath, envPath
+func (f *FakeBuildClient) DialHijack(_ context.Context, _, _ string, _ map[string][]string) (net.Conn, error) {
+	// Return a closed pipe so the session dialer fails gracefully.
+	c, _ := net.Pipe()
+	_ = c.Close()
+	return c, nil
 }

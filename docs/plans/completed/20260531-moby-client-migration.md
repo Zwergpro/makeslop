@@ -313,46 +313,46 @@
 - Modify: `internal/docker/run_test.go` / build tests (remove old build shim tests)
 - Modify: `go.mod` / `go.sum`
 
-- [ ] add `github.com/moby/buildkit` dep, **pinned to v0.30.0** (`go get
+- [x] add `github.com/moby/buildkit` dep, **pinned to v0.30.0** (`go get
       github.com/moby/buildkit@v0.30.0`); confirm `session`, `session/filesync`,
       `session/auth/authprovider`, `client`, `util/progress/progressui` resolve.
-- [ ] run `go mod tidy` and **verify it does not force-upgrade**
+- [x] run `go mod tidy` and **verify it does not force-upgrade**
       `github.com/moby/moby/client` (v0.4.1) or `.../api` (v1.54.2); if it does,
       add `replace`/version constraints and re-verify the build. (⚠️ blocker if unresolvable.)
-- [ ] add pure helpers in `build.go`: `parseBuildArgs([]string) map[string]*string`
+- [x] add pure helpers in `build.go`: `parseBuildArgs([]string) map[string]*string`
       and `buildImageOptions(o BuildOptions, sessionID string) ImageBuildOptions`
       (sets `Version`, `RemoteContext`, `Dockerfile=base(path)`, `Tags`, `NoCache`).
-- [ ] add the **session dialer adapter** closure wrapping `cli.DialHijack` with
+- [x] add the **session dialer adapter** closure wrapping `cli.DialHijack` with
       the `"/session"` url so it matches `session.Dialer`'s
       `func(ctx, proto, meta)` shape.
-- [ ] implement the **build-trace → `*client.SolveStatus` decoder**: read
+- [x] implement the **build-trace → `*client.SolveStatus` decoder**: read
       `resp.Body` as a jsonmessage stream, parse `aux` `moby.buildkit.trace`
       (base64 `controlapi.StatusResponse`) into `*client.SolveStatus` on a channel.
-- [ ] implement `Build(ctx, o BuildOptions, stdout, stderr io.Writer)`: build
+- [x] implement `Build(ctx, o BuildOptions, stdout, stderr io.Writer)`: build
       default client; create session with filesync (context dir + dockerfile dir)
       and authprovider; `go s.Run(ctx, dialer)`; call `ImageBuild` with
       `buildImageOptions`; feed the decoded `SolveStatus` channel to
       `progressui.NewDisplay(...).UpdateFrom`; close session/client. Keep the
       empty-context-temp-dir creation/cleanup behavior. No `ttyCheck`.
       (Fallback: `jsonmessage.DisplayJSONMessagesStream` if the decoder proves disproportionate.)
-- [ ] add internal `build(ctx, cli apiClient, ...)` seam mirroring Task 3 (for the
+- [x] add internal `build(ctx, cli apiClient, ...)` seam mirroring Task 3 (for the
       pure-options assertions; full flow stays integration-gated).
-- [ ] remove the old exec-based `Build` and `DOCKER_BUILDKIT` env handling from `run.go`.
-- [ ] retire ALL remaining shim machinery now that nothing execs docker:
+- [x] remove the old exec-based `Build` and `DOCKER_BUILDKIT` env handling from `run.go`.
+- [x] retire ALL remaining shim machinery now that nothing execs docker:
       `WriteShim`, `WriteBuildShim`, `SetDockerBinaryForTest`, the `dockerBinary`
       global, and `executableTempDir`; remove the now-dead shim-based build tests
       in `run_test.go` and migrate the build-command tests in `main_test.go` to
       the fake/seam (or mark integration-gated).
-- [ ] write pure unit tests: `parseBuildArgs` (KEY=VAL, KEY-only ⇒ nil-ish,
+- [x] write pure unit tests: `parseBuildArgs` (KEY=VAL, KEY-only ⇒ nil-ish,
       empty), `buildImageOptions` mapping (Version/SessionID injected/RemoteContext/
       Dockerfile basename/Tags/NoCache), and context/dockerfile sync-dir selection.
-- [ ] write `build_integration_test.go` behind `//go:build integration` + a
+- [x] write `build_integration_test.go` behind `//go:build integration` + a
       `MAKESLOP_DOCKER_IT` env guard (skip otherwise): real `Build` against the
       daemon produces the tagged image; document
       `MAKESLOP_DOCKER_IT=1 go test -tags integration ./internal/docker/`.
-- [ ] update `cmd/makeslop/main_test.go` build-command tests (if any used shims)
+- [x] update `cmd/makeslop/main_test.go` build-command tests (if any used shims)
       to the fake/seam or mark them integration-gated.
-- [ ] run `go test ./...` (non-integration) — must pass before Task 5.
+- [x] run `go test ./...` (non-integration) — must pass before Task 5.
 
 ### Task 5: Final dead-symbol sweep and dependency verification
 
@@ -360,37 +360,37 @@
 - Modify: `internal/docker/testing.go` (only if stragglers remain)
 - Modify: `go.mod` / `go.sum`
 
-- [ ] grep the whole tree for `WriteShim`, `WriteBuildShim`, `SetDockerBinaryForTest`,
+- [x] grep the whole tree for `WriteShim`, `WriteBuildShim`, `SetDockerBinaryForTest`,
       `dockerBinary`, `executableTempDir`, `GOTMPDIR`, `DOCKER_BUILDKIT` — confirm
       all are gone (retired in Tasks 3-4); keep `ttyCheck`, `SetTTYCheckForTest`,
       `SkipNonPOSIX`, and the new `SetClientForTest`/fake.
-- [ ] re-run `go mod tidy`; verify `moby/moby/client` + `moby/moby/api` are now
+- [x] re-run `go mod tidy`; verify `moby/moby/client` + `moby/moby/api` are now
       **direct** and the `moby/buildkit` pin (+ transitive) is recorded, with the
       client/api versions unchanged from Task 4.
-- [ ] run `go build ./...`, `gofmt -l`, and `go vet ./...` — all clean.
-- [ ] run `go test ./...` — must pass before Task 6.
+- [x] run `go build ./...`, `gofmt -l`, and `go vet ./...` — all clean.
+- [x] run `go test ./...` — must pass before Task 6.
 
 ### Task 6: Verify acceptance criteria
-- [ ] verify each Overview behavior is preserved: `--rm`, `-it` (raw + resize),
+- [x] verify each Overview behavior is preserved: `--rm`, `-it` (raw + resize),
       cap-drop ALL, no-new-privileges, network none w/ proxy, tmpfs `/tmp`,
       masked file (`/dev/null`) + masked dir (tmpfs) overlays, `--dry-run`
       output byte-identical to before, exit-code propagation incl. 137.
-- [ ] verify `docker` binary is no longer referenced anywhere (grep `"docker"`
+- [x] verify `docker` binary is no longer referenced anywhere (grep `"docker"`
       exec/literal usages; confirm only image/flag strings remain).
-- [ ] run full suite: `GOTMPDIR=/home/user go test ./...`.
-- [ ] run gated integration build: `MAKESLOP_DOCKER_IT=1 go test -tags integration ./internal/docker/` (requires a live daemon).
-- [ ] confirm `make build` produces a working binary.
+- [x] run full suite: `GOTMPDIR=/home/user go test ./...`.
+- [x] run gated integration build: `MAKESLOP_DOCKER_IT=1 go test -tags integration ./internal/docker/` (requires a live daemon). (skipped - not automatable; requires live daemon)
+- [x] confirm `make build` produces a working binary.
 
 ### Task 7: [Final] Update documentation
-- [ ] update `CLAUDE.md`: remove/rewrite the obsolete shim / `GOTMPDIR` / noexec
+- [x] update `CLAUDE.md`: remove/rewrite the obsolete shim / `GOTMPDIR` / noexec
       sections (docker package); document the `apiClient` seam +
       `SetClientForTest`, the `docker.ExitError` exit-code contract, and the
       BuildKit-session + `progressui` build flow + the `moby/buildkit` dep.
       Keep the MigrationVersion-on-Dockerfile-change rule and POSIX-only invariant
       (Dockerfile unchanged); keep TTY-is-`go`-only and home-dir guard exemptions.
-- [ ] update `README.md` if it mentions a docker-CLI prerequisite (now: a docker
+- [x] update `README.md` if it mentions a docker-CLI prerequisite (now: a docker
       **daemon**/socket, not the CLI binary).
-- [ ] move this plan to `docs/plans/completed/`.
+- [x] move this plan to `docs/plans/completed/`.
 
 ## Post-Completion
 *Items requiring manual intervention or external systems — informational only*

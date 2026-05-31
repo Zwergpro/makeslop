@@ -7,25 +7,14 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/moby/moby/api/types/container"
 	moby "github.com/moby/moby/client"
+	"golang.org/x/term"
 )
-
-// executableTempDir returns a temp dir that is on an executable filesystem.
-// It delegates to t.TempDir() which honours the GOTMPDIR env var; set
-// GOTMPDIR=/home/user (or any executable path) when running tests in
-// environments where /tmp is mounted noexec.
-func executableTempDir(t *testing.T) string {
-	t.Helper()
-	return t.TempDir()
-}
 
 func sampleSpec() Spec {
 	return BuildSpec(Options{
@@ -40,10 +29,12 @@ func sampleSpec() Spec {
 // ─── fakeClient: scripted apiClient for Run tests ────────────────────────────
 
 // fakeClient is a minimal fake apiClient that scripts the ContainerWait result
-// and can optionally fail on ContainerStart. It records which cleanup calls
-// were made so tests can assert on them.
+// and can optionally fail on ContainerCreate, ContainerAttach, or ContainerStart.
+// It records which calls were made so tests can assert on them.
 type fakeClient struct {
 	// scripted behaviour
+	createErr     error // if non-nil, ContainerCreate returns this
+	attachErr     error // if non-nil, ContainerAttach returns this
 	startErr      error // if non-nil, ContainerStart returns this
 	waitResult    container.WaitResponse
 	waitErr       error  // if non-nil, sent on the error channel
@@ -59,11 +50,17 @@ type fakeClient struct {
 
 func (f *fakeClient) ContainerCreate(_ context.Context, _ moby.ContainerCreateOptions) (moby.ContainerCreateResult, error) {
 	f.created = true
+	if f.createErr != nil {
+		return moby.ContainerCreateResult{}, f.createErr
+	}
 	return moby.ContainerCreateResult{ID: "fake-container-id"}, nil
 }
 
 func (f *fakeClient) ContainerAttach(_ context.Context, _ string, _ moby.ContainerAttachOptions) (moby.ContainerAttachResult, error) {
 	f.attached = true
+	if f.attachErr != nil {
+		return moby.ContainerAttachResult{}, f.attachErr
+	}
 
 	// Set up a pipe so we can write attachPayload and have it appear on the read side.
 	pr, pw := net.Pipe()
@@ -245,6 +242,64 @@ func TestExitError_ErrorString(t *testing.T) {
 	}
 }
 
+// TestRun_ContainerCreate_Failure: ContainerCreate error surfaces immediately.
+func TestRun_ContainerCreate_Failure(t *testing.T) {
+	t.Cleanup(SetTTYCheckForTest(func() bool { return true }))
+	t.Cleanup(SetTermMakeRawForTest(func(_ int) (*term.State, error) { return nil, nil }))
+
+	createErr := errors.New("no such image")
+	fc := &fakeClient{createErr: createErr}
+
+	err := run(context.Background(), fc, sampleSpec())
+	if err == nil {
+		t.Fatal("expected error from ContainerCreate failure, got nil")
+	}
+	if !strings.Contains(err.Error(), "container create") {
+		t.Errorf("expected 'container create' in error, got %v", err)
+	}
+	// No remove should be attempted when create never returned an ID.
+	if fc.removed {
+		t.Error("ContainerRemove must not be called when ContainerCreate fails")
+	}
+}
+
+// TestRun_ContainerAttach_Failure: ContainerAttach error fires deferred remove.
+func TestRun_ContainerAttach_Failure(t *testing.T) {
+	t.Cleanup(SetTTYCheckForTest(func() bool { return true }))
+	t.Cleanup(SetTermMakeRawForTest(func(_ int) (*term.State, error) { return nil, nil }))
+
+	attachErr := errors.New("stream attach refused")
+	fc := &fakeClient{attachErr: attachErr}
+
+	err := run(context.Background(), fc, sampleSpec())
+	if err == nil {
+		t.Fatal("expected error from ContainerAttach failure, got nil")
+	}
+	if !strings.Contains(err.Error(), "container attach") {
+		t.Errorf("expected 'container attach' in error, got %v", err)
+	}
+	// Container was created but never started, so deferred remove must fire.
+	if !fc.removed {
+		t.Error("ContainerRemove must be called when ContainerAttach fails")
+	}
+}
+
+// TestRun_WaitErrorChannel: wr.Error channel path in run() surfaces correctly.
+func TestRun_WaitErrorChannel(t *testing.T) {
+	t.Cleanup(SetTTYCheckForTest(func() bool { return true }))
+
+	waitErr := errors.New("daemon connection lost")
+	fc := &fakeClient{waitErr: waitErr}
+
+	err := runWithForceTTY(context.Background(), fc, sampleSpec())
+	if err == nil {
+		t.Fatal("expected error from wr.Error, got nil")
+	}
+	if !strings.Contains(err.Error(), "container wait") {
+		t.Errorf("expected 'container wait' in error, got %v", err)
+	}
+}
+
 // mapWaitResponse is the exit-translation logic extracted for unit testing.
 // It must match what run() does in the select case for wr.Result.
 func mapWaitResponse(res container.WaitResponse) error {
@@ -257,69 +312,13 @@ func mapWaitResponse(res container.WaitResponse) error {
 	return nil
 }
 
-// runWithForceTTY is a test-only variant of run() that bypasses the
-// term.MakeRaw call so tests can exercise the start/remove/wait paths
-// without a real PTY. ttyCheck is assumed to return true (caller must stub it).
+// runWithForceTTY calls run() with a no-op termMakeRaw stub so tests can
+// exercise the full run() path without a real PTY. ttyCheck must be stubbed
+// true by the caller before calling this.
 func runWithForceTTY(ctx context.Context, cli apiClient, s Spec) error {
-	// ttyCheck is assumed stubbed by the caller.
-	if !ttyCheck() {
-		return ErrNoTTY
-	}
-	defer cli.Close() //nolint:errcheck
-
-	createRes, err := cli.ContainerCreate(ctx, moby.ContainerCreateOptions{
-		Config:     s.ContainerConfig(),
-		HostConfig: s.HostConfig(),
-	})
-	if err != nil {
-		return fmt.Errorf("container create: %w", err)
-	}
-	id := createRes.ID
-
-	startedCleanly := false
-	defer func() {
-		if !startedCleanly || ctx.Err() != nil {
-			rmCtx := context.Background()
-			_, _ = cli.ContainerRemove(rmCtx, id, moby.ContainerRemoveOptions{Force: true})
-		}
-	}()
-
-	att, err := cli.ContainerAttach(ctx, id, moby.ContainerAttachOptions{
-		Stream: true,
-		Stdin:  true,
-		Stdout: true,
-		Stderr: true,
-	})
-	if err != nil {
-		return fmt.Errorf("container attach: %w", err)
-	}
-	defer att.Conn.Close() //nolint:errcheck
-
-	// Skip MakeRaw — no real TTY available in tests.
-
-	if _, err = cli.ContainerStart(ctx, id, moby.ContainerStartOptions{}); err != nil {
-		return fmt.Errorf("container start: %w", err)
-	}
-	startedCleanly = true
-
-	go io.Copy(att.Conn, os.Stdin)     //nolint:errcheck
-	go io.Copy(io.Discard, att.Reader) //nolint:errcheck
-
-	wr := cli.ContainerWait(ctx, id, moby.ContainerWaitOptions{})
-	select {
-	case err := <-wr.Error:
-		return fmt.Errorf("container wait: %w", err)
-	case res := <-wr.Result:
-		if res.Error != nil {
-			return fmt.Errorf("container wait error: %s", res.Error.Message)
-		}
-		if res.StatusCode != 0 {
-			return &ExitError{Code: int(res.StatusCode)}
-		}
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
+	restore := SetTermMakeRawForTest(func(_ int) (*term.State, error) { return nil, nil })
+	defer restore()
+	return run(ctx, cli, s)
 }
 
 // blockingWaitClient is a fake apiClient whose ContainerWait blocks until the
@@ -352,190 +351,4 @@ func (b *blockingWaitClient) ContainerStart(_ context.Context, _ string, _ moby.
 		close(b.startedCh)
 	}
 	return moby.ContainerStartResult{}, nil
-}
-
-// ─── build shim tests (kept unchanged until Task 4) ─────────────────────────
-
-// sampleBuildOptions returns a minimal BuildOptions with ContextDir set so it
-// can be compared against the shim's recorded argv (Build fills ContextDir
-// only when the caller leaves it empty, but the test passes a known value).
-func sampleBuildOptions(contextDir string) BuildOptions {
-	return BuildOptions{
-		Image:          "claudebox",
-		DockerfilePath: "/home/user/.makeslop/Dockerfile",
-		ContextDir:     contextDir,
-	}
-}
-
-func TestBuild_HappyPath_RecordsArgvAndBuildKit(t *testing.T) {
-	SkipNonPOSIX(t, "shell shim requires POSIX shell; makeslop is POSIX-only")
-	dir := executableTempDir(t)
-	shim, record, envFile := WriteBuildShim(t, dir, 0)
-	t.Cleanup(SetDockerBinaryForTest(shim))
-
-	ctxDir := t.TempDir()
-	o := sampleBuildOptions(ctxDir)
-	if err := Build(context.Background(), o, io.Discard, io.Discard); err != nil {
-		t.Fatalf("Build returned unexpected error: %v", err)
-	}
-
-	// Verify recorded argv matches BuildArgv output.
-	data, err := os.ReadFile(record)
-	if err != nil {
-		t.Fatalf("read argv record: %v", err)
-	}
-	got := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
-	want := BuildArgv(o)
-	if len(got) != len(want) {
-		t.Fatalf("argv length mismatch: got %d %v, want %d %v", len(got), got, len(want), want)
-	}
-	for i, w := range want {
-		if got[i] != w {
-			t.Errorf("argv[%d] = %q, want %q", i, got[i], w)
-		}
-	}
-
-	// Verify DOCKER_BUILDKIT=1 was set in the child environment.
-	envData, err := os.ReadFile(envFile)
-	if err != nil {
-		t.Fatalf("read env record: %v", err)
-	}
-	if got := strings.TrimRight(string(envData), "\n"); got != "1" {
-		t.Errorf("DOCKER_BUILDKIT = %q, want %q", got, "1")
-	}
-}
-
-// TestBuild_EmptyContextDir_GeneratesAndRemovesDir verifies two invariants:
-// (1) when ContextDir is empty, Build generates a non-empty path and passes it
-// as the last argv token; (2) that dir is removed after Build returns.
-// The two properties are tested together because recovering the generated path
-// requires reading the shim's argv record.
-func TestBuild_EmptyContextDir_GeneratesAndRemovesDir(t *testing.T) {
-	SkipNonPOSIX(t, "shell shim requires POSIX shell; makeslop is POSIX-only")
-	dir := executableTempDir(t)
-	shim, record, _ := WriteBuildShim(t, dir, 0)
-	t.Cleanup(SetDockerBinaryForTest(shim))
-
-	o := BuildOptions{
-		Image:          "claudebox",
-		DockerfilePath: "/home/user/.makeslop/Dockerfile",
-		// ContextDir intentionally left empty — Build should create one.
-	}
-	if err := Build(context.Background(), o, io.Discard, io.Discard); err != nil {
-		t.Fatalf("Build returned unexpected error: %v", err)
-	}
-
-	// The last token of the recorded argv is the context dir.
-	data, err := os.ReadFile(record)
-	if err != nil {
-		t.Fatalf("read argv record: %v", err)
-	}
-	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
-	if len(lines) == 0 {
-		t.Fatal("no argv recorded")
-	}
-	generatedCtxDir := lines[len(lines)-1]
-
-	// (1) The generated context dir must be a non-empty path.
-	if generatedCtxDir == "" {
-		t.Fatal("last argv token (context dir) is empty")
-	}
-	// (2) After Build returns, defer os.RemoveAll has run, so it must no longer exist.
-	if _, statErr := os.Stat(generatedCtxDir); !errors.Is(statErr, os.ErrNotExist) {
-		t.Errorf("temp context dir %q still exists after Build returned (want ErrNotExist, got %v)", generatedCtxDir, statErr)
-	}
-}
-
-func TestBuild_NonZeroExit_PropagatesCode(t *testing.T) {
-	SkipNonPOSIX(t, "POSIX-only invariant per CLAUDE.md")
-	dir := executableTempDir(t)
-	shim, _, _ := WriteBuildShim(t, dir, 5)
-	t.Cleanup(SetDockerBinaryForTest(shim))
-
-	o := BuildOptions{
-		Image:          "claudebox",
-		DockerfilePath: "/home/user/.makeslop/Dockerfile",
-		ContextDir:     t.TempDir(),
-	}
-	err := Build(context.Background(), o, io.Discard, io.Discard)
-	if err == nil {
-		t.Fatalf("expected error from shim exit 5, got nil")
-	}
-	var ee *exec.ExitError
-	if !errors.As(err, &ee) {
-		t.Fatalf("expected *exec.ExitError, got %T: %v", err, err)
-	}
-	if got := ee.ExitCode(); got != 5 {
-		t.Errorf("exit code = %d, want 5", got)
-	}
-}
-
-func TestBuild_DockerNotFound_ReturnsError(t *testing.T) {
-	SkipNonPOSIX(t, "POSIX-only invariant per CLAUDE.md")
-	missing := filepath.Join(t.TempDir(), "no-such-docker")
-	t.Cleanup(SetDockerBinaryForTest(missing))
-
-	o := BuildOptions{
-		Image:          "claudebox",
-		DockerfilePath: "/home/user/.makeslop/Dockerfile",
-		ContextDir:     t.TempDir(),
-	}
-	err := Build(context.Background(), o, io.Discard, io.Discard)
-	if err == nil {
-		t.Fatalf("expected error for missing docker binary, got nil")
-	}
-	var execErr *exec.Error
-	var pathErr *os.PathError
-	if !errors.As(err, &execErr) && !errors.As(err, &pathErr) {
-		t.Errorf("expected *exec.Error or *os.PathError, got %T: %v", err, err)
-	}
-}
-
-func TestBuild_ContextCancellation_KillsChild(t *testing.T) {
-	SkipNonPOSIX(t, "POSIX-only invariant per CLAUDE.md")
-	// Shim must be in an executable dir (/tmp is noexec in this environment).
-	dir := executableTempDir(t)
-	shim := filepath.Join(dir, "shim")
-	started := filepath.Join(dir, "started")
-	// The shim signals readiness by touching `started`, then busy-loops (no
-	// subprocess) so SIGKILL on the direct child is sufficient to unblock
-	// cmd.Wait — avoiding the pipe-drain issue that arises when a grandchild
-	// (e.g. `sleep`) inherits the stdout/stderr pipes and keeps them open.
-	script := "#!/bin/sh\n: > \"" + started + "\"\nwhile true; do :; done\n"
-	if err := os.WriteFile(shim, []byte(script), 0o755); err != nil {
-		t.Fatalf("write shim: %v", err)
-	}
-	t.Cleanup(SetDockerBinaryForTest(shim))
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	o := BuildOptions{
-		Image:          "claudebox",
-		DockerfilePath: "/home/user/.makeslop/Dockerfile",
-		ContextDir:     t.TempDir(),
-	}
-	done := make(chan error, 1)
-	go func() {
-		done <- Build(ctx, o, io.Discard, io.Discard)
-	}()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		if _, err := os.Stat(started); err == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("shim did not signal start within 5s")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	cancel()
-
-	select {
-	case err := <-done:
-		if err == nil {
-			t.Fatalf("expected error when context cancels mid-build, got nil")
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatalf("Build did not return within 5s after context cancellation")
-	}
 }

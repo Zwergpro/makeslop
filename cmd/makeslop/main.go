@@ -9,7 +9,6 @@ import (
 	"io"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 
@@ -375,8 +374,6 @@ func newRootCmd(baseDir string) *cobra.Command {
 // runWithExitCode maps an Execute() error to a host exit code:
 //   - *docker.ExitError passes through its Code (the daemon-reported exit status,
 //     e.g. 137 for SIGKILL); this is the primary path for `makeslop go`.
-//   - *exec.ExitError passes through its ExitCode(); this remains temporarily
-//     for `makeslop build` which still uses the CLI exec path until Task 4.
 //   - errSilent -> 1 with no reprint.
 //   - other errors -> 1 prefixed "makeslop: ".
 func runWithExitCode(baseDir string, stdout, stderr io.Writer, args []string) int {
@@ -391,14 +388,6 @@ func runWithExitCode(baseDir string, stdout, stderr io.Writer, args []string) in
 	var de *docker.ExitError
 	if errors.As(err, &de) {
 		return de.Code
-	}
-	// Temporary: exec.ExitError from the CLI-based Build path (removed in Task 4).
-	var ee *exec.ExitError
-	if errors.As(err, &ee) {
-		if code := ee.ExitCode(); code >= 0 {
-			return code
-		}
-		return 255
 	}
 	if !errors.Is(err, errSilent) {
 		fmt.Fprintf(stderr, "makeslop: %v\n", err)

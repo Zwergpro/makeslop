@@ -17,11 +17,9 @@ jobs:
           go-version: "1.26.x"
 
       - name: Set GOTMPDIR
-        # /tmp is mounted noexec in this CI environment (and mirrored in the
-        # project's CLAUDE.md). Shell shims (fake docker binaries used by
-        # run_test.go / main_test.go) must land on an executable filesystem.
-        # Using $GITHUB_WORKSPACE/gotmp satisfies that requirement because the
-        # workspace is checked out on the runner's regular disk, not a noexec tmpfs.
+        # /tmp may be mounted noexec in some CI environments. Setting GOTMPDIR
+        # to a workspace-local directory ensures t.TempDir() lands on an
+        # executable filesystem, which is harmless even when /tmp is executable.
         run: |
           mkdir -p "${{ github.workspace }}/gotmp"
           echo "GOTMPDIR=${{ github.workspace }}/gotmp" >> "$GITHUB_ENV"
@@ -44,8 +42,8 @@ jobs:
           go-version: "1.26.x"
 
       - name: Set GOTMPDIR
-        # /tmp is mounted noexec in GitHub Actions (mirrored in CLAUDE.md).
-        # Shell shims used in tests must land on an executable filesystem.
+        # /tmp may be mounted noexec in some CI environments. Setting GOTMPDIR
+        # to a workspace-local directory is a harmless precaution.
         run: |
           mkdir -p "${{ github.workspace }}/gotmp"
           echo "GOTMPDIR=${{ github.workspace }}/gotmp" >> "$GITHUB_ENV"

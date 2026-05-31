@@ -299,36 +299,15 @@ func mountsFor(mounts []Mount) []mount.Mount {
 	return out
 }
 
-// BuildOptions is the caller-supplied input to BuildArgv. All path fields must
-// be absolute. ContextDir is required and non-empty (see package-level note).
+// BuildOptions is the caller-supplied input to Build. All path fields must be
+// absolute. ContextDir may be left empty; Build will create a temporary empty
+// directory automatically.
 type BuildOptions struct {
 	Image          string   // -t tag (required)
 	DockerfilePath string   // -f path (required)
-	ContextDir     string   // positional build context (required, non-empty)
+	ContextDir     string   // positional build context; empty means Build auto-creates a temp dir
 	NoCache        bool     // --no-cache when true
-	BuildArgs      []string // each forwarded as: --build-arg <entry>
-}
-
-// BuildArgv returns argv starting with "build" for the given BuildOptions.
-// Argv order is deterministic:
-//
-//	build [--no-cache] -f <dockerfile> -t <image> (--build-arg <entry>)* <contextDir>
-//
-// ContextDir must be non-empty; BuildArgv is a pure projection and never
-// invents a path. The caller (Build) is responsible for providing it.
-func BuildArgv(o BuildOptions) []string {
-	var args []string
-	args = append(args, "build")
-	if o.NoCache {
-		args = append(args, "--no-cache")
-	}
-	args = append(args, "-f", o.DockerfilePath)
-	args = append(args, "-t", o.Image)
-	for _, entry := range o.BuildArgs {
-		args = append(args, "--build-arg", entry)
-	}
-	args = append(args, o.ContextDir)
-	return args
+	BuildArgs      []string // each forwarded as a build argument to the daemon
 }
 
 // csvField returns s as a single RFC 4180 CSV field: unquoted when it contains

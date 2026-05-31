@@ -684,8 +684,8 @@ func TestLoad_Scan_ValidPatternsAndSkipDirs(t *testing.T) {
 		wantSkipDirs []string
 	}{
 		{
-			name: "basic patterns and skip-dirs",
-			yaml: "exclude:\n  scan:\n    patterns:\n      - \"*.env\"\n      - \".env.*\"\n      - \"*.pem\"\n    skip-dirs:\n      - .git\n      - node_modules\n  dirs: []\n  files: []\n",
+			name:         "basic patterns and skip-dirs",
+			yaml:         "exclude:\n  scan:\n    patterns:\n      - \"*.env\"\n      - \".env.*\"\n      - \"*.pem\"\n    skip-dirs:\n      - .git\n      - node_modules\n  dirs: []\n  files: []\n",
 			wantPatterns: []string{"*.env", "*.pem", ".env.*"},
 			wantSkipDirs: []string{".git", "node_modules"},
 		},
@@ -696,20 +696,20 @@ func TestLoad_Scan_ValidPatternsAndSkipDirs(t *testing.T) {
 			wantSkipDirs: nil,
 		},
 		{
-			name: "patterns deduped and sorted",
-			yaml: "exclude:\n  scan:\n    patterns:\n      - \"*.pem\"\n      - \"*.env\"\n      - \"*.pem\"\n    skip-dirs: []\n  dirs: []\n  files: []\n",
+			name:         "patterns deduped and sorted",
+			yaml:         "exclude:\n  scan:\n    patterns:\n      - \"*.pem\"\n      - \"*.env\"\n      - \"*.pem\"\n    skip-dirs: []\n  dirs: []\n  files: []\n",
 			wantPatterns: []string{"*.env", "*.pem"},
 			wantSkipDirs: nil,
 		},
 		{
-			name: "skip-dirs deduped and sorted",
-			yaml: "exclude:\n  scan:\n    patterns: []\n    skip-dirs:\n      - vendor\n      - .git\n      - vendor\n  dirs: []\n  files: []\n",
+			name:         "skip-dirs deduped and sorted",
+			yaml:         "exclude:\n  scan:\n    patterns: []\n    skip-dirs:\n      - vendor\n      - .git\n      - vendor\n  dirs: []\n  files: []\n",
 			wantPatterns: nil,
 			wantSkipDirs: []string{".git", "vendor"},
 		},
 		{
-			name: "absent scan section yields nil slices",
-			yaml: "exclude:\n  dirs: []\n  files: []\n",
+			name:         "absent scan section yields nil slices",
+			yaml:         "exclude:\n  dirs: []\n  files: []\n",
 			wantPatterns: nil,
 			wantSkipDirs: nil,
 		},

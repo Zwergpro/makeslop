@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"os/signal"
 	"runtime"
 	"syscall"
@@ -18,11 +17,6 @@ import (
 var ErrNoTTY = errors.New("interactive TTY required on stdin and stdout")
 
 var (
-	// dockerBinary is the path to the docker CLI binary. Used only by Build
-	// (which still execs the CLI in this task); it is removed in Task 4 once
-	// Build migrates to the SDK.
-	dockerBinary = "docker"
-
 	ttyCheck = func() bool { return isTTY(os.Stdin) && isTTY(os.Stdout) }
 
 	// termMakeRaw wraps term.MakeRaw so tests can stub it (e.g. when there is
@@ -75,17 +69,14 @@ func run(ctx context.Context, cli apiClient, s Spec) error {
 	id := createRes.ID
 
 	// Track whether container started successfully so the deferred remove
-	// knows when to fire. AutoRemove handles cleanup after a clean exit.
+	// knows when to fire. AutoRemove handles cleanup on all exits; the deferred
+	// remove here handles pre-start aborts, start failures, and ctx cancellation.
 	startedCleanly := false
 	defer func() {
 		if !startedCleanly || ctx.Err() != nil {
 			// Best-effort force-remove to avoid leaked containers on
 			// pre-start abort, start failure, or context cancellation.
-			_ = func() error { //nolint:unparam
-				rmCtx := context.Background()
-				_, rmErr := cli.ContainerRemove(rmCtx, id, moby.ContainerRemoveOptions{Force: true})
-				return rmErr
-			}()
+			_, _ = cli.ContainerRemove(context.Background(), id, moby.ContainerRemoveOptions{Force: true})
 		}
 	}()
 
@@ -168,26 +159,4 @@ func run(ctx context.Context, cli apiClient, s Spec) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-}
-
-// Build executes `docker build` with the options in o. When o.ContextDir is
-// empty, Build creates an empty temp directory to use as the build context and
-// removes it on return. DOCKER_BUILDKIT=1 is always set in the child
-// environment so cache mounts (--mount=type=cache) work. Build never checks
-// for a TTY and can be used safely in CI/pipes.
-func Build(ctx context.Context, o BuildOptions, stdout, stderr io.Writer) error {
-	if o.ContextDir == "" {
-		dir, err := os.MkdirTemp("", "makeslop-build-*")
-		if err != nil {
-			return fmt.Errorf("create build context dir: %w", err)
-		}
-		defer os.RemoveAll(dir) //nolint:errcheck // best-effort cleanup; failure is non-actionable
-		o.ContextDir = dir
-	}
-	cmd := exec.CommandContext(ctx, dockerBinary, BuildArgv(o)...)
-	cmd.Env = append(os.Environ(), "DOCKER_BUILDKIT=1")
-	cmd.Stdout = stdout
-	cmd.Stderr = stderr
-	cmd.Stdin = nil
-	return cmd.Run()
 }

@@ -22,7 +22,7 @@ import (
 	"github.com/Zwergpro/makeslop/internal/workspace"
 )
 
-// Tests in this file swap docker.dockerBinary and docker.ttyCheck via the
+// Tests in this file swap docker.ttyCheck and docker.newClientFn via the
 // package-level SetForTest helpers. Do not add t.Parallel() to tests that
 // touch those swaps — the underlying state is process-global.
 
@@ -213,7 +213,6 @@ func TestInit_FromScratch(t *testing.T) {
 // installFakeRunClient installs a fake docker client that returns the given exit
 // code from ContainerWait and stubs out the TTY raw-mode call so tests work
 // without a real PTY. Returns the fake so tests can inspect fc.Started.
-// This replaces installDockerShim for the `go` command tests (Task 3 migration).
 func installFakeRunClient(t *testing.T, exitCode int) *docker.FakeRunClient {
 	t.Helper()
 	fc := docker.NewFakeRunClient(exitCode)
@@ -225,32 +224,18 @@ func installFakeRunClient(t *testing.T, exitCode int) *docker.FakeRunClient {
 	return fc
 }
 
-func installDockerShim(t *testing.T, exitCode int) string {
-	t.Helper()
-	docker.SkipNonPOSIX(t, "docker shim requires POSIX shell; makeslop is POSIX-only")
-	shim, record := docker.WriteShim(t, t.TempDir(), exitCode)
-	t.Cleanup(docker.SetDockerBinaryForTest(shim))
-	return record
-}
-
 func stubTTY(t *testing.T, ok bool) {
 	t.Helper()
 	t.Cleanup(docker.SetTTYCheckForTest(func() bool { return ok }))
 }
 
-func readArgv(t *testing.T, recordPath string) []string {
+// installFakeBuildClient installs a fake docker client that records
+// ImageBuildOptions and returns exitCode (0 = success, non-zero = error).
+func installFakeBuildClient(t *testing.T, exitCode int) *docker.FakeBuildClient {
 	t.Helper()
-	data, err := os.ReadFile(recordPath)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		t.Fatalf("read argv record: %v", err)
-	}
-	if len(data) == 0 {
-		return nil
-	}
-	return strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+	fbc := docker.NewFakeBuildClient(exitCode)
+	t.Cleanup(docker.SetClientForTest(fbc))
+	return fbc
 }
 
 // Milestone-1 regression guard: makeslop go must not print the cache path on stdout.
@@ -2184,31 +2169,12 @@ func TestGo_DryRunIncludesMaskedDirs(t *testing.T) {
 
 // ── build subcommand tests ─────────────────────────────────────────────────────
 
-// executableTempDirForCmd returns a temp dir that is on an executable
-// filesystem. It delegates to t.TempDir() which honours the GOTMPDIR env var;
-// set GOTMPDIR=/home/user (or any executable path) when running tests in
-// environments where /tmp is mounted noexec.
-func executableTempDirForCmd(t *testing.T) string {
-	t.Helper()
-	return t.TempDir()
-}
-
-// installBuildShim installs a build shim (recording argv + DOCKER_BUILDKIT)
-// that exits with exitCode. Returns the argv record path and env record path.
-func installBuildShim(t *testing.T, exitCode int) (record, envRecord string) {
-	t.Helper()
-	docker.SkipNonPOSIX(t, "docker build shim requires POSIX shell; makeslop is POSIX-only")
-	shim, rec, env := docker.WriteBuildShim(t, executableTempDirForCmd(t), exitCode)
-	t.Cleanup(docker.SetDockerBinaryForTest(shim))
-	return rec, env
-}
-
-// TestBuild_SeedsSelfHealAndInvokesDocker verifies that `makeslop build` on a
-// fresh (empty) baseDir bootstraps the Dockerfile then invokes docker build
-// with -t claudebox and -f <baseDir>/Dockerfile.
-func TestBuild_SeedsSelfHealAndInvokesDocker(t *testing.T) {
+// TestBuild_SeedsSelfHealAndInvokesSDK verifies that `makeslop build` on a
+// fresh (empty) baseDir bootstraps the Dockerfile then calls ImageBuild via
+// the SDK with the claudebox image tag and the correct Dockerfile basename.
+func TestBuild_SeedsSelfHealAndInvokesSDK(t *testing.T) {
 	baseDir := t.TempDir()
-	record, _ := installBuildShim(t, 0)
+	fbc := installFakeBuildClient(t, 0)
 
 	stdout, stderr, err := runCmd(t, baseDir, "build")
 	if err != nil {
@@ -2221,87 +2187,61 @@ func TestBuild_SeedsSelfHealAndInvokesDocker(t *testing.T) {
 		t.Errorf("Dockerfile not seeded by build: %v", statErr)
 	}
 
-	argv := readArgv(t, record)
-	if len(argv) == 0 {
-		t.Fatal("docker shim was not invoked")
-	}
-	if argv[0] != "build" {
-		t.Errorf("argv[0] = %q, want %q", argv[0], "build")
+	// Verify SDK was called with the right image tag.
+	tags := fbc.LastBuildOptions.Tags
+	if len(tags) == 0 || tags[0] != "claudebox" {
+		t.Errorf("ImageBuild Tags = %v, want [claudebox]", tags)
 	}
 
-	// Must contain -t claudebox.
-	var foundTag bool
-	for i, a := range argv {
-		if a == "-t" && i+1 < len(argv) && argv[i+1] == "claudebox" {
-			foundTag = true
-			break
-		}
-	}
-	if !foundTag {
-		t.Errorf("argv missing -t claudebox: %v", argv)
+	// Verify Dockerfile basename is set (SDK receives basename, not full path).
+	if fbc.LastBuildOptions.Dockerfile != "Dockerfile" {
+		t.Errorf("ImageBuild Dockerfile = %q, want %q", fbc.LastBuildOptions.Dockerfile, "Dockerfile")
 	}
 
-	// Must contain -f <baseDir>/Dockerfile.
-	var foundF bool
-	for i, a := range argv {
-		if a == "-f" && i+1 < len(argv) && argv[i+1] == dockerfilePath {
-			foundF = true
-			break
-		}
-	}
-	if !foundF {
-		t.Errorf("argv missing -f %s: %v", dockerfilePath, argv)
+	// Verify BuildKit mode selected (Version = "2").
+	if string(fbc.LastBuildOptions.Version) != "2" {
+		t.Errorf("ImageBuild Version = %q, want %q", fbc.LastBuildOptions.Version, "2")
 	}
 }
 
 // TestBuild_NoCacheAndBuildArg verifies that --no-cache and --build-arg flags
-// are forwarded verbatim to the docker build argv.
+// are forwarded to ImageBuildOptions.
 func TestBuild_NoCacheAndBuildArg(t *testing.T) {
 	baseDir := t.TempDir()
-	record, _ := installBuildShim(t, 0)
+	fbc := installFakeBuildClient(t, 0)
 
 	_, stderr, err := runCmd(t, baseDir, "build", "--no-cache", "--build-arg", "GO_VERSION=1.26.3")
 	if err != nil {
 		t.Fatalf("build --no-cache --build-arg failed: %v; stderr=%q", err, stderr)
 	}
 
-	argv := readArgv(t, record)
-	var foundNoCache, foundBuildArg bool
-	for i, a := range argv {
-		if a == "--no-cache" {
-			foundNoCache = true
-		}
-		if a == "--build-arg" && i+1 < len(argv) && argv[i+1] == "GO_VERSION=1.26.3" {
-			foundBuildArg = true
-		}
+	if !fbc.LastBuildOptions.NoCache {
+		t.Error("ImageBuildOptions.NoCache must be true when --no-cache is passed")
 	}
-	if !foundNoCache {
-		t.Errorf("argv missing --no-cache: %v", argv)
-	}
-	if !foundBuildArg {
-		t.Errorf("argv missing --build-arg GO_VERSION=1.26.3: %v", argv)
+	val, ok := fbc.LastBuildOptions.BuildArgs["GO_VERSION"]
+	if !ok || val == nil || *val != "1.26.3" {
+		t.Errorf("ImageBuildOptions.BuildArgs[GO_VERSION] = %v, want 1.26.3", fbc.LastBuildOptions.BuildArgs)
 	}
 }
 
-// TestBuild_NonZeroExit_PropagatesCode verifies that a non-zero shim exit
-// propagates through runWithExitCode as a non-zero exit code.
+// TestBuild_NonZeroExit_PropagatesCode verifies that when ImageBuild returns
+// an error, runWithExitCode returns a non-zero exit code.
 func TestBuild_NonZeroExit_PropagatesCode(t *testing.T) {
 	baseDir := t.TempDir()
-	installBuildShim(t, 42)
+	installFakeBuildClient(t, 1)
 
 	var stdout, stderr bytes.Buffer
 	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"build"})
-	if code != 42 {
-		t.Errorf("runWithExitCode = %d, want 42; stderr=%q", code, stderr.String())
+	if code != 1 {
+		t.Errorf("runWithExitCode = %d, want 1 (generic error); stderr=%q", code, stderr.String())
 	}
 }
 
 // TestBuild_CustomImage_FromSettings verifies that a custom image name in
-// settings.json is used as the -t tag. config.Bootstrap does NOT create
-// settings.json, so this test writes it explicitly via config.Save.
+// settings.json is used as the Tags[0] passed to ImageBuild.
 func TestBuild_CustomImage_FromSettings(t *testing.T) {
 	baseDir := t.TempDir()
-	record, _ := installBuildShim(t, 0)
+	fbc := installFakeBuildClient(t, 0)
 
 	// Bootstrap the baseDir so config.Save has the directory structure in place.
 	if err := config.Bootstrap(baseDir); err != nil {
@@ -2321,16 +2261,9 @@ func TestBuild_CustomImage_FromSettings(t *testing.T) {
 		t.Fatalf("build failed: %v; stderr=%q", err, stderr)
 	}
 
-	argv := readArgv(t, record)
-	var foundTag bool
-	for i, a := range argv {
-		if a == "-t" && i+1 < len(argv) && argv[i+1] == "my-custom-image:v2" {
-			foundTag = true
-			break
-		}
-	}
-	if !foundTag {
-		t.Errorf("argv missing -t my-custom-image:v2: %v", argv)
+	tags := fbc.LastBuildOptions.Tags
+	if len(tags) == 0 || tags[0] != "my-custom-image:v2" {
+		t.Errorf("ImageBuild Tags = %v, want [my-custom-image:v2]", tags)
 	}
 }
 
@@ -2373,11 +2306,10 @@ func TestBuild_CorruptSettings_ReportsError(t *testing.T) {
 }
 
 // TestBuild_MultipleBuildArgs verifies that --build-arg is repeatable and all
-// values are forwarded verbatim to the docker build argv. The plan says it is
-// "repeatable" — this test covers multiple values end-to-end.
+// values are forwarded to ImageBuildOptions.BuildArgs.
 func TestBuild_MultipleBuildArgs(t *testing.T) {
 	baseDir := t.TempDir()
-	record, _ := installBuildShim(t, 0)
+	fbc := installFakeBuildClient(t, 0)
 
 	_, stderr, err := runCmd(t, baseDir, "build",
 		"--build-arg", "GO_VERSION=1.26.3",
@@ -2388,44 +2320,33 @@ func TestBuild_MultipleBuildArgs(t *testing.T) {
 		t.Fatalf("build --build-arg (multiple) failed: %v; stderr=%q", err, stderr)
 	}
 
-	argv := readArgv(t, record)
-	wantArgs := []string{
-		"GO_VERSION=1.26.3",
-		"HTTP_PROXY=http://proxy.example.com:8080",
-		"FOO=bar",
+	wantArgs := map[string]string{
+		"GO_VERSION": "1.26.3",
+		"HTTP_PROXY": "http://proxy.example.com:8080",
+		"FOO":        "bar",
 	}
-	for _, want := range wantArgs {
-		var found bool
-		for i, a := range argv {
-			if a == "--build-arg" && i+1 < len(argv) && argv[i+1] == want {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("argv missing --build-arg %s: %v", want, argv)
+	for key, want := range wantArgs {
+		val, ok := fbc.LastBuildOptions.BuildArgs[key]
+		if !ok || val == nil || *val != want {
+			t.Errorf("BuildArgs[%s] = %v, want %q", key, val, want)
 		}
 	}
 }
 
-// TestBuild_DOCKER_BUILDKIT_EndToEnd verifies that the CLI-level build path
-// passes DOCKER_BUILDKIT=1 to docker. The env value is recovered from the
-// shim's env.txt (written by WriteBuildShim).
-func TestBuild_DOCKER_BUILDKIT_EndToEnd(t *testing.T) {
+// TestBuild_BuildKitVersion_IsSet verifies that the SDK Build call uses
+// BuilderBuildKit ("2") so cache mounts and BuildKit features are active.
+// This replaces the old DOCKER_BUILDKIT=1 env test which was CLI-specific.
+func TestBuild_BuildKitVersion_IsSet(t *testing.T) {
 	baseDir := t.TempDir()
-	_, envRecord := installBuildShim(t, 0)
+	fbc := installFakeBuildClient(t, 0)
 
 	_, stderr, err := runCmd(t, baseDir, "build")
 	if err != nil {
 		t.Fatalf("build failed: %v; stderr=%q", err, stderr)
 	}
 
-	data, readErr := os.ReadFile(envRecord)
-	if readErr != nil {
-		t.Fatalf("read env record: %v", readErr)
-	}
-	if got := strings.TrimRight(string(data), "\n"); got != "1" {
-		t.Errorf("DOCKER_BUILDKIT in child env = %q, want %q", got, "1")
+	if string(fbc.LastBuildOptions.Version) != "2" {
+		t.Errorf("ImageBuild Version = %q, want \"2\" (BuilderBuildKit)", fbc.LastBuildOptions.Version)
 	}
 }
 
