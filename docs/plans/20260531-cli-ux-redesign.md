@@ -361,13 +361,13 @@ today (printed == executed for argv).
 **Files:**
 - Modify: `README.md`
 
-- [ ] update Quickstart to `init → build → run` (drop `migrate` from the happy path; document it as
+- [x] update Quickstart to `init → build → run` (drop `migrate` from the happy path; document it as
       an explicit upgrade)
-- [ ] document `makeslop run` (was `go`), `makeslop status` (+ `--json`, exit codes), the `init`
+- [x] document `makeslop run` (was `go`), `makeslop status` (+ `--json`, exit codes), the `init`
       stale-config nudge, bare `config`, scoped `--out-of-home`, and `--quiet`
-- [ ] update the TTY-policy and home-guard sections to include `status` in the exempt/CI-safe lists
-- [ ] update the exit-codes section for `status`
-- [ ] no test (docs only)
+- [x] update the TTY-policy and home-guard sections to include `status` in the exempt/CI-safe lists
+- [x] update the exit-codes section for `status`
+- [x] no test (docs only)
 
 ### Task 10: Verify acceptance criteria
 
