@@ -738,6 +738,237 @@ func TestGatewayMode_Close_RemovesSocket(t *testing.T) {
 	}
 }
 
+// ── Task 4: request logging tests ────────────────────────────────────────────
+
+// TestGatewayLogging_CONNECT verifies that a CONNECT request writes a log line.
+func TestGatewayLogging_CONNECT(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX-only per CLAUDE.md")
+	}
+	sock := tempSockPath(t)
+	logFile := sock + ".log"
+	t.Cleanup(func() { os.Remove(logFile) })
+	targetAddr := startFakeTCPTarget(t)
+
+	g := NewGateway(sock, "", logFile)
+	if err := g.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer g.Close()
+
+	conn, err := net.Dial("unix", sock)
+	if err != nil {
+		t.Fatalf("dial unix socket: %v", err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(5 * time.Second))
+
+	// Send CONNECT.
+	fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", targetAddr, targetAddr)
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("read CONNECT response: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("CONNECT status = %d, want 200", resp.StatusCode)
+	}
+
+	// Send some data so the tunnel is exercised, then close.
+	fmt.Fprint(conn, "ping\n")
+	conn.Close()
+
+	// Allow goroutines to flush and let g.Close() close the file.
+	g.Close()
+
+	data, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatalf("read log file: %v", err)
+	}
+	if !strings.Contains(string(data), "CONNECT "+targetAddr) {
+		t.Errorf("log does not contain CONNECT entry; got:\n%s", data)
+	}
+}
+
+// TestGatewayLogging_PlainGET verifies that a plain GET request writes a log line.
+func TestGatewayLogging_PlainGET(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX-only per CLAUDE.md")
+	}
+	sock := tempSockPath(t)
+	logFile := sock + ".log"
+	t.Cleanup(func() { os.Remove(logFile) })
+
+	const wantBody = "ok"
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, wantBody)
+	}))
+	defer origin.Close()
+
+	g := NewGateway(sock, "", logFile)
+	if err := g.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer g.Close()
+
+	client := dialUnixHTTP(sock)
+	client.Timeout = 5 * time.Second
+
+	resp, err := client.Get(origin.URL + "/logtest")
+	if err != nil {
+		t.Fatalf("GET via gateway: %v", err)
+	}
+	resp.Body.Close()
+
+	// Close so log file is flushed/closed before reading.
+	g.Close()
+
+	data, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatalf("read log file: %v", err)
+	}
+	if !strings.Contains(string(data), "GET ") {
+		t.Errorf("log does not contain GET entry; got:\n%s", data)
+	}
+}
+
+// TestUpstreamLogging_RequestLineLogged verifies that upstream mode logs the
+// first request line AND forwards bytes verbatim to the fake upstream.
+func TestUpstreamLogging_RequestLineLogged(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX-only per CLAUDE.md")
+	}
+	sock := tempSockPath(t)
+	logFile := sock + ".log"
+	t.Cleanup(func() { os.Remove(logFile) })
+
+	// Start a recording upstream that captures everything it receives.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen upstream: %v", err)
+	}
+	defer ln.Close()
+	received := make(chan []byte, 1)
+	go func() {
+		c, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		// Accept probe connection first (from Start).
+		// Second connection is the actual data.
+		c2, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer c2.Close()
+		data, _ := io.ReadAll(c2)
+		received <- data
+	}()
+
+	upstreamAddr := ln.Addr().String()
+	g := NewGateway(sock, upstreamAddr, logFile)
+	if err := g.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer g.Close()
+
+	conn, err := net.Dial("unix", sock)
+	if err != nil {
+		t.Fatalf("dial unix socket: %v", err)
+	}
+	payload := "GET http://example.com/ HTTP/1.1\r\nHost: example.com\r\n\r\n"
+	conn.Write([]byte(payload)) //nolint:errcheck
+	conn.Close()
+
+	// Wait for upstream to receive.
+	var upstreamGot []byte
+	select {
+	case upstreamGot = <-received:
+	case <-time.After(3 * time.Second):
+		t.Fatal("upstream never received data")
+	}
+
+	g.Close()
+
+	// Verify data forwarded verbatim.
+	if !strings.Contains(string(upstreamGot), "GET http://example.com/") {
+		t.Errorf("upstream did not receive forwarded request; got: %q", upstreamGot)
+	}
+
+	// Verify log entry.
+	data, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatalf("read log file: %v", err)
+	}
+	if !strings.Contains(string(data), "GET http://example.com/") {
+		t.Errorf("log does not contain request line; got:\n%s", data)
+	}
+}
+
+// TestUpstreamLogging_Off verifies that when logging is off the upstream path
+// forwards bytes unchanged and no log file is created.
+func TestUpstreamLogging_Off(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX-only per CLAUDE.md")
+	}
+	sock := tempSockPath(t)
+	upstreamAddr := startFakeUpstream(t)
+
+	// logPath = "" → no logging
+	g := NewGateway(sock, upstreamAddr, "")
+	if err := g.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer g.Close()
+
+	conn, err := net.Dial("unix", sock)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	payload := "hello logging off\n"
+	conn.Write([]byte(payload)) //nolint:errcheck
+
+	buf := make([]byte, len(payload))
+	conn.SetDeadline(time.Now().Add(3 * time.Second))
+	if _, err := io.ReadFull(conn, buf); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(buf) != payload {
+		t.Errorf("got %q, want %q", buf, payload)
+	}
+
+	// Verify g.logger is nil (no logging wired).
+	if g.logger != nil {
+		t.Error("logger should be nil when logPath is empty")
+	}
+}
+
+// TestStart_FailLoud_BadLogPath verifies that Start fails and removes the socket
+// when logPath points to a non-existent directory.
+func TestStart_FailLoud_BadLogPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX-only per CLAUDE.md")
+	}
+	sock := tempSockPath(t)
+
+	// Use a path inside a non-existent directory — OpenFile will fail.
+	badLogPath := "/tmp/nonexistent_dir_makeslop_test/request.log"
+
+	g := NewGateway(sock, "", badLogPath)
+	err := g.Start(context.Background())
+	if err == nil {
+		g.Close()
+		t.Fatal("Start: expected error for bad logPath, got nil")
+	}
+
+	// Socket must be cleaned up.
+	if _, statErr := os.Stat(sock); !os.IsNotExist(statErr) {
+		t.Errorf("socket file should not exist after failed Start (stat err=%v)", statErr)
+	}
+}
+
 // TestGatewayMode_Close_TearDownInFlightTunnel verifies that Close tears down
 // an in-flight CONNECT tunnel (the hijacked conn is tracked and force-closed)
 // and that Close does not hang.

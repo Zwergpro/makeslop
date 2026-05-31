@@ -122,16 +122,16 @@ Rejected: a single unified forward-proxy handler with a pluggable dialer — it 
 - Modify: `internal/networks/proxy.go`
 - Modify: `internal/networks/proxy_test.go`
 
-- [ ] add fields `logFile *os.File`, `logger *log.Logger`; in `Start`, after binding the socket and BEFORE the mode branch: if `g.logPath != ""` open `O_CREATE|O_APPEND|O_WRONLY` (0644) and build `log.New(file, "", log.LstdFlags)`; **fail loud** — on open error, close+remove the listener/socket and return the error (abort launch)
-- [ ] in `Close`, close `g.logFile` if open
-- [ ] add `func (g *Gateway) logReq(method, target string)` — no-op when `g.logger == nil`, else `g.logger.Printf("%s %s", method, target)`; wire the two call sites in `ServeHTTP`
-- [ ] add `func (g *Gateway) logFirstLine(line string)` — `strings.Fields` → `logReq(method, target)`; log raw trimmed line if malformed (<2 fields)
-- [ ] gate the upstream path in `handle`/`splice`: when `g.logger == nil` use today's exact `go io.Copy(up, client)` client→up direction; when `g.logger != nil` use `bufio.NewReader(client)`, `ReadString('\n')`, `g.logFirstLine(line)`, `up.Write([]byte(line))`, then `go io.Copy(up, br)`. (The up→client direction is unchanged.)
-- [ ] add a doc comment noting the keep-alive limitation (only first request line logged on plain-HTTP keep-alive; CONNECT is exact)
-- [ ] write gateway logging tests: with a temp `logPath`, assert a line lands in the file for both CONNECT and plain GET
-- [ ] write upstream logging tests: with logging ON, assert the request line is BOTH logged AND forwarded verbatim to the fake upstream; with logging OFF, assert no parse occurs (bytes forwarded unchanged, file absent)
-- [ ] write a fail-loud test: unopenable `logPath` (e.g. path under a non-existent dir, or a dir as the path) → `Start` returns error and removes the socket
-- [ ] run `go test ./...` — must pass before task 5
+- [x] add fields `logFile *os.File`, `logger *log.Logger`; in `Start`, after binding the socket and BEFORE the mode branch: if `g.logPath != ""` open `O_CREATE|O_APPEND|O_WRONLY` (0644) and build `log.New(file, "", log.LstdFlags)`; **fail loud** — on open error, close+remove the listener/socket and return the error (abort launch)
+- [x] in `Close`, close `g.logFile` if open
+- [x] add `func (g *Gateway) logReq(method, target string)` — no-op when `g.logger == nil`, else `g.logger.Printf("%s %s", method, target)`; wire the two call sites in `ServeHTTP`
+- [x] add `func (g *Gateway) logFirstLine(line string)` — `strings.Fields` → `logReq(method, target)`; log raw trimmed line if malformed (<2 fields)
+- [x] gate the upstream path in `handle`/`splice`: when `g.logger == nil` use today's exact `go io.Copy(up, client)` client→up direction; when `g.logger != nil` use `bufio.NewReader(client)`, `ReadString('\n')`, `g.logFirstLine(line)`, `up.Write([]byte(line))`, then `go io.Copy(up, br)`. (The up→client direction is unchanged.)
+- [x] add a doc comment noting the keep-alive limitation (only first request line logged on plain-HTTP keep-alive; CONNECT is exact)
+- [x] write gateway logging tests: with a temp `logPath`, assert a line lands in the file for both CONNECT and plain GET
+- [x] write upstream logging tests: with logging ON, assert the request line is BOTH logged AND forwarded verbatim to the fake upstream; with logging OFF, assert no parse occurs (bytes forwarded unchanged, file absent)
+- [x] write a fail-loud test: unopenable `logPath` (e.g. path under a non-existent dir, or a dir as the path) → `Start` returns error and removes the socket
+- [x] run `go test ./...` — must pass before task 5
 
 ### Task 5: Project config — `network.log` parsing + validation + stub
 

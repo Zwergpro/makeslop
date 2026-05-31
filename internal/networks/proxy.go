@@ -26,8 +26,10 @@
 package networks
 
 import (
+	"bufio"
 	"context"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -56,6 +58,11 @@ var hopByHopHeaders = []string{
 //   - (upstream mode, proxy != "") tunnels all traffic to an upstream TCP proxy.
 //
 // Call Start/Close to manage the lifecycle; Close is idempotent.
+//
+// Logging limitation: plain-HTTP keep-alive connections log only the FIRST
+// request line per connection in upstream mode (because the upstream peek reads
+// one line). CONNECT (HTTPS, the dominant case) is exact. Gateway-mode plain
+// HTTP is logged per-request by ServeHTTP.
 type Gateway struct {
 	socketPath string
 	proxy      string
@@ -64,6 +71,10 @@ type Gateway struct {
 	// gateway-mode only; nil in upstream mode
 	srv       *http.Server
 	transport *http.Transport
+
+	// logging; both fields are nil when logPath == "" or Start has not run
+	logFile *os.File
+	logger  *log.Logger
 
 	mu       sync.Mutex
 	listener net.Listener
@@ -130,6 +141,20 @@ func (g *Gateway) Start(ctx context.Context) error {
 		_ = ln.Close()
 		_ = os.Remove(g.socketPath)
 		return err
+	}
+
+	// ── optional request logging ──────────────────────────────────────────────
+	// Open the log file before branching into the mode-specific path so that a
+	// bad logPath aborts launch loudly rather than silently skipping logging.
+	if g.logPath != "" {
+		f, err := os.OpenFile(g.logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+		if err != nil {
+			_ = ln.Close()
+			_ = os.Remove(g.socketPath)
+			return err
+		}
+		g.logFile = f
+		g.logger = log.New(f, "", log.LstdFlags)
 	}
 
 	proxyCtx, cancel := context.WithCancel(ctx)
@@ -224,9 +249,11 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			clientConn.Close()
 		}()
 
+		// Log before confirming the tunnel so the entry is durable before
+		// the client could race to trigger g.Close().
+		g.logReq("CONNECT", r.Host)
 		// Inform the client the tunnel is established.
 		_, _ = clientConn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
-		g.logReq("CONNECT", r.Host)
 		g.splice(clientConn, dst)
 		return
 	}
@@ -279,16 +306,40 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			w.Header().Add(k, v)
 		}
 	}
+	// Log before writing the response to avoid a race where the client could
+	// trigger g.Close() (closing the log file) before this goroutine logs.
+	g.logReq(r.Method, r.URL.String())
 	w.WriteHeader(resp.StatusCode)
 	io.Copy(w, resp.Body) //nolint:errcheck // client disconnect is expected
-
-	g.logReq(r.Method, r.URL.String())
 }
 
-// logReq logs a request line. It is a no-op when g.logger is nil (Task 4 wires
-// the logger; this stub keeps the build green until then).
-func (g *Gateway) logReq(_, _ string) {
-	// no-op until Task 4 adds the logger
+// logReq logs a single request line in the format "<METHOD> <target>".
+// It is a no-op when g.logger is nil (logging disabled).
+func (g *Gateway) logReq(method, target string) {
+	if g.logger == nil {
+		return
+	}
+	g.logger.Printf("%s %s", method, target)
+}
+
+// logFirstLine parses the first line of a raw HTTP request (e.g. "GET http://host/p HTTP/1.1")
+// and delegates to logReq. If the line is malformed (fewer than 2 fields) the
+// raw trimmed line is logged as-is.
+//
+// Limitation (upstream mode): plain-HTTP keep-alive connections log only the
+// FIRST request line per connection because the upstream peek reads exactly one
+// line. CONNECT (HTTPS) is exact.
+func (g *Gateway) logFirstLine(line string) {
+	if g.logger == nil {
+		return
+	}
+	fields := strings.Fields(line)
+	if len(fields) >= 2 {
+		g.logReq(fields[0], fields[1])
+		return
+	}
+	// Malformed line — log raw to aid debugging.
+	g.logger.Printf("%s", strings.TrimSpace(line))
 }
 
 // acceptLoop accepts connections from ln until it is closed or ctx is done.
@@ -312,6 +363,11 @@ func (g *Gateway) acceptLoop(ctx context.Context, ln net.Listener) {
 
 // handle dials the upstream, tracks the connection, then splices bytes between
 // client and upstream. Used by upstream mode only.
+//
+// When logging is enabled (g.logger != nil), the first request line from the
+// client is peeked and logged before being forwarded verbatim to the upstream.
+// When logging is disabled the path is identical to a plain io.Copy — no parse,
+// no overhead.
 func (g *Gateway) handle(ctx context.Context, client net.Conn) {
 	defer client.Close()
 
@@ -322,6 +378,35 @@ func (g *Gateway) handle(ctx context.Context, client net.Conn) {
 	defer up.Close()
 	g.trackConn(up)
 	defer g.untrackConn(up)
+
+	if g.logger != nil {
+		// Peek the first request line, log it, then forward it followed by the
+		// remaining bytes from the buffered reader.
+		br := bufio.NewReader(client)
+		line, _ := br.ReadString('\n')
+		g.logFirstLine(line)
+		// Write the peeked line back to upstream, then splice remaining bytes.
+		_, _ = up.Write([]byte(line))
+
+		// Replace the client with a conn-like reader that re-injects the buffered
+		// remainder (anything after the first line that bufio already read).
+		// We do this by splicing (br, client) → up and up → client using a
+		// custom splice that reads from br first.
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			io.Copy(up, br) //nolint:errcheck // reads br (buffered) then EOF
+			halfCloseWrite(up)
+		}()
+		go func() {
+			defer wg.Done()
+			io.Copy(client, up) //nolint:errcheck
+			halfCloseWrite(client)
+		}()
+		wg.Wait()
+		return
+	}
 
 	g.splice(client, up)
 }
@@ -413,6 +498,12 @@ func (g *Gateway) Close() error {
 
 	g.wg.Wait()
 	_ = os.Remove(g.socketPath)
+
+	if g.logFile != nil {
+		_ = g.logFile.Close()
+		g.logFile = nil
+	}
+
 	return nil
 }
 
