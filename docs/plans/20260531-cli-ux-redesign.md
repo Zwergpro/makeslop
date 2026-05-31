@@ -231,18 +231,18 @@ today (printed == executed for argv).
 - Create: `internal/docker/preflight_test.go`
 - Modify: `go.mod` (promote `github.com/containerd/errdefs` to a direct require)
 
-- [ ] promote `containerd/errdefs` to a direct dependency (`go get github.com/containerd/errdefs`)
-- [ ] create `preflight.go` with `ErrDaemonUnreachable`, `ErrImageNotBuilt` sentinels (carrying the
+- [x] promote `containerd/errdefs` to a direct dependency (`go get github.com/containerd/errdefs`)
+- [x] create `preflight.go` with `ErrDaemonUnreachable`, `ErrImageNotBuilt` sentinels (carrying the
       image tag / endpoint detail for messaging)
-- [ ] implement `CheckDaemon(ctx)` — builds client via `newClientFn`, calls `Ping(ctx, moby.PingOptions{})`,
+- [x] implement `CheckDaemon(ctx)` — builds client via `newClientFn`, calls `Ping(ctx, moby.PingOptions{})`,
       closes client, maps failure to `ErrDaemonUnreachable`
-- [ ] implement `ImageExists(ctx, image)` — `ImageInspect(ctx, image)`; returns `(true,nil)` when
+- [x] implement `ImageExists(ctx, image)` — `ImageInspect(ctx, image)`; returns `(true,nil)` when
       found, `(false,nil)` only when `cerrdefs.IsNotFound(err)`, and `(false, err)` for any other
       error (so a dead daemon is never misreported as "image absent")
-- [ ] write tests using `SetClientForTest` with the Task 1 fakes: daemon ok/down; image present;
+- [x] write tests using `SetClientForTest` with the Task 1 fakes: daemon ok/down; image present;
       image not-found (asserts `(false,nil)`); image other-error (asserts the error propagates, NOT
       mistaken for absent)
-- [ ] run tests — must pass before next task
+- [x] run tests — must pass before next task
 
 ### Task 3: Config helpers for fresh-seed stamping and migration staleness
 
