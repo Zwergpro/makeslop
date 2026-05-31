@@ -829,7 +829,7 @@ func TestOutOfHomeFlag_Bypasses(t *testing.T) {
 	outsidePwd := t.TempDir()
 	t.Chdir(outsidePwd)
 
-	_, stderr, err := runCmd(t, baseDir, "--out-of-home", "init")
+	_, stderr, err := runCmd(t, baseDir, "init", "--out-of-home")
 	if err != nil {
 		t.Fatalf("init --out-of-home should succeed outside HOME, got: %v; stderr=%q", err, stderr)
 	}
@@ -840,9 +840,9 @@ func TestOutOfHomeFlag_Bypasses(t *testing.T) {
 	fc := installFakeRunClient(t, 0)
 	stubTTY(t, true)
 
-	_, stderr, err = runCmd(t, baseDir, "--out-of-home", "run")
+	_, stderr, err = runCmd(t, baseDir, "run", "--out-of-home")
 	if err != nil {
-		t.Fatalf("makeslop --out-of-home go should succeed outside HOME, got: %v; stderr=%q", err, stderr)
+		t.Fatalf("makeslop run --out-of-home should succeed outside HOME, got: %v; stderr=%q", err, stderr)
 	}
 	if strings.Contains(stderr, "refusing to run") {
 		t.Errorf("makeslop --out-of-home go: stderr unexpectedly contains 'refusing to run': %q", stderr)
@@ -1270,8 +1270,8 @@ func TestRun_DryRun_OutOfHomeBypasses(t *testing.T) {
 
 	stubTTY(t, false)
 
-	// --out-of-home flag comes before the subcommand (it is a persistent flag).
-	stdout, stderr, err := runCmd(t, baseDir, "--out-of-home", "run", "--dry-run")
+	// --out-of-home is now scoped to `run` (not a root persistent flag).
+	stdout, stderr, err := runCmd(t, baseDir, "run", "--out-of-home", "--dry-run")
 	if err != nil {
 		t.Fatalf("--out-of-home --dry-run should succeed; err=%v; stderr=%q", err, stderr)
 	}
@@ -2352,20 +2352,27 @@ func TestBuild_BuildKitVersion_IsSet(t *testing.T) {
 
 // ── config subcommand tests ───────────────────────────────────────────────────
 
-// TestConfig_BareInvocation_PrintsHelp verifies that bare `makeslop config`
-// prints help (lists subcommands) and exits 0.
-func TestConfig_BareInvocation_PrintsHelp(t *testing.T) {
+// TestConfig_BareInvocation_PrintsSettings verifies that bare `makeslop config`
+// now prints key = value settings (not help) and exits 0.
+func TestConfig_BareInvocation_PrintsSettings(t *testing.T) {
 	baseDir := t.TempDir()
 
 	stdout, stderr, err := runCmd(t, baseDir, "config")
 	if err != nil {
 		t.Fatalf("bare 'makeslop config' should exit 0, got err: %v; stdout=%q stderr=%q", err, stdout, stderr)
 	}
-	if !strings.Contains(stdout, "list") {
-		t.Errorf("help output missing 'list' subcommand: %q", stdout)
+	if stderr != "" {
+		t.Errorf("expected empty stderr, got %q", stderr)
 	}
-	if !strings.Contains(stdout, "set") {
-		t.Errorf("help output missing 'set' subcommand: %q", stdout)
+	// Should print the same output as `config list`.
+	if !strings.Contains(stdout, "image = ") {
+		t.Errorf("config output missing 'image = ' key: %q", stdout)
+	}
+	if !strings.Contains(stdout, "shell = ") {
+		t.Errorf("config output missing 'shell = ' key: %q", stdout)
+	}
+	if !strings.Contains(stdout, "tmp_dir_size = ") {
+		t.Errorf("config output missing 'tmp_dir_size = ' key: %q", stdout)
 	}
 }
 
@@ -3080,5 +3087,177 @@ func TestRun_HappyPath_LaunchesDocker(t *testing.T) {
 	}
 	if !fc.Started {
 		t.Error("docker container must be started on happy path")
+	}
+}
+
+// ── Task 7: config bare / --out-of-home scope / --quiet tests ────────────────
+
+// TestConfig_Bare_EqualsConfigList verifies that bare `makeslop config` prints
+// exactly the same output as `makeslop config list` — both print key = value lines.
+func TestConfig_Bare_EqualsConfigList(t *testing.T) {
+	baseDir := t.TempDir()
+
+	bareOut, bareErr, err := runCmd(t, baseDir, "config")
+	if err != nil {
+		t.Fatalf("bare config failed: %v; stderr=%q", err, bareErr)
+	}
+	listOut, listErr, err := runCmd(t, baseDir, "config", "list")
+	if err != nil {
+		t.Fatalf("config list failed: %v; stderr=%q", err, listErr)
+	}
+
+	if bareOut != listOut {
+		t.Errorf("bare 'config' output != 'config list' output\nbare:\n%s\nlist:\n%s", bareOut, listOut)
+	}
+}
+
+// TestOutOfHome_RejectedOnVersion verifies that --out-of-home is unknown on
+// commands where it is not registered (version, migrate, build, config, status).
+func TestOutOfHome_RejectedOnVersion(t *testing.T) {
+	baseDir := t.TempDir()
+
+	for _, cmd := range [][]string{
+		{"version", "--out-of-home"},
+		{"migrate", "--out-of-home"},
+		{"build", "--out-of-home"},
+		{"config", "--out-of-home"},
+	} {
+		t.Run(cmd[0], func(t *testing.T) {
+			_, _, err := runCmd(t, baseDir, cmd...)
+			if err == nil {
+				t.Fatalf("%v --out-of-home should fail with unknown flag, got nil", cmd[0])
+			}
+			if !strings.Contains(err.Error(), "unknown flag") && !strings.Contains(err.Error(), "out-of-home") {
+				t.Errorf("%v --out-of-home error should mention unknown flag or out-of-home; got: %v", cmd[0], err)
+			}
+		})
+	}
+}
+
+// TestQuiet_SuppressesInitNudge verifies that --quiet suppresses the stale-config
+// nudge (chrome) but not errors.
+func TestQuiet_SuppressesInitNudge(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	// Seed a stale settings.json so the nudge fires.
+	if config.MigrationVersion == 0 {
+		t.Skip("MigrationVersion is 0; nothing would be stale")
+	}
+	s := &config.Settings{
+		Version:         config.CurrentVersion,
+		Image:           config.DefaultImage,
+		Shell:           config.DefaultShell,
+		TmpDirSize:      config.DefaultTmpDirSize,
+		Workspaces:      map[string]config.Workspace{},
+		MigratedVersion: 0, // stale
+	}
+	if err := config.Save(baseDir, s); err != nil {
+		t.Fatalf("seed stale settings: %v", err)
+	}
+
+	// Without --quiet: nudge appears.
+	_, stderrNoQuiet, err := runCmd(t, baseDir, "init")
+	if err != nil {
+		t.Fatalf("init failed: %v; stderr=%q", err, stderrNoQuiet)
+	}
+	if !strings.Contains(stderrNoQuiet, "note: base config is") {
+		t.Errorf("expected nudge on stderr without --quiet; got: %q", stderrNoQuiet)
+	}
+
+	// Re-seed stale settings for the next call.
+	s.MigratedVersion = 0
+	if err := config.Save(baseDir, s); err != nil {
+		t.Fatalf("re-seed stale settings: %v", err)
+	}
+
+	// With --quiet: nudge is suppressed.
+	_, stderrQuiet, err := runCmd(t, baseDir, "--quiet", "init")
+	if err != nil {
+		t.Fatalf("init --quiet failed: %v; stderr=%q", err, stderrQuiet)
+	}
+	if strings.Contains(stderrQuiet, "note: base config is") {
+		t.Errorf("--quiet must suppress nudge; got: %q", stderrQuiet)
+	}
+}
+
+// TestQuiet_SuppressesMaskedCount verifies that --quiet suppresses the
+// "masked N secret file(s)" notice during `makeslop run`, but the container
+// still gets the correct /dev/null mounts.
+func TestQuiet_SuppressesMaskedCount(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	resolvedPwd := evalSymlinks(t, pwd)
+
+	envFile := filepath.Join(resolvedPwd, ".env")
+	if err := os.WriteFile(envFile, []byte("SECRET=1"), 0o644); err != nil {
+		t.Fatalf("write .env: %v", err)
+	}
+	yamlContent := "exclude:\n  scan:\n    patterns:\n      - \"*.env\"\n  files: []\n  dirs: []\n"
+	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(yamlContent), 0o644); err != nil {
+		t.Fatalf("write yaml: %v", err)
+	}
+
+	stubTTY(t, false)
+
+	// Without --quiet: notice appears.
+	stdout1, stderr1, err := runCmd(t, baseDir, "run", "--dry-run")
+	if err != nil {
+		t.Fatalf("--dry-run failed: %v; stderr=%q", err, stderr1)
+	}
+	if !strings.Contains(stderr1, "masked 1 secret file") {
+		t.Errorf("expected 'masked 1 secret file' on stderr without --quiet; got: %q", stderr1)
+	}
+
+	// With --quiet: notice suppressed, but /dev/null mount still present in output.
+	stdout2, stderr2, err := runCmd(t, baseDir, "--quiet", "run", "--dry-run")
+	if err != nil {
+		t.Fatalf("--quiet --dry-run failed: %v; stderr=%q", err, stderr2)
+	}
+	if strings.Contains(stderr2, "masked") {
+		t.Errorf("--quiet must suppress 'masked' notice; got: %q", stderr2)
+	}
+	// The spec itself (stdout) must still contain the /dev/null mount.
+	if !strings.Contains(stdout2, "/dev/null") {
+		t.Errorf("--quiet --dry-run output must still contain /dev/null mounts; stdout:\n%s", stdout2)
+	}
+	// Outputs should be identical aside from the stderr difference.
+	if stdout1 != stdout2 {
+		t.Errorf("stdout differs between --quiet and non-quiet runs:\nnon-quiet: %s\nquiet: %s", stdout1, stdout2)
+	}
+}
+
+// TestQuiet_SuppressesRegisteredNotice verifies that --quiet suppresses the
+// "registered …" success notice on init but stdout (workspace path) is unaffected.
+func TestQuiet_SuppressesRegisteredNotice(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	stdout, stderr, err := runCmd(t, baseDir, "--quiet", "init")
+	if err != nil {
+		t.Fatalf("init --quiet failed: %v; stderr=%q", err, stderr)
+	}
+	// stderr chrome (registered notice) must be absent.
+	if strings.Contains(stderr, "registered") {
+		t.Errorf("--quiet must suppress 'registered' notice; stderr=%q", stderr)
+	}
+	// stdout must still carry the bare workspace path.
+	path := strings.TrimSpace(stdout)
+	if path == "" {
+		t.Errorf("stdout must contain the workspace path even with --quiet; got empty")
+	}
+	workspacesRoot := filepath.Join(baseDir, "workspaces")
+	if !strings.HasPrefix(path, workspacesRoot+string(filepath.Separator)) {
+		t.Errorf("workspace path %q not under %q", path, workspacesRoot)
 	}
 }

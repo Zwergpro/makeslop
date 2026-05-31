@@ -333,14 +333,14 @@ today (printed == executed for argv).
 - Modify: `cmd/makeslop/main.go`
 - Modify: `cmd/makeslop/main_test.go`
 
-- [ ] change `configCmd` RunE to print `ConfigList` (key = value lines) instead of `cmd.Help()`
-- [ ] move `--out-of-home` from `rootCmd.PersistentFlags` to flags registered only on `init` and
+- [x] change `configCmd` RunE to print `ConfigList` (key = value lines) instead of `cmd.Help()`
+- [x] move `--out-of-home` from `rootCmd.PersistentFlags` to flags registered only on `init` and
       `run`; ensure `version`/`config`/`migrate`/`build`/`status` reject it
-- [ ] add a persistent `--quiet` flag and a small stderr-chrome gate so notices/nudges/progress are
+- [x] add a persistent `--quiet` flag and a small stderr-chrome gate so notices/nudges/progress are
       suppressed while errors still print
-- [ ] write tests: bare `config` prints settings; `version --out-of-home` errors as unknown flag;
+- [x] write tests: bare `config` prints settings; `version --out-of-home` errors as unknown flag;
       `--quiet` suppresses the `masked N` / nudge lines but not errors
-- [ ] run tests — must pass before next task
+- [x] run tests — must pass before next task
 
 ### Task 8: Error-voice pass — every actionable error names its remedy
 

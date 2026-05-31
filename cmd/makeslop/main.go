@@ -98,7 +98,7 @@ func mergeUniqueSorted(a, b []string) []string {
 }
 
 // runRun implements the docker-launch logic for the "run" subcommand.
-func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfHome, dryRun bool) error {
+func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfHome, dryRun, quiet bool) error {
 	pwd, err := resolvePwd()
 	if err != nil {
 		return err
@@ -127,7 +127,9 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfH
 		return err
 	}
 	if len(masked) > 0 {
-		fmt.Fprintf(cmd.ErrOrStderr(), "makeslop: masked %d secret file(s)\n", len(masked))
+		// "masked N" is stderr chrome — gated by --quiet.
+		chrome := &quietWriter{w: cmd.ErrOrStderr(), quiet: &quiet}
+		fmt.Fprintf(chrome, "makeslop: masked %d secret file(s)\n", len(masked))
 	}
 	maskedFiles := mergeUniqueSorted(masked, yamlExcludes.Files)
 
@@ -209,12 +211,29 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfH
 	return nil
 }
 
+// quietWriter wraps an io.Writer and discards writes when quiet is true.
+// It is used to gate stderr chrome (notices, nudges, progress) while letting
+// callers that write to the underlying writer (e.g. cobra's SetErr) use the
+// real writer for actual errors.
+type quietWriter struct {
+	w     io.Writer
+	quiet *bool
+}
+
+func (q *quietWriter) Write(p []byte) (int, error) {
+	if q.quiet != nil && *q.quiet {
+		return len(p), nil
+	}
+	return q.w.Write(p)
+}
+
 func newRootCmd(baseDir string) *cobra.Command {
 	ws := workspace.New(baseDir)
 
 	var (
 		outOfHome bool
 		dryRun    bool
+		quiet     bool
 	)
 
 	rootCmd := &cobra.Command{
@@ -223,6 +242,10 @@ func newRootCmd(baseDir string) *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
+
+	// --quiet is persistent so all subcommands inherit it.
+	rootCmd.PersistentFlags().BoolVar(&quiet, "quiet", false,
+		"suppress stderr chrome (notices, nudges, progress); errors still print")
 
 	initCmd := &cobra.Command{
 		Use:          "init",
@@ -284,31 +307,41 @@ func newRootCmd(baseDir string) *cobra.Command {
 				_, _, stale := config.MigrationStatus(s)
 				if stale {
 					current, latest, _ := config.MigrationStatus(s)
-					fmt.Fprintf(cmd.ErrOrStderr(),
+					// Nudge is chrome (non-blocking), gated by --quiet.
+					chrome := &quietWriter{w: cmd.ErrOrStderr(), quiet: &quiet}
+					fmt.Fprintf(chrome,
 						"note: base config is v%d, yours is v%d — run 'makeslop migrate'\n",
 						latest, current)
 				}
 			}
 
-			// Success: stderr gets the human-readable message; stdout keeps the bare path.
-			fmt.Fprintf(cmd.ErrOrStderr(),
+			// Success: stderr chrome is gated by --quiet; stdout keeps the bare path.
+			// The "registered" line is human notice (chrome), so route through quietWriter.
+			chrome := &quietWriter{w: cmd.ErrOrStderr(), quiet: &quiet}
+			fmt.Fprintf(chrome,
 				"registered %s — run 'makeslop build' then 'makeslop run'\n",
 				filepath.Base(pwd))
 			fmt.Fprintln(cmd.OutOrStdout(), workspaceDir)
 			return nil
 		},
 	}
+	// --out-of-home is scoped to init and run only (not a persistent flag on root).
+	initCmd.Flags().BoolVar(&outOfHome, "out-of-home", false,
+		"allow running outside the user's home directory")
 
 	runCmd := &cobra.Command{
 		Use:          "run",
 		Short:        "Launch the docker container for this workspace",
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
-		RunE:         func(cmd *cobra.Command, _ []string) error { return runRun(cmd, ws, baseDir, outOfHome, dryRun) },
+		RunE:         func(cmd *cobra.Command, _ []string) error { return runRun(cmd, ws, baseDir, outOfHome, dryRun, quiet) },
 	}
 
 	runCmd.Flags().BoolVarP(&dryRun, "dry-run", "n", false,
 		"print the docker run command instead of executing it")
+	// --out-of-home is scoped to run as well (not a persistent flag on root).
+	runCmd.Flags().BoolVar(&outOfHome, "out-of-home", false,
+		"allow running outside the user's home directory")
 
 	migrateCmd := &cobra.Command{
 		Use:          "migrate",
@@ -365,7 +398,16 @@ func newRootCmd(baseDir string) *cobra.Command {
 		Use:          "config",
 		Short:        "View or change makeslop settings",
 		SilenceUsage: true,
-		RunE:         func(cmd *cobra.Command, _ []string) error { return cmd.Help() },
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			s, err := config.Load(baseDir)
+			if err != nil {
+				return err
+			}
+			for _, e := range config.ConfigList(s) {
+				fmt.Fprintf(cmd.OutOrStdout(), "%s = %s\n", e.Name, e.Value)
+			}
+			return nil
+		},
 	}
 
 	configListCmd := &cobra.Command{
@@ -425,9 +467,6 @@ func newRootCmd(baseDir string) *cobra.Command {
 	}
 
 	statusCmd := newStatusCmd(ws, baseDir, defaultIsTTY)
-
-	rootCmd.PersistentFlags().BoolVar(&outOfHome, "out-of-home", false,
-		"allow running outside the user's home directory")
 
 	rootCmd.AddCommand(initCmd, runCmd, migrateCmd, buildCmd, configCmd, versionCmd, statusCmd)
 	return rootCmd
