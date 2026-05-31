@@ -176,15 +176,15 @@ func Scan(ctx context.Context, root string, patterns, skipDirs []string) ([]stri
 - Modify: `internal/security/security_test.go`
 - Modify/Delete: `internal/security/testing.go`
 
-- [ ] delete `SetFdBinaryForTest` and `WriteFdShim` from `testing.go`; if the file becomes empty, delete the file
-- [ ] remove all fd-shim / `ErrFdMissing` / fd-fdfind PATH-probe tests from `security_test.go`
-- [ ] add table-driven matcher tests against a real `t.TempDir()` tree: each default glob hits its file; near-misses (`.envrc`, `environment`, `keyfile`, `keyboard.txt`) do NOT match
-- [ ] add skip-dirs pruning test: a secret planted in `node_modules/` and `.git/` is NOT returned
-- [ ] add empty-patterns test ⇒ `nil`; add nested/hidden-file-found test; add `.gitignore`d-file-still-found test
-- [ ] add symlink tests: symlink-to-secret-file is dropped; for a symlinked dir, assert the **target's contents are not walked** (plant a matching secret behind the link and confirm it is absent), not merely that the link basename is gone (guard with `docker.SkipNonPOSIX`)
-- [ ] add walk-error propagation test: `chmod 0o000` a subdir ⇒ `Scan` returns an error (guard with `docker.SkipNonPOSIX`)
-- [ ] add under-root invariant test: every path returned by `Scan` satisfies `filepath.IsLocal(rel)` relative to `root` — pins the `internal/docker/spec.go:95` "host is under ProjectRoot" contract
-- [ ] run tests: `GOTMPDIR=/home/user go test ./internal/security/...` — must pass before next task
+- [x] delete `SetFdBinaryForTest` and `WriteFdShim` from `testing.go`; if the file becomes empty, delete the file
+- [x] remove all fd-shim / `ErrFdMissing` / fd-fdfind PATH-probe tests from `security_test.go`
+- [x] add table-driven matcher tests against a real `t.TempDir()` tree: each default glob hits its file; near-misses (`.envrc`, `environment`, `keyfile`, `keyboard.txt`) do NOT match
+- [x] add skip-dirs pruning test: a secret planted in `node_modules/` and `.git/` is NOT returned
+- [x] add empty-patterns test ⇒ `nil`; add nested/hidden-file-found test; add `.gitignore`d-file-still-found test
+- [x] add symlink tests: symlink-to-secret-file is dropped; for a symlinked dir, assert the **target's contents are not walked** (plant a matching secret behind the link and confirm it is absent), not merely that the link basename is gone (guard with `docker.SkipNonPOSIX`)
+- [x] add walk-error propagation test: `chmod 0o000` a subdir ⇒ `Scan` returns an error (guard with `docker.SkipNonPOSIX`)
+- [x] add under-root invariant test: every path returned by `Scan` satisfies `filepath.IsLocal(rel)` relative to `root` — pins the `internal/docker/spec.go:95` "host is under ProjectRoot" contract
+- [x] run tests: `GOTMPDIR=/home/user go test ./internal/security/...` — must pass before next task
 
 ### Task 5: Rewire runGo in main.go
 
