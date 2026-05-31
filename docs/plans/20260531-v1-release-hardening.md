@@ -128,22 +128,22 @@ the basics (LICENSE, CI, version stamping) plus carries a committed build artifa
 - Modify: `internal/security/security.go`
 - Modify: `internal/security/security_test.go`
 
-- [ ] Replace the `--regex` value `\.env$` with the exact anchored alternation
+- [x] Replace the `--regex` value `\.env$` with the exact anchored alternation
       `\.env$|^\.env\.|\.pem$|\.key$|^id_rsa|^id_ed25519|^\.npmrc$|^\.netrc$|^\.git-credentials$`
       in the `argv` slice; keep all other flags, `--print0` parsing, and the `Rel`+`IsLocal` filter.
-- [ ] Update the package/function doc comment on `Scan` to describe the denylist (not just `.env`).
-- [ ] **Update existing `TestScan_ArgvShape`** (security_test.go:167): change its expected `--regex`
+- [x] Update the package/function doc comment on `Scan` to describe the denylist (not just `.env`).
+- [x] **Update existing `TestScan_ArgvShape`** (security_test.go:167): change its expected `--regex`
       value from `\.env$` to the new alternation string (exact match).
-- [ ] **Update existing `TestScan_RealFd_MatchesExpectedFiles`** (security_test.go:~232): move
+- [x] **Update existing `TestScan_RealFd_MatchesExpectedFiles`** (security_test.go:~232): move
       `.env.local` from the NOT-included set to the included set; add fixtures `app.pem`, `server.key`,
       `id_rsa`, `id_rsa.pub`, `id_ed25519`, `.npmrc`, `.netrc`, `.git-credentials` to the included set;
       add `.envrc` and `environment` as negative (NOT-included) fixtures.
-- [ ] Add table-test cases asserting each new pattern is matched: `.env`, `.env.local`, `local.env`,
+- [x] Add table-test cases asserting each new pattern is matched: `.env`, `.env.local`, `local.env`,
       `app.pem`, `server.key`, `id_rsa`, `id_rsa.pub`, `id_ed25519`, `.npmrc`, `.netrc`, `.git-credentials`.
-- [ ] Add negative table-test cases asserting these are NOT matched: `.envrc`, `environment`,
+- [x] Add negative table-test cases asserting these are NOT matched: `.envrc`, `environment`,
       `notes.txt`, `keyfile` (no extension).
-- [ ] Confirm the existing exclude dirs (`.git`, `node_modules`, `vendor`, `.venv`) still apply.
-- [ ] Run `GOTMPDIR=/home/user go test ./internal/security/...` — must pass before Task 2.
+- [x] Confirm the existing exclude dirs (`.git`, `node_modules`, `vendor`, `.venv`) still apply.
+- [x] Run `GOTMPDIR=/home/user go test ./internal/security/...` — must pass before Task 2.
 
 ### Task 2: Probe-dial the upstream proxy on Start (fail loud)
 

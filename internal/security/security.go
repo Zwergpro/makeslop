@@ -1,5 +1,12 @@
-// Package security scans for .env files under a project root so they can be
-// overlaid with /dev/null mounts, preventing container access to host secrets.
+// Package security scans for secret-bearing files under a project root so they
+// can be overlaid with /dev/null mounts, preventing container access to host
+// secrets. The denylist (basename-scoped fd --regex) covers:
+//   - .env files: names ending in .env (\.env$) or starting with .env. (^\.env\.)
+//   - PEM/key material: *.pem (\.pem$), *.key (\.key$)
+//   - SSH keys: id_rsa* (^id_rsa), id_ed25519* (^id_ed25519)
+//   - Credential files: .npmrc (^\.npmrc$), .netrc (^\.netrc$), .git-credentials (^\.git-credentials$)
+//
+// NOT matched: .envrc, environment, keyfile (no extension), keyboard.txt.
 package security
 
 import (
@@ -18,7 +25,11 @@ var fdBinary = ""
 // ErrFdMissing is returned when neither fd nor fdfind is on PATH.
 var ErrFdMissing = errors.New("security: fd CLI not found on PATH")
 
-// Scan returns the absolute, sorted paths of every .env file under root.
+// Scan returns the absolute, sorted paths of every secret-bearing file under
+// root. The denylist is basename-scoped (fd matches basenames by default):
+//
+//	\.env$|^\.env\.|\.pem$|\.key$|^id_rsa|^id_ed25519|^\.npmrc$|^\.netrc$|^\.git-credentials$
+//
 // Precondition: root must be absolute and EvalSymlinks-evaluated; any direct
 // caller must enforce this.
 // Returned paths are guaranteed to be under root (trust boundary for the fd
@@ -54,7 +65,7 @@ func Scan(ctx context.Context, root string) ([]string, error) {
 		"--exclude", "vendor",
 		"--exclude", ".venv",
 		"--print0",
-		"--regex", `\.env$`,
+		"--regex", `\.env$|^\.env\.|\.pem$|\.key$|^id_rsa|^id_ed25519|^\.npmrc$|^\.netrc$|^\.git-credentials$`,
 		"--",
 		root,
 	}

@@ -164,7 +164,7 @@ func TestScan_ArgvShape(t *testing.T) {
 		"--exclude", "vendor",
 		"--exclude", ".venv",
 		"--print0",
-		"--regex", `\.env$`,
+		"--regex", `\.env$|^\.env\.|\.pem$|\.key$|^id_rsa|^id_ed25519|^\.npmrc$|^\.netrc$|^\.git-credentials$`,
 		"--",
 		root,
 	}
@@ -174,6 +174,101 @@ func TestScan_ArgvShape(t *testing.T) {
 	for i, w := range want {
 		if got[i] != w {
 			t.Errorf("argv[%d] = %q, want %q", i, got[i], w)
+		}
+	}
+}
+
+// TestScan_RealFd_DenylistPatterns verifies that each basename pattern in the
+// broadened denylist is matched (positive cases) and that the well-known
+// non-secret names are NOT matched (negative cases). Requires real fd/fdfind.
+func TestScan_RealFd_DenylistPatterns(t *testing.T) {
+	var fdExe string
+	for _, name := range []string{"fd", "fdfind"} {
+		if resolved, err := exec.LookPath(name); err == nil {
+			fdExe = resolved
+			break
+		}
+	}
+	if fdExe == "" {
+		t.Skip("neither fd nor fdfind found on PATH; skipping denylist pattern test")
+	}
+	t.Cleanup(SetFdBinaryForTest(fdExe))
+
+	root := evalSymlinks(t, t.TempDir())
+
+	mustWriteFile := func(path string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
+		}
+		if err := os.WriteFile(path, []byte("data\n"), 0o644); err != nil {
+			t.Fatalf("write %s: %v", path, err)
+		}
+	}
+
+	positives := []string{
+		// \.env$ pattern
+		".env",
+		"local.env",
+		"app.env",
+		// ^\.env\. pattern
+		".env.local",
+		".env.production",
+		".env.staging",
+		// \.pem$ pattern
+		"app.pem",
+		"cert.pem",
+		// \.key$ pattern
+		"server.key",
+		"private.key",
+		// ^id_rsa pattern
+		"id_rsa",
+		"id_rsa.pub",
+		// ^id_ed25519 pattern
+		"id_ed25519",
+		"id_ed25519.pub",
+		// ^\.npmrc$ pattern
+		".npmrc",
+		// ^\.netrc$ pattern
+		".netrc",
+		// ^\.git-credentials$ pattern
+		".git-credentials",
+	}
+
+	negatives := []string{
+		// .envrc must NOT be matched (no $ after .env, and no dot follows)
+		".envrc",
+		// plain word must NOT be matched
+		"environment",
+		// notes file must NOT be matched
+		"notes.txt",
+		// keyfile with no extension must NOT be matched
+		"keyfile",
+	}
+
+	// Write all files.
+	for _, name := range append(positives, negatives...) {
+		mustWriteFile(filepath.Join(root, name))
+	}
+
+	got, err := Scan(context.Background(), root)
+	if err != nil {
+		t.Fatalf("Scan returned error: %v", err)
+	}
+
+	gotSet := make(map[string]bool, len(got))
+	for _, p := range got {
+		gotSet[filepath.Base(p)] = true
+	}
+
+	for _, name := range positives {
+		if !gotSet[name] {
+			t.Errorf("positive: %q should be matched by denylist, but was not", name)
+		}
+	}
+	for _, name := range negatives {
+		if gotSet[name] {
+			t.Errorf("negative: %q should NOT be matched by denylist, but was", name)
 		}
 	}
 }
@@ -211,6 +306,20 @@ func TestScan_RealFd_MatchesExpectedFiles(t *testing.T) {
 		filepath.Join(root, ".env"),
 		filepath.Join(root, "local.env"),
 		filepath.Join(root, "sub", "dir", ".env"),
+		// .env.<suffix> pattern (^\.env\.)
+		filepath.Join(root, ".env.local"),
+		filepath.Join(root, ".env.production"),
+		// PEM/key material
+		filepath.Join(root, "app.pem"),
+		filepath.Join(root, "server.key"),
+		// SSH keys
+		filepath.Join(root, "id_rsa"),
+		filepath.Join(root, "id_rsa.pub"),
+		filepath.Join(root, "id_ed25519"),
+		// Credential files
+		filepath.Join(root, ".npmrc"),
+		filepath.Join(root, ".netrc"),
+		filepath.Join(root, ".git-credentials"),
 	}
 	for _, p := range included {
 		mustWriteFile(p, "SECRET=1\n")
@@ -228,8 +337,10 @@ func TestScan_RealFd_MatchesExpectedFiles(t *testing.T) {
 	mustWriteFile(ignored, "SECRET=4\n")
 	included = append(included, ignored)
 
-	// NOT included: basename does not end exactly in ".env".
-	mustWriteFile(filepath.Join(root, ".env.local"), "SECRET=5\n")
+	// NOT included: .envrc, environment, keyfile (no extension).
+	mustWriteFile(filepath.Join(root, ".envrc"), "export FOO=bar\n")
+	mustWriteFile(filepath.Join(root, "environment"), "ENV=prod\n")
+	mustWriteFile(filepath.Join(root, "keyfile"), "data\n")
 
 	got, err := Scan(context.Background(), root)
 	if err != nil {
