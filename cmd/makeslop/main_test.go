@@ -27,6 +27,29 @@ import (
 // package-level SetForTest helpers. Do not add t.Parallel() to tests that
 // touch those swaps — the underlying state is process-global.
 
+// capturedGateway holds the arguments passed to newGatewayFn so tests can
+// inspect what sockPath, proxy, and logPath were used without running a real
+// gateway socket.
+type capturedGateway struct{ sockPath, proxy, logPath string }
+
+// setGatewayFnForTest installs a replacement newGatewayFn that records its
+// arguments and delegates to the real networks.NewGateway. It returns a
+// pointer to the capturedGateway so callers can inspect the captured values
+// after the first call. The original function is restored via t.Cleanup.
+//
+// Usage mirrors docker.SetClientForTest.
+func setGatewayFnForTest(t *testing.T) *capturedGateway {
+	t.Helper()
+	var cap capturedGateway
+	orig := newGatewayFn
+	newGatewayFn = func(sockPath, proxy, logPath string) *networks.Gateway {
+		cap = capturedGateway{sockPath, proxy, logPath}
+		return networks.NewGateway(sockPath, proxy, logPath)
+	}
+	t.Cleanup(func() { newGatewayFn = orig })
+	return &cap
+}
+
 func runCmd(t *testing.T, baseDir string, args ...string) (stdout, stderr string, err error) {
 	t.Helper()
 	cmd := newRootCmd(baseDir)
@@ -1147,13 +1170,7 @@ func TestRun_DryRun_StdoutEqualsBuildSpecShellCommand(t *testing.T) {
 
 	// Capture the sockPath that newGatewayFn will receive so we can build the
 	// expected spec. We still call the real NewGateway so Start would work.
-	var capturedSockPath string
-	orig := newGatewayFn
-	newGatewayFn = func(sockPath, proxy, logPath string) *networks.Gateway {
-		capturedSockPath = sockPath
-		return networks.NewGateway(sockPath, proxy, logPath)
-	}
-	t.Cleanup(func() { newGatewayFn = orig })
+	cap := setGatewayFnForTest(t)
 
 	stubTTY(t, false)
 
@@ -1168,7 +1185,7 @@ func TestRun_DryRun_StdoutEqualsBuildSpecShellCommand(t *testing.T) {
 		t.Fatalf("load settings: %v", loadErr)
 	}
 	// Gateway is the default: spec must include socket paths.
-	if capturedSockPath == "" {
+	if cap.sockPath == "" {
 		t.Fatal("newGatewayFn was not called; sockPath not captured")
 	}
 	want := docker.BuildSpec(docker.Options{
@@ -1178,7 +1195,7 @@ func TestRun_DryRun_StdoutEqualsBuildSpecShellCommand(t *testing.T) {
 		Image:                s.Image,
 		Command:              s.Shell,
 		TmpDirSize:           s.TmpDirSize,
-		ProxySocketHost:      capturedSockPath,
+		ProxySocketHost:      cap.sockPath,
 		ProxySocketContainer: "/tmp/makeslop-proxy.sock",
 	}).ShellCommand()
 
@@ -1718,13 +1735,7 @@ func TestRun_YamlAbsentIsBitIdenticalArgv(t *testing.T) {
 	}
 
 	// Capture sockPath from the newGatewayFn seam.
-	var capturedSockPath string
-	orig := newGatewayFn
-	newGatewayFn = func(sockPath, proxy, logPath string) *networks.Gateway {
-		capturedSockPath = sockPath
-		return networks.NewGateway(sockPath, proxy, logPath)
-	}
-	t.Cleanup(func() { newGatewayFn = orig })
+	cap := setGatewayFnForTest(t)
 
 	// Use --dry-run: yaml absent → gateway is default (socket wired).
 	stubTTY(t, false)
@@ -1733,7 +1744,7 @@ func TestRun_YamlAbsentIsBitIdenticalArgv(t *testing.T) {
 		t.Fatalf("go --dry-run failed: %v; stderr=%q", err, stderr)
 	}
 
-	if capturedSockPath == "" {
+	if cap.sockPath == "" {
 		t.Fatal("newGatewayFn was not called; sockPath not captured")
 	}
 	s, loadErr := config.Load(baseDir)
@@ -1748,7 +1759,7 @@ func TestRun_YamlAbsentIsBitIdenticalArgv(t *testing.T) {
 		Image:                s.Image,
 		Command:              s.Shell,
 		TmpDirSize:           s.TmpDirSize,
-		ProxySocketHost:      capturedSockPath,
+		ProxySocketHost:      cap.sockPath,
 		ProxySocketContainer: "/tmp/makeslop-proxy.sock",
 	}).ShellCommand()
 
@@ -2028,14 +2039,7 @@ func TestRun_DryRun_GatewayDefault_WiresSocket(t *testing.T) {
 	_ = os.Remove(filepath.Join(resolvedPwd, projectconfig.Filename))
 
 	// Capture the sockPath and proxy args from newGatewayFn.
-	type captured struct{ sockPath, proxy, logPath string }
-	var cap captured
-	orig := newGatewayFn
-	newGatewayFn = func(sockPath, proxy, logPath string) *networks.Gateway {
-		cap = captured{sockPath, proxy, logPath}
-		return networks.NewGateway(sockPath, proxy, logPath)
-	}
-	t.Cleanup(func() { newGatewayFn = orig })
+	cap := setGatewayFnForTest(t)
 
 	stubTTY(t, false)
 
@@ -2109,13 +2113,7 @@ func TestRun_DryRun_NoProxy_RestoresBridgeNetworking(t *testing.T) {
 	_ = os.Remove(filepath.Join(resolvedPwd, projectconfig.Filename))
 
 	// Track whether newGatewayFn was called.
-	var gwCalled bool
-	orig := newGatewayFn
-	newGatewayFn = func(sockPath, proxy, logPath string) *networks.Gateway {
-		gwCalled = true
-		return networks.NewGateway(sockPath, proxy, logPath)
-	}
-	t.Cleanup(func() { newGatewayFn = orig })
+	cap := setGatewayFnForTest(t)
 
 	stubTTY(t, false)
 
@@ -2125,8 +2123,8 @@ func TestRun_DryRun_NoProxy_RestoresBridgeNetworking(t *testing.T) {
 	}
 
 	// --no-proxy: gateway must NOT be constructed.
-	if gwCalled {
-		t.Error("newGatewayFn must not be called when --no-proxy is set")
+	if cap.sockPath != "" {
+		t.Errorf("newGatewayFn must not be called when --no-proxy is set; got sockPath=%q", cap.sockPath)
 	}
 
 	// Bridge networking: no --network, no proxy env vars, no socket.
@@ -3655,14 +3653,7 @@ func TestRun_DryRun_UpstreamProxy_CapturesProxyArg(t *testing.T) {
 		t.Fatalf("write yaml: %v", err)
 	}
 
-	type captured struct{ sockPath, proxy, logPath string }
-	var cap captured
-	orig := newGatewayFn
-	newGatewayFn = func(sockPath, proxy, logPath string) *networks.Gateway {
-		cap = captured{sockPath, proxy, logPath}
-		return networks.NewGateway(sockPath, proxy, logPath)
-	}
-	t.Cleanup(func() { newGatewayFn = orig })
+	cap := setGatewayFnForTest(t)
 
 	stubTTY(t, false)
 
@@ -3732,13 +3723,7 @@ func TestRun_DryRun_NetworkLog_CapturesLogPath(t *testing.T) {
 		t.Fatalf("write yaml: %v", err)
 	}
 
-	var capturedLogPath string
-	orig := newGatewayFn
-	newGatewayFn = func(sockPath, proxy, logPath string) *networks.Gateway {
-		capturedLogPath = logPath
-		return networks.NewGateway(sockPath, proxy, logPath)
-	}
-	t.Cleanup(func() { newGatewayFn = orig })
+	cap := setGatewayFnForTest(t)
 
 	stubTTY(t, false)
 
@@ -3749,7 +3734,116 @@ func TestRun_DryRun_NetworkLog_CapturesLogPath(t *testing.T) {
 
 	// logPath must be the resolved absolute path (root + logRel).
 	wantLogPath := filepath.Join(resolvedPwd, logRel)
-	if capturedLogPath != wantLogPath {
-		t.Errorf("logPath = %q, want %q", capturedLogPath, wantLogPath)
+	if cap.logPath != wantLogPath {
+		t.Errorf("logPath = %q, want %q", cap.logPath, wantLogPath)
+	}
+}
+
+// TestRun_GatewayStartFailure_AbortsBeforeDocker verifies that when gw.Start()
+// returns an error (e.g. bad log path, unreachable upstream), runRun returns
+// that error and the container is never started (fc.Started must be false).
+// This guards the "fail-loud" invariant at the gateway layer.
+func TestRun_GatewayStartFailure_AbortsBeforeDocker(t *testing.T) {
+	docker.SkipNonPOSIX(t, "unix socket tests are POSIX-only; makeslop is POSIX-only")
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	fc := installFakeRunClient(t, 0)
+	stubTTY(t, true)
+
+	// Swap newGatewayFn to return a gateway that always fails Start due to a
+	// bad log path (non-existent directory).
+	badLogPath := "/tmp/nonexistent_dir_makeslop_test/request.log"
+	orig := newGatewayFn
+	newGatewayFn = func(sockPath, proxy, logPath string) *networks.Gateway {
+		return networks.NewGateway(sockPath, proxy, badLogPath)
+	}
+	t.Cleanup(func() { newGatewayFn = orig })
+
+	_, stderr, err := runCmd(t, baseDir, "run")
+	if err == nil {
+		t.Fatalf("expected error from gw.Start() failure, got nil; stderr=%q", stderr)
+	}
+	// Error must not be errSilent — it is an unhandled error that main() prints.
+	if errors.Is(err, errSilent) {
+		t.Errorf("gateway Start error must not be errSilent; got errSilent")
+	}
+	if fc.Started {
+		t.Error("docker container must not be started when gw.Start() fails")
+	}
+}
+
+// TestRun_NoProxy_WithAddressSet verifies the primary escape-hatch combination:
+// --no-proxy flag overrides a configured network.proxy.address, so the gateway
+// is NOT constructed and bridge networking is used instead.
+func TestRun_NoProxy_WithAddressSet(t *testing.T) {
+	docker.SkipNonPOSIX(t, "proxy socket tests are POSIX-only; makeslop is POSIX-only")
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	initOut, _, err := runCmd(t, baseDir, "init")
+	if err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	workspaceDir := strings.TrimSpace(initOut)
+	resolvedPwd := evalSymlinks(t, pwd)
+
+	// Write .makeslop.yaml with a proxy address (upstream mode normally).
+	const upstreamAddr = "10.0.0.5:8888"
+	yamlContent := "exclude:\n  dirs: []\n  files: []\nnetwork:\n  proxy:\n    address: " + upstreamAddr + "\n  log: \"\"\n"
+	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(yamlContent), 0o644); err != nil {
+		t.Fatalf("write yaml: %v", err)
+	}
+
+	// Track whether newGatewayFn is called.
+	cap := setGatewayFnForTest(t)
+
+	stubTTY(t, false)
+
+	stdout, stderr, err := runCmd(t, baseDir, "run", "--no-proxy", "--dry-run")
+	if err != nil {
+		t.Fatalf("--no-proxy --dry-run with address set failed: %v; stderr=%q", err, stderr)
+	}
+
+	// --no-proxy wins over the configured address: gateway must NOT be constructed.
+	if cap.sockPath != "" {
+		t.Errorf("newGatewayFn must not be called when --no-proxy is set, even when address is configured; sockPath=%q", cap.sockPath)
+	}
+
+	// Bridge networking: no --network, no proxy env vars, no socket mount.
+	if strings.Contains(stdout, "--network") {
+		t.Errorf("--no-proxy: stdout must not contain --network\nstdout:\n%s", stdout)
+	}
+	if strings.Contains(stdout, "HTTP_PROXY") {
+		t.Errorf("--no-proxy: stdout must not contain HTTP_PROXY\nstdout:\n%s", stdout)
+	}
+	if strings.Contains(stdout, upstreamAddr) {
+		t.Errorf("--no-proxy: upstream address must not appear in spec\nstdout:\n%s", stdout)
+	}
+
+	// Verify the output matches plain BuildSpec (no proxy options).
+	s, loadErr := config.Load(baseDir)
+	if loadErr != nil {
+		t.Fatalf("load settings: %v", loadErr)
+	}
+	want := docker.BuildSpec(docker.Options{
+		ProjectRoot:   resolvedPwd,
+		WorkspaceName: filepath.Base(workspaceDir),
+		BaseDir:       baseDir,
+		Image:         s.Image,
+		Command:       s.Shell,
+		TmpDirSize:    s.TmpDirSize,
+	}).ShellCommand()
+	got := strings.TrimSuffix(stdout, "\n")
+	if got != want {
+		t.Errorf("--no-proxy with address: stdout must equal bridge-mode argv\ngot:\n%s\n\nwant:\n%s", got, want)
 	}
 }

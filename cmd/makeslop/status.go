@@ -321,7 +321,7 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, jso
 				proxyDetail = "gateway (direct egress)"
 			}
 			if netCfg.LogPath != "" {
-				proxyDetail += " (logging → " + netCfg.LogPath + ")"
+				proxyDetail = fmt.Sprintf("%s (logging → %s)", proxyDetail, netCfg.LogPath)
 			}
 			checks = append(checks, statusCheck{
 				Name:   "proxy",

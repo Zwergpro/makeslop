@@ -230,8 +230,7 @@ func Load(root string) (Excludes, Network, error) {
 		// non-empty, not absolute, filepath.IsLocal, not ".", not a reserved agent path.
 		cleaned, err := validateEntries([]string{logRel}, "network.log")
 		if err != nil {
-			// Re-wrap with the network.log context for clarity.
-			return Excludes{}, Network{}, fmt.Errorf("projectconfig: invalid network.log %q: %w", logRel, err)
+			return Excludes{}, Network{}, fmt.Errorf("projectconfig: invalid network.log %q: %s", logRel, strings.TrimPrefix(err.Error(), "projectconfig: "))
 		}
 		// No stat-drop: network.log is an output file and need not exist yet.
 		netCfg.LogPath = filepath.Join(root, cleaned[0])

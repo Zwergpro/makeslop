@@ -51,6 +51,24 @@ duration of a test. Ready-made fakes live in `testing.go`:
 This replaces the old shell-shim machinery (`WriteShim`, `SetDockerBinaryForTest`). There are no
 shell shims, no `dockerBinary` global, no `executableTempDir`.
 
+### newGatewayFn seam (cmd/makeslop/main.go)
+`newGatewayFn` is a package-level variable in `cmd/makeslop/main.go` that defaults to
+`networks.NewGateway`. It mirrors the `docker.newClientFn` pattern: tests swap it via the
+`setGatewayFnForTest(t)` helper defined in `cmd/makeslop/main_test.go`.
+
+The helper installs a replacement that records `(sockPath, proxy, logPath)` arguments for
+inspection and delegates to the real `networks.NewGateway`, so gateway behaviour (socket bind,
+probe-dial) is exercised unchanged while the test can assert on what arguments `runRun` passed.
+
+```go
+cap := setGatewayFnForTest(t)
+// ... run command ...
+if cap.sockPath == "" { t.Fatal("gateway was not constructed") }
+```
+
+The seam is used in dry-run and gateway-wiring tests in `main_test.go` where a real socket bind
+would be unnecessary or would race with test teardown.
+
 ### Shared preflight helpers (`internal/docker/preflight.go`)
 
 `CheckDaemon(ctx context.Context) error` — pings the daemon via `newClientFn`; returns
@@ -166,7 +184,7 @@ Config helpers added in `internal/config/config.go`:
 3. Image (`ImageExists`) — blocking
 4. Workspace (`ws.Lookup`) — blocking
 5. Secret scan summary (`security.Scan` count) — non-blocking (`–`/`✓`)
-6. Proxy (`projectconfig.Load`) — non-blocking (`–`)
+6. Proxy (`projectconfig.Load`) — non-blocking; detail is always a string: `gateway (direct egress)` when `ProxyAddress` is empty, the upstream address when set, with an optional ` (logging → <path>)` suffix when `LogPath` is set
 
 Output: aligned lines with glyphs `✓/✗/–/!`; final verdict line + single next action. `--json`
 emits `{checks:[{name,state,detail}], ready:bool}`. Exits non-zero when any blocking check fails.

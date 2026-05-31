@@ -39,6 +39,13 @@ import (
 	"time"
 )
 
+// shutdownTimeout is the maximum time srv.Shutdown waits for in-flight
+// ServeHTTP goroutines to drain before force-closing connections. 3 seconds
+// is long enough to let legitimate handlers finish a round-trip to a local
+// origin (httptest servers in tests, nearby upstreams in production) while
+// being short enough not to block container teardown noticeably.
+const shutdownTimeout = 3 * time.Second
+
 // hopByHopHeaders is the set of headers that must not be forwarded when
 // proxying plain-HTTP requests in gateway mode. Per RFC 7230 §6.1, any header
 // named in the Connection header value is also hop-by-hop.
@@ -87,7 +94,7 @@ type Gateway struct {
 // Start surfaces bind/listen/dial errors.
 //
 // proxy: upstream address (host:port). Empty string → gateway mode (direct egress).
-// logPath: path for the request log file. Empty string → logging disabled (Task 4).
+// logPath: path for the request log file. Empty string → logging disabled.
 func NewGateway(socketPath, proxy, logPath string) *Gateway {
 	g := &Gateway{
 		socketPath: socketPath,
@@ -170,8 +177,8 @@ func (g *Gateway) Start(ctx context.Context) error {
 		// traffic is routed through the socket. A short timeout avoids blocking
 		// the launch for a prolonged period on a bad address.
 		probeCtx, probeCancel := context.WithTimeout(ctx, 5*time.Second)
-		defer probeCancel()
 		probe, err := (&net.Dialer{}).DialContext(probeCtx, "tcp", g.proxy)
+		probeCancel()
 		if err != nil {
 			g.mu.Lock()
 			g.cancel = nil
@@ -180,6 +187,13 @@ func (g *Gateway) Start(ctx context.Context) error {
 			cancel()
 			_ = ln.Close()
 			_ = os.Remove(g.socketPath)
+			// Close the log file opened above so the fd is not leaked on this
+			// error path. The caller sees an error and will not call Close().
+			if g.logFile != nil {
+				_ = g.logFile.Close()
+				g.logFile = nil
+				g.logger = nil
+			}
 			return err
 		}
 		_ = probe.Close()
@@ -199,11 +213,13 @@ func (g *Gateway) Start(ctx context.Context) error {
 			},
 		}
 
+		// Local copy of srv prevents a data race: Close() sets g.srv=nil under
+		// the mutex, and this goroutine must not read g.srv after that.
 		srv := g.srv
 		g.wg.Add(1)
 		go func() {
 			defer g.wg.Done()
-			// ErrServerClosed is the normal exit when srv.Close() is called.
+			// ErrServerClosed is the normal exit when srv.Shutdown() is called.
 			srv.Serve(ln) //nolint:errcheck // ErrServerClosed is expected
 		}()
 	}
@@ -240,7 +256,9 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		clientConn, _, err := hj.Hijack()
 		if err != nil {
-			http.Error(w, "hijack failed: "+err.Error(), http.StatusInternalServerError)
+			// After a failed Hijack the connection is in an unusable state;
+			// calling http.Error would silently fail. Just return — the
+			// http.Server will close the underlying connection on its own.
 			return
 		}
 		g.trackConn(clientConn)
@@ -329,17 +347,18 @@ func (g *Gateway) logReq(method, target string) {
 // Limitation (upstream mode): plain-HTTP keep-alive connections log only the
 // FIRST request line per connection because the upstream peek reads exactly one
 // line. CONNECT (HTTPS) is exact.
+//
+// Precondition: g.logger != nil (callers guard this before calling).
 func (g *Gateway) logFirstLine(line string) {
-	if g.logger == nil {
-		return
-	}
 	fields := strings.Fields(line)
 	if len(fields) >= 2 {
 		g.logReq(fields[0], fields[1])
 		return
 	}
 	// Malformed line — log raw to aid debugging.
-	g.logger.Printf("%s", strings.TrimSpace(line))
+	if g.logger != nil {
+		g.logger.Printf("%s", strings.TrimSpace(line))
+	}
 }
 
 // acceptLoop accepts connections from ln until it is closed or ctx is done.
@@ -383,6 +402,10 @@ func (g *Gateway) handle(ctx context.Context, client net.Conn) {
 		// Peek the first request line, log it, then forward it followed by the
 		// remaining bytes from the buffered reader.
 		br := bufio.NewReader(client)
+		// ReadString error is intentionally discarded: even a partial line (e.g.
+		// a short write, or a pipelined request without a trailing '\n') still
+		// contains the method and target we want to log, and the raw bytes must
+		// be forwarded verbatim to the upstream regardless of parse quality.
 		line, _ := br.ReadString('\n')
 		g.logFirstLine(line)
 		// Write the peeked line back to upstream, then splice remaining bytes.
@@ -460,12 +483,21 @@ func (g *Gateway) untrackConn(c net.Conn) {
 //
 // Teardown order:
 //  1. cancel() — signals the proxyCtx; stops new work.
-//  2. g.srv.Close() (gateway mode) — closes the listener and any idle HTTP conns.
+//  2. g.srv.Shutdown() (gateway mode) — drains in-flight ServeHTTP goroutines
+//     before closing the listener so that plain-HTTP handlers cannot write to
+//     g.logFile after logFile.Close() runs. Hijacked CONNECT conns are detached
+//     from srv and are torn down via the trackConn loop below.
 //     The existing ln.Close() below is a harmless double-close (ErrClosed, already _-ignored).
-//     Hijacked CONNECT conns are detached from srv and are torn down via the trackConn loop.
 //  3. Close all tracked conns — unblocks any in-flight splice goroutines.
 //  4. wg.Wait() — drain all goroutines.
 //  5. os.Remove(socket) — clean up.
+//  6. Close g.logFile — safe because:
+//     - gateway mode: srv.Shutdown() (step 2) waits for all non-hijacked plain-HTTP
+//       ServeHTTP goroutines to return before it returns, so they cannot write to
+//       logFile after this point. Hijacked CONNECT tunnels call logReq before
+//       hijacking (before the connection is detached from srv), so they are also safe.
+//     - upstream mode: all handler goroutines are tracked by wg; wg.Wait() (step 4)
+//       ensures they have fully exited before logFile.Close() runs.
 func (g *Gateway) Close() error {
 	g.mu.Lock()
 	cancel := g.cancel
@@ -485,9 +517,14 @@ func (g *Gateway) Close() error {
 		cancel()
 	}
 	if srv != nil {
-		// srv.Close() closes the underlying listener too; the ln.Close() below
-		// is a harmless double-close.
-		_ = srv.Close()
+		// Shutdown drains in-flight ServeHTTP goroutines (plain-HTTP handlers)
+		// so they cannot write to g.logFile after logFile.Close(). A short
+		// deadline prevents a hung handler from blocking the teardown forever.
+		// The underlying listener is closed by Shutdown; ln.Close() below is a
+		// harmless double-close (ErrClosed is _-ignored).
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), shutdownTimeout)
+		_ = srv.Shutdown(shutdownCtx)
+		shutdownCancel() // release the 3s timer immediately; Shutdown has already returned
 	}
 	if ln != nil {
 		_ = ln.Close()
@@ -499,6 +536,17 @@ func (g *Gateway) Close() error {
 	g.wg.Wait()
 	_ = os.Remove(g.socketPath)
 
+	// Release idle keep-alive connections held by the gateway-mode transport so
+	// they are not leaked in tests or across back-to-back Close/Start cycles.
+	// transport is non-nil only in gateway mode (proxy == "").
+	if g.transport != nil {
+		g.transport.CloseIdleConnections()
+	}
+
+	// Close the log file last. By this point:
+	// - gateway mode: srv.Shutdown() has returned (all plain-HTTP handlers done),
+	//   and CONNECT tunnels logged before hijacking; no goroutine can write logFile.
+	// - upstream mode: wg.Wait() has returned; all handler goroutines have exited.
 	if g.logFile != nil {
 		_ = g.logFile.Close()
 		g.logFile = nil

@@ -551,8 +551,13 @@ network:
 	if !strings.Contains(stderr, "logging →") {
 		t.Errorf("proxy line must contain 'logging →' suffix when log path is set; stderr=%q", stderr)
 	}
-	if !strings.Contains(stderr, "makeslop-requests.log") {
-		t.Errorf("proxy line must contain the log filename; stderr=%q", stderr)
+	// Verify the full resolved absolute path appears, not just the basename.
+	// status derives LogPath from projectconfig.Load which resolves it under
+	// the workspace root.
+	resolvedPwd := evalSymlinks(t, pwd)
+	wantLogPath := filepath.Join(resolvedPwd, "makeslop-requests.log")
+	if !strings.Contains(stderr, wantLogPath) {
+		t.Errorf("proxy line must contain the full resolved log path %q; stderr=%q", wantLogPath, stderr)
 	}
 }
 
@@ -593,6 +598,12 @@ network:
 	if !strings.Contains(stderr, "logging →") {
 		t.Errorf("proxy line must show logging suffix; stderr=%q", stderr)
 	}
+	// Verify the resolved log path appears after the arrow, not just the arrow itself.
+	resolvedPwd := evalSymlinks(t, pwd)
+	wantLogPath := filepath.Join(resolvedPwd, "proxy.log")
+	if !strings.Contains(stderr, wantLogPath) {
+		t.Errorf("proxy line must contain resolved log path %q after 'logging →'; stderr=%q", wantLogPath, stderr)
+	}
 }
 
 // TestStatus_JSON_ProxyDetail_Gateway verifies that --json proxy detail shows
@@ -627,5 +638,70 @@ func TestStatus_JSON_ProxyDetail_Gateway(t *testing.T) {
 	}
 	if proxyCheck.Detail != "gateway (direct egress)" {
 		t.Errorf("proxy detail = %q, want %q", proxyCheck.Detail, "gateway (direct egress)")
+	}
+}
+
+// TestStatus_JSON_ProxyDetail_LoggingSuffix verifies that when network.log is
+// set, the JSON detail field for the proxy check contains the logging suffix
+// with the full resolved log path.
+func TestStatus_JSON_ProxyDetail_LoggingSuffix(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	// Gateway mode with a log path.
+	const logRel = "makeslop-requests.log"
+	yamlContent := `exclude:
+  scan:
+    patterns: []
+    skip-dirs: []
+  files: []
+  dirs: []
+network:
+  proxy:
+    address: ""
+  log: "` + logRel + `"
+`
+	if err := os.WriteFile(filepath.Join(pwd, ".makeslop.yaml"), []byte(yamlContent), 0o644); err != nil {
+		t.Fatalf("write .makeslop.yaml: %v", err)
+	}
+
+	installFakeStatusClient(t, false, false)
+
+	stdout, _, _ := runStatusCmd(t, baseDir, "status", "--json")
+
+	var result statusResult
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("--json output is not valid JSON: %v\noutput: %s", err, stdout)
+	}
+
+	var proxyCheck *statusCheck
+	for i := range result.Checks {
+		if result.Checks[i].Name == "proxy" {
+			proxyCheck = &result.Checks[i]
+			break
+		}
+	}
+	if proxyCheck == nil {
+		t.Fatalf("--json missing 'proxy' check; checks: %+v", result.Checks)
+	}
+
+	// The detail must start with "gateway (direct egress)" and include the
+	// logging suffix with the full resolved absolute path.
+	if !strings.HasPrefix(proxyCheck.Detail, "gateway (direct egress)") {
+		t.Errorf("proxy detail must start with 'gateway (direct egress)'; got %q", proxyCheck.Detail)
+	}
+	if !strings.Contains(proxyCheck.Detail, "logging →") {
+		t.Errorf("proxy detail must contain 'logging →' suffix; got %q", proxyCheck.Detail)
+	}
+	resolvedPwd := evalSymlinks(t, pwd)
+	wantLogPath := filepath.Join(resolvedPwd, logRel)
+	if !strings.Contains(proxyCheck.Detail, wantLogPath) {
+		t.Errorf("proxy detail must contain resolved log path %q; got %q", wantLogPath, proxyCheck.Detail)
 	}
 }

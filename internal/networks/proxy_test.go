@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -36,13 +37,17 @@ func tempSockPath(t *testing.T) string {
 	return sock
 }
 
-// startFakeUpstream starts a minimal TCP server that echoes bytes back to the
-// caller. Returns the address and a cleanup function.
-func startFakeUpstream(t *testing.T) string {
+// startEchoTCPServer starts a minimal TCP echo server that echoes every byte
+// it receives back to the sender. Returns the listening address.
+// Used both as a fake upstream (upstream mode) and as a fake target for CONNECT
+// tunnels (gateway mode). The two helper functions that existed previously
+// (startFakeUpstream and startFakeTCPTarget) were byte-for-byte identical and
+// have been consolidated here.
+func startEchoTCPServer(t *testing.T) string {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		t.Fatalf("listen fake upstream: %v", err)
+		t.Fatalf("listen echo TCP server: %v", err)
 	}
 	t.Cleanup(func() { ln.Close() })
 	go func() {
@@ -59,6 +64,9 @@ func startFakeUpstream(t *testing.T) string {
 	}()
 	return ln.Addr().String()
 }
+
+// startFakeUpstream is an alias for startEchoTCPServer for upstream-mode tests.
+func startFakeUpstream(t *testing.T) string { return startEchoTCPServer(t) }
 
 // 0666 so container processes with a different UID can connect.
 func TestStart_BindsAndChmodSocket(t *testing.T) {
@@ -90,7 +98,10 @@ func TestSocketPath_Accessor(t *testing.T) {
 	}
 }
 
-func TestCONNECT_TunnelRelaysBytesViaBothDirections(t *testing.T) {
+// TestUpstreamMode_TunnelRelaysBytesViaBothDirections verifies that upstream
+// mode (proxy != "") relays raw bytes bidirectionally without HTTP parsing.
+// This is a byte-pipe test for the upstream path, NOT the gateway CONNECT path.
+func TestUpstreamMode_TunnelRelaysBytesViaBothDirections(t *testing.T) {
 	sock := tempSockPath(t)
 	upstreamAddr := startFakeUpstream(t)
 
@@ -559,30 +570,8 @@ func TestStart_RemovesStaleSocket(t *testing.T) {
 
 // ── gateway mode tests ────────────────────────────────────────────────────────
 
-// startFakeTCPTarget starts a minimal TCP server that echoes everything it
-// receives back to the caller. This simulates a direct TCP target for CONNECT
-// tunnels.
-func startFakeTCPTarget(t *testing.T) string {
-	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen fake TCP target: %v", err)
-	}
-	t.Cleanup(func() { ln.Close() })
-	go func() {
-		for {
-			c, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			go func() {
-				defer c.Close()
-				io.Copy(c, c) //nolint:errcheck // echo server
-			}()
-		}
-	}()
-	return ln.Addr().String()
-}
+// startFakeTCPTarget is an alias for startEchoTCPServer for gateway-mode CONNECT tests.
+func startFakeTCPTarget(t *testing.T) string { return startEchoTCPServer(t) }
 
 // dialUnixHTTP dials the unix socket and wraps it with an http.Transport so we
 // can use http.Client for testing gateway mode without an actual network call.
@@ -598,9 +587,6 @@ func dialUnixHTTP(sock string) *http.Client {
 // TestGatewayMode_Start_NoProbeDial verifies that gateway mode (proxy == "")
 // starts without requiring any upstream — no probe-dial.
 func TestGatewayMode_Start_NoProbeDial(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("POSIX-only per CLAUDE.md")
-	}
 	sock := tempSockPath(t)
 	g := NewGateway(sock, "", "") // gateway mode: no upstream
 	if err := g.Start(context.Background()); err != nil {
@@ -622,9 +608,6 @@ func TestGatewayMode_Start_NoProbeDial(t *testing.T) {
 // over the unix socket is forwarded directly to a local TCP target and that
 // bytes round-trip correctly.
 func TestGatewayMode_CONNECT_TunnelToDirectTarget(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("POSIX-only per CLAUDE.md")
-	}
 	sock := tempSockPath(t)
 	targetAddr := startFakeTCPTarget(t)
 
@@ -673,9 +656,6 @@ func TestGatewayMode_CONNECT_TunnelToDirectTarget(t *testing.T) {
 // requests are forwarded to the target httptest server and the response is
 // returned to the caller.
 func TestGatewayMode_PlainHTTP_AbsoluteForm(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("POSIX-only per CLAUDE.md")
-	}
 	sock := tempSockPath(t)
 
 	// Start a local HTTP server that serves a known response.
@@ -718,9 +698,6 @@ func TestGatewayMode_PlainHTTP_AbsoluteForm(t *testing.T) {
 // TestGatewayMode_Close_RemovesSocket verifies that Close removes the socket
 // file in gateway mode.
 func TestGatewayMode_Close_RemovesSocket(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("POSIX-only per CLAUDE.md")
-	}
 	sock := tempSockPath(t)
 	g := NewGateway(sock, "", "")
 	if err := g.Start(context.Background()); err != nil {
@@ -738,13 +715,64 @@ func TestGatewayMode_Close_RemovesSocket(t *testing.T) {
 	}
 }
 
+// TestGatewayMode_CONNECT_UnreachableTarget_Returns502 verifies that a CONNECT
+// request to an unreachable target returns 502 Bad Gateway.
+func TestGatewayMode_CONNECT_UnreachableTarget_Returns502(t *testing.T) {
+	sock := tempSockPath(t)
+	g := NewGateway(sock, "", "")
+	if err := g.Start(context.Background()); err != nil {
+		t.Fatalf("Start (gateway mode): %v", err)
+	}
+	defer g.Close()
+
+	conn, err := net.Dial("unix", sock)
+	if err != nil {
+		t.Fatalf("dial unix socket: %v", err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(5 * time.Second))
+
+	// Target port 1 is never open — DialContext will fail immediately.
+	fmt.Fprintf(conn, "CONNECT 127.0.0.1:1 HTTP/1.1\r\nHost: 127.0.0.1:1\r\n\r\n")
+
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("read CONNECT response: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Errorf("CONNECT to unreachable target: status = %d, want 502", resp.StatusCode)
+	}
+}
+
+// TestGatewayMode_PlainHTTP_RoundTripFailure_Returns502 verifies that when the
+// upstream origin refuses the connection, ServeHTTP returns 502 Bad Gateway.
+func TestGatewayMode_PlainHTTP_RoundTripFailure_Returns502(t *testing.T) {
+	sock := tempSockPath(t)
+	g := NewGateway(sock, "", "")
+	if err := g.Start(context.Background()); err != nil {
+		t.Fatalf("Start (gateway mode): %v", err)
+	}
+	defer g.Close()
+
+	client := dialUnixHTTP(sock)
+	client.Timeout = 5 * time.Second
+
+	// Port 1 is never open — RoundTrip will fail and ServeHTTP must return 502.
+	resp, err := client.Get("http://127.0.0.1:1/test")
+	if err != nil {
+		t.Fatalf("GET via gateway: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Errorf("RoundTrip failure: status = %d, want 502", resp.StatusCode)
+	}
+}
+
 // ── Task 4: request logging tests ────────────────────────────────────────────
 
 // TestGatewayLogging_CONNECT verifies that a CONNECT request writes a log line.
 func TestGatewayLogging_CONNECT(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("POSIX-only per CLAUDE.md")
-	}
 	sock := tempSockPath(t)
 	logFile := sock + ".log"
 	t.Cleanup(func() { os.Remove(logFile) })
@@ -791,9 +819,6 @@ func TestGatewayLogging_CONNECT(t *testing.T) {
 
 // TestGatewayLogging_PlainGET verifies that a plain GET request writes a log line.
 func TestGatewayLogging_PlainGET(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("POSIX-only per CLAUDE.md")
-	}
 	sock := tempSockPath(t)
 	logFile := sock + ".log"
 	t.Cleanup(func() { os.Remove(logFile) })
@@ -826,17 +851,17 @@ func TestGatewayLogging_PlainGET(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read log file: %v", err)
 	}
-	if !strings.Contains(string(data), "GET ") {
-		t.Errorf("log does not contain GET entry; got:\n%s", data)
+	// Assert both method and target URL, not just the method, so a log line
+	// with an empty target would be caught.
+	wantLogFrag := "GET " + origin.URL + "/logtest"
+	if !strings.Contains(string(data), wantLogFrag) {
+		t.Errorf("log does not contain %q; got:\n%s", wantLogFrag, data)
 	}
 }
 
 // TestUpstreamLogging_RequestLineLogged verifies that upstream mode logs the
 // first request line AND forwards bytes verbatim to the fake upstream.
 func TestUpstreamLogging_RequestLineLogged(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("POSIX-only per CLAUDE.md")
-	}
 	sock := tempSockPath(t)
 	logFile := sock + ".log"
 	t.Cleanup(func() { os.Remove(logFile) })
@@ -854,8 +879,12 @@ func TestUpstreamLogging_RequestLineLogged(t *testing.T) {
 			return
 		}
 		defer c.Close()
-		// Accept probe connection first (from Start).
-		// Second connection is the actual data.
+		// Accept the probe connection first (from Start's DialContext probe-dial
+		// in upstream mode). The probe is performed before Start returns, so by
+		// the time the goroutine below dials the unix socket, the probe connection
+		// has already been accepted here and the second Accept is ready for the
+		// actual data connection. This ordering is guaranteed by the sequential
+		// structure of Start: probe-dial succeeds → Start returns → test dials.
 		c2, err := ln.Accept()
 		if err != nil {
 			return
@@ -895,22 +924,22 @@ func TestUpstreamLogging_RequestLineLogged(t *testing.T) {
 		t.Errorf("upstream did not receive forwarded request; got: %q", upstreamGot)
 	}
 
-	// Verify log entry.
+	// Verify log entry. The log line format is "<METHOD> <target>", so we check
+	// for the exact method+URL pair (not just the method) so that an entry with
+	// an empty or truncated target would be caught.
 	data, err := os.ReadFile(logFile)
 	if err != nil {
 		t.Fatalf("read log file: %v", err)
 	}
-	if !strings.Contains(string(data), "GET http://example.com/") {
-		t.Errorf("log does not contain request line; got:\n%s", data)
+	logStr := string(data)
+	if !strings.Contains(logStr, "GET http://example.com/") {
+		t.Errorf("log does not contain 'GET http://example.com/'; got:\n%s", logStr)
 	}
 }
 
 // TestUpstreamLogging_Off verifies that when logging is off the upstream path
 // forwards bytes unchanged and no log file is created.
 func TestUpstreamLogging_Off(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("POSIX-only per CLAUDE.md")
-	}
 	sock := tempSockPath(t)
 	upstreamAddr := startFakeUpstream(t)
 
@@ -948,9 +977,6 @@ func TestUpstreamLogging_Off(t *testing.T) {
 // TestStart_FailLoud_BadLogPath verifies that Start fails and removes the socket
 // when logPath points to a non-existent directory.
 func TestStart_FailLoud_BadLogPath(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("POSIX-only per CLAUDE.md")
-	}
 	sock := tempSockPath(t)
 
 	// Use a path inside a non-existent directory — OpenFile will fail.
@@ -969,13 +995,42 @@ func TestStart_FailLoud_BadLogPath(t *testing.T) {
 	}
 }
 
+// TestStart_UpstreamMode_LogPath_ProbeFail_NoFDLeak verifies that when upstream
+// mode is used with a logPath set and the probe-dial fails, the log file opened
+// before the probe-dial is properly closed on the error path (no fd leak).
+//
+// This is the critical case identified in the code review: Start opens g.logFile
+// before branching into upstream mode, so a probe-dial failure must close it.
+func TestStart_UpstreamMode_LogPath_ProbeFail_NoFDLeak(t *testing.T) {
+	sock := tempSockPath(t)
+	logFile := sock + ".log"
+	t.Cleanup(func() { os.Remove(logFile) })
+
+	// port 1 is never open — probe-dial will fail immediately.
+	g := NewGateway(sock, "127.0.0.1:1", logFile)
+	err := g.Start(context.Background())
+	if err == nil {
+		g.Close()
+		t.Fatal("Start: expected error for unreachable upstream, got nil")
+	}
+
+	// g.logFile must be nil after the error path — the file was opened and then
+	// closed before returning the error.
+	if g.logFile != nil {
+		_ = g.logFile.Close() // prevent actual fd leak during test
+		t.Error("g.logFile must be nil after Start failure (fd was not closed on error path)")
+	}
+
+	// Socket must not exist.
+	if _, statErr := os.Stat(sock); !os.IsNotExist(statErr) {
+		t.Errorf("socket file should not exist after failed Start (stat err=%v)", statErr)
+	}
+}
+
 // TestGatewayMode_Close_TearDownInFlightTunnel verifies that Close tears down
 // an in-flight CONNECT tunnel (the hijacked conn is tracked and force-closed)
 // and that Close does not hang.
 func TestGatewayMode_Close_TearDownInFlightTunnel(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("POSIX-only per CLAUDE.md")
-	}
 	sock := tempSockPath(t)
 
 	// blockLn simulates a slow target that accepts a connection but blocks.
@@ -1047,5 +1102,49 @@ func TestGatewayMode_Close_TearDownInFlightTunnel(t *testing.T) {
 
 	if _, err := os.Stat(sock); !os.IsNotExist(err) {
 		t.Errorf("socket file still exists after Close (err=%v)", err)
+	}
+}
+
+// TestLogFirstLine_MalformedInputs verifies that logFirstLine handles edge-case
+// inputs (single token, empty line, whitespace-only) without panicking and
+// logs a reasonable raw line rather than a structured method+target pair.
+func TestLogFirstLine_MalformedInputs(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX-only per CLAUDE.md")
+	}
+	cases := []struct {
+		name  string
+		input string
+	}{
+		{"single_token", "CONNECT\n"},
+		{"empty_line", "\n"},
+		{"whitespace_only", "   \n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			logPath := fmt.Sprintf("/tmp/ms_logfirstline_%s_%d.log", tc.name, os.Getpid())
+			t.Cleanup(func() { os.Remove(logPath) })
+
+			f, err := os.OpenFile(logPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+			if err != nil {
+				t.Fatalf("open log file: %v", err)
+			}
+			g := &Gateway{
+				logFile: f,
+				logger:  log.New(f, "", 0),
+			}
+			// Must not panic on malformed input.
+			g.logFirstLine(tc.input)
+			f.Close()
+
+			data, err := os.ReadFile(logPath)
+			if err != nil {
+				t.Fatalf("read log file: %v", err)
+			}
+			// For non-whitespace-only inputs something must have been written.
+			if strings.TrimSpace(tc.input) != "" && len(strings.TrimSpace(string(data))) == 0 {
+				t.Errorf("logFirstLine wrote nothing for non-empty input %q", tc.input)
+			}
+		})
 	}
 }

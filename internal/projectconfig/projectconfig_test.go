@@ -828,27 +828,27 @@ func TestLoad_NetworkLog_ValidationErrors(t *testing.T) {
 		{
 			name:        "absolute path",
 			logVal:      "/tmp/proxy.log",
-			wantErrFrag: "invalid network.log",
+			wantErrFrag: "network.log",
 		},
 		{
 			name:        "dotdot escape",
 			logVal:      "../escape.log",
-			wantErrFrag: "invalid network.log",
+			wantErrFrag: "network.log",
 		},
 		{
 			name:        "dot refers to root",
 			logVal:      ".",
-			wantErrFrag: "invalid network.log",
+			wantErrFrag: "network.log",
 		},
 		{
 			name:        "foo/.. cleans to dot",
 			logVal:      "foo/..",
-			wantErrFrag: "invalid network.log",
+			wantErrFrag: "network.log",
 		},
 		{
 			name:        "reserved path .claude",
 			logVal:      ".claude",
-			wantErrFrag: "invalid network.log",
+			wantErrFrag: "network.log",
 		},
 	}
 
@@ -869,8 +869,11 @@ func TestLoad_NetworkLog_ValidationErrors(t *testing.T) {
 			if err == nil {
 				t.Fatalf("expected error containing %q for log=%q, got nil", tc.wantErrFrag, tc.logVal)
 			}
-			if !strings.HasPrefix(err.Error(), "projectconfig:") {
-				t.Errorf("error missing 'projectconfig:' prefix: %q", err.Error())
+			// Error starts with "projectconfig: invalid network.log" (outer wrapper,
+			// consistent with the package's documented error contract) and wraps a
+			// "projectconfig:" error from validateEntries (inner).
+			if !strings.HasPrefix(err.Error(), "projectconfig: invalid network.log") {
+				t.Errorf("error must start with 'projectconfig: invalid network.log'; got: %q", err.Error())
 			}
 			if !strings.Contains(err.Error(), tc.wantErrFrag) {
 				t.Errorf("error %q does not contain %q", err.Error(), tc.wantErrFrag)
