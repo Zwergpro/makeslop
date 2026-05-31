@@ -191,12 +191,12 @@ func Scan(ctx context.Context, root string, patterns, skipDirs []string) ([]stri
 **Files:**
 - Modify: `cmd/makeslop/main.go`
 
-- [ ] move `projectconfig.Load(workspaceRoot)` ahead of the scan; abort on error (preserves no-leak invariant)
-- [ ] call `security.Scan(cmd.Context(), workspaceRoot, yamlExcludes.Patterns, yamlExcludes.SkipDirs)`; abort on error
-- [ ] keep the `mergeUniqueSorted(masked, yamlExcludes.Files)` merge
-- [ ] reposition the `makeslop: masked N secret file(s)` message after the scan; **preserve current semantics** — N counts scan hits (`len(masked)`), not the merged total (no behavior change unless intentionally decided otherwise)
-- [ ] remove the `ErrFdMissing` branch (the "install fd" hint) and any now-unused imports
-- [ ] run build: `go build ./...` — must compile before next task
+- [x] move `projectconfig.Load(workspaceRoot)` ahead of the scan; abort on error (preserves no-leak invariant)
+- [x] call `security.Scan(cmd.Context(), workspaceRoot, yamlExcludes.Patterns, yamlExcludes.SkipDirs)`; abort on error
+- [x] keep the `mergeUniqueSorted(masked, yamlExcludes.Files)` merge
+- [x] reposition the `makeslop: masked N secret file(s)` message after the scan; **preserve current semantics** — N counts scan hits (`len(masked)`), not the merged total (no behavior change unless intentionally decided otherwise)
+- [x] remove the `ErrFdMissing` branch (the "install fd" hint) and any now-unused imports
+- [x] run build: `go build ./...` — must compile before next task
 
 ### Task 6: Update cmd/makeslop tests to config-driven masking
 
