@@ -243,19 +243,19 @@ the basics (LICENSE, CI, version stamping) plus carries a committed build artifa
 **Files:**
 - Modify: `README.md`
 
-- [ ] Rewrite the top: one-line opinionated pitch ("a sandboxed runner for Claude Code + Codex") and
+- [x] Rewrite the top: one-line opinionated pitch ("a sandboxed runner for Claude Code + Codex") and
       a short quickstart (`init` → `migrate` → `build` → `go`).
-- [ ] Update the "Secret masking" section to describe the broadened denylist (patterns + the
+- [x] Update the "Secret masking" section to describe the broadened denylist (patterns + the
       masked/not-masked examples from Technical Details); reframe the "`fd` is non-negotiable" framing
       so the denylist is the story, `fd` is just the implementation detail.
-- [ ] Reframe the proxy section: state **"Node/undici clients only"** as an explicit scope
+- [x] Reframe the proxy section: state **"Node/undici clients only"** as an explicit scope
       requirement (Claude Code + Codex qualify); note that an unreachable upstream now aborts the
       launch; replace the alarmist client-support table with a concise scope statement.
-- [ ] Add a short "Host UID" note: container runs as uid 1000; works on Docker Desktop (macOS) and
+- [x] Add a short "Host UID" note: container runs as uid 1000; works on Docker Desktop (macOS) and
       uid-1000 Linux hosts; full uid remapping is deferred to post-1.0.
-- [ ] Trim internal-dev voice ("future milestones will store…") throughout; keep the reference detail
+- [x] Trim internal-dev voice ("future milestones will store…") throughout; keep the reference detail
       (container layout, exit codes, config keys) below the quickstart.
-- [ ] Document `makeslop version` in the usage list.
+- [x] Document `makeslop version` in the usage list.
 
 ### Task 8: Verify acceptance criteria
 
