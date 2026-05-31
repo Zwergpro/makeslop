@@ -32,7 +32,7 @@ var _ apiClient = (*moby.Client)(nil)
 // (DOCKER_HOST, DOCKER_TLS_VERIFY, DOCKER_CERT_PATH, DOCKER_API_VERSION).
 // It does not dial — the connection is lazy.
 func newClient() (apiClient, error) {
-	return moby.NewClientWithOpts(moby.FromEnv, moby.WithAPIVersionNegotiation())
+	return moby.New(moby.FromEnv)
 }
 
 // newClientFn is the swap point used by tests to inject a fake apiClient.

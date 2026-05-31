@@ -351,7 +351,7 @@ func (b *blockingWaitClient) ContainerWait(ctx context.Context, _ string, _ moby
 }
 
 func (b *blockingWaitClient) ContainerStart(_ context.Context, _ string, _ moby.ContainerStartOptions) (moby.ContainerStartResult, error) {
-	b.fakeClient.wasStarted = true
+	b.wasStarted = true
 	select {
 	case <-b.startedCh:
 		// already closed — no-op

@@ -371,13 +371,15 @@ today (printed == executed for argv).
 
 ### Task 10: Verify acceptance criteria
 
-- [ ] verify all Overview requirements are implemented (run/status/init-seeds-latest/config/flags/
+- [x] verify all Overview requirements are implemented (run/status/init-seeds-latest/config/flags/
       quiet/error-voice)
-- [ ] verify edge cases: fresh-vs-stale init, daemon-down, image-missing, `--dry-run` unaffected,
+- [x] verify edge cases: fresh-vs-stale init, daemon-down, image-missing, `--dry-run` unaffected,
       `--json` output, `--out-of-home` rejected on exempt commands
-- [ ] run full suite: `go test ./...`
-- [ ] run vet/lint: `go vet ./...` and `golangci-lint run` (per `.golangci.yml`)
-- [ ] (optional, if a daemon is reachable) gated integration: `MAKESLOP_DOCKER_IT=1 go test -tags integration ./internal/docker/`
+- [x] run full suite: `go test ./...`
+- [x] run vet/lint: `go vet ./...` and `golangci-lint run` (per `.golangci.yml`) — also fixed two
+      pre-existing deprecation warnings: `NewClientWithOpts`→`New`, removed no-op `WithAPIVersionNegotiation`;
+      simplified `b.fakeClient.wasStarted` → `b.wasStarted` (QF1008)
+- [x] (optional, if a daemon is reachable) gated integration: `MAKESLOP_DOCKER_IT=1 go test -tags integration ./internal/docker/` — manual test (skipped - no live daemon in CI)
 
 ### Task 11: [Final] Update documentation and close out
 
