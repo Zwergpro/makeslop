@@ -60,6 +60,7 @@ var Stub = []byte(`exclude:
 network:
   proxy:
     address: ""
+  log: ""
 `)
 
 // Already mounted by docker.BuildSpec; user overlays would silently shadow them.
@@ -81,8 +82,10 @@ type Excludes struct {
 
 // Network is the parsed network configuration. Empty ProxyAddress means no
 // proxy configured. Load validates only syntax (net.SplitHostPort) — no I/O.
+// LogPath is the absolute, under-root path for request logging; "" when unset.
 type Network struct {
 	ProxyAddress string // "host:port"; "" when unconfigured
+	LogPath      string // absolute path under project root; "" when unset
 }
 
 // yamlSchema is the strict decode target. Using KnownFields(true) means any
@@ -101,6 +104,7 @@ type yamlSchema struct {
 		Proxy struct {
 			Address string `yaml:"address"`
 		} `yaml:"proxy"`
+		Log string `yaml:"log"`
 	} `yaml:"network"`
 }
 
@@ -209,6 +213,18 @@ func Load(root string) (Excludes, Network, error) {
 			return Excludes{}, Network{}, fmt.Errorf("projectconfig: invalid network.proxy.address %q: must be host:port", addr)
 		}
 		netCfg.ProxyAddress = addr
+	}
+
+	if logRel := schema.Network.Log; logRel != "" {
+		// Reuse validateEntries to apply the same rules as exclude.files/dirs:
+		// non-empty, not absolute, filepath.IsLocal, not ".", not a reserved agent path.
+		cleaned, err := validateEntries([]string{logRel}, "network.log")
+		if err != nil {
+			// Re-wrap with the network.log context for clarity.
+			return Excludes{}, Network{}, fmt.Errorf("projectconfig: invalid network.log %q: %w", logRel, err)
+		}
+		// No stat-drop: network.log is an output file and need not exist yet.
+		netCfg.LogPath = filepath.Join(root, cleaned[0])
 	}
 
 	return Excludes{Files: files, Dirs: dirs, Patterns: patterns, SkipDirs: skipDirs}, netCfg, nil

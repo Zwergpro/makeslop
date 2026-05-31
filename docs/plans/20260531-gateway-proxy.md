@@ -139,15 +139,15 @@ Rejected: a single unified forward-proxy handler with a pluggable dialer — it 
 - Modify: `internal/projectconfig/projectconfig.go`
 - Modify: `internal/projectconfig/projectconfig_test.go`
 
-- [ ] add `Log string \`yaml:"log"\`` to `yamlSchema.Network`
-- [ ] add `LogPath string` to the `Network` struct (doc: absolute, under-root, "" when unset)
-- [ ] in `Load`, when `schema.Network.Log != ""`: validate with the `validateEntries` rules (non-empty, not absolute, `filepath.IsLocal`, not `.`, not a reserved agent path) — but do NOT stat-drop; resolve to `filepath.Join(root, filepath.Clean(log))` and set `netCfg.LogPath`. Wrap errors with `projectconfig: invalid network.log …`
-- [ ] add `log: ""` under `network:` in `Stub`, as a sibling of `proxy:` (placement matters for strict decode)
-- [ ] update the exported-`Stub`-bytes comparison test (it hardcodes the stub) — **definite, not conditional**
-- [ ] add an explicit "Scaffold then Load the stub → no strict-decode error AND `LogPath == ""`" round-trip assertion
-- [ ] write table-driven tests: valid relative path → resolved absolute `LogPath`; absolute path → error; `../escape` → error; reserved path (e.g. `.claude`) → error; empty/absent → `LogPath == ""`; missing-but-valid path (no stat-drop) → kept
-- [ ] verify strict decode: an existing file lacking `log:` still loads (`LogPath == ""`)
-- [ ] run `go test ./...` — must pass before task 6
+- [x] add `Log string \`yaml:"log"\`` to `yamlSchema.Network`
+- [x] add `LogPath string` to the `Network` struct (doc: absolute, under-root, "" when unset)
+- [x] in `Load`, when `schema.Network.Log != ""`: validate with the `validateEntries` rules (non-empty, not absolute, `filepath.IsLocal`, not `.`, not a reserved agent path) — but do NOT stat-drop; resolve to `filepath.Join(root, filepath.Clean(log))` and set `netCfg.LogPath`. Wrap errors with `projectconfig: invalid network.log …`
+- [x] add `log: ""` under `network:` in `Stub`, as a sibling of `proxy:` (placement matters for strict decode)
+- [x] update the exported-`Stub`-bytes comparison test (it hardcodes the stub) — **definite, not conditional**
+- [x] add an explicit "Scaffold then Load the stub → no strict-decode error AND `LogPath == ""`" round-trip assertion
+- [x] write table-driven tests: valid relative path → resolved absolute `LogPath`; absolute path → error; `../escape` → error; reserved path (e.g. `.claude`) → error; empty/absent → `LogPath == ""`; missing-but-valid path (no stat-drop) → kept
+- [x] verify strict decode: an existing file lacking `log:` still loads (`LogPath == ""`)
+- [x] run `go test ./...` — must pass before task 6
 
 ### Task 6: Wire `runRun` — socket-by-default + `--no-proxy` flag + logPath
 

@@ -98,6 +98,10 @@ func TestLoad_DefaultStub_RoundTrips(t *testing.T) {
 	if netCfg.ProxyAddress != "" {
 		t.Errorf("expected empty ProxyAddress, got %q", netCfg.ProxyAddress)
 	}
+	// network log path is empty
+	if netCfg.LogPath != "" {
+		t.Errorf("expected empty LogPath, got %q", netCfg.LogPath)
+	}
 	// default scan patterns are seeded — these must mirror Stub exactly (sorted).
 	// If you change Stub, update this list to match.
 	wantPatterns := []string{
@@ -669,6 +673,209 @@ func TestLoad_Network_ExcludesUnchanged(t *testing.T) {
 
 	if netCfg.ProxyAddress != "10.0.0.1:8888" {
 		t.Errorf("ProxyAddress: got %q, want %q", netCfg.ProxyAddress, "10.0.0.1:8888")
+	}
+}
+
+// ---- network.log tests ----
+
+// TestLoad_NetworkLog_StubRoundTrip verifies that Scaffold + Load with the
+// default stub produces no strict-decode error and LogPath == "".
+func TestLoad_NetworkLog_StubRoundTrip(t *testing.T) {
+	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	root := evalSymlinks(t, t.TempDir())
+
+	if err := Scaffold(root); err != nil {
+		t.Fatalf("Scaffold: %v", err)
+	}
+	_, netCfg, err := Load(root)
+	if err != nil {
+		t.Fatalf("Load on scaffolded stub: %v", err)
+	}
+	if netCfg.LogPath != "" {
+		t.Errorf("expected empty LogPath from default stub, got %q", netCfg.LogPath)
+	}
+}
+
+// TestLoad_NetworkLog_ValidRelativePath verifies a valid relative path is
+// resolved to an absolute path under root (no stat-drop; file need not exist).
+func TestLoad_NetworkLog_ValidRelativePath(t *testing.T) {
+	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	root := evalSymlinks(t, t.TempDir())
+
+	content := "network:\n  proxy:\n    address: \"\"\n  log: makeslop-requests.log\n"
+	if err := os.WriteFile(filepath.Join(root, Filename), []byte(content), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	_, netCfg, err := Load(root)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	want := filepath.Join(root, "makeslop-requests.log")
+	if netCfg.LogPath != want {
+		t.Errorf("LogPath: got %q, want %q", netCfg.LogPath, want)
+	}
+}
+
+// TestLoad_NetworkLog_SubdirPath verifies a valid subdir-relative path is resolved.
+func TestLoad_NetworkLog_SubdirPath(t *testing.T) {
+	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	root := evalSymlinks(t, t.TempDir())
+
+	content := "network:\n  proxy:\n    address: \"\"\n  log: logs/proxy.log\n"
+	if err := os.WriteFile(filepath.Join(root, Filename), []byte(content), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	_, netCfg, err := Load(root)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	want := filepath.Join(root, "logs/proxy.log")
+	if netCfg.LogPath != want {
+		t.Errorf("LogPath: got %q, want %q", netCfg.LogPath, want)
+	}
+}
+
+// TestLoad_NetworkLog_MissingButValidPath verifies that no stat-drop occurs:
+// a path that does not exist yet is still accepted (it is an output file).
+func TestLoad_NetworkLog_MissingButValidPath(t *testing.T) {
+	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	root := evalSymlinks(t, t.TempDir())
+
+	content := "network:\n  proxy:\n    address: \"\"\n  log: does-not-exist.log\n"
+	if err := os.WriteFile(filepath.Join(root, Filename), []byte(content), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	_, netCfg, err := Load(root)
+	if err != nil {
+		t.Fatalf("Load returned error (no stat-drop expected): %v", err)
+	}
+	want := filepath.Join(root, "does-not-exist.log")
+	if netCfg.LogPath != want {
+		t.Errorf("LogPath: got %q, want %q", netCfg.LogPath, want)
+	}
+}
+
+// TestLoad_NetworkLog_EmptyOrAbsent verifies that absent or empty log field
+// produces LogPath == "".
+func TestLoad_NetworkLog_EmptyOrAbsent(t *testing.T) {
+	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+
+	cases := []struct {
+		name    string
+		content string
+	}{
+		{
+			name:    "empty log value",
+			content: "network:\n  proxy:\n    address: \"\"\n  log: \"\"\n",
+		},
+		{
+			name:    "absent log key",
+			content: "network:\n  proxy:\n    address: \"\"\n",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := evalSymlinks(t, t.TempDir())
+			if err := os.WriteFile(filepath.Join(root, Filename), []byte(tc.content), 0o644); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			_, netCfg, err := Load(root)
+			if err != nil {
+				t.Fatalf("Load returned error: %v", err)
+			}
+			if netCfg.LogPath != "" {
+				t.Errorf("expected empty LogPath, got %q", netCfg.LogPath)
+			}
+		})
+	}
+}
+
+// TestLoad_NetworkLog_StrictDecode_OldFileWithoutLog verifies that an existing
+// config file that lacks the log: key still loads without a strict-decode error.
+func TestLoad_NetworkLog_StrictDecode_OldFileWithoutLog(t *testing.T) {
+	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	root := evalSymlinks(t, t.TempDir())
+
+	// Old-style config without the log key under network.
+	content := "exclude:\n  dirs: []\n  files: []\nnetwork:\n  proxy:\n    address: \"\"\n"
+	if err := os.WriteFile(filepath.Join(root, Filename), []byte(content), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	_, netCfg, err := Load(root)
+	if err != nil {
+		t.Fatalf("Load returned error for old config without log: key: %v", err)
+	}
+	if netCfg.LogPath != "" {
+		t.Errorf("expected empty LogPath for old config, got %q", netCfg.LogPath)
+	}
+}
+
+// TestLoad_NetworkLog_ValidationErrors verifies that invalid network.log values
+// are rejected with an appropriate error.
+func TestLoad_NetworkLog_ValidationErrors(t *testing.T) {
+	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+
+	cases := []struct {
+		name        string
+		logVal      string
+		wantErrFrag string
+	}{
+		{
+			name:        "absolute path",
+			logVal:      "/tmp/proxy.log",
+			wantErrFrag: "invalid network.log",
+		},
+		{
+			name:        "dotdot escape",
+			logVal:      "../escape.log",
+			wantErrFrag: "invalid network.log",
+		},
+		{
+			name:        "dot refers to root",
+			logVal:      ".",
+			wantErrFrag: "invalid network.log",
+		},
+		{
+			name:        "foo/.. cleans to dot",
+			logVal:      "foo/..",
+			wantErrFrag: "invalid network.log",
+		},
+		{
+			name:        "reserved path .claude",
+			logVal:      ".claude",
+			wantErrFrag: "invalid network.log",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := evalSymlinks(t, t.TempDir())
+			var content string
+			if strings.HasPrefix(tc.logVal, "/") {
+				content = "network:\n  proxy:\n    address: \"\"\n  log: \"" + tc.logVal + "\"\n"
+			} else {
+				content = "network:\n  proxy:\n    address: \"\"\n  log: " + tc.logVal + "\n"
+			}
+			if err := os.WriteFile(filepath.Join(root, Filename), []byte(content), 0o644); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+
+			_, _, err := Load(root)
+			if err == nil {
+				t.Fatalf("expected error containing %q for log=%q, got nil", tc.wantErrFrag, tc.logVal)
+			}
+			if !strings.HasPrefix(err.Error(), "projectconfig:") {
+				t.Errorf("error missing 'projectconfig:' prefix: %q", err.Error())
+			}
+			if !strings.Contains(err.Error(), tc.wantErrFrag) {
+				t.Errorf("error %q does not contain %q", err.Error(), tc.wantErrFrag)
+			}
+		})
 	}
 }
 
