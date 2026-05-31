@@ -210,19 +210,19 @@ today (printed == executed for argv).
 - Modify: `internal/docker/testing.go`
 - Modify: `internal/docker/client_test.go`
 
-- [ ] **first**: add the two methods to the interface using the verified signatures —
+- [x] **first**: add the two methods to the interface using the verified signatures —
       `Ping(ctx, moby.PingOptions) (moby.PingResult, error)` and
       `ImageInspect(ctx, imageID string, opts ...moby.ImageInspectOption) (moby.ImageInspectResult, error)` —
       and run `go build ./internal/docker/` so the `var _ apiClient = (*moby.Client)(nil)` assertion
       confirms them against the real client BEFORE writing any fakes
-- [ ] add `Ping` and `ImageInspect` no-op implementations to `noopClient` (defaults: ping ok, image
+- [x] add `Ping` and `ImageInspect` no-op implementations to `noopClient` (defaults: ping ok, image
       found); the `ImageInspect` stub must accept and ignore the variadic `...moby.ImageInspectOption`
-- [ ] add scripting fields to the fakes so tests can simulate daemon-down (`PingErr`) and
+- [x] add scripting fields to the fakes so tests can simulate daemon-down (`PingErr`) and
       image-missing/present — image-missing MUST return an error satisfying `cerrdefs.IsNotFound`
       (e.g. wrap `errdefs.ErrNotFound`) so the Task 2 classification path is genuinely exercised
-- [ ] write tests asserting `*moby.Client` still satisfies `apiClient` and the fakes return scripted
+- [x] write tests asserting `*moby.Client` still satisfies `apiClient` and the fakes return scripted
       ping/image results (success + not-found + other-error cases)
-- [ ] run tests — must pass before next task
+- [x] run tests — must pass before next task
 
 ### Task 2: Add shared preflight helpers (CheckDaemon, ImageExists)
 

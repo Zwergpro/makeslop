@@ -113,6 +113,14 @@ func (f *fakeClient) DialHijack(_ context.Context, _, _ string, _ map[string][]s
 	return nil, errors.New("DialHijack not implemented in fakeClient")
 }
 
+func (f *fakeClient) Ping(_ context.Context, _ moby.PingOptions) (moby.PingResult, error) {
+	return moby.PingResult{}, nil
+}
+
+func (f *fakeClient) ImageInspect(_ context.Context, _ string, _ ...moby.ImageInspectOption) (moby.ImageInspectResult, error) {
+	return moby.ImageInspectResult{}, nil
+}
+
 func (f *fakeClient) Close() error {
 	f.closed = true
 	return nil

@@ -20,6 +20,8 @@ type apiClient interface {
 	ContainerRemove(ctx context.Context, container string, options moby.ContainerRemoveOptions) (moby.ContainerRemoveResult, error)
 	ImageBuild(ctx context.Context, buildContext io.Reader, options moby.ImageBuildOptions) (moby.ImageBuildResult, error)
 	DialHijack(ctx context.Context, url, proto string, meta map[string][]string) (net.Conn, error)
+	Ping(ctx context.Context, options moby.PingOptions) (moby.PingResult, error)
+	ImageInspect(ctx context.Context, imageID string, opts ...moby.ImageInspectOption) (moby.ImageInspectResult, error)
 	Close() error
 }
 
