@@ -25,7 +25,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     && rm -rf /tmp/* /var/tmp/*
 
 ARG GO_VERSION=1.26.3
-RUN curl -fsSL https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz -o /tmp/go.tgz \
+RUN ARCH=$(dpkg --print-architecture) \
+    && curl -fsSL https://go.dev/dl/go${GO_VERSION}.linux-${ARCH}.tar.gz -o /tmp/go.tgz \
     && tar -C /usr/local -xzf /tmp/go.tgz \
     && rm /tmp/go.tgz \
     && rm -rf /usr/local/go/test /usr/local/go/api /usr/local/go/doc \

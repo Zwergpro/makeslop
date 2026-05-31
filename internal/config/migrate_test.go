@@ -289,6 +289,82 @@ func TestMigrate_PreservesOtherSettings(t *testing.T) {
 	}
 }
 
+// TestMigrate_UpgradeFromVersion1 verifies the concrete upgrade path that users
+// on a pre-existing install will hit: a baseDir already stamped at
+// migrated_version: 1 (the previous MigrationVersion) must trigger a migration
+// (applied == true), have its Dockerfile overwritten with the current embedded
+// asset, and be re-stamped to the current MigrationVersion (2).
+// An immediately-following Migrate call must return applied == false (idempotent).
+func TestMigrate_UpgradeFromVersion1(t *testing.T) {
+	const previousVersion = 1
+
+	// Sanity guard: this test is meaningful only while the current
+	// MigrationVersion is strictly greater than 1.
+	if MigrationVersion <= previousVersion {
+		t.Skipf("MigrationVersion=%d is not > 1; test is vacuous", MigrationVersion)
+	}
+
+	base := filepath.Join(t.TempDir(), ".makeslop")
+	if err := os.MkdirAll(base, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	// Seed settings at version 1 with a stale sentinel Dockerfile.
+	sentinel := []byte("# stale Dockerfile from version 1\n")
+	if err := os.WriteFile(filepath.Join(base, "Dockerfile"), sentinel, 0o644); err != nil {
+		t.Fatalf("seed Dockerfile: %v", err)
+	}
+	s := &Settings{
+		Version:         CurrentVersion,
+		Image:           DefaultImage,
+		Shell:           DefaultShell,
+		Workspaces:      map[string]Workspace{},
+		MigratedVersion: previousVersion,
+	}
+	if err := Save(base, s); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	// First call: upgrade must be applied.
+	applied, err := Migrate(base)
+	if err != nil {
+		t.Fatalf("Migrate (upgrade from 1): %v", err)
+	}
+	if !applied {
+		t.Error("Migrate should return applied == true when upgrading from version 1")
+	}
+
+	// Dockerfile must have been refreshed to the current embedded asset.
+	got, err := os.ReadFile(filepath.Join(base, "Dockerfile"))
+	if err != nil {
+		t.Fatalf("read Dockerfile after upgrade: %v", err)
+	}
+	if bytes.Equal(got, sentinel) {
+		t.Error("Migrate did not overwrite the stale version-1 Dockerfile")
+	}
+	if !bytes.Equal(got, assets.Dockerfile) {
+		t.Errorf("Dockerfile content mismatch after upgrade: got %d bytes, want %d bytes", len(got), len(assets.Dockerfile))
+	}
+
+	// migrated_version must be stamped to the current MigrationVersion.
+	loaded, err := Load(base)
+	if err != nil {
+		t.Fatalf("Load after upgrade: %v", err)
+	}
+	if loaded.MigratedVersion != MigrationVersion {
+		t.Errorf("MigratedVersion = %d, want %d", loaded.MigratedVersion, MigrationVersion)
+	}
+
+	// Second call: already at current version — must be a no-op.
+	applied2, err := Migrate(base)
+	if err != nil {
+		t.Fatalf("second Migrate: %v", err)
+	}
+	if applied2 {
+		t.Error("second Migrate should return applied == false when already at MigrationVersion")
+	}
+}
+
 // TestSaveLoadByteIdenticalForSameSettings_WithMigratedVersion ensures the
 // existing byte-identical invariant still holds when MigratedVersion is set.
 func TestSaveLoadByteIdenticalForSameSettings_WithMigratedVersion(t *testing.T) {

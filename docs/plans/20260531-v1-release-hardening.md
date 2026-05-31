@@ -175,17 +175,17 @@ the basics (LICENSE, CI, version stamping) plus carries a committed build artifa
 - Modify: `internal/config/config.go`
 - Modify: `internal/config/migrate_test.go`
 
-- [ ] In the Dockerfile, resolve the Go arch at build time (`ARCH=$(dpkg --print-architecture)`)
+- [x] In the Dockerfile, resolve the Go arch at build time (`ARCH=$(dpkg --print-architecture)`)
       and download `go${GO_VERSION}.linux-${ARCH}.tar.gz`; keep the cleanup/`go version` steps.
-- [ ] Bump `MigrationVersion` from `1` to `2` in `internal/config/config.go` (leave `CurrentVersion`).
-- [ ] Confirm `internal/assets/assets_test.go` still passes (it only checks non-empty + `FROM`
+- [x] Bump `MigrationVersion` from `1` to `2` in `internal/config/config.go` (leave `CurrentVersion`).
+- [x] Confirm `internal/assets/assets_test.go` still passes (it only checks non-empty + `FROM`
       presence, so it survives a content change).
-- [ ] Confirm the existing `migrate_test.go` suite survives the bump: its tests assert against the
+- [x] Confirm the existing `migrate_test.go` suite survives the bump: its tests assert against the
       `MigrationVersion` symbol (not a literal `1`), so `_AlreadyUpToDate`, `_VersionAheadSkips`
       (uses `999`), etc. still hold. No edits expected — verify, don't assume.
-- [ ] Add a migrate test for the upgrade path: a baseDir stamped at `migrated_version: 1` triggers a
+- [x] Add a migrate test for the upgrade path: a baseDir stamped at `migrated_version: 1` triggers a
       migration (returns `applied=true`) and re-stamps to `2`; an already-`2` baseDir returns `applied=false`.
-- [ ] Run `GOTMPDIR=/home/user go test ./internal/config/... ./internal/assets/...` — must pass before Task 4.
+- [x] Run `GOTMPDIR=/home/user go test ./internal/config/... ./internal/assets/...` — must pass before Task 4.
 
 ### Task 4: Add `makeslop version` subcommand + ldflags stamping
 

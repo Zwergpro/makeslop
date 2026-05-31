@@ -23,7 +23,7 @@ const (
 	// MigrationVersion is distinct from CurrentVersion: it gates the one-shot
 	// directory migration run by Migrate. Bump when a migration step is
 	// added or changed; Migrate re-runs all (idempotent) steps and re-stamps.
-	MigrationVersion = 1
+	MigrationVersion = 2
 )
 
 // omitempty + Load-time defaulting keeps pre-existing files byte-stable until a user overrides.
