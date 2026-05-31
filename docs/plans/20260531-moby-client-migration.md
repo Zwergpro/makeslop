@@ -218,21 +218,21 @@
 - Create: `internal/docker/client.go`
 - Create: `internal/docker/client_test.go`
 
-- [ ] define unexported `apiClient` interface in `client.go` with exactly the
+- [x] define unexported `apiClient` interface in `client.go` with exactly the
       methods used: `ContainerCreate`, `ContainerAttach`, `ContainerStart`,
       `ContainerWait`, `ContainerResize`, `ContainerRemove`, `ImageBuild`,
       `DialHijack`, `Close`. **Copy the literal options/result-struct signatures
       from `moby/moby/client@v0.4.1` `client_interfaces.go`** (e.g. `ContainerWait`
       returns a single `ContainerWaitResult` and no error) — guessed positional
       signatures will fail the assertion below.
-- [ ] add `func newClient() (apiClient, error)` using
+- [x] add `func newClient() (apiClient, error)` using
       `client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())`.
-- [ ] add `var newClientFn = newClient` (swap point for tests) and a compile-time
+- [x] add `var newClientFn = newClient` (swap point for tests) and a compile-time
       assertion `var _ apiClient = (*client.Client)(nil)`.
-- [ ] write a test asserting `*client.Client` satisfies `apiClient` (compile-time
+- [x] write a test asserting `*client.Client` satisfies `apiClient` (compile-time
       assertion is the test; add a trivial test that `newClient` returns non-nil
       when `DOCKER_HOST` is unset or pointed at a dummy, without dialing).
-- [ ] run `go build ./...` and tests — package still compiles (run.go unchanged), must pass before Task 2.
+- [x] run `go build ./...` and tests — package still compiles (run.go unchanged), must pass before Task 2.
 
 ### Task 2: Add pure Spec → SDK-struct projections
 
