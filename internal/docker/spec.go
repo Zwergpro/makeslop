@@ -1,5 +1,9 @@
 // Package docker assembles and executes the `docker run` invocation. Argv
-// assembly (BuildSpec, Spec.Args) is pure; exec lives in run.go.
+// assembly (BuildSpec, Spec.Args, Spec.ShellCommand) is pure; exec lives in
+// run.go. Pure SDK-struct projections (Spec.ContainerConfig, Spec.HostConfig)
+// are also pure — they never touch the filesystem or exec anything — and
+// produce the same result for the same Spec, consistent with the CLAUDE.md
+// pure/impure split contract.
 package docker
 
 import (
@@ -8,6 +12,8 @@ import (
 	"strings"
 
 	"github.com/Zwergpro/makeslop/internal/config"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/mount"
 )
 
 // Options is the caller-supplied input to BuildSpec. Path fields must be
@@ -217,6 +223,80 @@ func (s Spec) ShellCommand() string {
 		sb.WriteByte('\n')
 	}
 	return strings.TrimSuffix(sb.String(), "\n")
+}
+
+// ContainerConfig returns the SDK container.Config for this Spec.
+// Pure: same Spec → same *container.Config. Never touches the filesystem.
+func (s Spec) ContainerConfig() *container.Config {
+	return &container.Config{
+		Image:        s.Image,
+		Cmd:          []string{s.Command},
+		WorkingDir:   s.Workdir,
+		Env:          s.Env,
+		Tty:          true,
+		OpenStdin:    true,
+		AttachStdin:  true,
+		AttachStdout: true,
+		AttachStderr: true,
+	}
+}
+
+// HostConfig returns the SDK container.HostConfig for this Spec.
+// Pure: same Spec → same *container.HostConfig. Never touches the filesystem.
+func (s Spec) HostConfig() *container.HostConfig {
+	return &container.HostConfig{
+		AutoRemove:  true,
+		CapDrop:     s.CapDrop,
+		SecurityOpt: s.SecOpt,
+		NetworkMode: container.NetworkMode(s.NetworkMode),
+		Tmpfs:       tmpfsMap(s.Tmpfs),
+		Mounts:      mountsFor(s.Mounts),
+	}
+}
+
+// tmpfsMap converts a slice of "target:opts" (or "target" with no colon)
+// entries into the map[string]string that container.HostConfig.Tmpfs expects.
+// The split is on the first colon only, so target paths containing ':'
+// are not supported (docker itself doesn't support them either).
+func tmpfsMap(entries []string) map[string]string {
+	if len(entries) == 0 {
+		return nil
+	}
+	m := make(map[string]string, len(entries))
+	for _, e := range entries {
+		if idx := strings.Index(e, ":"); idx >= 0 {
+			m[e[:idx]] = e[idx+1:]
+		} else {
+			m[e] = ""
+		}
+	}
+	return m
+}
+
+// mountsFor translates the package-local []Mount slice into the SDK
+// []mount.Mount form used by container.HostConfig.
+func mountsFor(mounts []Mount) []mount.Mount {
+	if len(mounts) == 0 {
+		return nil
+	}
+	out := make([]mount.Mount, len(mounts))
+	for i, m := range mounts {
+		if m.Type == "tmpfs" {
+			out[i] = mount.Mount{
+				Type:   mount.TypeTmpfs,
+				Target: m.Container,
+			}
+		} else {
+			// "" or "bind" both map to bind mount.
+			out[i] = mount.Mount{
+				Type:     mount.TypeBind,
+				Source:   m.Host,
+				Target:   m.Container,
+				ReadOnly: m.ReadOnly,
+			}
+		}
+	}
+	return out
 }
 
 // BuildOptions is the caller-supplied input to BuildArgv. All path fields must

@@ -240,20 +240,20 @@
 - Modify: `internal/docker/spec.go`
 - Modify: `internal/docker/spec_test.go`
 
-- [ ] add pure `func (s Spec) ContainerConfig() *container.Config` per Technical Details.
-- [ ] add pure `func (s Spec) HostConfig() *container.HostConfig`, including
+- [x] add pure `func (s Spec) ContainerConfig() *container.Config` per Technical Details.
+- [x] add pure `func (s Spec) HostConfig() *container.HostConfig`, including
       `tmpfsMap` (split on first `:`) and `mountsFor` helpers.
-- [ ] keep `Args()`/`ShellCommand()`/`BuildSpec` unchanged (used by `--dry-run`).
-- [ ] refresh the `spec.go` package doc comment to note the pure SDK-struct
+- [x] keep `Args()`/`ShellCommand()`/`BuildSpec` unchanged (used by `--dry-run`).
+- [x] refresh the `spec.go` package doc comment to note the pure SDK-struct
       projections (still pure — no fs/exec — so the CLAUDE.md contract holds).
-- [ ] write table tests for `ContainerConfig()` (image/cmd/env/tty/stdin flags).
-- [ ] write table tests for `HostConfig()` (AutoRemove, CapDrop, SecurityOpt,
+- [x] write table tests for `ContainerConfig()` (image/cmd/env/tty/stdin flags).
+- [x] write table tests for `HostConfig()` (AutoRemove, CapDrop, SecurityOpt,
       NetworkMode incl. empty default, tmpfs map split incl. no-`:` case, bind +
       tmpfs + `/dev/null` mount translation, ReadOnly propagation, proxy-socket case).
-- [ ] write the **drift-guard** test: one representative `Spec` (proxy + masked
+- [x] write the **drift-guard** test: one representative `Spec` (proxy + masked
       files/dirs), assert `Args()`/`ShellCommand()` and the projections agree on
       image, cmd, workdir, env, mounts, caps, secopt, network.
-- [ ] run tests — must pass before Task 3.
+- [x] run tests — must pass before Task 3.
 
 ### Task 3: Migrate Run to the SDK + introduce docker.ExitError + client test seam
 

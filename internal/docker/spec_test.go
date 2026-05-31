@@ -5,6 +5,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/moby/moby/api/types/mount"
 )
 
 func sampleOptions() Options {
@@ -892,5 +894,450 @@ func TestSpecArgs_MultiValueSlicesRepeatFlag(t *testing.T) {
 	}
 	if got := spec.Args(); !reflect.DeepEqual(got, want) {
 		t.Errorf("Args mismatch\n got: %#v\nwant: %#v", got, want)
+	}
+}
+
+// ── ContainerConfig tests ─────────────────────────────────────────────────────
+
+func TestContainerConfig_ImageCmdEnvTTYStdin(t *testing.T) {
+	tests := []struct {
+		name    string
+		spec    Spec
+		wantImg string
+		wantCmd []string
+		wantEnv []string
+		wantWd  string
+	}{
+		{
+			name:    "minimal spec",
+			spec:    Spec{Image: "claudebox", Command: "/bin/zsh", Workdir: "/workspace/foo"},
+			wantImg: "claudebox",
+			wantCmd: []string{"/bin/zsh"},
+			wantEnv: nil,
+			wantWd:  "/workspace/foo",
+		},
+		{
+			name: "spec with env vars",
+			spec: Spec{
+				Image:   "claudebox",
+				Command: "/bin/bash",
+				Workdir: "/workspace/bar",
+				Env:     []string{"HTTP_PROXY=unix:///tmp/proxy.sock", "HTTPS_PROXY=unix:///tmp/proxy.sock"},
+			},
+			wantImg: "claudebox",
+			wantCmd: []string{"/bin/bash"},
+			wantEnv: []string{"HTTP_PROXY=unix:///tmp/proxy.sock", "HTTPS_PROXY=unix:///tmp/proxy.sock"},
+			wantWd:  "/workspace/bar",
+		},
+		{
+			name:    "from BuildSpec defaults",
+			spec:    BuildSpec(sampleOptions()),
+			wantImg: "claudebox",
+			wantCmd: []string{"/bin/zsh"},
+			wantEnv: nil,
+			wantWd:  "/workspace/myproj-abc123",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := tc.spec.ContainerConfig()
+			if cfg.Image != tc.wantImg {
+				t.Errorf("Image = %q, want %q", cfg.Image, tc.wantImg)
+			}
+			if !reflect.DeepEqual(cfg.Cmd, tc.wantCmd) {
+				t.Errorf("Cmd = %v, want %v", cfg.Cmd, tc.wantCmd)
+			}
+			if !reflect.DeepEqual(cfg.Env, tc.wantEnv) {
+				t.Errorf("Env = %v, want %v", cfg.Env, tc.wantEnv)
+			}
+			if cfg.WorkingDir != tc.wantWd {
+				t.Errorf("WorkingDir = %q, want %q", cfg.WorkingDir, tc.wantWd)
+			}
+			// TTY and stdin flags must all be true.
+			if !cfg.Tty {
+				t.Error("Tty must be true")
+			}
+			if !cfg.OpenStdin {
+				t.Error("OpenStdin must be true")
+			}
+			if !cfg.AttachStdin {
+				t.Error("AttachStdin must be true")
+			}
+			if !cfg.AttachStdout {
+				t.Error("AttachStdout must be true")
+			}
+			if !cfg.AttachStderr {
+				t.Error("AttachStderr must be true")
+			}
+		})
+	}
+}
+
+// ── HostConfig tests ──────────────────────────────────────────────────────────
+
+func TestHostConfig_AutoRemoveCapDropSecOpt(t *testing.T) {
+	spec := BuildSpec(sampleOptions())
+	hc := spec.HostConfig()
+
+	if !hc.AutoRemove {
+		t.Error("AutoRemove must be true (matches --rm)")
+	}
+	if !reflect.DeepEqual(hc.CapDrop, []string{"ALL"}) {
+		t.Errorf("CapDrop = %v, want [ALL]", hc.CapDrop)
+	}
+	if !reflect.DeepEqual(hc.SecurityOpt, []string{"no-new-privileges"}) {
+		t.Errorf("SecurityOpt = %v, want [no-new-privileges]", hc.SecurityOpt)
+	}
+}
+
+func TestHostConfig_NetworkModeDefault(t *testing.T) {
+	spec := Spec{Image: "img", Command: "sh", Workdir: "/wd"}
+	hc := spec.HostConfig()
+	if hc.NetworkMode != "" {
+		t.Errorf("NetworkMode = %q, want empty string (default bridge)", hc.NetworkMode)
+	}
+}
+
+func TestHostConfig_NetworkModeNone(t *testing.T) {
+	o := sampleOptions()
+	o.ProxySocketHost = "/tmp/makeslop-abc123-42.sock"
+	o.ProxySocketContainer = "/tmp/makeslop-proxy.sock"
+	spec := BuildSpec(o)
+	hc := spec.HostConfig()
+	if hc.NetworkMode != "none" {
+		t.Errorf("NetworkMode = %q, want none", hc.NetworkMode)
+	}
+}
+
+func TestHostConfig_TmpfsMapWithColon(t *testing.T) {
+	spec := Spec{
+		Image:   "img",
+		Command: "sh",
+		Workdir: "/wd",
+		Tmpfs:   []string{"/tmp:size=100m"},
+	}
+	hc := spec.HostConfig()
+	want := map[string]string{"/tmp": "size=100m"}
+	if !reflect.DeepEqual(hc.Tmpfs, want) {
+		t.Errorf("Tmpfs = %v, want %v", hc.Tmpfs, want)
+	}
+}
+
+func TestHostConfig_TmpfsMapWithoutColon(t *testing.T) {
+	spec := Spec{
+		Image:   "img",
+		Command: "sh",
+		Workdir: "/wd",
+		Tmpfs:   []string{"/tmp"},
+	}
+	hc := spec.HostConfig()
+	want := map[string]string{"/tmp": ""}
+	if !reflect.DeepEqual(hc.Tmpfs, want) {
+		t.Errorf("Tmpfs = %v, want %v", hc.Tmpfs, want)
+	}
+}
+
+func TestHostConfig_TmpfsMapEmpty(t *testing.T) {
+	spec := Spec{Image: "img", Command: "sh", Workdir: "/wd"}
+	hc := spec.HostConfig()
+	if hc.Tmpfs != nil {
+		t.Errorf("Tmpfs = %v, want nil for empty input", hc.Tmpfs)
+	}
+}
+
+func TestHostConfig_TmpfsMapMultipleEntries(t *testing.T) {
+	spec := Spec{
+		Image:   "img",
+		Command: "sh",
+		Workdir: "/wd",
+		Tmpfs:   []string{"/tmp:size=100m", "/run:size=10m", "/var/run"},
+	}
+	hc := spec.HostConfig()
+	want := map[string]string{
+		"/tmp":     "size=100m",
+		"/run":     "size=10m",
+		"/var/run": "",
+	}
+	if !reflect.DeepEqual(hc.Tmpfs, want) {
+		t.Errorf("Tmpfs = %v, want %v", hc.Tmpfs, want)
+	}
+}
+
+func TestHostConfig_BindMountTranslation(t *testing.T) {
+	spec := Spec{
+		Image:   "img",
+		Command: "sh",
+		Workdir: "/wd",
+		Mounts: []Mount{
+			{Host: "/host/path", Container: "/container/path"},
+			{Host: "/host/ro", Container: "/container/ro", ReadOnly: true},
+		},
+	}
+	hc := spec.HostConfig()
+	want := []mount.Mount{
+		{Type: mount.TypeBind, Source: "/host/path", Target: "/container/path", ReadOnly: false},
+		{Type: mount.TypeBind, Source: "/host/ro", Target: "/container/ro", ReadOnly: true},
+	}
+	if !reflect.DeepEqual(hc.Mounts, want) {
+		t.Errorf("Mounts = %+v, want %+v", hc.Mounts, want)
+	}
+}
+
+func TestHostConfig_TmpfsMountTranslation(t *testing.T) {
+	spec := Spec{
+		Image:   "img",
+		Command: "sh",
+		Workdir: "/wd",
+		Mounts: []Mount{
+			{Type: "tmpfs", Container: "/workspace/secrets"},
+		},
+	}
+	hc := spec.HostConfig()
+	if len(hc.Mounts) != 1 {
+		t.Fatalf("want 1 mount, got %d", len(hc.Mounts))
+	}
+	m := hc.Mounts[0]
+	if m.Type != mount.TypeTmpfs {
+		t.Errorf("Type = %q, want TypeTmpfs", m.Type)
+	}
+	if m.Target != "/workspace/secrets" {
+		t.Errorf("Target = %q, want /workspace/secrets", m.Target)
+	}
+	if m.Source != "" {
+		t.Errorf("Source = %q, want empty for tmpfs", m.Source)
+	}
+}
+
+func TestHostConfig_DevNullMountTranslation(t *testing.T) {
+	// /dev/null masked-file overlays are bind mounts with Source=/dev/null.
+	spec := Spec{
+		Image:   "img",
+		Command: "sh",
+		Workdir: "/wd",
+		Mounts: []Mount{
+			{Host: "/dev/null", Container: "/workspace/foo/.env"},
+		},
+	}
+	hc := spec.HostConfig()
+	if len(hc.Mounts) != 1 {
+		t.Fatalf("want 1 mount, got %d", len(hc.Mounts))
+	}
+	m := hc.Mounts[0]
+	if m.Type != mount.TypeBind {
+		t.Errorf("Type = %q, want TypeBind", m.Type)
+	}
+	if m.Source != "/dev/null" {
+		t.Errorf("Source = %q, want /dev/null", m.Source)
+	}
+	if m.Target != "/workspace/foo/.env" {
+		t.Errorf("Target = %q, want /workspace/foo/.env", m.Target)
+	}
+}
+
+func TestHostConfig_ReadOnlyPropagated(t *testing.T) {
+	spec := Spec{
+		Image:   "img",
+		Command: "sh",
+		Workdir: "/wd",
+		Mounts: []Mount{
+			{Host: "/h", Container: "/c", ReadOnly: true},
+			{Host: "/h2", Container: "/c2", ReadOnly: false},
+		},
+	}
+	hc := spec.HostConfig()
+	if len(hc.Mounts) != 2 {
+		t.Fatalf("want 2 mounts, got %d", len(hc.Mounts))
+	}
+	if !hc.Mounts[0].ReadOnly {
+		t.Error("Mounts[0].ReadOnly must be true")
+	}
+	if hc.Mounts[1].ReadOnly {
+		t.Error("Mounts[1].ReadOnly must be false")
+	}
+}
+
+func TestHostConfig_ProxySocketMountReadOnly(t *testing.T) {
+	o := sampleOptions()
+	o.ProxySocketHost = "/tmp/makeslop-abc123-42.sock"
+	o.ProxySocketContainer = "/tmp/makeslop-proxy.sock"
+	spec := BuildSpec(o)
+	hc := spec.HostConfig()
+
+	// Last mount is the proxy socket; must be ReadOnly.
+	if len(hc.Mounts) == 0 {
+		t.Fatal("no mounts in HostConfig")
+	}
+	last := hc.Mounts[len(hc.Mounts)-1]
+	if last.Type != mount.TypeBind {
+		t.Errorf("proxy mount type = %q, want TypeBind", last.Type)
+	}
+	if last.Source != "/tmp/makeslop-abc123-42.sock" {
+		t.Errorf("proxy mount Source = %q, want /tmp/makeslop-abc123-42.sock", last.Source)
+	}
+	if last.Target != "/tmp/makeslop-proxy.sock" {
+		t.Errorf("proxy mount Target = %q, want /tmp/makeslop-proxy.sock", last.Target)
+	}
+	if !last.ReadOnly {
+		t.Error("proxy socket mount must be ReadOnly")
+	}
+}
+
+func TestHostConfig_MixedMountTypesOrder(t *testing.T) {
+	// Bind, tmpfs, and /dev/null masked-file mounts in one Spec.
+	spec := Spec{
+		Image:   "img",
+		Command: "sh",
+		Workdir: "/wd",
+		Mounts: []Mount{
+			{Host: "/host/proj", Container: "/workspace/proj"},
+			{Type: "tmpfs", Container: "/workspace/proj/secrets"},
+			{Host: "/dev/null", Container: "/workspace/proj/.env"},
+		},
+	}
+	hc := spec.HostConfig()
+	if len(hc.Mounts) != 3 {
+		t.Fatalf("want 3 mounts, got %d", len(hc.Mounts))
+	}
+	if hc.Mounts[0].Type != mount.TypeBind {
+		t.Errorf("Mounts[0].Type = %q, want TypeBind", hc.Mounts[0].Type)
+	}
+	if hc.Mounts[1].Type != mount.TypeTmpfs {
+		t.Errorf("Mounts[1].Type = %q, want TypeTmpfs", hc.Mounts[1].Type)
+	}
+	if hc.Mounts[2].Type != mount.TypeBind {
+		t.Errorf("Mounts[2].Type = %q, want TypeBind (/dev/null masked-file)", hc.Mounts[2].Type)
+	}
+}
+
+// ── Drift-guard test ──────────────────────────────────────────────────────────
+
+// TestDriftGuard_ArgsAndSDKProjectionsAgree asserts that the argv projection
+// (Args/ShellCommand) and the SDK-struct projection (ContainerConfig/HostConfig)
+// agree on all semantically load-bearing fields for a representative Spec that
+// exercises proxy, masked files, masked dirs, and the default security/network
+// settings. This catches silent drift where one projection is updated but not
+// the other.
+func TestDriftGuard_ArgsAndSDKProjectionsAgree(t *testing.T) {
+	o := sampleOptions()
+	o.MaskedFiles = []string{
+		"/home/me/code/myproj/.env",
+		"/home/me/code/myproj/configs/secret.yaml",
+	}
+	o.MaskedDirs = []string{"/home/me/code/myproj/node_modules"}
+	o.ProxySocketHost = "/tmp/makeslop-abc123-42.sock"
+	o.ProxySocketContainer = "/tmp/makeslop-proxy.sock"
+
+	spec := BuildSpec(o)
+	args := spec.Args()
+	cfg := spec.ContainerConfig()
+	hc := spec.HostConfig()
+
+	// --- image ---
+	// Args(): second-to-last element is image name.
+	if len(args) < 2 {
+		t.Fatal("args too short")
+	}
+	argsImage := args[len(args)-2]
+	if argsImage != cfg.Image {
+		t.Errorf("image: Args=%q, ContainerConfig=%q", argsImage, cfg.Image)
+	}
+
+	// --- command ---
+	argsCmd := args[len(args)-1]
+	if len(cfg.Cmd) != 1 || cfg.Cmd[0] != argsCmd {
+		t.Errorf("cmd: Args=%q, ContainerConfig.Cmd=%v", argsCmd, cfg.Cmd)
+	}
+
+	// --- workdir ---
+	argsWorkdir := ""
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == "--workdir" {
+			argsWorkdir = args[i+1]
+		}
+	}
+	if argsWorkdir != cfg.WorkingDir {
+		t.Errorf("workdir: Args=%q, ContainerConfig=%q", argsWorkdir, cfg.WorkingDir)
+	}
+
+	// --- env (proxy) ---
+	var argsEnv []string
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == "-e" {
+			argsEnv = append(argsEnv, args[i+1])
+		}
+	}
+	if !reflect.DeepEqual(argsEnv, cfg.Env) {
+		t.Errorf("env: Args=%v, ContainerConfig.Env=%v", argsEnv, cfg.Env)
+	}
+
+	// --- caps ---
+	var argsCaps []string
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == "--cap-drop" {
+			argsCaps = append(argsCaps, args[i+1])
+		}
+	}
+	if !reflect.DeepEqual(argsCaps, hc.CapDrop) {
+		t.Errorf("cap-drop: Args=%v, HostConfig=%v", argsCaps, hc.CapDrop)
+	}
+
+	// --- secopt ---
+	var argsSecOpt []string
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == "--security-opt" {
+			argsSecOpt = append(argsSecOpt, args[i+1])
+		}
+	}
+	if !reflect.DeepEqual(argsSecOpt, hc.SecurityOpt) {
+		t.Errorf("security-opt: Args=%v, HostConfig=%v", argsSecOpt, hc.SecurityOpt)
+	}
+
+	// --- network ---
+	argsNetwork := ""
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == "--network" {
+			argsNetwork = args[i+1]
+		}
+	}
+	if argsNetwork != string(hc.NetworkMode) {
+		t.Errorf("network: Args=%q, HostConfig=%q", argsNetwork, hc.NetworkMode)
+	}
+
+	// --- mounts: count bind mounts and tmpfs mounts in Args, compare to HostConfig ---
+	argsMounts := collectMountArgs(args)
+	var argsBindCount, argsTmpfsCount int
+	for _, raw := range argsMounts {
+		if strings.HasPrefix(raw, "type=tmpfs") {
+			argsTmpfsCount++
+		} else {
+			argsBindCount++
+		}
+	}
+	var hcBindCount, hcTmpfsCount int
+	for _, m := range hc.Mounts {
+		switch m.Type {
+		case mount.TypeBind:
+			hcBindCount++
+		case mount.TypeTmpfs:
+			hcTmpfsCount++
+		}
+	}
+	if argsBindCount != hcBindCount {
+		t.Errorf("bind mount count: Args=%d, HostConfig=%d", argsBindCount, hcBindCount)
+	}
+	if argsTmpfsCount != hcTmpfsCount {
+		t.Errorf("tmpfs mount count: Args=%d, HostConfig=%d", argsTmpfsCount, hcTmpfsCount)
+	}
+
+	// --- AutoRemove: --rm in args <=> AutoRemove=true in HostConfig ---
+	argsHasRM := false
+	for _, a := range args {
+		if a == "--rm" {
+			argsHasRM = true
+			break
+		}
+	}
+	if argsHasRM != hc.AutoRemove {
+		t.Errorf("--rm/AutoRemove mismatch: Args.hasRM=%v, HostConfig.AutoRemove=%v", argsHasRM, hc.AutoRemove)
 	}
 }
