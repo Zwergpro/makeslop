@@ -387,15 +387,15 @@ today (printed == executed for argv).
 - Modify: `CLAUDE.md`
 - Modify: `docs/plans/20260531-cli-ux-redesign.md` (this file)
 
-- [ ] update `CLAUDE.md`: note the renamed `run` command, the new `status` command + shared
+- [x] update `CLAUDE.md`: note the renamed `run` command, the new `status` command + shared
       `preflight.go` helpers, the extended `apiClient` seam (Ping/ImageInspect) + fakes, the scoped
       `--out-of-home`, and the `init` seed-at-latest/stale-nudge behavior
-- [ ] **specifically** update the migration-stamping invariant note in `CLAUDE.md`: it currently
+- [x] **specifically** update the migration-stamping invariant note in `CLAUDE.md`: it currently
       documents "Bootstrap does not stamp MigratedVersion" — record that `init` now stamps
       `MigratedVersion = MigrationVersion` on a fresh seed, so the documented contract stays truthful
-- [ ] update the "TTY requirement is `go`-only" and home-guard-exemptions notes in `CLAUDE.md` to
+- [x] update the "TTY requirement is `go`-only" and home-guard-exemptions notes in `CLAUDE.md` to
       reflect `run`/`status`
-- [ ] move this plan to `docs/plans/completed/`
+- [x] move this plan to `docs/plans/completed/`
 
 ## Post-Completion
 
