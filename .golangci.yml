@@ -14,6 +14,8 @@ linters:
         - (net.Conn).Close
         - (net.Listener).Close
         - (*os.File).Close
-        - (*github.com/Zwergpro/makeslop/internal/networks.Proxy).Close
+        - (*github.com/Zwergpro/makeslop/internal/networks.Gateway).Close
         - os.Remove
         - (net.Conn).SetDeadline
+        - (io.ReadCloser).Close
+        - (io.Closer).Close

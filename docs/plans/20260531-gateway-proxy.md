@@ -176,13 +176,13 @@ Rejected: a single unified forward-proxy handler with a pluggable dialer — it 
 - [x] run `go test ./...` — must pass before task 8
 
 ### Task 8: Verify acceptance criteria
-- [ ] verify the three-state model: gateway default (socket + `--network none`), upstream unchanged, `--no-proxy` → bridge
-- [ ] verify logging works in both modes and is gated off cleanly (upstream byte-for-byte unchanged when off)
-- [ ] verify fail-loud: bad `network.log` path aborts `Start`; upstream probe-dial fail-loud preserved
-- [ ] verify `spec.go` is unchanged (drift-guard test still green) and `MigrationVersion` not bumped
-- [ ] run full suite: `go test ./...`
-- [ ] run linter if configured (e.g. `golangci-lint run`) — fix new warnings
-- [ ] confirm gated integration test still compiles: `go test -tags integration ./internal/docker/` (skips without daemon)
+- [x] verify the three-state model: gateway default (socket + `--network none`), upstream unchanged, `--no-proxy` → bridge
+- [x] verify logging works in both modes and is gated off cleanly (upstream byte-for-byte unchanged when off)
+- [x] verify fail-loud: bad `network.log` path aborts `Start`; upstream probe-dial fail-loud preserved
+- [x] verify `spec.go` is unchanged (drift-guard test still green) and `MigrationVersion` not bumped
+- [x] run full suite: `go test ./...`
+- [x] run linter if configured (e.g. `golangci-lint run`) — fix new warnings
+- [x] confirm gated integration test still compiles: `go test -tags integration ./internal/docker/` (skips without daemon)
 
 ### Task 9: [Final] Update documentation
 - [ ] update `CLAUDE.md` "Proxy probe-dial invariant" section: probe-dial is **upstream-mode-only** now; document the gateway default, `--no-proxy` → bridge, and request logging (`network.log`, both modes, keep-alive limitation, fail-loud on unopenable path)
