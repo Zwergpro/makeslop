@@ -348,13 +348,13 @@ today (printed == executed for argv).
 - Modify: `cmd/makeslop/main.go`
 - Modify: `cmd/makeslop/main_test.go`
 
-- [ ] audit (do NOT re-author) each user-facing error/notice in `main.go` for the format
+- [x] audit (do NOT re-author) each user-facing error/notice in `main.go` for the format
       `makeslop: <what failed> — <remedy>` where a remedy exists (no-workspace, no-TTY, daemon,
       image, home-guard). Remedy strings set in Tasks 4/6 are already correct — normalize only;
       avoid churning the same lines twice
-- [ ] keep `errSilent` semantics (no double-print) intact
-- [ ] update/add tests asserting the remedy clause is present in each error string
-- [ ] run tests — must pass before next task
+- [x] keep `errSilent` semantics (no double-print) intact
+- [x] update/add tests asserting the remedy clause is present in each error string
+- [x] run tests — must pass before next task
 
 ### Task 9: Rewrite README for the new surface
 

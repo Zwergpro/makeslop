@@ -141,8 +141,8 @@ func TestRun_NotRegistered_NoMutation(t *testing.T) {
 	if !strings.Contains(stderr, "no workspace registered") {
 		t.Errorf("stderr missing 'no workspace registered': %q", stderr)
 	}
-	if !strings.Contains(stderr, "run 'makeslop init'") {
-		t.Errorf("stderr missing init hint: %q", stderr)
+	if !strings.Contains(stderr, "— run 'makeslop init'") {
+		t.Errorf("stderr missing remedy '— run 'makeslop init'': %q", stderr)
 	}
 	resolvedPwd := evalSymlinks(t, pwd)
 	if !strings.Contains(stderr, resolvedPwd) {
@@ -385,6 +385,9 @@ func TestRun_NoTTY_FailsBeforeDocker(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "TTY") {
 		t.Errorf("stderr missing TTY hint: %q", stderr)
+	}
+	if !strings.Contains(stderr, "— run in an interactive terminal") {
+		t.Errorf("stderr missing remedy '— run in an interactive terminal': %q", stderr)
 	}
 	if fc.Started {
 		t.Errorf("docker client must not be started when TTY check fails")
@@ -770,6 +773,9 @@ func TestRun_OutsideHome_Refuses(t *testing.T) {
 	if !strings.Contains(stderr, "refusing to run from") {
 		t.Errorf("stderr missing 'refusing to run from': %q", stderr)
 	}
+	if !strings.Contains(stderr, "— pass --out-of-home to override") {
+		t.Errorf("stderr missing remedy '— pass --out-of-home to override': %q", stderr)
+	}
 	if !strings.HasSuffix(stderr, "\n") {
 		t.Errorf("stderr does not end with newline: %q", stderr)
 	}
@@ -796,6 +802,12 @@ func TestInit_OutsideHome_Refuses(t *testing.T) {
 	}
 	if !errors.Is(err, errSilent) {
 		t.Errorf("expected errSilent, got %v", err)
+	}
+	if !strings.Contains(stderr, "refusing to run from") {
+		t.Errorf("stderr missing 'refusing to run from': %q", stderr)
+	}
+	if !strings.Contains(stderr, "— pass --out-of-home to override") {
+		t.Errorf("stderr missing remedy '— pass --out-of-home to override': %q", stderr)
 	}
 	if !strings.HasSuffix(stderr, "\n") {
 		t.Errorf("stderr does not end with newline: %q", stderr)
@@ -1225,6 +1237,9 @@ func TestRun_DryRun_Unregistered_StillRefuses(t *testing.T) {
 	if !strings.Contains(stderr, "no workspace registered") {
 		t.Errorf("stderr missing 'no workspace registered': %q", stderr)
 	}
+	if !strings.Contains(stderr, "— run 'makeslop init'") {
+		t.Errorf("stderr missing remedy '— run 'makeslop init'': %q", stderr)
+	}
 	if stdout != "" {
 		t.Errorf("stdout must be empty when precondition fails; got %q", stdout)
 	}
@@ -1247,6 +1262,9 @@ func TestRun_DryRun_OutsideHome_StillRefuses(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "refusing to run from") {
 		t.Errorf("stderr missing 'refusing to run from': %q", stderr)
+	}
+	if !strings.Contains(stderr, "— pass --out-of-home to override") {
+		t.Errorf("stderr missing remedy '— pass --out-of-home to override': %q", stderr)
 	}
 	if stdout != "" {
 		t.Errorf("stdout must be empty when home-dir guard fires; got %q", stdout)
@@ -3259,5 +3277,151 @@ func TestQuiet_SuppressesRegisteredNotice(t *testing.T) {
 	workspacesRoot := filepath.Join(baseDir, "workspaces")
 	if !strings.HasPrefix(path, workspacesRoot+string(filepath.Separator)) {
 		t.Errorf("workspace path %q not under %q", path, workspacesRoot)
+	}
+}
+
+// ── Task 8: error-voice tests ─────────────────────────────────────────────────
+
+// TestErrorVoice_HomeGuard_ContainsRemedy verifies that the home-guard error
+// follows the "makeslop: <what> — <remedy>" format: the remedy clause uses
+// the em-dash separator and names the specific flag to use.
+func TestErrorVoice_HomeGuard_ContainsRemedy(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", evalSymlinks(t, tmpHome))
+
+	baseDir := t.TempDir()
+	outsidePwd := t.TempDir()
+	t.Chdir(outsidePwd)
+
+	_, stderr, err := runCmd(t, baseDir, "run")
+	if err == nil {
+		t.Fatalf("expected error from run outside HOME")
+	}
+	// Must follow the "makeslop: <what> — <remedy>" format.
+	if !strings.HasPrefix(stderr, "makeslop: ") {
+		t.Errorf("home-guard error must start with 'makeslop: '; got: %q", stderr)
+	}
+	if !strings.Contains(stderr, " — ") {
+		t.Errorf("home-guard error must contain em-dash remedy separator ' — '; got: %q", stderr)
+	}
+	if !strings.Contains(stderr, "--out-of-home") {
+		t.Errorf("home-guard remedy must name '--out-of-home' flag; got: %q", stderr)
+	}
+}
+
+// TestErrorVoice_NoWorkspace_ContainsRemedy verifies that the no-workspace error
+// follows "makeslop: <what> — <remedy>" with em-dash and 'makeslop init' hint.
+func TestErrorVoice_NoWorkspace_ContainsRemedy(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+	// No init — no workspace registered.
+
+	_, stderr, err := runCmd(t, baseDir, "run")
+	if err == nil {
+		t.Fatalf("expected error from run with no workspace")
+	}
+	if !strings.HasPrefix(stderr, "makeslop: ") {
+		t.Errorf("no-workspace error must start with 'makeslop: '; got: %q", stderr)
+	}
+	if !strings.Contains(stderr, " — ") {
+		t.Errorf("no-workspace error must contain em-dash remedy separator ' — '; got: %q", stderr)
+	}
+	if !strings.Contains(stderr, "makeslop init") {
+		t.Errorf("no-workspace remedy must mention 'makeslop init'; got: %q", stderr)
+	}
+}
+
+// TestErrorVoice_NoTTY_ContainsRemedy verifies that the no-TTY error follows
+// "makeslop: <what> — <remedy>" with em-dash and an actionable terminal hint.
+func TestErrorVoice_NoTTY_ContainsRemedy(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	installFakeRunClient(t, 0)
+	// Do NOT stub ttyCheck — real predicate returns false under go test.
+
+	_, stderr, err := runCmd(t, baseDir, "run")
+	if err == nil {
+		t.Fatalf("expected error when stdin/stdout are not TTYs")
+	}
+	if !strings.HasPrefix(stderr, "makeslop: ") {
+		t.Errorf("no-TTY error must start with 'makeslop: '; got: %q", stderr)
+	}
+	if !strings.Contains(stderr, " — ") {
+		t.Errorf("no-TTY error must contain em-dash remedy separator ' — '; got: %q", stderr)
+	}
+	if !strings.Contains(stderr, "interactive terminal") {
+		t.Errorf("no-TTY remedy must mention 'interactive terminal'; got: %q", stderr)
+	}
+}
+
+// TestErrorVoice_DaemonDown_ContainsRemedy verifies that the daemon-down error
+// follows "makeslop: <what> — <remedy>" with an actionable docker hint.
+func TestErrorVoice_DaemonDown_ContainsRemedy(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	fc := docker.NewFakeRunClient(0)
+	fc.PingErr = errors.New("connection refused")
+	t.Cleanup(docker.SetClientForTest(fc))
+	stubTTY(t, true)
+
+	_, stderr, err := runCmd(t, baseDir, "run")
+	if err == nil {
+		t.Fatalf("expected error when daemon is down")
+	}
+	if !strings.HasPrefix(stderr, "makeslop: ") {
+		t.Errorf("daemon-down error must start with 'makeslop: '; got: %q", stderr)
+	}
+	if !strings.Contains(stderr, " — ") {
+		t.Errorf("daemon-down error must contain em-dash remedy separator ' — '; got: %q", stderr)
+	}
+	if !strings.Contains(stderr, "docker running") {
+		t.Errorf("daemon-down remedy must mention 'docker running'; got: %q", stderr)
+	}
+}
+
+// TestErrorVoice_ImageMissing_ContainsRemedy verifies that the image-missing error
+// follows "makeslop: <what> — <remedy>" with an actionable build hint.
+func TestErrorVoice_ImageMissing_ContainsRemedy(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	fc := docker.NewFakeRunClient(0)
+	fc.ImageMissing = true
+	t.Cleanup(docker.SetClientForTest(fc))
+	stubTTY(t, true)
+
+	_, stderr, err := runCmd(t, baseDir, "run")
+	if err == nil {
+		t.Fatalf("expected error when image is missing")
+	}
+	if !strings.HasPrefix(stderr, "makeslop: ") {
+		t.Errorf("image-missing error must start with 'makeslop: '; got: %q", stderr)
+	}
+	if !strings.Contains(stderr, " — ") {
+		t.Errorf("image-missing error must contain em-dash remedy separator ' — '; got: %q", stderr)
+	}
+	if !strings.Contains(stderr, "makeslop build") {
+		t.Errorf("image-missing remedy must mention 'makeslop build'; got: %q", stderr)
 	}
 }

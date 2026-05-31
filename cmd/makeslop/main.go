@@ -69,7 +69,7 @@ func ensureWithinHome(stderr io.Writer, pwd string, outOfHome bool) error {
 	}
 	if !filepath.IsLocal(rel) {
 		fmt.Fprintf(stderr,
-			"makeslop: refusing to run from %s (outside %s); pass --out-of-home to override\n",
+			"makeslop: refusing to run from %s (outside %s) — pass --out-of-home to override\n",
 			pwd, resolvedHome)
 		return errSilent
 	}
@@ -109,7 +109,7 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfH
 	workspaceRoot, workspaceDir, err := ws.Lookup(pwd)
 	if errors.Is(err, workspace.ErrNotRegistered) {
 		fmt.Fprintf(cmd.ErrOrStderr(),
-			"makeslop: no workspace registered for %s; run 'makeslop init' to register it\n",
+			"makeslop: no workspace registered for %s — run 'makeslop init' to register it\n",
 			pwd)
 		return errSilent
 	}
@@ -203,7 +203,7 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfH
 	if err := docker.Run(cmd.Context(), spec); err != nil {
 		if errors.Is(err, docker.ErrNoTTY) {
 			fmt.Fprintln(cmd.ErrOrStderr(),
-				"makeslop: stdin/stdout must be a TTY; makeslop is interactive-only")
+				"makeslop: stdin/stdout must be a TTY — run in an interactive terminal")
 			return errSilent
 		}
 		return err
