@@ -16,12 +16,6 @@ jobs:
         with:
           go-version: "1.26.x"
 
-      - name: Install fd-find
-        # fd-find provides the 'fdfind' binary (Debian/Ubuntu package name).
-        # security.Scan already handles both 'fd' and 'fdfind' on PATH, so this
-        # is enough for TestScan_RealFd_MatchesExpectedFiles to run (instead of skip).
-        run: sudo apt-get update && sudo apt-get install -y fd-find
-
       - name: Set GOTMPDIR
         # /tmp is mounted noexec in this CI environment (and mirrored in the
         # project's CLAUDE.md). Shell shims (fake docker binaries used by
@@ -48,11 +42,6 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: "1.26.x"
-
-      - name: Install fd-find
-        # fd-find provides the 'fdfind' binary (Debian/Ubuntu package name).
-        # Needed so lint analysis of the security package works correctly.
-        run: sudo apt-get update && sudo apt-get install -y fd-find
 
       - name: Set GOTMPDIR
         # /tmp is mounted noexec in GitHub Actions (mirrored in CLAUDE.md).

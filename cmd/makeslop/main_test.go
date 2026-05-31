@@ -249,7 +249,7 @@ func TestGo_AfterInit_LaunchesDocker(t *testing.T) {
 	}
 	workspaceDir := strings.TrimSpace(initOut)
 
-record := installDockerShim(t, 0)
+	record := installDockerShim(t, 0)
 	stubTTY(t, true)
 
 	snapBefore := snapshotTree(t, baseDir)
@@ -300,7 +300,7 @@ func TestGo_FromSubdirectory_MountsRegisteredAncestor(t *testing.T) {
 	}
 	t.Chdir(sub)
 
-record := installDockerShim(t, 0)
+	record := installDockerShim(t, 0)
 	stubTTY(t, true)
 
 	if _, _, err := runCmd(t, baseDir, "go"); err != nil {
@@ -440,7 +440,7 @@ func TestGo_CustomImageAndShell_FlowFromSettings(t *testing.T) {
 		t.Fatalf("save settings: %v", err)
 	}
 
-record := installDockerShim(t, 0)
+	record := installDockerShim(t, 0)
 	stubTTY(t, true)
 
 	if _, _, err := runCmd(t, baseDir, "go"); err != nil {
@@ -825,7 +825,7 @@ func TestOutOfHomeFlag_Bypasses(t *testing.T) {
 		t.Errorf("init --out-of-home: stderr unexpectedly contains 'refusing to run': %q", stderr)
 	}
 
-record := installDockerShim(t, 0)
+	record := installDockerShim(t, 0)
 	stubTTY(t, true)
 
 	_, stderr, err = runCmd(t, baseDir, "--out-of-home", "go")
@@ -839,7 +839,6 @@ record := installDockerShim(t, 0)
 		t.Errorf("docker shim was not invoked when --out-of-home bypasses guard")
 	}
 }
-
 
 func TestGo_MasksFoundEnvFiles_ArgvContainsDevNullMounts(t *testing.T) {
 	setHomeToTestParent(t)
@@ -1106,7 +1105,7 @@ func TestGo_DryRun_SkipsDocker(t *testing.T) {
 		t.Fatalf("init failed: %v", err)
 	}
 
-record := installDockerShim(t, 0)
+	record := installDockerShim(t, 0)
 	stubTTY(t, false)
 
 	stdout, stderr, err := runCmd(t, baseDir, "go", "--dry-run")
@@ -1135,7 +1134,7 @@ func TestGo_DryRun_StdoutEqualsBuildSpecShellCommand(t *testing.T) {
 	}
 	workspaceDir := strings.TrimSpace(initOut)
 
-stubTTY(t, false)
+	stubTTY(t, false)
 
 	stdout, stderr, err := runCmd(t, baseDir, "go", "--dry-run")
 	if err != nil {
@@ -1572,6 +1571,11 @@ func TestGo_LoadsYamlAndMergesMaskedFiles(t *testing.T) {
 		t.Fatalf("go failed: %v; stderr=%q", err, stderr)
 	}
 
+	// Scan hits .env (1 file); private/token.txt is via exclude.files (not counted in masked N).
+	if !strings.Contains(stderr, "masked 1 secret file") {
+		t.Errorf("stderr must mention 'masked 1 secret file'; got %q", stderr)
+	}
+
 	name := filepath.Base(workspaceDir)
 	argv := readArgv(t, record)
 	wantMount1 := "type=bind,source=/dev/null,target=/workspace/" + name + "/.env"
@@ -1607,6 +1611,31 @@ func TestGo_LoadsYamlAndMergesMaskedFiles(t *testing.T) {
 	}
 }
 
+// TestGo_BadScanPattern_AbortsBeforeDocker verifies that a malformed glob pattern in
+// exclude.scan.patterns causes makeslop go to abort with an error before invoking docker.
+func TestGo_BadScanPattern_AbortsBeforeDocker(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	resolvedPwd := evalSymlinks(t, pwd)
+
+	// Write .makeslop.yaml with an invalid glob pattern (unclosed bracket).
+	yamlContent := "exclude:\n  scan:\n    patterns:\n      - \"[bad\"\n  files: []\n  dirs: []\n"
+	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(yamlContent), 0o644); err != nil {
+		t.Fatalf("write yaml: %v", err)
+	}
+
+	_, _, err := runCmd(t, baseDir, "go")
+	if err == nil {
+		t.Fatal("makeslop go must fail with a bad scan pattern, got nil error")
+	}
+}
+
 func TestGo_LoadsYamlMaskedDirs_TmpfsMountInArgv(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -1626,7 +1655,7 @@ func TestGo_LoadsYamlMaskedDirs_TmpfsMountInArgv(t *testing.T) {
 		t.Fatalf("mkdir node_modules: %v", err)
 	}
 
-yamlContent := "exclude:\n  dirs: [node_modules]\n  files: []\n"
+	yamlContent := "exclude:\n  dirs: [node_modules]\n  files: []\n"
 	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(yamlContent), 0o644); err != nil {
 		t.Fatalf("write yaml: %v", err)
 	}
@@ -1685,7 +1714,7 @@ func TestGo_YamlAbsentIsBitIdenticalArgv(t *testing.T) {
 		t.Fatalf("remove yaml: %v", err)
 	}
 
-record := installDockerShim(t, 0)
+	record := installDockerShim(t, 0)
 	stubTTY(t, true)
 
 	_, stderr, err := runCmd(t, baseDir, "go")
@@ -1817,7 +1846,7 @@ func TestGo_YamlReservedPathAbortsBeforeDocker(t *testing.T) {
 		t.Fatalf("write yaml: %v", err)
 	}
 
-record := installDockerShim(t, 0)
+	record := installDockerShim(t, 0)
 	stubTTY(t, true)
 
 	var stdout, stderr bytes.Buffer
@@ -1850,7 +1879,7 @@ func TestGo_YamlDirAndFileDupAborts(t *testing.T) {
 		t.Fatalf("write yaml: %v", err)
 	}
 
-record := installDockerShim(t, 0)
+	record := installDockerShim(t, 0)
 	stubTTY(t, true)
 
 	var stdout, stderr bytes.Buffer
@@ -1884,7 +1913,7 @@ func TestGo_YamlMissingPathSkippedSilently(t *testing.T) {
 	// Explicitly ensure the file does not exist.
 	_ = os.Remove(filepath.Join(resolvedPwd, "secrets", "api.key"))
 
-record := installDockerShim(t, 0)
+	record := installDockerShim(t, 0)
 	stubTTY(t, true)
 
 	_, stderr, err := runCmd(t, baseDir, "go")
@@ -1926,7 +1955,7 @@ func TestGo_DryRun_WithProxy_PrintsProxyArgvNoSocket(t *testing.T) {
 		t.Fatalf("write yaml: %v", err)
 	}
 
-stubTTY(t, false)
+	stubTTY(t, false)
 
 	stdout, stderr, err := runCmd(t, baseDir, "go", "--dry-run")
 	if err != nil {
@@ -2171,7 +2200,7 @@ func TestGo_DryRunIncludesMaskedDirs(t *testing.T) {
 		t.Fatalf("mkdir secrets: %v", err)
 	}
 
-yamlContent := "exclude:\n  dirs: [secrets]\n  files: []\n"
+	yamlContent := "exclude:\n  dirs: [secrets]\n  files: []\n"
 	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(yamlContent), 0o644); err != nil {
 		t.Fatalf("write yaml: %v", err)
 	}
@@ -2750,7 +2779,7 @@ func TestGo_CustomTmpDirSize_FlowsIntoDockerArgv(t *testing.T) {
 		t.Fatalf("save settings: %v", err)
 	}
 
-record := installDockerShim(t, 0)
+	record := installDockerShim(t, 0)
 	stubTTY(t, true)
 
 	if _, _, err := runCmd(t, baseDir, "go"); err != nil {

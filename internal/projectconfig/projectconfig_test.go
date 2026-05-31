@@ -68,7 +68,13 @@ func TestLoad_MissingFile(t *testing.T) {
 		t.Fatalf("Load on missing file: %v", err)
 	}
 	if len(excl.Files) != 0 || len(excl.Dirs) != 0 {
-		t.Errorf("expected zero Excludes, got %+v", excl)
+		t.Errorf("expected zero Files/Dirs, got %+v", excl)
+	}
+	if excl.Patterns != nil {
+		t.Errorf("expected nil Patterns for missing file, got %v", excl.Patterns)
+	}
+	if excl.SkipDirs != nil {
+		t.Errorf("expected nil SkipDirs for missing file, got %v", excl.SkipDirs)
 	}
 }
 
@@ -92,7 +98,8 @@ func TestLoad_DefaultStub_RoundTrips(t *testing.T) {
 	if netCfg.ProxyAddress != "" {
 		t.Errorf("expected empty ProxyAddress, got %q", netCfg.ProxyAddress)
 	}
-	// default scan patterns are seeded
+	// default scan patterns are seeded — these must mirror Stub exactly (sorted).
+	// If you change Stub, update this list to match.
 	wantPatterns := []string{
 		"*.env",
 		"*.key",
@@ -105,12 +112,13 @@ func TestLoad_DefaultStub_RoundTrips(t *testing.T) {
 		"id_rsa*",
 	}
 	if !stringSlicesEqual(excl.Patterns, wantPatterns) {
-		t.Errorf("Patterns: got %v, want %v", excl.Patterns, wantPatterns)
+		t.Errorf("Patterns: got %v, want %v\n(if Stub changed, update wantPatterns to match)", excl.Patterns, wantPatterns)
 	}
-	// default skip-dirs are seeded
+	// default skip-dirs are seeded — these must mirror Stub exactly (sorted).
+	// If you change Stub, update this list to match.
 	wantSkipDirs := []string{".git", ".venv", "node_modules", "vendor"}
 	if !stringSlicesEqual(excl.SkipDirs, wantSkipDirs) {
-		t.Errorf("SkipDirs: got %v, want %v", excl.SkipDirs, wantSkipDirs)
+		t.Errorf("SkipDirs: got %v, want %v\n(if Stub changed, update wantSkipDirs to match)", excl.SkipDirs, wantSkipDirs)
 	}
 }
 
@@ -138,7 +146,13 @@ func TestLoad_EmptyAndCommentOnlyFiles(t *testing.T) {
 				t.Fatalf("Load returned error for %q: %v", tc.name, err)
 			}
 			if len(excl.Files) != 0 || len(excl.Dirs) != 0 {
-				t.Errorf("expected zero Excludes for %q, got %+v", tc.name, excl)
+				t.Errorf("expected zero Files/Dirs for %q, got %+v", tc.name, excl)
+			}
+			if excl.Patterns != nil {
+				t.Errorf("expected nil Patterns for %q, got %v", tc.name, excl.Patterns)
+			}
+			if excl.SkipDirs != nil {
+				t.Errorf("expected nil SkipDirs for %q, got %v", tc.name, excl.SkipDirs)
 			}
 		})
 	}
@@ -830,8 +844,8 @@ func TestLoad_Scan_UnknownKeyRejected(t *testing.T) {
 	}
 }
 
-// stringSlicesEqual returns true if two string slices are element-wise equal
-// (both nil counts as equal; nil and empty [] do not).
+// stringSlicesEqual returns true if two string slices are element-wise equal.
+// nil and empty [] are treated as equal (both have len 0).
 func stringSlicesEqual(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

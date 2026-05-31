@@ -61,11 +61,16 @@ func Scan(ctx context.Context, root string, patterns, skipDirs []string) ([]stri
 			return nil
 		}
 
+		// Only match regular files; skip sockets, pipes, device nodes, etc.
+		if !d.Type().IsRegular() {
+			return nil
+		}
+
 		// Match regular files by basename.
 		name := d.Name()
 		for _, pat := range patterns {
-			matched, err := filepath.Match(pat, name)
-			if err != nil {
+			matched, matchErr := filepath.Match(pat, name)
+			if matchErr != nil {
 				// Pattern was validated at Load time; this should not occur.
 				continue
 			}

@@ -27,6 +27,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -253,6 +254,11 @@ func validatePatterns(entries []string) ([]string, error) {
 			return nil, fmt.Errorf("projectconfig: invalid scan pattern %q: %w", p, err)
 		}
 	}
+	// Patterns are basename globs, not paths — filepath.Clean is intentionally
+	// not applied. "*.env" and ".env.*" are not path components, so cleaning
+	// them would be wrong (e.g. it would strip leading dots or reduce "a/../b"
+	// in a glob into something unintended). The original entries are passed
+	// directly to dedupSorted.
 	return dedupSorted(entries), nil
 }
 
@@ -268,11 +274,9 @@ func validateSkipDirs(entries []string) ([]string, error) {
 		if d == "." || d == ".." {
 			return nil, fmt.Errorf("projectconfig: skip-dir %q must be a bare directory name", d)
 		}
-		// Reject entries that contain a path separator (Unix "/" or OS separator).
-		for _, ch := range d {
-			if ch == '/' || ch == rune(os.PathSeparator) {
-				return nil, fmt.Errorf("projectconfig: skip-dir %q must be a bare directory name", d)
-			}
+		// Reject entries that contain a path separator.
+		if strings.Contains(d, "/") {
+			return nil, fmt.Errorf("projectconfig: skip-dir %q must be a bare directory name", d)
 		}
 	}
 	return dedupSorted(entries), nil
@@ -304,14 +308,18 @@ func dedupSorted(paths []string) []string {
 	if len(paths) == 0 {
 		return paths
 	}
-	seen := make(map[string]struct{}, len(paths))
-	var out []string
-	for _, p := range paths {
-		if _, ok := seen[p]; !ok {
-			seen[p] = struct{}{}
+	cp := make([]string, len(paths))
+	copy(cp, paths)
+	sort.Strings(cp)
+	// compact: keep only the first of each run of equal strings.
+	// Aliasing cp[:1] as the output slice is safe because deduplication only
+	// shrinks the slice — out never overtakes the read head, so writes never
+	// clobber elements that have not yet been processed.
+	out := cp[:1]
+	for _, p := range cp[1:] {
+		if p != out[len(out)-1] {
 			out = append(out, p)
 		}
 	}
-	sort.Strings(out)
 	return out
 }
