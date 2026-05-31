@@ -155,13 +155,13 @@ Rejected: a single unified forward-proxy handler with a pluggable dialer — it 
 - Modify: `cmd/makeslop/main.go`
 - Modify: `cmd/makeslop/main_test.go`
 
-- [ ] add a package-level seam `newGatewayFn = networks.NewGateway` in `main.go` (mirrors the existing `docker.newClientFn` pattern) and construct via `newGatewayFn(...)` so tests can capture the `(sockPath, proxy, logPath)` args — `logPath` is a `NewGateway` arg, NOT part of `spec`, so it is invisible to `--dry-run`/`ShellCommand()`; the seam is the only way to assert it
-- [ ] add a `noProxy bool` variable (`outOfHomeRun`-style local) and register `--no-proxy` on the `run` command ONLY via `runCmd.Flags().BoolVar(...)` (matches the run-only `--out-of-home` at main.go:343; NOT a persistent root flag); thread it into `runRun`'s signature
-- [ ] replace the `if netCfg.ProxyAddress != "" { … }` block (~line 155): UNLESS `noProxy`, ALWAYS compute `sockPath` (existing sha256+pid scheme), set `opts.ProxySocketHost`/`opts.ProxySocketContainer`, and `gw = newGatewayFn(sockPath, netCfg.ProxyAddress, netCfg.LogPath)`. When `noProxy`: leave `ProxySocketHost` empty (so `spec.go` keeps bridge networking) and `gw` nil
-- [ ] keep `gw.Start(cmd.Context())` / `defer gw.Close()` guarded by `gw != nil`, in the same place (after image pre-flight)
-- [ ] confirm `--no-proxy` is rejected as unknown by `version`/`config`/`migrate`/`build`/`status` (run-only registration ensures this; add an assertion test, mirroring any existing unknown-flag test)
-- [ ] write `main_test.go` cases (swap `newGatewayFn` to capture args, like the existing `docker.newClientFn`/`ttyCheck` swaps at main_test.go:25): default (no address, no flag) → spec has `ProxySocketHost` set AND `NetworkMode == "none"`, captured `proxy == ""`; `--no-proxy` → no `ProxySocketHost`, bridge networking (empty `NetworkMode`), `gw` not constructed; address set → captured `proxy == <addr>`; `network.log` set → captured `logPath == <resolved abs path>`
-- [ ] run `go test ./...` — must pass before task 7
+- [x] add a package-level seam `newGatewayFn = networks.NewGateway` in `main.go` (mirrors the existing `docker.newClientFn` pattern) and construct via `newGatewayFn(...)` so tests can capture the `(sockPath, proxy, logPath)` args — `logPath` is a `NewGateway` arg, NOT part of `spec`, so it is invisible to `--dry-run`/`ShellCommand()`; the seam is the only way to assert it
+- [x] add a `noProxy bool` variable (`outOfHomeRun`-style local) and register `--no-proxy` on the `run` command ONLY via `runCmd.Flags().BoolVar(...)` (matches the run-only `--out-of-home` at main.go:343; NOT a persistent root flag); thread it into `runRun`'s signature
+- [x] replace the `if netCfg.ProxyAddress != "" { … }` block (~line 155): UNLESS `noProxy`, ALWAYS compute `sockPath` (existing sha256+pid scheme), set `opts.ProxySocketHost`/`opts.ProxySocketContainer`, and `gw = newGatewayFn(sockPath, netCfg.ProxyAddress, netCfg.LogPath)`. When `noProxy`: leave `ProxySocketHost` empty (so `spec.go` keeps bridge networking) and `gw` nil
+- [x] keep `gw.Start(cmd.Context())` / `defer gw.Close()` guarded by `gw != nil`, in the same place (after image pre-flight)
+- [x] confirm `--no-proxy` is rejected as unknown by `version`/`config`/`migrate`/`build`/`status` (run-only registration ensures this; add an assertion test, mirroring any existing unknown-flag test)
+- [x] write `main_test.go` cases (swap `newGatewayFn` to capture args, like the existing `docker.newClientFn`/`ttyCheck` swaps at main_test.go:25): default (no address, no flag) → spec has `ProxySocketHost` set AND `NetworkMode == "none"`, captured `proxy == ""`; `--no-proxy` → no `ProxySocketHost`, bridge networking (empty `NetworkMode`), `gw` not constructed; address set → captured `proxy == <addr>`; `network.log` set → captured `logPath == <resolved abs path>`
+- [x] run `go test ./...` — must pass before task 7
 
 ### Task 7: Update `status` proxy line
 
