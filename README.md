@@ -78,10 +78,6 @@ the changes.
 
 - The `docker` CLI must be on `PATH`. `makeslop` shells out to it; there is no Go-side docker SDK
   dependency.
-- The `fd` CLI (or its Debian/Ubuntu alias `fdfind`) must be on `PATH`. `makeslop` uses it to scan
-  for secret files before launching the container. Install from
-  [https://github.com/sharkdp/fd](https://github.com/sharkdp/fd). If `fd`/`fdfind` is not found,
-  `makeslop` refuses to launch and prints an install hint.
 
 ### Container layout
 
@@ -122,55 +118,118 @@ do not require a TTY and work correctly in CI pipelines and non-interactive shel
 
 ### Secret masking
 
-Before launching the container, `makeslop` runs `fd` (or `fdfind`) to locate secret files under
-the project root. Each matched file is overlaid with `/dev/null` inside the container — the agent
-sees a zero-byte file at that path instead of the real credential.
+Before launching the container, `makeslop` scans for secret files under the project root using a
+native Go `filepath.WalkDir` walk driven entirely by the project's `.makeslop.yaml`. Each matched
+file is overlaid with `/dev/null` inside the container — the agent sees a zero-byte file at that
+path instead of the real credential.
 
-The denylist covers the common secret-file shapes (basename-scoped):
+Secret masking is **opt-in and config-driven**: if `exclude.scan` is absent (or `patterns` is
+empty) in `.makeslop.yaml`, no scan is performed and nothing is masked. `makeslop init` seeds the
+default patterns and skip-dirs as active values in the generated `.makeslop.yaml`, so new projects
+are safe by default.
 
-- **Masked**: `.env`, `local.env`, `.env.local`, `production.env` (any basename ending in `.env`
-  or starting with `.env.`), `server.pem`, `server.key`, `id_rsa`, `id_rsa.pub`, `id_ed25519`,
-  `.npmrc`, `.netrc`, `.git-credentials`.
-- **Not masked**: `.envrc`, `environment`, `notes.txt`, `keyfile` (no extension).
-- **Excluded from scan**: `.git/`, `node_modules/`, `vendor/`, `.venv/` subtrees.
+The default `exclude.scan` block covers the common secret-file shapes:
 
-The underlying `fd` regex: `\.env$|^\.env\.|\.pem$|\.key$|^id_rsa|^id_ed25519|^\.npmrc$|^\.netrc$|^\.git-credentials$`
+```yaml
+exclude:
+  scan:
+    patterns:
+      - "*.env"
+      - ".env.*"
+      - "*.pem"
+      - "*.key"
+      - "id_rsa*"
+      - "id_ed25519*"
+      - ".npmrc"
+      - ".netrc"
+      - ".git-credentials"
+    skip-dirs:
+      - .git
+      - node_modules
+      - vendor
+      - .venv
+```
 
-`.gitignore` is intentionally ignored (`--no-ignore` flag) because most `.env` files are
-gitignored — that is precisely why the scan is necessary.
+Patterns are basename globs (`filepath.Match`). Files matching a pattern are masked; symlinks are
+silently dropped (not followed). Directories named in `skip-dirs` are pruned entirely during the
+walk.
+
+Walk errors (e.g. unreadable subdirectories) are propagated immediately and abort the launch. This
+matches the no-secret-leak invariant: if a directory cannot be read, we cannot prove it is
+secret-free.
+
+`.gitignore` is intentionally ignored because most `.env` files are gitignored — that is precisely
+why the scan is necessary.
 
 When at least one file is masked, `makeslop` prints `makeslop: masked N secret file(s)` to stderr.
 Zero hits are silent.
 
-Secret masking is **non-negotiable**: if `fd`/`fdfind` is not on `PATH`, `makeslop` refuses to
-launch:
-
-```
-makeslop: fd/fdfind CLI required for secret scanning; install: https://github.com/sharkdp/fd
-```
+**Pre-existing projects:** if your `.makeslop.yaml` was generated before this change, it will not
+contain an `exclude.scan` block — secret masking will not run. Copy the `exclude.scan` block above
+into your existing `.makeslop.yaml` to restore masking.
 
 ### Project-local exclusions
 
-`makeslop init` creates a `.makeslop.yaml` file at the project root with an empty-list stub:
+`makeslop init` creates a `.makeslop.yaml` file at the project root. The generated file includes
+the default `exclude.scan` block (patterns + skip-dirs for the secret scan) and empty `files`/`dirs`
+lists:
 
 ```yaml
 exclude:
-  dirs: []
+  scan:
+    patterns:
+      - "*.env"
+      - ".env.*"
+      - "*.pem"
+      - "*.key"
+      - "id_rsa*"
+      - "id_ed25519*"
+      - ".npmrc"
+      - ".netrc"
+      - ".git-credentials"
+    skip-dirs:
+      - .git
+      - node_modules
+      - vendor
+      - .venv
   files: []
+  dirs: []
+network:
+  proxy:
+    address: ""
 ```
 
-Edit this file to hide additional directories and files from the container on every `makeslop go`
-invocation:
+Edit this file to control scanning and hide additional directories and files from the container on
+every `makeslop go` invocation:
 
+- Entries under `exclude.scan.patterns` are basename globs; files whose name matches are masked
+  with `/dev/null`. Remove all patterns to disable secret masking entirely.
+- Entries under `exclude.scan.skip-dirs` are bare directory names pruned during the walk.
 - Entries under `exclude.dirs` are mounted as an empty in-memory tmpfs, so the container sees an
   empty directory at that path instead of the real contents.
 - Entries under `exclude.files` are overlaid with `/dev/null`, so the container sees a zero-byte
   file at that path.
 
-All paths must be relative to the project root. Example:
+All paths under `exclude.dirs` and `exclude.files` must be relative to the project root. Example:
 
 ```yaml
 exclude:
+  scan:
+    patterns:
+      - "*.env"
+      - ".env.*"
+      - "*.pem"
+      - "*.key"
+      - "id_rsa*"
+      - "id_ed25519*"
+      - ".npmrc"
+      - ".netrc"
+      - ".git-credentials"
+    skip-dirs:
+      - ".git"
+      - "node_modules"
+      - "vendor"
+      - ".venv"
   dirs:
     - node_modules        # large build artifact — skip it entirely
     - secrets             # local secrets directory
@@ -178,10 +237,9 @@ exclude:
     - secrets/local.env   # specific file overlay
 ```
 
-The existing secret auto-scan (see [Secret masking](#secret-masking)) still runs unconditionally.
-The YAML entries layer on top; if the same path is found by the scan and listed in
-`exclude.files`, only one overlay mount is emitted. A YAML parse error aborts the launch before
-docker is invoked.
+The scan results and the `exclude.files` entries are merged; if the same path is found by the scan
+and listed in `exclude.files`, only one overlay mount is emitted. A YAML parse error aborts the
+launch before docker is invoked.
 
 **Reserved paths.** The paths `.claude`, `.codex`, `docs`, and `CLAUDE.md` are already mounted by
 `makeslop go` for agent state. Listing them in `.makeslop.yaml` is rejected with an error

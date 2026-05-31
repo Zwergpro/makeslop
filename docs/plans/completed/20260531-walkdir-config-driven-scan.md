@@ -211,16 +211,16 @@ func Scan(ctx context.Context, root string, patterns, skipDirs []string) ([]stri
 - [x] run tests: `GOTMPDIR=/home/user go test ./cmd/...` — must pass before next task
 
 ### Task 7: Verify acceptance criteria
-- [ ] verify all Overview requirements implemented: no `fd`/`os/exec` in `internal/security`; scan driven by `exclude.scan`; empty patterns ⇒ nothing masked; scaffold seeds active defaults
-- [ ] `grep -rn "fd\|fdfind\|ErrFdMissing\|WriteFdShim\|SetFdBinaryForTest" --include="*.go" .` returns only intentional/no hits
-- [ ] verify edge cases: bad glob/skip-dir rejected at Load; walk error aborts launch; symlinks dropped
-- [ ] run full test suite: `GOTMPDIR=/home/user go test ./...`
-- [ ] run linter: `golangci-lint run` (config `.golangci.yml`)
+- [x] verify all Overview requirements implemented: no `fd`/`os/exec` in `internal/security`; scan driven by `exclude.scan`; empty patterns ⇒ nothing masked; scaffold seeds active defaults
+- [x] `grep -rn "fd\|fdfind\|ErrFdMissing\|WriteFdShim\|SetFdBinaryForTest" --include="*.go" .` returns only intentional/no hits
+- [x] verify edge cases: bad glob/skip-dir rejected at Load; walk error aborts launch; symlinks dropped
+- [x] run full test suite: `GOTMPDIR=/home/user go test ./...`
+- [x] run linter: `golangci-lint run` (config `.golangci.yml`)
 
 ### Task 8: [Final] Update documentation
-- [ ] update `README.md`: document the `exclude.scan` schema; remove the "install fd" prerequisite; **rewrite the now-false safety claims** — "Secret masking is non-negotiable… refuses to launch" (~lines 145-150) and "the secret auto-scan… still runs unconditionally" (~line 181) — to describe the opt-in, config-driven behavior (empty patterns ⇒ nothing masked); add the manual re-migration caveat for pre-existing projects
-- [ ] update `CLAUDE.md`: remove the "fd shim requires POSIX shell" note and the fd-shim noexec-`/tmp` note; KEEP the build-context-dir `/tmp` note; add a note that scan filters are config-driven (no in-code denylist, no engine fallback) and that pre-existing project files are not auto-migrated
-- [ ] move this plan to `docs/plans/completed/`
+- [x] update `README.md`: document the `exclude.scan` schema; remove the "install fd" prerequisite; **rewrite the now-false safety claims** — "Secret masking is non-negotiable… refuses to launch" (~lines 145-150) and "the secret auto-scan… still runs unconditionally" (~line 181) — to describe the opt-in, config-driven behavior (empty patterns ⇒ nothing masked); add the manual re-migration caveat for pre-existing projects
+- [x] update `CLAUDE.md`: remove the "fd shim requires POSIX shell" note and the fd-shim noexec-`/tmp` note; KEEP the build-context-dir `/tmp` note; add a note that scan filters are config-driven (no in-code denylist, no engine fallback) and that pre-existing project files are not auto-migrated
+- [x] move this plan to `docs/plans/completed/`
 
 ## Post-Completion
 *Items requiring manual intervention or external systems — no checkboxes, informational only*

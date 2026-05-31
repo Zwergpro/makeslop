@@ -31,6 +31,20 @@ socket, not via exec — so `/tmp` is fine there.
 - **Build context dir** (real empty temp dir passed to docker build): lives in `/tmp` via
   `os.MkdirTemp("", ...)` — only needs to exist, not be executable.
 
+### Scan filters are config-driven (no in-code denylist, no engine fallback)
+`internal/security.Scan` uses a native Go `filepath.WalkDir` walk — there is no `fd`/`fdfind`
+dependency. Patterns (basename globs) and skip-dirs are passed in at call time; the engine has no
+hardcoded defaults. If `patterns` is empty, `Scan` returns `nil` immediately (no walk).
+
+Walk errors (e.g. unreadable subdirectory) are **propagated immediately** and abort `runGo` before
+`docker.Run`. This "fail-loud" invariant ensures we never silently skip a directory we cannot prove
+is secret-free — consistent with the no-`.env`-leak contract.
+
+The defaults live as active values in the `Scaffold` stub (seeded by `makeslop init`). Pre-existing
+project `.makeslop.yaml` files are **never** auto-migrated — `MigrationVersion` only refreshes
+`~/.makeslop/`, not project-local files. Users with an old stub must manually add an
+`exclude.scan` block to restore masking.
+
 ### POSIX-only invariant
 makeslop targets POSIX systems only. Tests that rely on shell shims call `SkipNonPOSIX` at the top.
 Do not add Windows compatibility paths.
