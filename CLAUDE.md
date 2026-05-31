@@ -22,25 +22,19 @@ so it cannot reach unexported symbols via an `export_test.go` bridge. Shipping t
 testability. The binary size impact is negligible.
 
 ### apiClient seam and SetClientForTest
-`internal/docker/client.go` declares a narrow unexported `apiClient` interface with the methods
-`Run`, `Build`, `Ping`, and `ImageInspect` call. A package-level `newClientFn` (defaulting to
-`newClient`, which calls `client.New(client.FromEnv)`) constructs the live client.
-A compile-time assertion `var _ apiClient = (*moby.Client)(nil)` guards against signature drift.
-
-The interface includes:
-- `Ping(ctx context.Context, options moby.PingOptions) (moby.PingResult, error)`
-- `ImageInspect(ctx context.Context, imageID string, opts ...moby.ImageInspectOption) (moby.ImageInspectResult, error)`
+`internal/docker/client.go` declares a narrow unexported `apiClient` interface with exactly the
+methods `Run` and `Build` call. A package-level `newClientFn` (defaulting to `newClient`, which
+calls `client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())`) constructs
+the live client.
 
 `SetClientForTest(c apiClient) (restore func())` (in `testing.go`) replaces `newClientFn` for the
-duration of a test. Ready-made fakes live in `testing.go`:
+duration of a test. Two ready-made fakes live in `testing.go`:
 
-- **`FakeRunClient`** — simulates the `Run` container lifecycle with a scripted exit code; also
-  supports `PingErr` to simulate daemon-down and `ImageMissing` to simulate absent images.
+- **`FakeRunClient`** — simulates the `Run` container lifecycle with a scripted exit code.
   ```go
   t.Cleanup(docker.SetClientForTest(docker.NewFakeRunClient(0))) // exit 0
   ```
-- **`FakeBuildClient`** — simulates the `Build` SDK call and records `ImageBuildOptions`; also
-  supports `PingErr` and `ImageMissing` fields.
+- **`FakeBuildClient`** — simulates the `Build` SDK call and records `ImageBuildOptions`.
   ```go
   fbc := docker.NewFakeBuildClient(0)         // 0 = success
   t.Cleanup(docker.SetClientForTest(fbc))
@@ -50,18 +44,6 @@ duration of a test. Ready-made fakes live in `testing.go`:
 
 This replaces the old shell-shim machinery (`WriteShim`, `SetDockerBinaryForTest`). There are no
 shell shims, no `dockerBinary` global, no `executableTempDir`.
-
-### Shared preflight helpers (`internal/docker/preflight.go`)
-
-`CheckDaemon(ctx context.Context) error` — pings the daemon via `newClientFn`; returns
-`ErrDaemonUnreachable` on failure.
-
-`ImageExists(ctx context.Context, image string) (bool, error)` — calls `ImageInspect`; returns
-`(true, nil)` when found, `(false, nil)` only when `cerrdefs.IsNotFound(err)`, and `(false, err)`
-for any other error (so a dead daemon is never misreported as "image absent").
-
-Both helpers build and close their own client (two constructions per `status` run — accepted for
-simplicity).
 
 ### Integration test for Build
 A gated integration test exercises the full `Build` flow against a live Docker daemon:
@@ -120,13 +102,13 @@ project `.makeslop.yaml` files are **never** auto-migrated — `MigrationVersion
 makeslop targets POSIX systems only. Tests that rely on TTY/signal behavior call `SkipNonPOSIX` at the top.
 Do not add Windows compatibility paths.
 
-### TTY requirement is `run`-only
-`makeslop run` (formerly `go`) requires an interactive TTY (checked via `ttyCheck`).
-`makeslop build`, `makeslop init`, `makeslop migrate`, `makeslop config`, `makeslop status`, and `makeslop version` are CI/pipe-safe and never consult `ttyCheck`.
+### TTY requirement is `go`-only
+`makeslop go` requires an interactive TTY (checked via `ttyCheck`).
+`makeslop build`, `makeslop init`, `makeslop migrate`, `makeslop config`, and `makeslop version` are CI/pipe-safe and never consult `ttyCheck`.
 
 ### Home-directory guard exemptions
-`makeslop run` and `makeslop init` enforce the home-directory guard.
-`makeslop build`, `makeslop migrate`, `makeslop config`, `makeslop status`, and `makeslop version` are exempt — they operate on `~/.makeslop/` directly
+`makeslop go` and `makeslop init` enforce the home-directory guard.
+`makeslop build`, `makeslop migrate`, `makeslop config`, and `makeslop version` are exempt — they operate on `~/.makeslop/` directly
 and do not care about the current working directory.
 
 ### MigrationVersion-on-Dockerfile-change rule
@@ -136,50 +118,6 @@ Dockerfile on the next `makeslop migrate`. `CurrentVersion` (settings schema ver
 and only changes when the `Settings` struct fields change. The two constants serve different
 purposes: `CurrentVersion` gates JSON schema compatibility; `MigrationVersion` gates the one-shot
 directory refresh.
-
-### init seed-at-latest and stale-nudge behavior
-`makeslop init` detects whether `~/.makeslop/settings.json` already exists **before** calling
-`Bootstrap`. On a **fresh seed** (no `settings.json`), after `Bootstrap`, it stamps
-`s.MigratedVersion = MigrationVersion` and saves — so a freshly-initialised directory is never
-reported as stale. On an **existing-but-stale** directory (`s.MigratedVersion < MigrationVersion`),
-it prints a non-blocking nudge to stderr:
-
-```
-note: base config is v<latest>, yours is v<current> — run 'makeslop migrate'
-```
-
-and continues without failing. `init` does NOT stamp `MigratedVersion` for existing installs — that
-would skip the actual migration. The success message changed to:
-
-- stderr: `registered <name> — run 'makeslop build' then 'makeslop run'`
-- stdout: bare cache path (unchanged)
-
-Config helpers added in `internal/config/config.go`:
-- `BaseConfigExists(baseDir string) (bool, error)` — reports presence of `settings.json`.
-- `MigrationStatus(s *Settings) (current, latest int, stale bool)` — compares `s.MigratedVersion`
-  to `MigrationVersion`.
-
-### status command
-`makeslop status` is an ordered dependency health check:
-1. Daemon (`CheckDaemon`) — blocking
-2. Base config present + staleness (`BaseConfigExists`/`MigrationStatus`) — non-blocking (`!`)
-3. Image (`ImageExists`) — blocking
-4. Workspace (`ws.Lookup`) — blocking
-5. Secret scan summary (`security.Scan` count) — non-blocking (`–`/`✓`)
-6. Proxy (`projectconfig.Load`) — non-blocking (`–`)
-
-Output: aligned lines with glyphs `✓/✗/–/!`; final verdict line + single next action. `--json`
-emits `{checks:[{name,state,detail}], ready:bool}`. Exits non-zero when any blocking check fails.
-CI/pipe-safe; exempt from the home guard and TTY requirement. Color/glyphs only when stderr is a
-TTY and `NO_COLOR` is unset.
-
-### --out-of-home flag scope
-`--out-of-home` is registered only on `init` and `run` (not a persistent root flag). Commands
-`version`, `config`, `migrate`, `build`, and `status` reject it as an unknown flag.
-
-### --quiet flag
-`--quiet` is a persistent root flag. When set, stderr chrome (notices, nudges, progress lines such
-as `masked N`) is suppressed. Error messages still print to stderr.
 
 ### Proxy probe-dial invariant
 `Proxy.Start` performs a single TCP probe-dial of the upstream address before accepting any

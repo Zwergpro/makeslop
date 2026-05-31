@@ -36,7 +36,7 @@ reported stale. Running `init` on a directory with an existing but older `~/.mak
 non-blocking nudge and continues without modifying the existing files:
 
 ```
-note: base config is v<current>, yours is v<old> — run 'makeslop migrate'
+note: base config is v<latest>, yours is v<current> — run 'makeslop migrate'
 ```
 
 `migrate` is the explicit upgrade path: it force-refreshes managed files in `~/.makeslop/`

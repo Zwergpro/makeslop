@@ -3,7 +3,10 @@ package docker
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
+
+	cerrdefs "github.com/containerd/errdefs"
 )
 
 // TestCheckDaemonOK verifies that CheckDaemon returns nil when the fake ping
@@ -85,7 +88,9 @@ func TestImageExistsOtherError(t *testing.T) {
 		t.Fatal("ImageExists() expected false when error occurs")
 	}
 	// Confirm it is NOT misclassified as a not-found result.
-	if errors.Is(err, errors.New("not found")) {
+	// cerrdefs.IsNotFound is the canonical predicate used by ImageExists; use it
+	// here to ensure the other-error is not silently treated as "image absent".
+	if cerrdefs.IsNotFound(err) {
 		t.Fatal("other-error must not be treated as not-found")
 	}
 	if err.Error() != "permission denied reading image store" {
@@ -131,10 +136,10 @@ func TestErrDaemonUnreachableMessage(t *testing.T) {
 			t.Fatal("expected non-empty error message")
 		}
 		// Endpoint and cause must appear in the message.
-		if !contains(msg, "unix:///var/run/docker.sock") {
+		if !strings.Contains(msg, "unix:///var/run/docker.sock") {
 			t.Errorf("endpoint not in message: %q", msg)
 		}
-		if !contains(msg, "connection refused") {
+		if !strings.Contains(msg, "connection refused") {
 			t.Errorf("cause not in message: %q", msg)
 		}
 	})
@@ -145,32 +150,10 @@ func TestErrDaemonUnreachableMessage(t *testing.T) {
 		if msg == "" {
 			t.Fatal("expected non-empty error message")
 		}
-		if !contains(msg, "connection refused") {
+		if !strings.Contains(msg, "connection refused") {
 			t.Errorf("cause not in message: %q", msg)
 		}
 	})
 }
 
-// TestErrImageNotBuiltMessage verifies the ErrImageNotBuilt error string.
-func TestErrImageNotBuiltMessage(t *testing.T) {
-	e := &ErrImageNotBuilt{Tag: "myapp:latest"}
-	msg := e.Error()
-	if !contains(msg, "myapp:latest") {
-		t.Errorf("tag not in message: %q", msg)
-	}
-}
 
-// contains is a simple substring check to keep tests dependency-free.
-func contains(s, sub string) bool {
-	return len(s) >= len(sub) && (s == sub || len(sub) == 0 ||
-		findSubstring(s, sub))
-}
-
-func findSubstring(s, sub string) bool {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
-		}
-	}
-	return false
-}

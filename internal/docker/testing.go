@@ -107,7 +107,7 @@ func (noopClient) Ping(_ context.Context, _ moby.PingOptions) (moby.PingResult, 
 
 // ImageInspect returns a non-empty result (image "found") by default.
 // The variadic opts are accepted and ignored.
-func (noopClient) ImageInspect(_ context.Context, imageID string, _ ...moby.ImageInspectOption) (moby.ImageInspectResult, error) {
+func (noopClient) ImageInspect(_ context.Context, _ string, _ ...moby.ImageInspectOption) (moby.ImageInspectResult, error) {
 	return moby.ImageInspectResult{}, nil
 }
 

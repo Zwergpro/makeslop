@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"unicode/utf8"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -56,13 +57,7 @@ func defaultIsTTY(w io.Writer) bool {
 		return false
 	}
 	// fd 2 is stderr; we only color stderr output.
-	return isTerminal(int(f.Fd()))
-}
-
-// isTerminal is the underlying TTY check, separated so it can be swapped in
-// tests. Defaults to term.IsTerminal from golang.org/x/term.
-var isTerminal = func(fd int) bool {
-	return term.IsTerminal(fd)
+	return term.IsTerminal(int(f.Fd()))
 }
 
 // renderChecks writes the aligned check lines and the verdict line to w.
@@ -108,15 +103,16 @@ func renderChecks(w io.Writer, checks []statusCheck, ready bool, tty bool) {
 		rows[i] = row{glyph: g, name: c.Name, detail: c.Detail}
 	}
 
-	// Compute column widths.
+	// Compute column widths in rune count so that Unicode glyphs (3 bytes each)
+	// and ASCII bracket glyphs (e.g. "[ok]") align correctly in the same output.
 	maxGlyph := 0
 	maxName := 0
 	for _, r := range rows {
-		if len(r.glyph) > maxGlyph {
-			maxGlyph = len(r.glyph)
+		if w := utf8.RuneCountInString(r.glyph); w > maxGlyph {
+			maxGlyph = w
 		}
-		if len(r.name) > maxName {
-			maxName = len(r.name)
+		if w := utf8.RuneCountInString(r.name); w > maxName {
+			maxName = w
 		}
 	}
 
@@ -168,6 +164,9 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, jso
 	}
 
 	// ── 2. Base config check ──────────────────────────────────────────────
+	// loadedSettings is set when config loads successfully; shared with the
+	// image check below to avoid a second Load call.
+	var loadedSettings *config.Settings
 	exists, err := config.BaseConfigExists(baseDir)
 	if err != nil {
 		checks = append(checks, statusCheck{
@@ -193,13 +192,13 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, jso
 			})
 			ready = false
 		} else {
-			_, _, stale := config.MigrationStatus(s)
+			loadedSettings = s
+			current, latest, stale := config.MigrationStatus(s)
 			if stale {
-				current, latest, _ := config.MigrationStatus(s)
 				checks = append(checks, statusCheck{
 					Name:   "base config",
 					State:  checkWarn,
-					Detail: fmt.Sprintf("v%d (current is v%d) — run 'makeslop migrate'", current, latest),
+					Detail: fmt.Sprintf("v%d (latest: v%d) — run 'makeslop migrate'", current, latest),
 				})
 				// Non-blocking: stale config does not prevent "ready"
 			} else {
@@ -213,10 +212,8 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, jso
 
 	// ── 3. Image check ────────────────────────────────────────────────────
 	imageName := config.DefaultImage
-	if exists {
-		if s, loadErr := config.Load(baseDir); loadErr == nil {
-			imageName = s.Image
-		}
+	if loadedSettings != nil {
+		imageName = loadedSettings.Image
 	}
 	imageFound, imageErr := docker.ImageExists(ctx, imageName)
 	if imageErr != nil {
@@ -252,11 +249,9 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, jso
 		})
 		ready = false
 	} else {
-		var wsCacheDir string
-		workspaceRoot, wsCacheDir, err = ws.Lookup(pwd)
-		_ = wsCacheDir
+		workspaceRoot, _, err = ws.Lookup(pwd)
 		if err != nil {
-			if isWorkspaceNotRegistered(err) {
+			if errors.Is(err, workspace.ErrNotRegistered) {
 				checks = append(checks, statusCheck{
 					Name:   "workspace",
 					State:  checkFail,
@@ -287,6 +282,12 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, jso
 				Name:   "secret scan",
 				State:  checkWarn,
 				Detail: fmt.Sprintf("cannot read .makeslop.yaml: %v", pcErr),
+			})
+			// Proxy config is also unavailable when project config load fails;
+			// append an info entry so the pipeline always has 6 checks.
+			checks = append(checks, statusCheck{
+				Name:  "proxy",
+				State: checkInfo,
 			})
 		} else {
 			masked, scanErr := security.Scan(ctx, workspaceRoot, yamlExcludes.Patterns, yamlExcludes.SkipDirs)
@@ -343,7 +344,6 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, jso
 		if encErr := enc.Encode(result); encErr != nil {
 			return fmt.Errorf("encode status JSON: %w", encErr)
 		}
-		_ = stderr // unused in JSON mode but keep for consistency
 	} else {
 		tty := ttyPred(stderr)
 		renderChecks(stderr, checks, ready, tty)
@@ -353,12 +353,6 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, jso
 		return errSilent
 	}
 	return nil
-}
-
-// isWorkspaceNotRegistered returns true when err is (or wraps)
-// workspace.ErrNotRegistered.
-func isWorkspaceNotRegistered(err error) bool {
-	return errors.Is(err, workspace.ErrNotRegistered)
 }
 
 // newStatusCmd constructs and returns the `status` cobra command.

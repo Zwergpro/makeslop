@@ -2858,7 +2858,7 @@ func TestInit_StaleConfig_NudgesWithoutStamping(t *testing.T) {
 	}
 
 	// Nudge must appear on stderr.
-	if !strings.Contains(stderr, "note: base config is") {
+	if !strings.Contains(stderr, "note: your base config is") {
 		t.Errorf("stderr missing stale-config nudge: %q", stderr)
 	}
 	if !strings.Contains(stderr, "makeslop migrate") {
@@ -2945,7 +2945,7 @@ func TestInit_AfterBuild_TreatedAsFresh(t *testing.T) {
 	}
 
 	// The nudge must NOT appear — this is a fresh seed path, not stale.
-	if strings.Contains(stderr, "note: base config is") {
+	if strings.Contains(stderr, "note: your base config is") {
 		t.Errorf("stale-config nudge must not appear after build+init (fresh seed); stderr=%q", stderr)
 	}
 }
@@ -2970,7 +2970,7 @@ func TestInit_UpToDateConfig_NoNudge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second init failed: %v", err)
 	}
-	if strings.Contains(stderr, "note: base config is") {
+	if strings.Contains(stderr, "note: your base config is") {
 		t.Errorf("stale-config nudge must not appear when config is up to date; stderr=%q", stderr)
 	}
 }
@@ -3045,6 +3045,43 @@ func TestRun_ImageMissing_AbortsWithRemedy(t *testing.T) {
 	}
 	if fc.Started {
 		t.Errorf("docker container must not be started when image is missing")
+	}
+}
+
+// TestRun_ImageOtherError_PropagatesError verifies that when ImageExists returns
+// a non-not-found error (e.g. permission denied reading image store), `makeslop run`
+// propagates that error instead of silently treating it as "image absent". This
+// distinguishes a transient daemon/store error from a missing image.
+func TestRun_ImageOtherError_PropagatesError(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	fc := docker.NewFakeRunClient(0)
+	fc.ImageErr = errors.New("permission denied reading image store")
+	t.Cleanup(docker.SetClientForTest(fc))
+	t.Cleanup(docker.SetTermMakeRawForTest(func(_ int) (*term.State, error) { return nil, nil }))
+	stubTTY(t, true)
+
+	_, stderr, err := runCmd(t, baseDir, "run")
+	if err == nil {
+		t.Fatalf("expected error when ImageExists returns other-error, got nil; stderr=%q", stderr)
+	}
+	// Must NOT be errSilent — this is a real propagated error, not a tailored message.
+	if errors.Is(err, errSilent) {
+		t.Errorf("image other-error must propagate as real error, not errSilent; got errSilent")
+	}
+	// Must NOT silently report "not built" hint (that's for a missing image only).
+	if strings.Contains(stderr, "not built") {
+		t.Errorf("image other-error must not emit 'not built' hint; stderr=%q", stderr)
+	}
+	if fc.Started {
+		t.Errorf("docker container must not be started when ImageExists returns error")
 	}
 }
 
@@ -3139,6 +3176,7 @@ func TestOutOfHome_RejectedOnVersion(t *testing.T) {
 		{"migrate", "--out-of-home"},
 		{"build", "--out-of-home"},
 		{"config", "--out-of-home"},
+		{"status", "--out-of-home"},
 	} {
 		t.Run(cmd[0], func(t *testing.T) {
 			_, _, err := runCmd(t, baseDir, cmd...)
@@ -3181,7 +3219,7 @@ func TestQuiet_SuppressesInitNudge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("init failed: %v; stderr=%q", err, stderrNoQuiet)
 	}
-	if !strings.Contains(stderrNoQuiet, "note: base config is") {
+	if !strings.Contains(stderrNoQuiet, "note: your base config is") {
 		t.Errorf("expected nudge on stderr without --quiet; got: %q", stderrNoQuiet)
 	}
 
@@ -3196,7 +3234,7 @@ func TestQuiet_SuppressesInitNudge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("init --quiet failed: %v; stderr=%q", err, stderrQuiet)
 	}
-	if strings.Contains(stderrQuiet, "note: base config is") {
+	if strings.Contains(stderrQuiet, "note: your base config is") {
 		t.Errorf("--quiet must suppress nudge; got: %q", stderrQuiet)
 	}
 }

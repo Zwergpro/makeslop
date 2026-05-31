@@ -56,6 +56,9 @@ func TestStatus_AllGreen_ExitsZero(t *testing.T) {
 	if !strings.Contains(stderr, "ready") {
 		t.Errorf("stderr missing 'ready' verdict: %q", stderr)
 	}
+	if strings.Contains(stderr, "not ready") {
+		t.Errorf("all-green status must not contain 'not ready': %q", stderr)
+	}
 }
 
 // TestStatus_DaemonDown_ExitsNonZero verifies that a daemon-down state causes
@@ -180,6 +183,9 @@ func TestStatus_StaleConfig_ReportsWarnButStaysReady(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "ready") {
 		t.Errorf("stderr missing 'ready' verdict: %q", stderr)
+	}
+	if strings.Contains(stderr, "not ready") {
+		t.Errorf("stale-config status must not contain 'not ready' (stale is non-blocking): %q", stderr)
 	}
 	// The base-config line must show the stale state.
 	if !strings.Contains(stderr, "base config") {
@@ -334,6 +340,9 @@ func TestStatus_TTYOutput_UsesGlyphs(t *testing.T) {
 	}
 	if !strings.Contains(out, "ready") {
 		t.Errorf("TTY output missing 'ready' verdict: %q", out)
+	}
+	if strings.Contains(out, "not ready") {
+		t.Errorf("all-green TTY output must not contain 'not ready': %q", out)
 	}
 }
 

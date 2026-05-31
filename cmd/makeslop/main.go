@@ -128,7 +128,7 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfH
 	}
 	if len(masked) > 0 {
 		// "masked N" is stderr chrome — gated by --quiet.
-		chrome := &quietWriter{w: cmd.ErrOrStderr(), quiet: &quiet}
+		chrome := &quietWriter{w: cmd.ErrOrStderr(), quiet: quiet}
 		fmt.Fprintf(chrome, "makeslop: masked %d secret file(s)\n", len(masked))
 	}
 	maskedFiles := mergeUniqueSorted(masked, yamlExcludes.Files)
@@ -217,11 +217,11 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfH
 // real writer for actual errors.
 type quietWriter struct {
 	w     io.Writer
-	quiet *bool
+	quiet bool
 }
 
 func (q *quietWriter) Write(p []byte) (int, error) {
-	if q.quiet != nil && *q.quiet {
+	if q.quiet {
 		return len(p), nil
 	}
 	return q.w.Write(p)
@@ -231,9 +231,10 @@ func newRootCmd(baseDir string) *cobra.Command {
 	ws := workspace.New(baseDir)
 
 	var (
-		outOfHome bool
-		dryRun    bool
-		quiet     bool
+		outOfHomeInit bool
+		outOfHomeRun  bool
+		dryRun        bool
+		quiet         bool
 	)
 
 	rootCmd := &cobra.Command{
@@ -257,7 +258,7 @@ func newRootCmd(baseDir string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := ensureWithinHome(cmd.ErrOrStderr(), pwd, outOfHome); err != nil {
+			if err := ensureWithinHome(cmd.ErrOrStderr(), pwd, outOfHomeInit); err != nil {
 				return err
 			}
 
@@ -304,20 +305,19 @@ func newRootCmd(baseDir string) *cobra.Command {
 				if loadErr != nil {
 					return loadErr
 				}
-				_, _, stale := config.MigrationStatus(s)
+				current, latest, stale := config.MigrationStatus(s)
 				if stale {
-					current, latest, _ := config.MigrationStatus(s)
 					// Nudge is chrome (non-blocking), gated by --quiet.
-					chrome := &quietWriter{w: cmd.ErrOrStderr(), quiet: &quiet}
+					chrome := &quietWriter{w: cmd.ErrOrStderr(), quiet: quiet}
 					fmt.Fprintf(chrome,
-						"note: base config is v%d, yours is v%d — run 'makeslop migrate'\n",
-						latest, current)
+						"note: your base config is v%d, latest is v%d — run 'makeslop migrate'\n",
+						current, latest)
 				}
 			}
 
 			// Success: stderr chrome is gated by --quiet; stdout keeps the bare path.
 			// The "registered" line is human notice (chrome), so route through quietWriter.
-			chrome := &quietWriter{w: cmd.ErrOrStderr(), quiet: &quiet}
+			chrome := &quietWriter{w: cmd.ErrOrStderr(), quiet: quiet}
 			fmt.Fprintf(chrome,
 				"registered %s — run 'makeslop build' then 'makeslop run'\n",
 				filepath.Base(pwd))
@@ -325,8 +325,8 @@ func newRootCmd(baseDir string) *cobra.Command {
 			return nil
 		},
 	}
-	// --out-of-home is scoped to init and run only (not a persistent flag on root).
-	initCmd.Flags().BoolVar(&outOfHome, "out-of-home", false,
+	// --out-of-home is scoped to init only (not a persistent flag on root).
+	initCmd.Flags().BoolVar(&outOfHomeInit, "out-of-home", false,
 		"allow running outside the user's home directory")
 
 	runCmd := &cobra.Command{
@@ -334,13 +334,13 @@ func newRootCmd(baseDir string) *cobra.Command {
 		Short:        "Launch the docker container for this workspace",
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
-		RunE:         func(cmd *cobra.Command, _ []string) error { return runRun(cmd, ws, baseDir, outOfHome, dryRun, quiet) },
+		RunE:         func(cmd *cobra.Command, _ []string) error { return runRun(cmd, ws, baseDir, outOfHomeRun, dryRun, quiet) },
 	}
 
 	runCmd.Flags().BoolVarP(&dryRun, "dry-run", "n", false,
 		"print the docker run command instead of executing it")
-	// --out-of-home is scoped to run as well (not a persistent flag on root).
-	runCmd.Flags().BoolVar(&outOfHome, "out-of-home", false,
+	// --out-of-home is scoped to run only (not a persistent flag on root).
+	runCmd.Flags().BoolVar(&outOfHomeRun, "out-of-home", false,
 		"allow running outside the user's home directory")
 
 	migrateCmd := &cobra.Command{
@@ -394,20 +394,25 @@ func newRootCmd(baseDir string) *cobra.Command {
 	buildCmd.Flags().StringArrayVar(&buildArgs, "build-arg", nil,
 		"set build-time variables (repeatable)")
 
+	// runConfigList is the shared implementation for `config` (bare) and
+	// `config list` — both print key = value lines from ConfigList.
+	runConfigList := func(cmd *cobra.Command, _ []string) error {
+		s, err := config.Load(baseDir)
+		if err != nil {
+			return err
+		}
+		for _, e := range config.ConfigList(s) {
+			fmt.Fprintf(cmd.OutOrStdout(), "%s = %s\n", e.Name, e.Value)
+		}
+		return nil
+	}
+
 	configCmd := &cobra.Command{
 		Use:          "config",
 		Short:        "View or change makeslop settings",
+		Args:         cobra.NoArgs,
 		SilenceUsage: true,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			s, err := config.Load(baseDir)
-			if err != nil {
-				return err
-			}
-			for _, e := range config.ConfigList(s) {
-				fmt.Fprintf(cmd.OutOrStdout(), "%s = %s\n", e.Name, e.Value)
-			}
-			return nil
-		},
+		RunE:         runConfigList,
 	}
 
 	configListCmd := &cobra.Command{
@@ -415,16 +420,7 @@ func newRootCmd(baseDir string) *cobra.Command {
 		Short:        "Print current effective settings as key = value lines",
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			s, err := config.Load(baseDir)
-			if err != nil {
-				return err
-			}
-			for _, e := range config.ConfigList(s) {
-				fmt.Fprintf(cmd.OutOrStdout(), "%s = %s\n", e.Name, e.Value)
-			}
-			return nil
-		},
+		RunE:         runConfigList,
 	}
 
 	configSetCmd := &cobra.Command{
