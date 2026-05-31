@@ -64,8 +64,9 @@ the changes.
   `.codex/`, `CLAUDE.md`, `docs/`) mounted in. Exits with the container's exit code. Refuses to
   launch when stdin or stdout is not a TTY. If no ancestor is registered, exits non-zero with a hint
   to run `makeslop init`.
-- `makeslop version` — print the version string (stamped at build time via `git describe`; prints
-  `dev` when built outside of a tagged release).
+- `makeslop version` — print the version string (stamped at build time via
+  `-ldflags "-X main.version=$(git describe --tags --always --dirty)"`; prints `dev` when built
+  without ldflags, e.g. via a plain `go build`).
 - `makeslop config list` — print all current effective settings as `key = value` lines. Works
   without a prior `init`.
 - `makeslop config set <key> <value>` — validate and persist a setting. Keys: `image` (docker image
@@ -138,7 +139,7 @@ The underlying `fd` regex: `\.env$|^\.env\.|\.pem$|\.key$|^id_rsa|^id_ed25519|^\
 `.gitignore` is intentionally ignored (`--no-ignore` flag) because most `.env` files are
 gitignored — that is precisely why the scan is necessary.
 
-When at least one file is masked, `makeslop` prints `makeslop: masked N .env file(s)` to stderr.
+When at least one file is masked, `makeslop` prints `makeslop: masked N secret file(s)` to stderr.
 Zero hits are silent.
 
 Secret masking is **non-negotiable**: if `fd`/`fdfind` is not on `PATH`, `makeslop` refuses to
@@ -316,5 +317,10 @@ on Linux hosts.
 
 ```
 go build ./cmd/makeslop
-go test ./...
+GOTMPDIR=/home/user go test ./...
 ```
+
+The `GOTMPDIR` prefix is required on systems where `/tmp` is mounted `noexec` (common in CI and
+some Docker-based environments). Shell shims used in tests must land on an executable filesystem;
+`GOTMPDIR` redirects `t.TempDir()` to a writable, executable path. Use any executable directory
+on your system (e.g. `$HOME`, `/var/tmp`).

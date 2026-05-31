@@ -408,4 +408,3 @@ func TestSaveLoadByteIdenticalForSameSettings_WithMigratedVersion(t *testing.T) 
 		t.Errorf("saved file is not valid JSON: %v", err)
 	}
 }
-

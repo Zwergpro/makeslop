@@ -37,7 +37,7 @@ Do not add Windows compatibility paths.
 
 ### TTY requirement is `go`-only
 `makeslop go` requires an interactive TTY (checked via `ttyCheck`).
-`makeslop build`, `makeslop init`, `makeslop migrate`, and `makeslop config` are CI/pipe-safe and never consult `ttyCheck`.
+`makeslop build`, `makeslop init`, `makeslop migrate`, `makeslop config`, and `makeslop version` are CI/pipe-safe and never consult `ttyCheck`.
 
 ### Home-directory guard exemptions
 `makeslop go` and `makeslop init` enforce the home-directory guard.

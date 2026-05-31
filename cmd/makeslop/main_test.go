@@ -932,7 +932,7 @@ func TestGo_MasksFoundEnvFiles_ArgvContainsDevNullMounts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("root failed: %v; stderr=%q", err, stderr)
 	}
-	if !strings.Contains(stderr, "makeslop: masked 2 .env file(s)") {
+	if !strings.Contains(stderr, "makeslop: masked 2 secret file(s)") {
 		t.Errorf("stderr missing masked count: %q", stderr)
 	}
 
@@ -1463,7 +1463,7 @@ func TestGo_DryRun_MasksEnvFiles_StdoutContainsDevNullMounts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("--dry-run failed: %v; stderr=%q", err, stderr)
 	}
-	if !strings.Contains(stderr, "makeslop: masked 2 .env file(s)") {
+	if !strings.Contains(stderr, "makeslop: masked 2 secret file(s)") {
 		t.Errorf("stderr missing masked count: %q", stderr)
 	}
 
@@ -2879,6 +2879,8 @@ func TestGo_CustomTmpDirSize_FlowsIntoDockerArgv(t *testing.T) {
 func TestVersion_PrintsVersionAndExitsZero(t *testing.T) {
 	// Override the package-level version to a deterministic value so the test
 	// does not depend on ldflags or git state.
+	// NOTE: mutates the package-level var; this test must not run in parallel
+	// with other tests that read or write version.
 	orig := version
 	version = "test-1.2.3"
 	t.Cleanup(func() { version = orig })

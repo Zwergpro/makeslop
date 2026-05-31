@@ -163,15 +163,24 @@ func TestHandle_DialFailureClosesClientCleanly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listen probe upstream: %v", err)
 	}
+	t.Cleanup(func() { probeLn.Close() })
 	upstreamAddr := probeLn.Addr().String()
+	// closed is closed after probeLn.Close() fires so the client dial below
+	// cannot connect before the listener is gone. Without this signal the test
+	// is racy: handle() may succeed its DialContext against the still-open
+	// listener and the conn.Read assertion would pass only via the 3-second
+	// deadline rather than via the intended connection-refused error.
+	closed := make(chan struct{})
 	// Accept the probe connection in the background to unblock Start.
 	go func() {
 		c, err := probeLn.Accept()
 		if err != nil {
+			close(closed)
 			return
 		}
 		c.Close()
 		probeLn.Close() // stop accepting so subsequent dials fail
+		close(closed)
 	}()
 
 	p := NewProxy(sock, upstreamAddr)
@@ -179,6 +188,14 @@ func TestHandle_DialFailureClosesClientCleanly(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 	defer p.Close()
+
+	// Wait until the probe listener is closed before dialling so that the
+	// handle goroutine's DialContext is guaranteed to fail immediately.
+	select {
+	case <-closed:
+	case <-time.After(3 * time.Second):
+		t.Fatal("probe listener never closed")
+	}
 
 	conn, err := net.Dial("unix", sock)
 	if err != nil {

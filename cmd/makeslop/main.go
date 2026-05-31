@@ -128,7 +128,7 @@ func runGo(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfHo
 		return err
 	}
 	if len(masked) > 0 {
-		fmt.Fprintf(cmd.ErrOrStderr(), "makeslop: masked %d .env file(s)\n", len(masked))
+		fmt.Fprintf(cmd.ErrOrStderr(), "makeslop: masked %d secret file(s)\n", len(masked))
 	}
 	// YAML parse error aborts launch before docker.Run — symmetric with security.Scan
 	// failure to preserve the no-.env-leak invariant.
@@ -277,8 +277,8 @@ func newRootCmd(baseDir string) *cobra.Command {
 	}
 
 	var (
-		buildNoCache  bool
-		buildBuildArgs []string
+		buildNoCache bool
+		buildArgs    []string
 	)
 
 	buildCmd := &cobra.Command{
@@ -298,14 +298,14 @@ func newRootCmd(baseDir string) *cobra.Command {
 				Image:          s.Image,
 				DockerfilePath: filepath.Join(baseDir, config.DockerfileFile),
 				NoCache:        buildNoCache,
-				BuildArgs:      buildBuildArgs,
+				BuildArgs:      buildArgs,
 			}
 			return docker.Build(cmd.Context(), o, cmd.OutOrStdout(), cmd.ErrOrStderr())
 		},
 	}
 	buildCmd.Flags().BoolVar(&buildNoCache, "no-cache", false,
 		"do not use cache when building the image")
-	buildCmd.Flags().StringArrayVar(&buildBuildArgs, "build-arg", nil,
+	buildCmd.Flags().StringArrayVar(&buildArgs, "build-arg", nil,
 		"set build-time variables (repeatable)")
 
 	configCmd := &cobra.Command{

@@ -2,8 +2,6 @@
 .gocache/
 .claude/
 .codex/
-docs/
-CLAUDE.md
 .makeslop.yaml
 .gotmp/
 .tmp/

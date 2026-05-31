@@ -69,9 +69,10 @@ func (p *Proxy) SocketPath() string {
 // Start performs a single probe dial of the upstream address before accepting
 // any connections. If the upstream is unreachable, Start tears down the
 // listener and socket and returns the error so the container launch aborts
-// loudly rather than silently black-holing traffic. The probe checks TCP
-// reachability only (a listening socket at the far end); it does not validate
-// that the upstream speaks a valid HTTP CONNECT proxy protocol.
+// loudly rather than silently black-holing traffic. The probe has a 5-second
+// timeout; it checks TCP reachability only (a listening socket at the far end)
+// and does not validate that the upstream speaks a valid HTTP CONNECT proxy
+// protocol.
 func (p *Proxy) Start(ctx context.Context) error {
 	// Remove any stale socket left by a previous (crashed) run.
 	_ = os.Remove(p.socketPath)
