@@ -133,15 +133,15 @@ func Scan(ctx context.Context, root string, patterns, skipDirs []string) ([]stri
 - Modify: `internal/projectconfig/projectconfig.go`
 - Modify: `internal/projectconfig/projectconfig_test.go`
 
-- [ ] add `Scan struct { Patterns []string `yaml:"patterns"`; SkipDirs []string `yaml:"skip-dirs"` } `yaml:"scan"`` to `yamlSchema.Exclude`
-- [ ] add `Patterns []string` and `SkipDirs []string` fields to the `Excludes` result struct (with doc comments)
-- [ ] add `validatePatterns(entries []string) ([]string, error)` — reject empty, validate each via `filepath.Match(p, "")`, dedup+sort
-- [ ] add `validateSkipDirs(entries []string) ([]string, error)` — reject empty, reject separator/`.`/`..`, dedup+sort
-- [ ] wire both into `Load`, populating `Excludes.Patterns`/`Excludes.SkipDirs`; keep `KnownFields(true)` strict decode (rejects typos under `scan`)
-- [ ] update package doc header to describe `exclude.scan` (walk config) vs `exclude.files`/`dirs` (explicit mask paths); keep the existing "symlinks silently dropped" note scoped to the *path* lists — scan `patterns` are names, not paths, so don't conflate them
-- [ ] write tests: valid patterns/skip-dirs parsed, deduped, sorted (success cases)
-- [ ] write tests: bad glob rejected (`[`), non-bare skip-dir rejected (`foo/bar`, `.`, `..`), empty entry rejected, unknown key under `exclude.scan` rejected by KnownFields (error cases)
-- [ ] run tests: `GOTMPDIR=/home/user go test ./internal/projectconfig/...` — must pass before next task
+- [x] add `Scan struct { Patterns []string `yaml:"patterns"`; SkipDirs []string `yaml:"skip-dirs"` } `yaml:"scan"`` to `yamlSchema.Exclude`
+- [x] add `Patterns []string` and `SkipDirs []string` fields to the `Excludes` result struct (with doc comments)
+- [x] add `validatePatterns(entries []string) ([]string, error)` — reject empty, validate each via `filepath.Match(p, "")`, dedup+sort
+- [x] add `validateSkipDirs(entries []string) ([]string, error)` — reject empty, reject separator/`.`/`..`, dedup+sort
+- [x] wire both into `Load`, populating `Excludes.Patterns`/`Excludes.SkipDirs`; keep `KnownFields(true)` strict decode (rejects typos under `scan`)
+- [x] update package doc header to describe `exclude.scan` (walk config) vs `exclude.files`/`dirs` (explicit mask paths); keep the existing "symlinks silently dropped" note scoped to the *path* lists — scan `patterns` are names, not paths, so don't conflate them
+- [x] write tests: valid patterns/skip-dirs parsed, deduped, sorted (success cases)
+- [x] write tests: bad glob rejected (`[`), non-bare skip-dir rejected (`foo/bar`, `.`, `..`), empty entry rejected, unknown key under `exclude.scan` rejected by KnownFields (error cases)
+- [x] run tests: `GOTMPDIR=/home/user go test ./internal/projectconfig/...` — must pass before next task
 
 ### Task 2: Seed default scan filters in the Scaffold stub
 

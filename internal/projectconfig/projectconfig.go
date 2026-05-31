@@ -5,10 +5,16 @@
 // root parameters must be absolute and EvalSymlinks-evaluated; any direct
 // caller must enforce this.
 //
-// Load returns only paths that are under root. Symlinks are silently dropped
-// (masking a symlink has ambiguous semantics: the symlink itself or its target?).
-// Reserved agent paths (.claude, .codex, docs, CLAUDE.md) are a hard error
-// because a user overlay would shadow the agent mount.
+// The config has two distinct exclude mechanisms:
+//   - exclude.scan: drives the WalkDir secret scan (config-driven glob walk, no
+//     in-code denylist). Patterns are basename globs; skip-dirs are bare directory
+//     names pruned during the walk. These are names, not paths — no IsLocal/path
+//     checks apply.
+//   - exclude.files / exclude.dirs: explicit host paths for /dev/null and tmpfs
+//     overlays. Load returns only paths that are under root. Symlinks are silently
+//     dropped (masking a symlink has ambiguous semantics: the symlink itself or its
+//     target?). Reserved agent paths (.claude, .codex, docs, CLAUDE.md) are a hard
+//     error because a user overlay would shadow the agent mount.
 package projectconfig
 
 import (
@@ -42,8 +48,10 @@ var reservedPaths = map[string]struct{}{
 // Excludes is the parsed, validated, host-resolved result of Load.
 // Paths are absolute, under root, deduplicated within each list, and sorted.
 type Excludes struct {
-	Files []string // absolute host paths; /dev/null overlay targets
-	Dirs  []string // absolute host paths; tmpfs overlay targets
+	Files    []string // absolute host paths; /dev/null overlay targets
+	Dirs     []string // absolute host paths; tmpfs overlay targets
+	Patterns []string // basename globs for the WalkDir secret scan; deduped and sorted
+	SkipDirs []string // bare directory names pruned during the WalkDir scan; deduped and sorted
 }
 
 // Network is the parsed network configuration. Empty ProxyAddress means no
@@ -57,6 +65,10 @@ type Network struct {
 // rejected immediately with a meaningful decoder error.
 type yamlSchema struct {
 	Exclude struct {
+		Scan struct {
+			Patterns []string `yaml:"patterns"`
+			SkipDirs []string `yaml:"skip-dirs"`
+		} `yaml:"scan"`
 		Dirs  []string `yaml:"dirs"`
 		Files []string `yaml:"files"`
 	} `yaml:"exclude"`
@@ -123,6 +135,15 @@ func Load(root string) (Excludes, Network, error) {
 		return Excludes{}, Network{}, fmt.Errorf("projectconfig: parse %s: %w", Filename, err)
 	}
 
+	patterns, err := validatePatterns(schema.Exclude.Scan.Patterns)
+	if err != nil {
+		return Excludes{}, Network{}, err
+	}
+	skipDirs, err := validateSkipDirs(schema.Exclude.Scan.SkipDirs)
+	if err != nil {
+		return Excludes{}, Network{}, err
+	}
+
 	cleanedFiles, err := validateEntries(schema.Exclude.Files, "exclude.files")
 	if err != nil {
 		return Excludes{}, Network{}, err
@@ -165,7 +186,7 @@ func Load(root string) (Excludes, Network, error) {
 		netCfg.ProxyAddress = addr
 	}
 
-	return Excludes{Files: files, Dirs: dirs}, netCfg, nil
+	return Excludes{Files: files, Dirs: dirs, Patterns: patterns, SkipDirs: skipDirs}, netCfg, nil
 }
 
 // validateEntries cleans and validates user-supplied relative paths for the
@@ -193,6 +214,44 @@ func validateEntries(entries []string, listName string) ([]string, error) {
 		cleaned = append(cleaned, c)
 	}
 	return cleaned, nil
+}
+
+// validatePatterns cleans and validates user-supplied basename glob patterns for
+// exclude.scan.patterns. Rejects empty entries and syntactically invalid globs
+// (filepath.ErrBadPattern). Returns deduplicated, sorted patterns.
+func validatePatterns(entries []string) ([]string, error) {
+	for _, p := range entries {
+		if p == "" {
+			return nil, fmt.Errorf("projectconfig: empty pattern in exclude.scan.patterns")
+		}
+		// filepath.Match with "" as name validates syntax without matching anything.
+		if _, err := filepath.Match(p, ""); err != nil {
+			return nil, fmt.Errorf("projectconfig: invalid scan pattern %q: %w", p, err)
+		}
+	}
+	return dedupSorted(entries), nil
+}
+
+// validateSkipDirs cleans and validates user-supplied bare directory names for
+// exclude.scan.skip-dirs. Rejects empty entries, entries containing a path
+// separator, and the special names "." and "..". Returns deduplicated, sorted
+// names.
+func validateSkipDirs(entries []string) ([]string, error) {
+	for _, d := range entries {
+		if d == "" {
+			return nil, fmt.Errorf("projectconfig: empty entry in exclude.scan.skip-dirs")
+		}
+		if d == "." || d == ".." {
+			return nil, fmt.Errorf("projectconfig: skip-dir %q must be a bare directory name", d)
+		}
+		// Reject entries that contain a path separator (Unix "/" or OS separator).
+		for _, ch := range d {
+			if ch == '/' || ch == rune(os.PathSeparator) {
+				return nil, fmt.Errorf("projectconfig: skip-dir %q must be a bare directory name", d)
+			}
+		}
+	}
+	return dedupSorted(entries), nil
 }
 
 // statFilter Lstats each relative path under root; silently drops missing and

@@ -632,3 +632,189 @@ func TestLoad_Network_ExcludesUnchanged(t *testing.T) {
 		t.Errorf("ProxyAddress: got %q, want %q", netCfg.ProxyAddress, "10.0.0.1:8888")
 	}
 }
+
+// ---- exclude.scan tests ----
+
+func TestLoad_Scan_ValidPatternsAndSkipDirs(t *testing.T) {
+	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+
+	cases := []struct {
+		name         string
+		yaml         string
+		wantPatterns []string
+		wantSkipDirs []string
+	}{
+		{
+			name: "basic patterns and skip-dirs",
+			yaml: "exclude:\n  scan:\n    patterns:\n      - \"*.env\"\n      - \".env.*\"\n      - \"*.pem\"\n    skip-dirs:\n      - .git\n      - node_modules\n  dirs: []\n  files: []\n",
+			wantPatterns: []string{"*.env", "*.pem", ".env.*"},
+			wantSkipDirs: []string{".git", "node_modules"},
+		},
+		{
+			name:         "empty scan section",
+			yaml:         "exclude:\n  scan:\n    patterns: []\n    skip-dirs: []\n  dirs: []\n  files: []\n",
+			wantPatterns: nil,
+			wantSkipDirs: nil,
+		},
+		{
+			name: "patterns deduped and sorted",
+			yaml: "exclude:\n  scan:\n    patterns:\n      - \"*.pem\"\n      - \"*.env\"\n      - \"*.pem\"\n    skip-dirs: []\n  dirs: []\n  files: []\n",
+			wantPatterns: []string{"*.env", "*.pem"},
+			wantSkipDirs: nil,
+		},
+		{
+			name: "skip-dirs deduped and sorted",
+			yaml: "exclude:\n  scan:\n    patterns: []\n    skip-dirs:\n      - vendor\n      - .git\n      - vendor\n  dirs: []\n  files: []\n",
+			wantPatterns: nil,
+			wantSkipDirs: []string{".git", "vendor"},
+		},
+		{
+			name: "absent scan section yields nil slices",
+			yaml: "exclude:\n  dirs: []\n  files: []\n",
+			wantPatterns: nil,
+			wantSkipDirs: nil,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := evalSymlinks(t, t.TempDir())
+			if err := os.WriteFile(filepath.Join(root, Filename), []byte(tc.yaml), 0o644); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			excl, _, err := Load(root)
+			if err != nil {
+				t.Fatalf("Load returned error: %v", err)
+			}
+			if !stringSlicesEqual(excl.Patterns, tc.wantPatterns) {
+				t.Errorf("Patterns: got %v, want %v", excl.Patterns, tc.wantPatterns)
+			}
+			if !stringSlicesEqual(excl.SkipDirs, tc.wantSkipDirs) {
+				t.Errorf("SkipDirs: got %v, want %v", excl.SkipDirs, tc.wantSkipDirs)
+			}
+		})
+	}
+}
+
+func TestLoad_Scan_InvalidPatterns(t *testing.T) {
+	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+
+	cases := []struct {
+		name        string
+		yaml        string
+		wantErrFrag string
+	}{
+		{
+			name:        "bad glob bracket",
+			yaml:        "exclude:\n  scan:\n    patterns:\n      - \"[bad\"\n    skip-dirs: []\n  dirs: []\n  files: []\n",
+			wantErrFrag: "invalid scan pattern",
+		},
+		{
+			name:        "empty pattern entry",
+			yaml:        "exclude:\n  scan:\n    patterns:\n      - \"\"\n    skip-dirs: []\n  dirs: []\n  files: []\n",
+			wantErrFrag: "empty pattern",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := evalSymlinks(t, t.TempDir())
+			if err := os.WriteFile(filepath.Join(root, Filename), []byte(tc.yaml), 0o644); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			_, _, err := Load(root)
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tc.wantErrFrag)
+			}
+			if !strings.Contains(err.Error(), tc.wantErrFrag) {
+				t.Errorf("error %q does not contain %q", err.Error(), tc.wantErrFrag)
+			}
+			if !strings.HasPrefix(err.Error(), "projectconfig:") {
+				t.Errorf("error missing 'projectconfig:' prefix: %q", err.Error())
+			}
+		})
+	}
+}
+
+func TestLoad_Scan_InvalidSkipDirs(t *testing.T) {
+	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+
+	cases := []struct {
+		name        string
+		yaml        string
+		wantErrFrag string
+	}{
+		{
+			name:        "skip-dir with path separator foo/bar",
+			yaml:        "exclude:\n  scan:\n    patterns: []\n    skip-dirs:\n      - foo/bar\n  dirs: []\n  files: []\n",
+			wantErrFrag: "bare directory name",
+		},
+		{
+			name:        "skip-dir dot",
+			yaml:        "exclude:\n  scan:\n    patterns: []\n    skip-dirs:\n      - \".\"\n  dirs: []\n  files: []\n",
+			wantErrFrag: "bare directory name",
+		},
+		{
+			name:        "skip-dir dotdot",
+			yaml:        "exclude:\n  scan:\n    patterns: []\n    skip-dirs:\n      - \"..\"\n  dirs: []\n  files: []\n",
+			wantErrFrag: "bare directory name",
+		},
+		{
+			name:        "empty skip-dir entry",
+			yaml:        "exclude:\n  scan:\n    patterns: []\n    skip-dirs:\n      - \"\"\n  dirs: []\n  files: []\n",
+			wantErrFrag: "empty entry",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := evalSymlinks(t, t.TempDir())
+			if err := os.WriteFile(filepath.Join(root, Filename), []byte(tc.yaml), 0o644); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			_, _, err := Load(root)
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tc.wantErrFrag)
+			}
+			if !strings.Contains(err.Error(), tc.wantErrFrag) {
+				t.Errorf("error %q does not contain %q", err.Error(), tc.wantErrFrag)
+			}
+			if !strings.HasPrefix(err.Error(), "projectconfig:") {
+				t.Errorf("error missing 'projectconfig:' prefix: %q", err.Error())
+			}
+		})
+	}
+}
+
+func TestLoad_Scan_UnknownKeyRejected(t *testing.T) {
+	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	root := evalSymlinks(t, t.TempDir())
+
+	// KnownFields(true) must reject an unknown key under exclude.scan.
+	content := "exclude:\n  scan:\n    patterns: []\n    skip-dirs: []\n    unknown-key: oops\n  dirs: []\n  files: []\n"
+	if err := os.WriteFile(filepath.Join(root, Filename), []byte(content), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	_, _, err := Load(root)
+	if err == nil {
+		t.Fatal("expected error for unknown key under exclude.scan, got nil")
+	}
+	if !strings.HasPrefix(err.Error(), "projectconfig:") {
+		t.Errorf("error missing 'projectconfig:' prefix: %q", err.Error())
+	}
+}
+
+// stringSlicesEqual returns true if two string slices are element-wise equal
+// (both nil counts as equal; nil and empty [] do not).
+func stringSlicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
