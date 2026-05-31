@@ -137,8 +137,8 @@ func (g *Gateway) acceptLoop(ctx context.Context, ln net.Listener) {
 	}
 }
 
-// handle splices bytes between client and upstream. When one direction
-// finishes, halfCloseWrite lets the opposite direction drain rather than block.
+// handle dials the upstream, tracks the connection, then splices bytes between
+// client and upstream.
 func (g *Gateway) handle(ctx context.Context, client net.Conn) {
 	defer client.Close()
 
@@ -150,17 +150,24 @@ func (g *Gateway) handle(ctx context.Context, client net.Conn) {
 	g.trackConn(up)
 	defer g.untrackConn(up)
 
+	g.splice(client, up)
+}
+
+// splice bidirectionally copies bytes between a and b. When one copy direction
+// finishes (EOF or error), halfCloseWrite signals EOF to the peer so the
+// opposite direction drains rather than blocking.
+func (g *Gateway) splice(a, b net.Conn) {
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		io.Copy(up, client) //nolint:errcheck // EOF / reset are expected
-		halfCloseWrite(up)
+		io.Copy(b, a) //nolint:errcheck // EOF / reset are expected
+		halfCloseWrite(b)
 	}()
 	go func() {
 		defer wg.Done()
-		io.Copy(client, up) //nolint:errcheck // EOF / reset are expected
-		halfCloseWrite(client)
+		io.Copy(a, b) //nolint:errcheck // EOF / reset are expected
+		halfCloseWrite(a)
 	}()
 	wg.Wait()
 }

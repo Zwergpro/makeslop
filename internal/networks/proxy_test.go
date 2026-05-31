@@ -419,6 +419,118 @@ func TestStart_ReachableUpstreamSucceedsAndTunnels(t *testing.T) {
 	}
 }
 
+// TestSplice_CopiesBothDirections verifies that splice relays bytes in both
+// directions and propagates EOF via halfCloseWrite so both goroutines terminate.
+func TestSplice_CopiesBothDirections(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX-only per CLAUDE.md")
+	}
+
+	// Use two TCP pairs so both sides support CloseWrite (TCP half-close).
+	ln1, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen1: %v", err)
+	}
+	defer ln1.Close()
+
+	aClientCh := make(chan net.Conn, 1)
+	go func() {
+		c, err := net.Dial("tcp", ln1.Addr().String())
+		if err != nil {
+			aClientCh <- nil
+			return
+		}
+		aClientCh <- c
+	}()
+	aServer, err := ln1.Accept()
+	if err != nil {
+		t.Fatalf("accept1: %v", err)
+	}
+	aClient := <-aClientCh
+	if aClient == nil {
+		t.Fatal("dial1 failed")
+	}
+	defer aServer.Close()
+	defer aClient.Close()
+
+	ln2, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen2: %v", err)
+	}
+	defer ln2.Close()
+
+	bClientCh := make(chan net.Conn, 1)
+	go func() {
+		c, err := net.Dial("tcp", ln2.Addr().String())
+		if err != nil {
+			bClientCh <- nil
+			return
+		}
+		bClientCh <- c
+	}()
+	bServer, err := ln2.Accept()
+	if err != nil {
+		t.Fatalf("accept2: %v", err)
+	}
+	bClient := <-bClientCh
+	if bClient == nil {
+		t.Fatal("dial2 failed")
+	}
+	defer bServer.Close()
+	defer bClient.Close()
+
+	// splice connects aServer (a) ↔ bClient (b).
+	g := &Gateway{}
+	spliceFinished := make(chan struct{})
+	go func() {
+		g.splice(aServer, bClient)
+		close(spliceFinished)
+	}()
+
+	// Direction a→b: write from aClient, read from bServer.
+	aToB := "hello from a"
+	if _, err := aClient.Write([]byte(aToB)); err != nil {
+		t.Fatalf("write a→b: %v", err)
+	}
+	if tc, ok := aClient.(*net.TCPConn); ok {
+		_ = tc.CloseWrite()
+	}
+
+	bServer.SetDeadline(time.Now().Add(3 * time.Second))
+	gotAtoB, err := io.ReadAll(bServer)
+	if err != nil {
+		t.Fatalf("ReadAll bServer (a→b): %v", err)
+	}
+	if string(gotAtoB) != aToB {
+		t.Errorf("a→b: got %q, want %q", gotAtoB, aToB)
+	}
+
+	// Direction b→a: write from bServer, read from aClient.
+	bToA := "hello from b"
+	if _, err := bServer.Write([]byte(bToA)); err != nil {
+		t.Fatalf("write b→a: %v", err)
+	}
+	if tc, ok := bServer.(*net.TCPConn); ok {
+		_ = tc.CloseWrite()
+	}
+
+	aClient.SetDeadline(time.Now().Add(3 * time.Second))
+	gotBtoA, err := io.ReadAll(aClient)
+	if err != nil {
+		t.Fatalf("ReadAll aClient (b→a): %v", err)
+	}
+	if string(gotBtoA) != bToA {
+		t.Errorf("b→a: got %q, want %q", gotBtoA, bToA)
+	}
+
+	// Both halves have EOF'd — splice should have returned.
+	select {
+	case <-spliceFinished:
+	case <-time.After(3 * time.Second):
+		t.Fatal("splice did not return after both sides closed")
+	}
+}
+
 func TestStart_RemovesStaleSocket(t *testing.T) {
 	sock := tempSockPath(t)
 	upstreamAddr := startFakeUpstream(t)

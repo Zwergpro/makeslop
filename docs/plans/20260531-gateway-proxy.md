@@ -92,11 +92,11 @@ Rejected: a single unified forward-proxy handler with a pluggable dialer — it 
 - Modify: `internal/networks/proxy.go`
 - Modify: `internal/networks/proxy_test.go`
 
-- [ ] extract the bidirectional copy in `handle` (the two `io.Copy` + `halfCloseWrite` goroutines + inner `wg.Wait`) into `func (g *Gateway) splice(a, b net.Conn)`
-- [ ] rewrite `handle` to dial the upstream, track/untrack `up`, then call `g.splice(client, up)`
-- [ ] keep `halfCloseWrite` as-is (used by `splice`)
-- [ ] add/adjust a unit test asserting `splice` copies bytes both directions and half-closes on EOF (use `net.Pipe`-backed or local TCP conns)
-- [ ] run `go test ./...` — must pass before task 3
+- [x] extract the bidirectional copy in `handle` (the two `io.Copy` + `halfCloseWrite` goroutines + inner `wg.Wait`) into `func (g *Gateway) splice(a, b net.Conn)`
+- [x] rewrite `handle` to dial the upstream, track/untrack `up`, then call `g.splice(client, up)`
+- [x] keep `halfCloseWrite` as-is (used by `splice`)
+- [x] add/adjust a unit test asserting `splice` copies bytes both directions and half-closes on EOF (use `net.Pipe`-backed or local TCP conns)
+- [x] run `go test ./...` — must pass before task 3
 
 ### Task 3: Add gateway mode — `NewGateway(…, proxy, logPath)`, `Start`/`Close` branch, `ServeHTTP`
 
