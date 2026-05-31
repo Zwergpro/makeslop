@@ -7,3 +7,4 @@ CLAUDE.md
 .makeslop.yaml
 .gotmp/
 .tmp/
+/makeslop

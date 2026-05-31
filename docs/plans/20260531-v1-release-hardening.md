@@ -212,15 +212,15 @@ the basics (LICENSE, CI, version stamping) plus carries a committed build artifa
 - Create: `LICENSE`
 - Modify: `.gitignore` (verify only)
 
-- [ ] Create `LICENSE` with the standard MIT text, year `2026`, copyright holder per the repo owner
+- [x] Create `LICENSE` with the standard MIT text, year `2026`, copyright holder per the repo owner
       (`makeslop` / `github.com/Zwergpro`).
-- [ ] `git rm --cached makeslop` to untrack the committed build artifact (keep the local file).
-- [ ] **Add `/makeslop` to `.gitignore`** — it is NOT currently ignored (the file only has
+- [x] `git rm --cached makeslop` to untrack the committed build artifact (keep the local file).
+- [x] **Add `/makeslop` to `.gitignore`** — it is NOT currently ignored (the file only has
       `.makeslop.yaml`). Use the root-anchored `/makeslop` so it does not affect the `cmd/makeslop/`
       package directory.
-- [ ] Confirm `git status` no longer shows `makeslop` as tracked, and a fresh `make build`-style
+- [x] Confirm `git status` no longer shows `makeslop` as tracked, and a fresh `make build`-style
       repo-root binary (if any) is ignored.
-- [ ] (No unit tests for this task — license/VCS change only; note in the commit.)
+- [x] (No unit tests for this task — license/VCS change only; note in the commit.)
 
 ### Task 6: Add GitHub Actions CI
 
