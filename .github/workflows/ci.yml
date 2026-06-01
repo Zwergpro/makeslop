@@ -2,7 +2,9 @@ name: CI
 
 on:
   push:
+    branches: ["main"]
   pull_request:
+    branches: ["main"]
 
 jobs:
   build-and-test:
@@ -12,14 +14,11 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
-          go-version: "1.26.x"
+          go-version: "1.26"
 
       - name: Set GOTMPDIR
-        # /tmp may be mounted noexec in some CI environments. Setting GOTMPDIR
-        # to a workspace-local directory ensures t.TempDir() lands on an
-        # executable filesystem, which is harmless even when /tmp is executable.
         run: |
           mkdir -p "${{ github.workspace }}/gotmp"
           echo "GOTMPDIR=${{ github.workspace }}/gotmp" >> "$GITHUB_ENV"
@@ -28,7 +27,7 @@ jobs:
         run: go build ./cmd/makeslop
 
       - name: Test
-        run: go test ./...
+        run: go test -v -timeout=100s ./...
 
   lint:
     runs-on: ubuntu-latest
@@ -42,13 +41,11 @@ jobs:
           go-version: "1.26.x"
 
       - name: Set GOTMPDIR
-        # /tmp may be mounted noexec in some CI environments. Setting GOTMPDIR
-        # to a workspace-local directory is a harmless precaution.
         run: |
           mkdir -p "${{ github.workspace }}/gotmp"
           echo "GOTMPDIR=${{ github.workspace }}/gotmp" >> "$GITHUB_ENV"
 
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v9
         with:
-          version: v1.64.8
+          version: v2.12.2
