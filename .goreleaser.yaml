@@ -1,20 +1,9 @@
-metadata:
-  maintainers:
-    - "Sergey Nesterenko <nestsdev@gmail.com>"
-  license: "MIT"
-  homepage: "https://github.com/Zwergpro/makeslop"
-  commit_author:
-    name: zwergpro
-    email: nestsdev@gmail.com
-    signing:
-      enabled: true
-      key: "9833038F4AC3B765A90EBBDEEC538E10E9A61141"
-      program: gpg2
-      format: openpgp
+project_name: makeslop
+version: 2
 
 builds:
   - id: linux
-    main: cmd/makeslop/
+    main: ./cmd/makeslop/
     goos:
       - linux
     goarch:
@@ -22,7 +11,7 @@ builds:
     ldflags:
       - "-X main.version={{.Version}}"
   - id: mac
-    main: cmd/makeslop/
+    main: ./cmd/makeslop/
     goos:
       - darwin
     goarch:
