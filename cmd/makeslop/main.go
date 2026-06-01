@@ -348,7 +348,9 @@ func newRootCmd(baseDir string) *cobra.Command {
 		Short:        "Launch the docker container for this workspace",
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
-		RunE:         func(cmd *cobra.Command, _ []string) error { return runRun(cmd, ws, baseDir, outOfHomeRun, dryRun, quiet, noProxy) },
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runRun(cmd, ws, baseDir, outOfHomeRun, dryRun, quiet, noProxy)
+		},
 	}
 
 	runCmd.Flags().BoolVarP(&dryRun, "dry-run", "n", false,
