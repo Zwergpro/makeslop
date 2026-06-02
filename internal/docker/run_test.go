@@ -121,6 +121,37 @@ func (f *fakeClient) ImageInspect(_ context.Context, _ string, _ ...moby.ImageIn
 	return moby.ImageInspectResult{}, nil
 }
 
+func (f *fakeClient) ContainerInspect(_ context.Context, _ string, _ moby.ContainerInspectOptions) (moby.ContainerInspectResult, error) {
+	return moby.ContainerInspectResult{}, nil
+}
+
+func (f *fakeClient) ExecCreate(_ context.Context, _ string, _ moby.ExecCreateOptions) (moby.ExecCreateResult, error) {
+	return moby.ExecCreateResult{}, nil
+}
+
+func (f *fakeClient) ExecAttach(_ context.Context, _ string, _ moby.ExecAttachOptions) (moby.ExecAttachResult, error) {
+	pr, pw := net.Pipe()
+	go func() { _ = pw.Close() }()
+	hr := moby.NewHijackedResponse(pr, "")
+	return moby.ExecAttachResult{HijackedResponse: hr}, nil
+}
+
+func (f *fakeClient) ExecInspect(_ context.Context, _ string, _ moby.ExecInspectOptions) (moby.ExecInspectResult, error) {
+	return moby.ExecInspectResult{}, nil
+}
+
+func (f *fakeClient) VolumeCreate(_ context.Context, _ moby.VolumeCreateOptions) (moby.VolumeCreateResult, error) {
+	return moby.VolumeCreateResult{}, nil
+}
+
+func (f *fakeClient) VolumeRemove(_ context.Context, _ string, _ moby.VolumeRemoveOptions) (moby.VolumeRemoveResult, error) {
+	return moby.VolumeRemoveResult{}, nil
+}
+
+func (f *fakeClient) ImagePull(_ context.Context, _ string, _ moby.ImagePullOptions) (moby.ImagePullResponse, error) {
+	return noopImagePullResponse{}, nil
+}
+
 func (f *fakeClient) Close() error {
 	f.closed = true
 	return nil

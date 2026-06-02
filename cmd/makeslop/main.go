@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -31,8 +32,21 @@ var version = "dev"
 
 // newGatewayFn is the seam used by tests to capture or replace NewGateway calls.
 // It mirrors the docker.newClientFn pattern: swapped via a test helper so tests
-// can assert on (sockPath, proxy, logPath) args without running a real socket.
+// can assert on (proxy, logPath) args without running a real gateway.
 var newGatewayFn = networks.NewGateway
+
+// sidecarRunner is the interface used by runRun for the socat sidecar lifecycle.
+// Satisfied by *docker.Sidecar; tests swap newSidecarFn to return a fake.
+type sidecarRunner interface {
+	Start(ctx context.Context, port int, volumeName string) error
+	Close() error
+}
+
+// newSidecarFn is the seam used by tests to capture or replace Sidecar creation.
+// The default returns a real *docker.Sidecar; tests swap it via setSidecarFnForTest.
+var newSidecarFn = func(quiet bool, stderr io.Writer) sidecarRunner {
+	return docker.NewSidecar(quiet, stderr)
+}
 
 // errSilent signals that a RunE has already written a tailored message to
 // stderr; main() should exit non-zero without reprinting.
@@ -155,23 +169,27 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfH
 		MaskedDirs:    yamlExcludes.Dirs,
 	}
 
-	// sha256(workspaceDir)[:12] + PID: unique across projects and concurrent runs,
-	// ~39 bytes (safely under the 108-byte sockaddr_un limit).
+	// sha256(workspaceDir)[:12] + PID: unique volume name across projects and concurrent runs.
 	//
 	// Socket-by-default: UNLESS --no-proxy, always wire the gateway so the
-	// container is locked to --network none and egresses via the host socket.
+	// container is locked to --network none and egresses via the proxy volume socket.
 	// When network.proxy.address is set, the gateway tunnels to that upstream.
 	// --no-proxy bypasses entirely → docker bridge networking (escape hatch for
 	// non-HTTP traffic such as raw TCP or git+ssh).
 	// logPath comes from netCfg.LogPath (resolved under project root); it is a
 	// NewGateway arg and therefore invisible to --dry-run/ShellCommand().
+	//
+	// Socat-volume transport: the Gateway listens on TCP 127.0.0.1:<ephemeral port>.
+	// A docker.Sidecar (alpine/socat container on bridge net) re-exposes that port as
+	// a unix socket on the named Docker volume so the app container can connect via
+	// HTTP_PROXY=unix:///sockets/proxy.sock while staying --network none.
 	var gw *networks.Gateway
+	var volumeName string
 	if !noProxy {
 		h := sha256.Sum256([]byte(workspaceDir))
-		sockPath := filepath.Join("/tmp", fmt.Sprintf("makeslop-%x-%d.sock", h[:6], os.Getpid()))
-		opts.ProxySocketHost = sockPath
-		opts.ProxySocketContainer = "/tmp/makeslop-proxy.sock"
-		gw = newGatewayFn(sockPath, netCfg.ProxyAddress, netCfg.LogPath)
+		volumeName = fmt.Sprintf("makeslop-sock-%x-%d", h[:6], os.Getpid())
+		opts.ProxySocketVolume = volumeName
+		gw = newGatewayFn(netCfg.ProxyAddress, netCfg.LogPath)
 	}
 
 	// ProjectRoot must be the registered ancestor (workspaceRoot), not pwd:
@@ -205,12 +223,22 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfH
 		return errSilent
 	}
 
-	// Gateway must exist before the container starts; a Start failure aborts the launch.
+	// Gateway and sidecar must exist before the container starts; any Start
+	// failure aborts the launch (fail-loud invariant).
+	// Teardown order: sidecar first (reverse of start), then gateway.
 	if gw != nil {
 		if err := gw.Start(cmd.Context()); err != nil {
 			return err
 		}
 		defer gw.Close() //nolint:errcheck // teardown; error not actionable here
+
+		// Start the socat sidecar: it bridges host TCP port → volume unix socket.
+		// --quiet gates the "pulling socat image" notice.
+		sc := newSidecarFn(quiet, cmd.ErrOrStderr())
+		if err := sc.Start(cmd.Context(), gw.Port(), volumeName); err != nil {
+			return err
+		}
+		defer sc.Close() //nolint:errcheck // teardown; error not actionable here
 	}
 
 	if err := docker.Run(cmd.Context(), spec); err != nil {

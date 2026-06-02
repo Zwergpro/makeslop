@@ -1,6 +1,11 @@
 // Package networks owns the host-side HTTP forward proxy that bridges container
-// traffic (via unix socket) to either an upstream HTTP CONNECT proxy (upstream
-// mode) or directly to the internet (gateway mode).
+// traffic (via the socat-volume unix socket) to either an upstream HTTP CONNECT
+// proxy (upstream mode) or directly to the internet (gateway mode).
+//
+// The host Gateway listens on TCP 127.0.0.1:<ephemeral port>. A socat sidecar
+// container (see internal/docker/sidecar.go) re-exposes the TCP endpoint as a
+// unix socket on a Docker volume so the app container can reach it via
+// HTTP_PROXY=unix:///sockets/proxy.sock while staying on --network none.
 //
 // # Modes
 //
@@ -12,12 +17,7 @@
 // gateway forwards verbatim without additional HTTP parsing — the payload is
 // forwarded as-is to the upstream proxy. The upstream-mode data path is:
 //
-//	Container app ──unix socket──► Gateway ──TCP──► upstream proxy ──► internet
-//
-// # Socket-path limit
-//
-// Unix sockets have a 108-byte sun_path limit. Start returns the bind error if
-// exceeded. Use /tmp/makeslop-<12hex>-<pid>.sock (~39 bytes).
+//	Container app ──volume unix socket──► socat ──TCP──► Gateway ──TCP──► upstream proxy ──► internet
 //
 // # Half-close protocol
 //
@@ -35,7 +35,6 @@ import (
 	"os"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -60,7 +59,7 @@ var hopByHopHeaders = []string{
 	"Upgrade",
 }
 
-// Gateway listens on a unix socket and either:
+// Gateway listens on TCP 127.0.0.1:<ephemeral port> and either:
 //   - (gateway mode, proxy == "") acts as a direct HTTP(S) forward proxy; or
 //   - (upstream mode, proxy != "") tunnels all traffic to an upstream TCP proxy.
 //
@@ -71,9 +70,8 @@ var hopByHopHeaders = []string{
 // one line). CONNECT (HTTPS, the dominant case) is exact. Gateway-mode plain
 // HTTP is logged per-request by ServeHTTP.
 type Gateway struct {
-	socketPath string
-	proxy      string
-	logPath    string
+	proxy   string
+	logPath string
 
 	// gateway-mode only; nil in upstream mode
 	srv       *http.Server
@@ -91,15 +89,14 @@ type Gateway struct {
 }
 
 // NewGateway constructs a Gateway; none of the arguments are validated —
-// Start surfaces bind/listen/dial errors.
+// Start surfaces bind/dial errors.
 //
 // proxy: upstream address (host:port). Empty string → gateway mode (direct egress).
 // logPath: path for the request log file. Empty string → logging disabled.
-func NewGateway(socketPath, proxy, logPath string) *Gateway {
+func NewGateway(proxy, logPath string) *Gateway {
 	g := &Gateway{
-		socketPath: socketPath,
-		proxy:      proxy,
-		logPath:    logPath,
+		proxy:   proxy,
+		logPath: logPath,
 	}
 	if proxy == "" {
 		// Gateway mode: allocate a shared transport for plain-HTTP forwarding.
@@ -108,45 +105,48 @@ func NewGateway(socketPath, proxy, logPath string) *Gateway {
 	return g
 }
 
-// SocketPath returns the unix socket path Start will bind; use it as the
-// source for the container bind mount.
-func (g *Gateway) SocketPath() string {
-	return g.socketPath
+// Addr returns the TCP address the Gateway is listening on after Start returns
+// successfully, or nil if Start has not been called.
+func (g *Gateway) Addr() net.Addr {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.listener == nil {
+		return nil
+	}
+	return g.listener.Addr()
 }
 
-// Start binds the unix socket (removing any stale file first), chmod 0666,
-// and starts serving. ctx cancellation alone does not stop the loop; only
-// Close unblocks it. ctx is propagated to in-flight connection handlers.
+// Port returns the TCP port the Gateway is listening on after Start returns
+// successfully, or 0 if Start has not been called.
+func (g *Gateway) Port() int {
+	addr := g.Addr()
+	if addr == nil {
+		return 0
+	}
+	if ta, ok := addr.(*net.TCPAddr); ok {
+		return ta.Port
+	}
+	return 0
+}
+
+// Start binds a TCP listener on 127.0.0.1:0 (OS assigns the port) and starts
+// serving. ctx cancellation alone does not stop the loop; only Close unblocks
+// it. ctx is propagated to in-flight connection handlers.
 //
-// 0666 is required because container processes may run as a different UID;
-// unix socket access is permission-checked against the socket's mode, not the
-// bind-mount flags.
-//
-// A bind error (e.g. path too long) should abort the container launch.
+// A bind error should abort the container launch.
 //
 // In upstream mode Start performs a single probe dial of the upstream address
 // before accepting any connections. If the upstream is unreachable, Start tears
-// down the listener and socket and returns the error so the container launch
-// aborts loudly rather than silently black-holing traffic. The probe has a
-// 5-second timeout; it checks TCP reachability only.
+// down the listener and returns the error so the container launch aborts loudly
+// rather than silently black-holing traffic. The probe has a 5-second timeout;
+// it checks TCP reachability only.
 //
 // In gateway mode (proxy == "") no probe dial is performed; the listener is
 // handed to an http.Server whose ServeHTTP handles CONNECT and absolute-form HTTP.
 func (g *Gateway) Start(ctx context.Context) error {
 	// ── shared prologue ───────────────────────────────────────────────────────
-	// Remove any stale socket left by a previous (crashed) run.
-	_ = os.Remove(g.socketPath)
-
-	// Set umask 0 before Listen to avoid a race window on socket mode, then restore.
-	oldUmask := syscall.Umask(0)
-	ln, err := net.Listen("unix", g.socketPath)
-	syscall.Umask(oldUmask)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		return err
-	}
-	if err := os.Chmod(g.socketPath, 0o666); err != nil {
-		_ = ln.Close()
-		_ = os.Remove(g.socketPath)
 		return err
 	}
 
@@ -157,7 +157,6 @@ func (g *Gateway) Start(ctx context.Context) error {
 		f, err := os.OpenFile(g.logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 		if err != nil {
 			_ = ln.Close()
-			_ = os.Remove(g.socketPath)
 			return err
 		}
 		g.logFile = f
@@ -186,7 +185,6 @@ func (g *Gateway) Start(ctx context.Context) error {
 			g.mu.Unlock()
 			cancel()
 			_ = ln.Close()
-			_ = os.Remove(g.socketPath)
 			// Close the log file opened above so the fd is not leaked on this
 			// error path. The caller sees an error and will not call Close().
 			if g.logFile != nil {
@@ -254,6 +252,17 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "server does not support hijacking", http.StatusInternalServerError)
 			return
 		}
+
+		// Add to the gateway WaitGroup before calling Hijack. Once Hijack
+		// succeeds, the http.Server no longer tracks this connection in its
+		// own shutdown wait — srv.Shutdown() will NOT wait for this goroutine
+		// to finish. By incrementing g.wg here (while still inside
+		// ServeHTTP, which srv does track), and decrementing it on return,
+		// Close()'s wg.Wait() is guaranteed to drain this goroutine before
+		// logFile.Close() runs, preventing a write to a closed file descriptor.
+		g.wg.Add(1)
+		defer g.wg.Done()
+
 		clientConn, _, err := hj.Hijack()
 		if err != nil {
 			// After a failed Hijack the connection is in an unusable state;
@@ -356,9 +365,8 @@ func (g *Gateway) logFirstLine(line string) {
 		return
 	}
 	// Malformed line — log raw to aid debugging.
-	if g.logger != nil {
-		g.logger.Printf("%s", strings.TrimSpace(line))
-	}
+	// Caller guards g.logger != nil before invoking logFirstLine.
+	g.logger.Printf("%s", strings.TrimSpace(line))
 }
 
 // acceptLoop accepts connections from ln until it is closed or ctx is done.
@@ -486,16 +494,16 @@ func (g *Gateway) untrackConn(c net.Conn) {
 //  2. g.srv.Shutdown() (gateway mode) — drains in-flight ServeHTTP goroutines
 //     before closing the listener so that plain-HTTP handlers cannot write to
 //     g.logFile after logFile.Close() runs. Hijacked CONNECT conns are detached
-//     from srv and are torn down via the trackConn loop below.
+//     from srv after Hijack() returns, but they call g.wg.Add(1) before Hijack(),
+//     so wg.Wait() (step 4) still catches them.
 //     The existing ln.Close() below is a harmless double-close (ErrClosed, already _-ignored).
 //  3. Close all tracked conns — unblocks any in-flight splice goroutines.
 //  4. wg.Wait() — drain all goroutines.
-//  5. os.Remove(socket) — clean up.
-//  6. Close g.logFile — safe because:
+//  5. Close g.logFile — safe because:
 //     - gateway mode: srv.Shutdown() (step 2) waits for all non-hijacked plain-HTTP
 //       ServeHTTP goroutines to return before it returns, so they cannot write to
-//       logFile after this point. Hijacked CONNECT tunnels call logReq before
-//       hijacking (before the connection is detached from srv), so they are also safe.
+//       logFile after this point. CONNECT handler goroutines call g.wg.Add(1) before
+//       Hijack(), so wg.Wait() (step 4) ensures they have also fully exited.
 //     - upstream mode: all handler goroutines are tracked by wg; wg.Wait() (step 4)
 //       ensures they have fully exited before logFile.Close() runs.
 func (g *Gateway) Close() error {
@@ -503,14 +511,17 @@ func (g *Gateway) Close() error {
 	cancel := g.cancel
 	ln := g.listener
 	srv := g.srv
+	logFile := g.logFile
 	conns := make([]net.Conn, len(g.conns))
 	copy(conns, g.conns)
 	// Clear stored state while holding the lock so concurrent Close calls are
-	// harmless.
+	// harmless. g.logFile is captured and cleared here so a second concurrent
+	// Close() call cannot race on the nil-check + Close() + nil-assignment below.
 	g.cancel = nil
 	g.listener = nil
 	g.srv = nil
 	g.conns = nil
+	g.logFile = nil
 	g.mu.Unlock()
 
 	if cancel != nil {
@@ -534,7 +545,6 @@ func (g *Gateway) Close() error {
 	}
 
 	g.wg.Wait()
-	_ = os.Remove(g.socketPath)
 
 	// Release idle keep-alive connections held by the gateway-mode transport so
 	// they are not leaked in tests or across back-to-back Close/Start cycles.
@@ -545,11 +555,13 @@ func (g *Gateway) Close() error {
 
 	// Close the log file last. By this point:
 	// - gateway mode: srv.Shutdown() has returned (all plain-HTTP handlers done),
-	//   and CONNECT tunnels logged before hijacking; no goroutine can write logFile.
+	//   and CONNECT handler goroutines have called g.wg.Done() (tracked via g.wg.Add
+	//   before Hijack); no goroutine can write logFile.
 	// - upstream mode: wg.Wait() has returned; all handler goroutines have exited.
-	if g.logFile != nil {
-		_ = g.logFile.Close()
-		g.logFile = nil
+	// logFile was captured and cleared from g.logFile under the mutex above so
+	// concurrent Close() calls do not race on this field.
+	if logFile != nil {
+		_ = logFile.Close()
 	}
 
 	return nil

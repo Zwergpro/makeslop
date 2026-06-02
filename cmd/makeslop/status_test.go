@@ -26,11 +26,20 @@ func runStatusCmd(t *testing.T, baseDir string, args ...string) (stdout, stderr 
 // daemon/image state for status tests. The fake is torn down via t.Cleanup.
 func installFakeStatusClient(t *testing.T, daemonDown bool, imageMissing bool) *docker.FakeRunClient {
 	t.Helper()
+	return installFakeStatusClientFull(t, daemonDown, imageMissing, false)
+}
+
+// installFakeStatusClientFull is the full-control variant of
+// installFakeStatusClient. socatMissing controls whether the socat image
+// inspect returns not-found (simulating alpine/socat not yet pulled).
+func installFakeStatusClientFull(t *testing.T, daemonDown bool, imageMissing bool, socatMissing bool) *docker.FakeRunClient {
+	t.Helper()
 	fc := docker.NewFakeRunClient(0)
 	if daemonDown {
 		fc.PingErr = errors.New("connection refused")
 	}
 	fc.ImageMissing = imageMissing
+	fc.SocatImageMissing = socatMissing
 	t.Cleanup(docker.SetClientForTest(fc))
 	return fc
 }
@@ -703,5 +712,217 @@ network:
 	wantLogPath := filepath.Join(resolvedPwd, logRel)
 	if !strings.Contains(proxyCheck.Detail, wantLogPath) {
 		t.Errorf("proxy detail must contain resolved log path %q; got %q", wantLogPath, proxyCheck.Detail)
+	}
+}
+
+// ── Socat image check tests ───────────────────────────────────────────────────
+
+// TestStatus_SocatImagePresent verifies that when alpine/socat is locally
+// present, the socat-image check is ok with "alpine/socat present" detail.
+func TestStatus_SocatImagePresent(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	// Daemon up, app image present, socat image present.
+	installFakeStatusClientFull(t, false, false, false /* socatMissing=false */)
+
+	stdout, _, err := runStatusCmd(t, baseDir, "status", "--json")
+	if err != nil {
+		t.Fatalf("status should exit 0 when all checks pass; err=%v", err)
+	}
+
+	var result statusResult
+	if jsonErr := json.Unmarshal([]byte(stdout), &result); jsonErr != nil {
+		t.Fatalf("--json output is not valid JSON: %v\noutput: %s", jsonErr, stdout)
+	}
+
+	var socatCheck *statusCheck
+	for i := range result.Checks {
+		if result.Checks[i].Name == "socat-image" {
+			socatCheck = &result.Checks[i]
+			break
+		}
+	}
+	if socatCheck == nil {
+		t.Fatalf("--json missing 'socat-image' check; checks: %+v", result.Checks)
+	}
+	if socatCheck.State != checkOK {
+		t.Errorf("socat-image state = %q, want %q", socatCheck.State, checkOK)
+	}
+	if socatCheck.Detail != "alpine/socat present" {
+		t.Errorf("socat-image detail = %q, want %q", socatCheck.Detail, "alpine/socat present")
+	}
+}
+
+// TestStatus_SocatImageAbsent verifies that when alpine/socat is not locally
+// present, the socat-image check is non-blocking warn with a pull hint.
+func TestStatus_SocatImageAbsent(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	// Daemon up, app image present, socat image absent.
+	installFakeStatusClientFull(t, false, false, true /* socatMissing=true */)
+
+	stdout, stderr, err := runStatusCmd(t, baseDir, "status", "--json")
+
+	// The socat-image check is non-blocking — status must still exit 0 when all
+	// other blocking checks pass.
+	if err != nil {
+		t.Errorf("socat-image absent must be non-blocking (exit 0); err=%v stderr=%q", err, stderr)
+	}
+
+	var result statusResult
+	if jsonErr := json.Unmarshal([]byte(stdout), &result); jsonErr != nil {
+		t.Fatalf("--json output is not valid JSON: %v\noutput: %s", jsonErr, stdout)
+	}
+
+	var socatCheck *statusCheck
+	for i := range result.Checks {
+		if result.Checks[i].Name == "socat-image" {
+			socatCheck = &result.Checks[i]
+			break
+		}
+	}
+	if socatCheck == nil {
+		t.Fatalf("--json missing 'socat-image' check; checks: %+v", result.Checks)
+	}
+	// Must be warn (non-blocking), not fail.
+	if socatCheck.State != checkWarn {
+		t.Errorf("socat-image absent state = %q, want %q (non-blocking)", socatCheck.State, checkWarn)
+	}
+	if !strings.Contains(socatCheck.Detail, "will pull on first run") {
+		t.Errorf("socat-image detail must hint at pull; got %q", socatCheck.Detail)
+	}
+}
+
+// TestStatus_SocatImageAbsent_PlainOutput verifies that the "alpine/socat absent"
+// hint appears in plain (non-JSON) status output.
+func TestStatus_SocatImageAbsent_PlainOutput(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	installFakeStatusClientFull(t, false, false, true /* socatMissing=true */)
+
+	_, stderr, err := runStatusCmd(t, baseDir, "status")
+	// Still exits 0 (non-blocking).
+	if err != nil {
+		t.Errorf("socat-image absent must not fail status; err=%v stderr=%q", err, stderr)
+	}
+	if !strings.Contains(stderr, "socat-image") {
+		t.Errorf("plain output must mention 'socat-image'; stderr=%q", stderr)
+	}
+	if !strings.Contains(stderr, "will pull on first run") {
+		t.Errorf("plain output must hint at pull; stderr=%q", stderr)
+	}
+	// Non-blocking: ready verdict must still appear.
+	if !strings.Contains(stderr, "ready") {
+		t.Errorf("plain output must show 'ready' verdict; stderr=%q", stderr)
+	}
+	if strings.Contains(stderr, "not ready") {
+		t.Errorf("socat-image absent must not cause 'not ready'; stderr=%q", stderr)
+	}
+}
+
+// TestStatus_SocatImageCheck_InspectError verifies that when ImageExists returns
+// a non-not-found error for the socat image, the socat-image check is non-blocking
+// (warn, exits 0) with an error detail string.
+func TestStatus_SocatImageCheck_InspectError(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	fc := installFakeStatusClient(t, false, false)
+	fc.SocatImageErr = errors.New("daemon io error") // non-not-found error specifically for socat image
+
+	stdout, stderr, err := runStatusCmd(t, baseDir, "status", "--json")
+	// socat-image error is non-blocking — status must exit 0.
+	if err != nil {
+		t.Errorf("socat-image inspect error must be non-blocking (exit 0); err=%v stderr=%q", err, stderr)
+	}
+
+	var result statusResult
+	if jsonErr := json.Unmarshal([]byte(stdout), &result); jsonErr != nil {
+		t.Fatalf("--json output is not valid JSON: %v\noutput: %s", jsonErr, stdout)
+	}
+
+	var socatCheck *statusCheck
+	for i := range result.Checks {
+		if result.Checks[i].Name == "socat-image" {
+			socatCheck = &result.Checks[i]
+		}
+	}
+	if socatCheck == nil {
+		t.Fatalf("--json missing 'socat-image' check; checks: %+v", result.Checks)
+	}
+	if socatCheck.State != checkWarn {
+		t.Errorf("socat-image inspect-error state = %q, want %q (non-blocking)", socatCheck.State, checkWarn)
+	}
+	if !strings.Contains(socatCheck.Detail, "error checking socat image") {
+		t.Errorf("socat-image detail must mention error; got %q", socatCheck.Detail)
+	}
+}
+
+// TestStatus_SocatImageCheck_AppearAfterProxy verifies that the socat-image check
+// appears after the proxy check in --json output.
+func TestStatus_SocatImageCheck_AppearAfterProxy(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	installFakeStatusClient(t, false, false)
+
+	stdout, _, _ := runStatusCmd(t, baseDir, "status", "--json")
+
+	var result statusResult
+	if jsonErr := json.Unmarshal([]byte(stdout), &result); jsonErr != nil {
+		t.Fatalf("--json output is not valid JSON: %v\noutput: %s", jsonErr, stdout)
+	}
+
+	proxyIdx := -1
+	socatIdx := -1
+	for i, c := range result.Checks {
+		switch c.Name {
+		case "proxy":
+			proxyIdx = i
+		case "socat-image":
+			socatIdx = i
+		}
+	}
+	if proxyIdx < 0 {
+		t.Fatal("proxy check not found in --json output")
+	}
+	if socatIdx < 0 {
+		t.Fatal("socat-image check not found in --json output")
+	}
+	if socatIdx <= proxyIdx {
+		t.Errorf("socat-image (idx %d) must appear after proxy (idx %d) in checks array", socatIdx, proxyIdx)
 	}
 }

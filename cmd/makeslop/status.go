@@ -284,7 +284,7 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, jso
 				Detail: fmt.Sprintf("cannot read .makeslop.yaml: %v", pcErr),
 			})
 			// Proxy config is also unavailable when project config load fails;
-			// append an info entry so the pipeline always has 6 checks.
+			// append an info entry so the pipeline always has 7 checks.
 			checks = append(checks, statusCheck{
 				Name:  "proxy",
 				State: checkInfo,
@@ -338,6 +338,30 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, jso
 		checks = append(checks, statusCheck{
 			Name:  "proxy",
 			State: checkInfo,
+		})
+	}
+
+	// ── 7. Socat image check (non-blocking) ──────────────────────────────
+	// alpine/socat is pulled on demand at `makeslop run` time; absence is not
+	// a hard failure but worth surfacing so users know the first run will pull.
+	socatFound, socatErr := docker.ImageExists(ctx, docker.SocatImage)
+	if socatErr != nil {
+		checks = append(checks, statusCheck{
+			Name:   "socat-image",
+			State:  checkWarn,
+			Detail: fmt.Sprintf("error checking socat image: %v", socatErr),
+		})
+	} else if !socatFound {
+		checks = append(checks, statusCheck{
+			Name:   "socat-image",
+			State:  checkWarn,
+			Detail: "alpine/socat absent — will pull on first run",
+		})
+	} else {
+		checks = append(checks, statusCheck{
+			Name:   "socat-image",
+			State:  checkOK,
+			Detail: "alpine/socat present",
 		})
 	}
 
