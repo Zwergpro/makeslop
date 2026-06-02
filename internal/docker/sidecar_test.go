@@ -22,7 +22,7 @@ func TestSidecar_Start_HappyPath(t *testing.T) {
 	sc := NewSidecar(false, &stderr)
 	volName := "makeslop-sock-testhappy"
 
-	if err := sc.Start(context.Background(), 9999, volName); err != nil {
+	if err := sc.Start(context.Background(), "10.0.0.5:3128", volName); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 
@@ -30,9 +30,9 @@ func TestSidecar_Start_HappyPath(t *testing.T) {
 	if len(frc.CreatedVolumes) != 1 || frc.CreatedVolumes[0] != volName {
 		t.Errorf("CreatedVolumes = %v, want [%s]", frc.CreatedVolumes, volName)
 	}
-	// VolumeName accessor.
-	if sc.VolumeName() != volName {
-		t.Errorf("VolumeName() = %q, want %q", sc.VolumeName(), volName)
+	// Internal volumeName field must be set after Start.
+	if sc.volumeName != volName {
+		t.Errorf("sc.volumeName = %q, want %q", sc.volumeName, volName)
 	}
 	// No pull notice when image is present.
 	if stderr.Len() > 0 {
@@ -63,7 +63,7 @@ func TestSidecar_Start_ImagePullOnDemand(t *testing.T) {
 	sc := NewSidecar(false, &stderr)
 	volName := "makeslop-sock-testpull"
 
-	if err := sc.Start(context.Background(), 9999, volName); err != nil {
+	if err := sc.Start(context.Background(), "10.0.0.5:3128", volName); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	if !frc.ImagePullCalled {
@@ -87,7 +87,7 @@ func TestSidecar_Start_QuietSuppressesPullNotice(t *testing.T) {
 	sc := NewSidecar(true, &stderr)
 	volName := "makeslop-sock-testquiet"
 
-	if err := sc.Start(context.Background(), 9999, volName); err != nil {
+	if err := sc.Start(context.Background(), "10.0.0.5:3128", volName); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	if !frc.ImagePullCalled {
@@ -112,7 +112,7 @@ func TestSidecar_Start_PullFailure(t *testing.T) {
 	sc := NewSidecar(false, nil)
 	volName := "makeslop-sock-testpullfail"
 
-	err := sc.Start(context.Background(), 9999, volName)
+	err := sc.Start(context.Background(), "10.0.0.5:3128", volName)
 	if err == nil {
 		t.Fatal("Start: expected error on pull failure, got nil")
 	}
@@ -138,7 +138,7 @@ func TestSidecar_Start_SidecarEarlyExit(t *testing.T) {
 	sc := NewSidecar(false, nil)
 	volName := "makeslop-sock-testearly"
 
-	err := sc.Start(context.Background(), 9999, volName)
+	err := sc.Start(context.Background(), "10.0.0.5:3128", volName)
 	if err == nil {
 		t.Fatal("Start: expected error on sidecar early exit, got nil")
 	}
@@ -209,7 +209,7 @@ func TestSidecar_Close_RemovesVolumeAndContainer(t *testing.T) {
 	sc := NewSidecar(false, nil)
 	volName := "makeslop-sock-testclose"
 
-	if err := sc.Start(context.Background(), 9999, volName); err != nil {
+	if err := sc.Start(context.Background(), "10.0.0.5:3128", volName); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	if err := sc.Close(); err != nil {
@@ -243,7 +243,7 @@ func TestSidecar_Start_HappyPath_ContainerRemoved(t *testing.T) {
 	sc := NewSidecar(false, nil)
 	volName := "makeslop-sock-testhappy2"
 
-	if err := sc.Start(context.Background(), 9999, volName); err != nil {
+	if err := sc.Start(context.Background(), "10.0.0.5:3128", volName); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	if err := sc.Close(); err != nil {
@@ -267,7 +267,7 @@ func TestSidecar_Start_ContainerCreateFails(t *testing.T) {
 	sc := NewSidecar(false, nil)
 	volName := "makeslop-sock-testccfail"
 
-	err := sc.Start(context.Background(), 9999, volName)
+	err := sc.Start(context.Background(), "10.0.0.5:3128", volName)
 	if err == nil {
 		t.Fatal("Start: expected error on ContainerCreate failure, got nil")
 	}
@@ -293,7 +293,7 @@ func TestSidecar_Start_ContainerStartFails(t *testing.T) {
 	sc := NewSidecar(false, nil)
 	volName := "makeslop-sock-testcsfail"
 
-	err := sc.Start(context.Background(), 9999, volName)
+	err := sc.Start(context.Background(), "10.0.0.5:3128", volName)
 	if err == nil {
 		t.Fatal("Start: expected error on ContainerStart failure, got nil")
 	}
@@ -323,7 +323,7 @@ func TestSidecar_Start_VolumeCreateFails(t *testing.T) {
 	sc := NewSidecar(false, nil)
 	volName := "makeslop-sock-testvcfail"
 
-	err := sc.Start(context.Background(), 9999, volName)
+	err := sc.Start(context.Background(), "10.0.0.5:3128", volName)
 	if err == nil {
 		t.Fatal("Start: expected error on VolumeCreate failure, got nil")
 	}
@@ -335,9 +335,9 @@ func TestSidecar_Start_VolumeCreateFails(t *testing.T) {
 	if len(frc.RemovedContainers) != 0 {
 		t.Errorf("ContainerRemove called unexpectedly when VolumeCreate failed; got %v", frc.RemovedContainers)
 	}
-	// volumeName must not be set so Close is a no-op.
-	if sc.VolumeName() != "" {
-		t.Errorf("VolumeName() = %q after VolumeCreate failure; want empty", sc.VolumeName())
+	// sc.volumeName must not be set so Close is a no-op.
+	if sc.volumeName != "" {
+		t.Errorf("sc.volumeName = %q after VolumeCreate failure; want empty", sc.volumeName)
 	}
 }
 
@@ -386,21 +386,21 @@ func TestSidecar_waitReady_ExecCreateError(t *testing.T) {
 	}
 }
 
-// TestSidecar_waitReady_ExecAttachError verifies that waitReady propagates
-// an ExecAttach error immediately.
-func TestSidecar_waitReady_ExecAttachError(t *testing.T) {
+// TestSidecar_waitReady_ExecStartError verifies that waitReady propagates
+// an ExecStart error immediately.
+func TestSidecar_waitReady_ExecStartError(t *testing.T) {
 	frc := NewFakeRunClient(0)
-	frc.ExecAttachErr = errors.New("exec attach failed")
+	frc.ExecStartErr = errors.New("exec start failed")
 	t.Cleanup(SetClientForTest(frc))
 
 	sc := &Sidecar{containerID: "fake-id"}
 	cli, _ := newClientFn()
 	err := sc.waitReady(context.Background(), cli)
 	if err == nil {
-		t.Fatal("waitReady: expected error on ExecAttach failure, got nil")
+		t.Fatal("waitReady: expected error on ExecStart failure, got nil")
 	}
-	if !strings.Contains(err.Error(), "exec attach") {
-		t.Errorf("error should mention exec attach; got: %v", err)
+	if !strings.Contains(err.Error(), "exec start") {
+		t.Errorf("error should mention exec start; got: %v", err)
 	}
 }
 
@@ -424,28 +424,93 @@ func TestSidecar_waitReady_ContainerInspectError(t *testing.T) {
 
 // ─── VolumeCreate label and container args ────────────────────────────────────
 
-// TestSidecar_Start_VolumeCreate_HasManagedByLabel verifies that VolumeCreate
-// is called with the managed-by=makeslop label.
-func TestSidecar_Start_VolumeCreate_HasManagedByLabel(t *testing.T) {
-	// Use a custom VolumeCreate that captures the options.
+// ─── Socat command args: TCP-CONNECT to upstream, no host.docker.internal ─────
+
+// TestSidecar_Start_SocatCmdContainsTCPConnect verifies that the socat container
+// is started with the correct TCP-CONNECT argument pointing to the upstream address.
+func TestSidecar_Start_SocatCmdContainsTCPConnect(t *testing.T) {
 	frc := NewFakeRunClient(0)
 	frc.ExecExitCode = 0
 	t.Cleanup(SetClientForTest(frc))
 
-	// Wrap VolumeCreate to capture labels via a hook in frc — we can't override
-	// it at this level without a custom fake, so we verify by inspecting the
-	// spec indirectly: we check that Start succeeds and the volume was created.
-	// Label correctness is verified by reading spec.go's VolumeCreate call.
-	// Direct capture requires a per-test custom client; use the simpler approach:
-	// compile-time grep confirms managed-by=makeslop is the only label set.
-	// This test ensures VolumeCreate is called at all when Start succeeds.
+	sc := NewSidecar(false, nil)
+	upstream := "10.0.0.5:3128"
+	volName := "makeslop-sock-testcmd"
+
+	if err := sc.Start(context.Background(), upstream, volName); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Verify the socat command contains TCP-CONNECT:<upstream>,reuseaddr.
+	cmd := frc.LastContainerCreateOpts.Config.Cmd
+	found := false
+	for _, arg := range cmd {
+		if strings.Contains(arg, "TCP-CONNECT:"+upstream+",reuseaddr") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("socat cmd %v does not contain TCP-CONNECT:%s,reuseaddr", cmd, upstream)
+	}
+
+	// The command must NOT reference host.docker.internal.
+	for _, arg := range cmd {
+		if strings.Contains(arg, "host.docker.internal") {
+			t.Errorf("socat cmd contains host.docker.internal (should use direct remote address): %v", cmd)
+		}
+	}
+}
+
+// TestSidecar_Start_SocatCmdNoHostDockerInternal verifies that the socat
+// command never references the legacy host.docker.internal hostname regardless
+// of the upstream address passed in.
+func TestSidecar_Start_SocatCmdNoHostDockerInternal(t *testing.T) {
+	cases := []string{
+		"10.0.0.5:3128",
+		"192.168.1.100:8080",
+		"proxy.corp.example.com:3128",
+	}
+	for _, upstream := range cases {
+		t.Run(upstream, func(t *testing.T) {
+			frc := NewFakeRunClient(0)
+			frc.ExecExitCode = 0
+			t.Cleanup(SetClientForTest(frc))
+
+			sc := NewSidecar(false, nil)
+			volName := "makeslop-sock-nodockerhost"
+			if err := sc.Start(context.Background(), upstream, volName); err != nil {
+				t.Fatalf("Start(%q): %v", upstream, err)
+			}
+			cmd := frc.LastContainerCreateOpts.Config.Cmd
+			for _, arg := range cmd {
+				if strings.Contains(arg, "host.docker.internal") {
+					t.Errorf("upstream %q: socat cmd references host.docker.internal: %v", upstream, cmd)
+				}
+			}
+		})
+	}
+}
+
+// TestSidecar_Start_VolumeCreate_HasManagedByLabel verifies that VolumeCreate
+// is called with the managed-by=makeslop label.
+func TestSidecar_Start_VolumeCreate_HasManagedByLabel(t *testing.T) {
+	frc := NewFakeRunClient(0)
+	frc.ExecExitCode = 0
+	t.Cleanup(SetClientForTest(frc))
 
 	sc := NewSidecar(false, nil)
 	volName := "makeslop-sock-testlabel"
-	if err := sc.Start(context.Background(), 9999, volName); err != nil {
+	if err := sc.Start(context.Background(), "10.0.0.5:3128", volName); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	if len(frc.CreatedVolumes) == 0 || frc.CreatedVolumes[0] != volName {
 		t.Errorf("VolumeCreate not called with expected name; CreatedVolumes=%v", frc.CreatedVolumes)
+	}
+	if len(frc.CreatedVolumeLabels) == 0 {
+		t.Fatal("VolumeCreate labels not recorded")
+	}
+	labels := frc.CreatedVolumeLabels[0]
+	if labels["managed-by"] != "makeslop" {
+		t.Errorf("VolumeCreate missing managed-by=makeslop label; got labels=%v", labels)
 	}
 }

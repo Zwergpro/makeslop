@@ -16,9 +16,9 @@ import (
 	"github.com/moby/moby/api/types/mount"
 )
 
-// proxySocketDir is the fixed in-container mount point for the proxy volume.
-// The app container mounts the socat-populated volume read-only at this path;
-// the proxy socket is always /sockets/proxy.sock inside the container.
+// proxySocketDir is the fixed in-container mount point for the proxy volume,
+// shared by both the app container (read-only) and the socat sidecar (read-write).
+// The proxy socket is always /sockets/proxy.sock inside the container.
 const proxySocketDir = "/sockets"
 
 // Options is the caller-supplied input to BuildSpec. Path fields must be
@@ -42,7 +42,7 @@ type Options struct {
 	// HTTP_PROXY/HTTPS_PROXY=unix:///sockets/proxy.sock. Empty means default
 	// bridge networking (no proxy).
 	//
-	// The sidecar (Task 4) mounts the same volume read-write so it can create
+	// The sidecar mounts the same volume read-write so it can create
 	// the socket inside the VM filesystem — app container and sidecar use
 	// asymmetric read-only vs read-write access to the same volume.
 	ProxySocketVolume string
@@ -145,8 +145,8 @@ func BuildSpec(o Options) Spec {
 			"HTTP_PROXY=" + unixURL,
 			"HTTPS_PROXY=" + unixURL,
 		}
-		// App container mounts the volume read-only; the socat sidecar (Task 4)
-		// mounts the same volume read-write to create the socket inside the VM.
+		// App container mounts the volume read-only; the socat sidecar mounts
+		// the same volume read-write to create the socket inside the VM.
 		spec.Mounts = append(spec.Mounts, Mount{
 			Type:      "volume",
 			Host:      o.ProxySocketVolume, // volume name (not a host path)

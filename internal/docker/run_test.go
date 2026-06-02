@@ -129,11 +129,8 @@ func (f *fakeClient) ExecCreate(_ context.Context, _ string, _ moby.ExecCreateOp
 	return moby.ExecCreateResult{}, nil
 }
 
-func (f *fakeClient) ExecAttach(_ context.Context, _ string, _ moby.ExecAttachOptions) (moby.ExecAttachResult, error) {
-	pr, pw := net.Pipe()
-	go func() { _ = pw.Close() }()
-	hr := moby.NewHijackedResponse(pr, "")
-	return moby.ExecAttachResult{HijackedResponse: hr}, nil
+func (f *fakeClient) ExecStart(_ context.Context, _ string, _ moby.ExecStartOptions) (moby.ExecStartResult, error) {
+	return moby.ExecStartResult{}, nil
 }
 
 func (f *fakeClient) ExecInspect(_ context.Context, _ string, _ moby.ExecInspectOptions) (moby.ExecInspectResult, error) {

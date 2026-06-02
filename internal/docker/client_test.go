@@ -3,7 +3,6 @@ package docker
 import (
 	"context"
 	"errors"
-	"io"
 	"testing"
 
 	cerrdefs "github.com/containerd/errdefs"
@@ -216,10 +215,10 @@ func TestFakeRunClient_VolumeCreateRemove_RecordBoth(t *testing.T) {
 	}
 }
 
-// ─── FakeRunClient exec handshake (create→attach→inspect) ────────────────────
+// ─── FakeRunClient exec handshake (create→start→inspect) ─────────────────────
 
 // TestFakeRunClient_ExecHandshake_Success verifies the happy-path exec handshake:
-// ExecCreate → ExecAttach (blocks until exec exits) → ExecInspect returns exit code 0.
+// ExecCreate → ExecStart → ExecInspect returns exit code 0.
 func TestFakeRunClient_ExecHandshake_Success(t *testing.T) {
 	f := NewFakeRunClient(0)
 	f.ExecExitCode = 0 // explicit: success
@@ -234,13 +233,10 @@ func TestFakeRunClient_ExecHandshake_Success(t *testing.T) {
 		t.Fatal("ExecCreate returned empty exec ID")
 	}
 
-	attachRes, err := f.ExecAttach(context.Background(), execID.ID, moby.ExecAttachOptions{})
+	_, err = f.ExecStart(context.Background(), execID.ID, moby.ExecStartOptions{Detach: true})
 	if err != nil {
-		t.Fatalf("ExecAttach returned error: %v", err)
+		t.Fatalf("ExecStart returned error: %v", err)
 	}
-	// Drain to EOF — blocks until exec exits (fake closes pipe immediately).
-	_, _ = io.Copy(io.Discard, attachRes.Reader)
-	attachRes.Close()
 
 	result, err := f.ExecInspect(context.Background(), execID.ID, moby.ExecInspectOptions{})
 	if err != nil {

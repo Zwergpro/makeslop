@@ -134,11 +134,8 @@ func (noopClient) ExecCreate(_ context.Context, _ string, _ moby.ExecCreateOptio
 	return moby.ExecCreateResult{}, nil
 }
 
-func (noopClient) ExecAttach(_ context.Context, _ string, _ moby.ExecAttachOptions) (moby.ExecAttachResult, error) {
-	pr, pw := net.Pipe()
-	go func() { _ = pw.Close() }()
-	hr := moby.NewHijackedResponse(pr, "")
-	return moby.ExecAttachResult{HijackedResponse: hr}, nil
+func (noopClient) ExecStart(_ context.Context, _ string, _ moby.ExecStartOptions) (moby.ExecStartResult, error) {
+	return moby.ExecStartResult{}, nil
 }
 
 func (noopClient) ExecInspect(_ context.Context, _ string, _ moby.ExecInspectOptions) (moby.ExecInspectResult, error) {
@@ -187,9 +184,8 @@ func (noopClient) Close() error { return nil }
 // Image pull simulation:
 //   - ImagePullCalled records whether ImagePull was invoked.
 //   - ImagePullErr, if non-nil, is returned by ImagePull.
-//   - SocatImageMissing, when true, causes ImageInspect to return not-found for
-//     the socat image (the first ImageInspect call), then found afterwards; used
-//     to test pull-on-demand.
+//   - SocatImageMissing, when true, causes every ImageInspect call for the socat
+//     image to return not-found; used to test pull-on-demand.
 type FakeRunClient struct {
 	noopClient
 	ExitCode     int
@@ -199,21 +195,23 @@ type FakeRunClient struct {
 	ImageErr     error // if non-nil (and ImageMissing false), ImageInspect returns this error
 
 	// Volume tracking
-	CreatedVolumes  []string
-	RemovedVolumes  []string
-	VolumeCreateErr error // if non-nil, VolumeCreate returns this error
+	CreatedVolumes       []string
+	CreatedVolumeLabels  []map[string]string // labels from each VolumeCreate call, parallel to CreatedVolumes
+	RemovedVolumes       []string
+	VolumeCreateErr      error // if non-nil, VolumeCreate returns this error
 
 	// Container tracking
-	RemovedContainers  []string
-	ContainerCreateErr error // if non-nil, ContainerCreate returns this error
-	ContainerStartErr  error // if non-nil, ContainerStart returns this error
+	RemovedContainers      []string
+	LastContainerCreateOpts moby.ContainerCreateOptions // options from most recent ContainerCreate call
+	ContainerCreateErr     error                        // if non-nil, ContainerCreate returns this error
+	ContainerStartErr      error                        // if non-nil, ContainerStart returns this error
 
 	// Exec handshake
-	ExecExitCode    int   // exit code returned by ExecInspect (default 0 = success)
-	ExecRunning     bool  // if true, ExecInspect reports Running=true
-	ExecCreateErr   error // if non-nil, ExecCreate returns this error
-	ExecAttachErr   error // if non-nil, ExecAttach returns this error
-	ExecInspectErr  error // if non-nil, ExecInspect returns this error
+	ExecExitCode        int   // exit code returned by ExecInspect (default 0 = success)
+	ExecRunning         bool  // if true, ExecInspect reports Running=true
+	ExecCreateErr       error // if non-nil, ExecCreate returns this error
+	ExecStartErr        error // if non-nil, ExecStart returns this error
+	ExecInspectErr      error // if non-nil, ExecInspect returns this error
 	ContainerInspectErr error // if non-nil, ContainerInspect returns this error
 
 	// Sidecar early-exit simulation
@@ -307,16 +305,13 @@ func (f *FakeRunClient) ExecCreate(_ context.Context, _ string, _ moby.ExecCreat
 	return moby.ExecCreateResult{ID: "fake-exec-id"}, nil
 }
 
-// ExecAttach returns a hijacked pipe that closes immediately (simulating exec
-// completion). If ExecAttachErr is set, it is returned instead.
-func (f *FakeRunClient) ExecAttach(_ context.Context, _ string, _ moby.ExecAttachOptions) (moby.ExecAttachResult, error) {
-	if f.ExecAttachErr != nil {
-		return moby.ExecAttachResult{}, f.ExecAttachErr
+// ExecStart is a no-op (blocks in production until exec completes; Detach: false).
+// If ExecStartErr is set, it is returned instead.
+func (f *FakeRunClient) ExecStart(_ context.Context, _ string, _ moby.ExecStartOptions) (moby.ExecStartResult, error) {
+	if f.ExecStartErr != nil {
+		return moby.ExecStartResult{}, f.ExecStartErr
 	}
-	pr, pw := net.Pipe()
-	go func() { _ = pw.Close() }()
-	hr := moby.NewHijackedResponse(pr, "")
-	return moby.ExecAttachResult{HijackedResponse: hr}, nil
+	return moby.ExecStartResult{}, nil
 }
 
 // ExecInspect returns scripted Running/ExitCode values.
@@ -331,13 +326,14 @@ func (f *FakeRunClient) ExecInspect(_ context.Context, _ string, _ moby.ExecInsp
 	}, nil
 }
 
-// VolumeCreate records the created volume name and returns it.
+// VolumeCreate records the created volume name and labels, then returns it.
 // If VolumeCreateErr is set, it is returned without recording the volume.
 func (f *FakeRunClient) VolumeCreate(_ context.Context, opts moby.VolumeCreateOptions) (moby.VolumeCreateResult, error) {
 	if f.VolumeCreateErr != nil {
 		return moby.VolumeCreateResult{}, f.VolumeCreateErr
 	}
 	f.CreatedVolumes = append(f.CreatedVolumes, opts.Name)
+	f.CreatedVolumeLabels = append(f.CreatedVolumeLabels, opts.Labels)
 	return moby.VolumeCreateResult{Volume: volume.Volume{Name: opts.Name}}, nil
 }
 
@@ -362,7 +358,8 @@ func (f *FakeRunClient) ContainerRemove(_ context.Context, id string, _ moby.Con
 	return moby.ContainerRemoveResult{}, nil
 }
 
-func (f *FakeRunClient) ContainerCreate(_ context.Context, _ moby.ContainerCreateOptions) (moby.ContainerCreateResult, error) {
+func (f *FakeRunClient) ContainerCreate(_ context.Context, opts moby.ContainerCreateOptions) (moby.ContainerCreateResult, error) {
+	f.LastContainerCreateOpts = opts
 	if f.ContainerCreateErr != nil {
 		return moby.ContainerCreateResult{}, f.ContainerCreateErr
 	}

@@ -17,14 +17,9 @@
 //     error because a user overlay would shadow the agent mount.
 //
 // The network block controls egress:
-//   - network.proxy.address ("host:port"): when set, the Gateway tunnels all
-//     container traffic to this upstream HTTP CONNECT proxy. When absent (the
-//     default), the Gateway acts as a direct HTTP(S) forward proxy.
-//   - network.log (relative path): when set, Load resolves it to an absolute
-//     path under the project root and returns it as Network.LogPath. The
-//     networks.Gateway opens this file for append-only request logging. The
-//     file need not exist at config-load time (no stat-drop). Absolute paths,
-//     escaping paths (../), and reserved agent paths are errors.
+//   - network.proxy.address ("host:port"): when set, container traffic is routed
+//     through this remote HTTP proxy via a socat sidecar. When absent (the
+//     default), the container uses direct bridge networking.
 package projectconfig
 
 import (
@@ -33,7 +28,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"net"
 	"os"
 	"path/filepath"
 	"sort"
@@ -70,7 +64,6 @@ var Stub = []byte(`exclude:
 network:
   proxy:
     address: ""
-  log: ""
 `)
 
 // Already mounted by docker.BuildSpec; user overlays would silently shadow them.
@@ -91,11 +84,11 @@ type Excludes struct {
 }
 
 // Network is the parsed network configuration. Empty ProxyAddress means no
-// proxy configured. Load validates only syntax (net.SplitHostPort) — no I/O.
-// LogPath is the absolute, under-root path for request logging; "" when unset.
+// proxy configured (direct bridge networking). Load stores ProxyAddress as a
+// raw string without validating its syntax — callers must validate the
+// effective upstream after resolving flag overrides (see runRun in main.go).
 type Network struct {
-	ProxyAddress string // "host:port"; "" when unconfigured
-	LogPath      string // absolute path under project root; "" when unset
+	ProxyAddress string // "host:port"; "" when unconfigured (direct bridge)
 }
 
 // yamlSchema is the strict decode target. Using KnownFields(true) means any
@@ -114,7 +107,6 @@ type yamlSchema struct {
 		Proxy struct {
 			Address string `yaml:"address"`
 		} `yaml:"proxy"`
-		Log string `yaml:"log"`
 	} `yaml:"network"`
 }
 
@@ -147,9 +139,10 @@ func Scaffold(root string) error {
 // Load parses <root>/.makeslop.yaml and returns validated Excludes, Network,
 // and any error. Missing file yields zero values with no error. Malformed YAML,
 // unknown fields, cross-list duplicates, reserved-path collisions, and invalid
-// paths/addresses are errors wrapped with "projectconfig: ". Symlinks and
-// missing entries are silently dropped. root must be absolute and
-// EvalSymlinks-evaluated.
+// paths are errors wrapped with "projectconfig: ". Symlinks and missing entries
+// are silently dropped. ProxyAddress is stored as a raw string without
+// validation — callers validate the effective upstream after flag overrides.
+// root must be absolute and EvalSymlinks-evaluated.
 func Load(root string) (Excludes, Network, error) {
 	path := filepath.Join(root, Filename)
 	data, err := os.ReadFile(path)
@@ -216,25 +209,11 @@ func Load(root string) (Excludes, Network, error) {
 	files = dedupSorted(files)
 	dirs = dedupSorted(dirs)
 
-	var netCfg Network
-	if addr := schema.Network.Proxy.Address; addr != "" {
-		host, port, splitErr := net.SplitHostPort(addr)
-		if splitErr != nil || host == "" || port == "" {
-			return Excludes{}, Network{}, fmt.Errorf("projectconfig: invalid network.proxy.address %q: must be host:port", addr)
-		}
-		netCfg.ProxyAddress = addr
-	}
-
-	if logRel := schema.Network.Log; logRel != "" {
-		// Reuse validateEntries to apply the same rules as exclude.files/dirs:
-		// non-empty, not absolute, filepath.IsLocal, not ".", not a reserved agent path.
-		cleaned, err := validateEntries([]string{logRel}, "network.log")
-		if err != nil {
-			return Excludes{}, Network{}, fmt.Errorf("projectconfig: invalid network.log %q: %s", logRel, strings.TrimPrefix(err.Error(), "projectconfig: "))
-		}
-		// No stat-drop: network.log is an output file and need not exist yet.
-		netCfg.LogPath = filepath.Join(root, cleaned[0])
-	}
+	// Store the raw address string; syntax validation is deferred to the caller
+	// (runRun in main.go) after flag overrides are applied (--proxy wins over
+	// network.proxy.address). Validating here would cause Load to fail even
+	// when a valid --proxy flag would override the bad config value.
+	netCfg := Network{ProxyAddress: schema.Network.Proxy.Address}
 
 	return Excludes{Files: files, Dirs: dirs, Patterns: patterns, SkipDirs: skipDirs}, netCfg, nil
 }

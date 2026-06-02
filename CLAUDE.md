@@ -62,36 +62,25 @@ duration of a test. Ready-made fakes live in `testing.go`:
 This replaces the old shell-shim machinery (`WriteShim`, `SetDockerBinaryForTest`). There are no
 shell shims, no `dockerBinary` global, no `executableTempDir`.
 
-### newGatewayFn and newSidecarFn seams (cmd/makeslop/main.go)
-Two package-level seams in `cmd/makeslop/main.go` mirror the `docker.newClientFn` pattern:
-
-**`newGatewayFn`** defaults to `networks.NewGateway`. Tests swap it via `setGatewayFnForTest(t)`,
-which installs a replacement that records `(proxy, logPath)` arguments for inspection and
-delegates to the real `networks.NewGateway`.
-
-```go
-cap := setGatewayFnForTest(t)
-// ... run command ...
-if !cap.called { t.Fatal("gateway was not constructed") }
-// cap.proxy, cap.logPath are available
-```
+### newSidecarFn seam (cmd/makeslop/main.go)
+One package-level seam in `cmd/makeslop/main.go` mirrors the `docker.newClientFn` pattern:
 
 **`newSidecarFn`** defaults to a closure that calls `docker.NewSidecar(quiet, stderr)` and returns
 a `sidecarRunner`. Tests swap it via `setSidecarFnForTest(t)`, which returns a `fakeSidecar` that
-records `(port, volumeName)` passed to `Start`. To simulate a `Start` failure, set
+records `(upstream, volumeName)` passed to `Start`. To simulate a `Start` failure, set
 `cap.startErr` before calling `runCmd`.
 
 ```go
 cap := setSidecarFnForTest(t)
 // ... run command ...
-// cap.port, cap.volumeName, cap.called are available
+// cap.upstream, cap.volumeName, cap.called are available
 ```
 
-The `sidecarRunner` interface (in `main.go`) has `Start(ctx, port int, volumeName string) error`
+The `sidecarRunner` interface (in `main.go`) has `Start(ctx context.Context, upstream string, volumeName string) error`
 and `Close() error`; satisfied by `*docker.Sidecar`.
 
-Both seams are used in dry-run and gateway-wiring tests in `main_test.go` where real socket
-bind/sidecar creation would be unnecessary or would race with test teardown.
+The seam is used in proxy-wiring tests in `main_test.go` where a real sidecar container would be
+unnecessary or would race with test teardown.
 
 ### Shared preflight helpers (`internal/docker/preflight.go`)
 
@@ -183,6 +172,10 @@ directory refresh.
 **not** bump either `CurrentVersion` or `MigrationVersion` — the `Settings` struct fields are
 unchanged and the embedded Dockerfile is unchanged.
 
+**Note:** the network-default inversion (proxy off by default, opt-in via `--proxy`/`network.proxy.address`)
+does **not** bump either `CurrentVersion` or `MigrationVersion` — the `Settings` struct fields are
+unchanged and the embedded Dockerfile is unchanged.
+
 ### init seed-at-latest and stale-nudge behavior
 `makeslop init` detects whether `~/.makeslop/settings.json` already exists **before** calling
 `Bootstrap`. On a **fresh seed** (no `settings.json`), after `Bootstrap`, it stamps
@@ -212,8 +205,8 @@ Config helpers added in `internal/config/config.go`:
 3. Image (`ImageExists`) — blocking
 4. Workspace (`ws.Lookup`) — blocking
 5. Secret scan summary (`security.Scan` count) — non-blocking (`–`/`✓`)
-6. Proxy (`projectconfig.Load`) — non-blocking; detail is always a string: `gateway (direct egress)` when `ProxyAddress` is empty, the upstream address when set, with an optional ` (logging → <path>)` suffix when `LogPath` is set
-7. Socat image (`docker.ImageExists(docker.SocatImage)`) — non-blocking; `✓` when present, `!` with `"alpine/socat absent — will pull on first run"` when absent
+6. Proxy (`projectconfig.Load`) — non-blocking; detail is config-derived: `"direct (bridge networking)"` when `ProxyAddress` is empty, the upstream address when set (e.g. `"10.0.0.5:3128"`)
+7. Socat image (`docker.ImageExists(docker.SocatImage)`) — non-blocking; `✓` when present, `!` with `"alpine/socat absent — will pull on first --proxy run"` when absent
 
 Output: aligned lines with glyphs `✓/✗/–/!`; final verdict line + single next action. `--json`
 emits `{checks:[{name,state,detail}], ready:bool}`. Exits non-zero when any blocking check fails.
@@ -224,59 +217,60 @@ TTY and `NO_COLOR` is unset.
 `--out-of-home` is registered only on `init` and `run` (not a persistent root flag). Commands
 `version`, `config`, `migrate`, `build`, and `status` reject it as an unknown flag.
 
-### --no-proxy flag scope
-`--no-proxy` is registered only on `run` (not a persistent root flag). Commands `version`,
+### --proxy flag scope
+`--proxy` is registered only on `run` (not a persistent root flag). Commands `version`,
 `config`, `migrate`, `build`, `init`, and `status` reject it as an unknown flag.
 
 ### --quiet flag
 `--quiet` is a persistent root flag. When set, stderr chrome (notices, nudges, progress lines such
 as `masked N`) is suppressed. Error messages still print to stderr.
 
-### Gateway proxy — socat-volume transport
+### Network model — direct default, opt-in proxy
 
-`makeslop run` wires the network through `internal/networks.Gateway` (host TCP) and
-`internal/docker/sidecar.go` (`Sidecar`, the alpine/socat container). The **socat-volume** transport
-replaces the previous host-unix-socket bind-mount; there is **no OS/VM detection, no transport
-selection knob** — all platforms use the same path.
+**Direct bridge networking is the default.** The app container has normal Docker bridge networking
+and full internet access. No socat sidecar, no volume, no `--network none`.
 
-#### Three-state network model
+**Proxy mode is opt-in.** Enabled by `--proxy ip:port` (flag) or `network.proxy.address` in
+`.makeslop.yaml` (config). The flag wins over config. When proxy mode is active, the app is
+airtight (`--network none`; its sole egress is a unix socket → socat → `TCP-CONNECT:<ip>:<port>`
+→ the remote HTTP proxy).
+
+There is **no host-side Gateway process**, no `host.docker.internal`, no probe-dial, and no
+request logging. The socat sidecar connects to the remote upstream directly over bridge networking,
+so proxy mode works on native Linux as well as Docker Desktop.
+
+#### Two-state model
 
 | State | Trigger | Behavior |
 |---|---|---|
-| **Gateway (default)** | no `network.proxy.address`, no `--no-proxy` | host TCP gateway + socat sidecar; app gets `--network none` + volume socket |
-| **Upstream** | `network.proxy.address` set | host TCP gateway splices to upstream; socat sidecar unchanged; probe-dial fail-loud invariant applies |
-| **Off** | `--no-proxy` flag | skip the gateway AND sidecar → docker bridge networking (escape hatch for non-HTTP traffic) |
+| **Direct (default)** | no `--proxy`, no `network.proxy.address` | bridge networking; no socat, no volume, no `--network none` |
+| **Proxy** | `--proxy ip:port` OR `network.proxy.address` (flag wins) | `--network none`; egress = volume unix socket → socat → `TCP-CONNECT:<ip>:<port>` → remote HTTP proxy |
 
-#### Gateway (TCP-only)
-`internal/networks.Gateway` listens on **TCP `127.0.0.1:0`** (OS assigns the ephemeral port).
-
-Signature: `NewGateway(proxy, logPath string) *Gateway` — the `socketPath` argument and
-`SocketPath()` method have been **removed**. There are no unix-socket prologue steps
-(`os.Remove`, `syscall.Umask`, `chmod 0666`).
-
-New accessors after a successful `Start`:
-- `Addr() net.Addr` — the bound TCP address
-- `Port() int` — the TCP port (for passing to `Sidecar.Start`)
-
-All ServeHTTP / upstream-splice / logging / upstream probe-dial / `Close()` logic is unchanged.
+#### Data path (proxy mode)
+```
+app (--network none, HTTP_PROXY=unix:///sockets/proxy.sock)
+  → read-only volume → socat sidecar (bridge)
+       UNIX-LISTEN:/sockets/proxy.sock,fork,mode=0666
+       TCP-CONNECT:<remote-ip>:<remote-port>,reuseaddr
+         → remote HTTP proxy
+```
 
 #### Sidecar (`internal/docker/sidecar.go`)
-`Sidecar` manages an `alpine/socat` container that re-exposes the host TCP port as a unix socket
-on a Docker **volume** inside the VM.
+`Sidecar` manages an `alpine/socat` container that exposes a unix socket on a Docker **volume**
+and connects it to a remote upstream address.
 
 - `const SocatImage = "alpine/socat@sha256:<digest>"` — pinned by digest; exported so `status.go`
   can check its presence via `docker.ImageExists`.
 - `NewSidecar(quiet bool, stderr io.Writer) *Sidecar`
-- `Start(ctx context.Context, port int, volumeName string) error`
+- `Start(ctx context.Context, upstream string, volumeName string) error`
   1. `ImageInspect` to check presence; if absent, `ImagePull` with a one-line notice (suppressed by `--quiet`); pull failure is fatal with a registry hint.
   2. `VolumeCreate` (per-run name, `managed-by: makeslop` label).
   3. `ContainerCreate` + `ContainerStart` — detached socat container on bridge networking, volume
      mounted **read-write** at `/sockets`. Socat args:
-     `UNIX-LISTEN:/sockets/proxy.sock,fork,mode=0666 TCP-CONNECT:host.docker.internal:<port>,reuseaddr`.
+     `UNIX-LISTEN:/sockets/proxy.sock,fork,mode=0666 TCP-CONNECT:<upstream>,reuseaddr`.
   4. Readiness poll (~5 s, 100 ms intervals): `ContainerInspect` (early-exit detection) →
      `ExecCreate`/`ExecStart`/`ExecInspect` (`test -S /sockets/proxy.sock`, exit code 0 = ready).
 - `Close() error` — `ContainerRemove(Force:true)` then `VolumeRemove`; best-effort, idempotent.
-- `VolumeName() string` — returns the volume name after `Start`; used to set `opts.ProxySocketVolume`.
 
 **No proactive stale-sweep** (no `VolumeList`/`ContainerList`): orphans from killed runs are
 tolerated (unique per-run volume name) and prunable via `docker volume prune --filter label=managed-by=makeslop`.
@@ -289,56 +283,27 @@ tolerated (unique per-run volume name) and prunable via `docker volume prune --f
 - `HTTP_PROXY=unix:///sockets/proxy.sock` and `HTTPS_PROXY=unix:///sockets/proxy.sock`.
 
 The socat sidecar mounts the same volume **read-write** (it must create the socket file); the app
-container is read-only. `Options.ProxySocketHost` and `Options.ProxySocketContainer` (the old
-host-bind-mount fields) have been **removed**.
+container is read-only.
 
 #### runRun wiring
-When `!noProxy`, `runRun` in `cmd/makeslop/main.go`:
-1. Derives the per-run volume name `makeslop-sock-<hash>-<pid>`.
-2. Constructs the TCP Gateway via `newGatewayFn(proxyAddr, logPath)` and calls `gw.Start`.
+`runRun` in `cmd/makeslop/main.go` resolves the effective upstream:
+
+```go
+upstream := proxyFlag
+if upstream == "" {
+    upstream = netCfg.ProxyAddress
+}
+```
+
+When `upstream != ""`:
+1. Validates with `net.SplitHostPort`; fails loud (prints `makeslop: …` to stderr, returns `errSilent`) on malformed address.
+2. Derives the per-run volume name `makeslop-sock-<hash>-<pid>`.
 3. Sets `opts.ProxySocketVolume = volumeName`.
-4. Constructs the Sidecar via `newSidecarFn(quiet, stderr)` and calls `sc.Start(ctx, port, volumeName)`.
+4. Constructs the Sidecar via `newSidecarFn(quiet, stderr)` and calls `sc.Start(ctx, upstream, volumeName)`.
 5. Calls `docker.Run(...)`.
-6. Defers teardown: `sc.Close()` then `gw.Close()`.
+6. Defers teardown: `sc.Close()`.
 
-Dry-run: the app container spec shows the read-only volume mount + `--network none`. Gateway and
-sidecar creation are runtime side-effects invisible to dry-run (consistent with the previous design).
-"Printed == executed" holds for the app container spec.
+When `upstream == ""` (direct mode): skips all proxy wiring; `opts.ProxySocketVolume` is empty.
 
-#### Probe-dial invariant (upstream mode only)
-In **upstream mode** (`network.proxy.address` non-empty), `Gateway.Start` performs a single TCP
-probe-dial of the upstream address before accepting any connections. If the upstream is unreachable,
-`Start` tears down the listener and returns the error — the caller (`runRun`) must abort the
-container launch. This "fail loud" invariant prevents silent black-holing of container traffic when
-the upstream proxy is misconfigured. The probe checks TCP reachability only; it does not validate
-HTTP CONNECT protocol.
-
-In **gateway mode** (no upstream address), no probe-dial is performed; the gateway dials targets
-on demand via `ServeHTTP`.
-
-Tests that call `Start` in upstream mode must use a live fake upstream (a
-`net.Listen("tcp", "127.0.0.1:0")` helper) — passing a dead address such as `127.0.0.1:1` will
-cause `Start` to return an error.
-
-#### Request logging (`network.log`, both modes)
-When `network.log` is set in `.makeslop.yaml` (a relative path resolved under the project root),
-`Gateway.Start` opens the file (`O_CREATE|O_APPEND|O_WRONLY`, 0644) **before** branching into
-gateway or upstream mode. If the file cannot be opened, `Start` tears down the listener and returns
-the error (fail-loud).
-
-Log line format: `<METHOD> <target>` e.g. `CONNECT api.example.com:443`, `GET http://host/path`.
-
-**Limitation:** plain-HTTP keep-alive connections in upstream mode log only the **first** request
-line per connection (the upstream peek reads one `bufio.ReadString('\n')` line). CONNECT (HTTPS,
-the dominant case) is exact. Gateway-mode plain HTTP is logged per-request by `ServeHTTP`.
-
-When `network.log` is absent (`logPath == ""`), the upstream code path is byte-for-byte identical
-to the pre-logging implementation — no buffering, no parse overhead.
-
-#### Known limitation: Docker Desktop only
-> ⚠️ The host proxy binds `127.0.0.1`; the socat sidecar reaches it via
-> `host.docker.internal`. This hostname is provided by **Docker Desktop** (macOS and Windows).
-> **Native-Linux / non-Docker-Desktop** daemons do **not** supply `host.docker.internal` by
-> default and cannot reach a loopback-bound host service via the Docker bridge — those setups
-> are out of scope. Revisit if native-Linux support is needed (would require
-> `--add-host host.docker.internal:host-gateway` on the sidecar *and* a non-loopback host bind).
+Dry-run: the app container spec shows the read-only volume mount + `--network none` when proxy is
+active, or plain bridge networking when direct. "Printed == executed" holds for the app container spec.

@@ -1,12 +1,12 @@
 package docker
 
-// Sidecar manages the lifecycle of an alpine/socat container that bridges the
-// host TCP proxy port to a unix socket on a Docker volume inside the VM.
+// Sidecar manages the lifecycle of an alpine/socat container that bridges a
+// remote HTTP proxy to a unix socket on a Docker volume inside the VM.
 //
 // Architecture:
 //
-//	host Gateway (TCP 127.0.0.1:<port>)
-//	       ▲  via host.docker.internal:<port>
+//	remote HTTP proxy (ip:port)
+//	       ▲  via TCP-CONNECT over bridge networking
 //	       │
 //	┌──────┴─────────────────┐   makeslop-sock-<name>  (Docker volume, in-VM)
 //	│ alpine/socat sidecar    │   UNIX-LISTEN:/sockets/proxy.sock,fork,mode=0666
@@ -15,15 +15,12 @@ package docker
 //
 // The sidecar creates the unix socket inside the VM filesystem, side-stepping the
 // host file-sharing boundary that breaks bind-mounts on Docker Desktop / macOS.
+// Because the sidecar uses bridge networking, it can reach any remote ip:port
+// directly — no host.docker.internal, no Docker-Desktop-only limitation.
 //
 // Security note: the app container stays airtight (--network none; sole egress is
-// the volume unix socket). The host proxy listens on 127.0.0.1 at an ephemeral
-// TCP port reachable via host.docker.internal. In gateway mode this grants nothing
-// new (local processes already have direct internet); in upstream mode other local
-// processes could borrow the upstream — acceptable for a single-user dev tool.
-//
-// Known limitation: host.docker.internal is provided by Docker Desktop; native-Linux
-// daemons do not supply it by default. This path is intentionally Docker-Desktop-only.
+// the volume unix socket → socat → remote HTTP proxy). This works on any Docker
+// daemon (Docker Desktop and native Linux).
 
 import (
 	"context"
@@ -78,9 +75,12 @@ func NewSidecar(quiet bool, stderr io.Writer) *Sidecar {
 // launches the socat container. It then polls for the unix socket to appear
 // inside the volume (readiness), aborting loudly if the sidecar exits early.
 //
-// On success, VolumeName() returns the volume name the app container must mount
-// read-only at proxySocketDir (/sockets).
-func (s *Sidecar) Start(ctx context.Context, port int, volumeName string) error {
+// upstream must be a "host:port" string identifying the remote HTTP proxy that
+// socat will forward traffic to (e.g. "10.0.0.5:3128").
+//
+// On success, the caller should mount volumeName read-only at proxySocketDir
+// (/sockets) in the app container.
+func (s *Sidecar) Start(ctx context.Context, upstream string, volumeName string) error {
 	cli, err := newClientFn()
 	if err != nil {
 		return fmt.Errorf("sidecar: create docker client: %w", err)
@@ -104,12 +104,12 @@ func (s *Sidecar) Start(ctx context.Context, port int, volumeName string) error 
 	s.volumeName = volumeName
 
 	// 3. Create the socat container.
-	//    - bridge networking so host.docker.internal resolves to the host
+	//    - bridge networking so socat can reach the remote upstream directly
 	//    - volume mounted read-write at /sockets so socat can create the socket
 	//    - detached (no stdin/stdout/tty)
 	socatCmd := []string{
 		fmt.Sprintf("UNIX-LISTEN:%s/%s,fork,mode=0666", proxySocketDir, proxySocketName),
-		fmt.Sprintf("TCP-CONNECT:host.docker.internal:%d,reuseaddr", port),
+		fmt.Sprintf("TCP-CONNECT:%s,reuseaddr", upstream),
 	}
 	createRes, err := cli.ContainerCreate(ctx, moby.ContainerCreateOptions{
 		Config: &container.Config{
@@ -118,6 +118,7 @@ func (s *Sidecar) Start(ctx context.Context, port int, volumeName string) error 
 		},
 		HostConfig: &container.HostConfig{
 			NetworkMode: container.NetworkMode("bridge"),
+			AutoRemove:  true, // daemon removes the container on exit; Close()'s ContainerRemove is best-effort and ignores not-found
 			Mounts: []mount.Mount{
 				{
 					Type:     mount.TypeVolume,
@@ -155,12 +156,6 @@ func (s *Sidecar) Start(ctx context.Context, port int, volumeName string) error 
 	return nil
 }
 
-// VolumeName returns the Docker volume name that holds the proxy unix socket.
-// Only valid after a successful Start.
-func (s *Sidecar) VolumeName() string {
-	return s.volumeName
-}
-
 // Close removes the socat container (force) and then the volume. Both
 // operations are best-effort and idempotent: not-found errors are ignored.
 // Close is safe to call multiple times.
@@ -169,14 +164,6 @@ func (s *Sidecar) Close() error {
 		return nil // nothing started
 	}
 
-	// Capture and clear the IDs before any I/O so that concurrent or
-	// repeated Close() calls are truly idempotent and do not re-attempt
-	// removal of resources that have already been cleaned up.
-	cid := s.containerID
-	vol := s.volumeName
-	s.containerID = ""
-	s.volumeName = ""
-
 	cli, err := newClientFn()
 	if err != nil {
 		// Can't clean up without a client — best effort.
@@ -184,11 +171,11 @@ func (s *Sidecar) Close() error {
 	}
 	defer cli.Close() //nolint:errcheck
 
-	if cid != "" {
-		_, _ = cli.ContainerRemove(context.Background(), cid, moby.ContainerRemoveOptions{Force: true})
+	if s.containerID != "" {
+		_, _ = cli.ContainerRemove(context.Background(), s.containerID, moby.ContainerRemoveOptions{Force: true})
 	}
-	if vol != "" {
-		_, _ = cli.VolumeRemove(context.Background(), vol, moby.VolumeRemoveOptions{})
+	if s.volumeName != "" {
+		_, _ = cli.VolumeRemove(context.Background(), s.volumeName, moby.VolumeRemoveOptions{})
 	}
 	return nil
 }
@@ -239,10 +226,7 @@ func (s *Sidecar) waitReady(ctx context.Context, cli apiClient) error {
 		if err != nil {
 			return fmt.Errorf("sidecar: inspect container: %w", err)
 		}
-		if insp.Container.State == nil {
-			return fmt.Errorf("sidecar: container inspect returned nil State (unknown container status)")
-		}
-		if !insp.Container.State.Running {
+		if insp.Container.State != nil && !insp.Container.State.Running {
 			return fmt.Errorf("sidecar: socat container exited early (exit code %d)", insp.Container.State.ExitCode)
 		}
 
@@ -254,25 +238,12 @@ func (s *Sidecar) waitReady(ctx context.Context, cli apiClient) error {
 			return fmt.Errorf("sidecar: exec create: %w", err)
 		}
 
-		// ExecAttach (hijacked connection) properly blocks until the exec exits:
-		// the server closes the connection only after the process terminates,
-		// so reading the response body to EOF guarantees ExecInspect sees the
-		// final exit code.
-		//
-		// ExecStart with Detach:false does NOT block until exec exits — the moby
-		// client calls post() whose defer ensureReaderClosed drains only 512 bytes
-		// and returns. An immediate ExecInspect after ExecStart can therefore read
-		// the pre-run default state (Running=false, ExitCode=0), producing a
-		// false-positive "socket ready" result.
-		attachRes, err := cli.ExecAttach(ctx, execRes.ID, moby.ExecAttachOptions{})
-		if err != nil {
-			return fmt.Errorf("sidecar: exec attach: %w", err)
+		// Detach: false makes ExecStart block until the exec completes, so
+		// ExecInspect always sees a deterministic result (never the default
+		// Running=false, ExitCode=0 of an unstarted exec).
+		if _, err := cli.ExecStart(ctx, execRes.ID, moby.ExecStartOptions{Detach: false}); err != nil {
+			return fmt.Errorf("sidecar: exec start: %w", err)
 		}
-		// Drain the hijacked connection to EOF; this blocks until the exec process
-		// exits. The exec produces no output (no TTY, no attach flags) so the read
-		// returns almost immediately after the process terminates.
-		_, _ = io.Copy(io.Discard, attachRes.Reader)
-		attachRes.Close()
 
 		inspRes, err := cli.ExecInspect(ctx, execRes.ID, moby.ExecInspectOptions{})
 		if err != nil {

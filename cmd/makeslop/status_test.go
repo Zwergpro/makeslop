@@ -462,9 +462,9 @@ func TestStatus_RenderNotReadyVerdict(t *testing.T) {
 	}
 }
 
-// TestStatus_ProxyLine_GatewayDefault verifies that when no proxy address is
-// configured, the proxy check shows "gateway (direct egress)".
-func TestStatus_ProxyLine_GatewayDefault(t *testing.T) {
+// TestStatus_ProxyLine_DirectDefault verifies that when no proxy address is
+// configured, the proxy check shows "direct (bridge networking)".
+func TestStatus_ProxyLine_DirectDefault(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
@@ -475,10 +475,13 @@ func TestStatus_ProxyLine_GatewayDefault(t *testing.T) {
 	}
 	installFakeStatusClient(t, false, false)
 
-	_, stderr, _ := runStatusCmd(t, baseDir, "status")
+	_, stderr, err := runStatusCmd(t, baseDir, "status")
+	if err != nil {
+		t.Fatalf("status must succeed when all blocking checks pass; err=%v; stderr=%q", err, stderr)
+	}
 
-	if !strings.Contains(stderr, "gateway (direct egress)") {
-		t.Errorf("proxy line must show 'gateway (direct egress)' when no address configured; stderr=%q", stderr)
+	if !strings.Contains(stderr, "direct (bridge networking)") {
+		t.Errorf("proxy line must show 'direct (bridge networking)' when no address configured; stderr=%q", stderr)
 	}
 }
 
@@ -504,7 +507,6 @@ func TestStatus_ProxyLine_UpstreamAddress(t *testing.T) {
 network:
   proxy:
     address: "proxy.example.com:8080"
-  log: ""
 `
 	if err := os.WriteFile(filepath.Join(pwd, ".makeslop.yaml"), []byte(yamlContent), 0o644); err != nil {
 		t.Fatalf("write .makeslop.yaml: %v", err)
@@ -512,19 +514,22 @@ network:
 
 	installFakeStatusClient(t, false, false)
 
-	_, stderr, _ := runStatusCmd(t, baseDir, "status")
+	_, stderr, err := runStatusCmd(t, baseDir, "status")
+	if err != nil {
+		t.Fatalf("status must succeed when all blocking checks pass; err=%v; stderr=%q", err, stderr)
+	}
 
 	if !strings.Contains(stderr, "proxy.example.com:8080") {
 		t.Errorf("proxy line must show address when configured; stderr=%q", stderr)
 	}
-	if strings.Contains(stderr, "gateway (direct egress)") {
-		t.Errorf("proxy line must not show 'gateway (direct egress)' when address is set; stderr=%q", stderr)
+	if strings.Contains(stderr, "direct (bridge networking)") {
+		t.Errorf("proxy line must not show 'direct (bridge networking)' when address is set; stderr=%q", stderr)
 	}
 }
 
-// TestStatus_ProxyLine_LoggingSuffix verifies that when network.log is set,
-// the logging path is appended to the proxy detail for both gateway and upstream modes.
-func TestStatus_ProxyLine_LoggingSuffix(t *testing.T) {
+// TestStatus_ProxyLine_NoLoggingSuffix verifies that the proxy detail never
+// contains a "logging →" suffix (network.log / LogPath has been removed).
+func TestStatus_ProxyLine_NoLoggingSuffix(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
@@ -534,7 +539,7 @@ func TestStatus_ProxyLine_LoggingSuffix(t *testing.T) {
 		t.Fatalf("init failed: %v", err)
 	}
 
-	// Gateway mode (no address) with log path set.
+	// Write a .makeslop.yaml with a proxy address set — no log field.
 	yamlContent := `exclude:
   scan:
     patterns: []
@@ -543,8 +548,7 @@ func TestStatus_ProxyLine_LoggingSuffix(t *testing.T) {
   dirs: []
 network:
   proxy:
-    address: ""
-  log: "makeslop-requests.log"
+    address: "proxy.example.com:8080"
 `
 	if err := os.WriteFile(filepath.Join(pwd, ".makeslop.yaml"), []byte(yamlContent), 0o644); err != nil {
 		t.Fatalf("write .makeslop.yaml: %v", err)
@@ -552,27 +556,19 @@ network:
 
 	installFakeStatusClient(t, false, false)
 
-	_, stderr, _ := runStatusCmd(t, baseDir, "status")
+	_, stderr, err := runStatusCmd(t, baseDir, "status")
+	if err != nil {
+		t.Fatalf("status must succeed when all blocking checks pass; err=%v; stderr=%q", err, stderr)
+	}
 
-	if !strings.Contains(stderr, "gateway (direct egress)") {
-		t.Errorf("proxy line must show 'gateway (direct egress)'; stderr=%q", stderr)
-	}
-	if !strings.Contains(stderr, "logging →") {
-		t.Errorf("proxy line must contain 'logging →' suffix when log path is set; stderr=%q", stderr)
-	}
-	// Verify the full resolved absolute path appears, not just the basename.
-	// status derives LogPath from projectconfig.Load which resolves it under
-	// the workspace root.
-	resolvedPwd := evalSymlinks(t, pwd)
-	wantLogPath := filepath.Join(resolvedPwd, "makeslop-requests.log")
-	if !strings.Contains(stderr, wantLogPath) {
-		t.Errorf("proxy line must contain the full resolved log path %q; stderr=%q", wantLogPath, stderr)
+	if strings.Contains(stderr, "logging →") {
+		t.Errorf("proxy line must not contain 'logging →' suffix (feature removed); stderr=%q", stderr)
 	}
 }
 
-// TestStatus_ProxyLine_UpstreamWithLogging verifies the logging suffix appears
-// when both an upstream address and a log path are configured.
-func TestStatus_ProxyLine_UpstreamWithLogging(t *testing.T) {
+// TestStatus_ProxyLine_UpstreamNoLogging verifies that when a proxy address is
+// set, the proxy detail is the address only — no logging suffix.
+func TestStatus_ProxyLine_UpstreamNoLogging(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
@@ -591,7 +587,6 @@ func TestStatus_ProxyLine_UpstreamWithLogging(t *testing.T) {
 network:
   proxy:
     address: "corp.proxy:3128"
-  log: "proxy.log"
 `
 	if err := os.WriteFile(filepath.Join(pwd, ".makeslop.yaml"), []byte(yamlContent), 0o644); err != nil {
 		t.Fatalf("write .makeslop.yaml: %v", err)
@@ -599,25 +594,22 @@ network:
 
 	installFakeStatusClient(t, false, false)
 
-	_, stderr, _ := runStatusCmd(t, baseDir, "status")
+	_, stderr, err := runStatusCmd(t, baseDir, "status")
+	if err != nil {
+		t.Fatalf("status must succeed when all blocking checks pass; err=%v; stderr=%q", err, stderr)
+	}
 
 	if !strings.Contains(stderr, "corp.proxy:3128") {
 		t.Errorf("proxy line must show upstream address; stderr=%q", stderr)
 	}
-	if !strings.Contains(stderr, "logging →") {
-		t.Errorf("proxy line must show logging suffix; stderr=%q", stderr)
-	}
-	// Verify the resolved log path appears after the arrow, not just the arrow itself.
-	resolvedPwd := evalSymlinks(t, pwd)
-	wantLogPath := filepath.Join(resolvedPwd, "proxy.log")
-	if !strings.Contains(stderr, wantLogPath) {
-		t.Errorf("proxy line must contain resolved log path %q after 'logging →'; stderr=%q", wantLogPath, stderr)
+	if strings.Contains(stderr, "logging →") {
+		t.Errorf("proxy line must not show logging suffix (feature removed); stderr=%q", stderr)
 	}
 }
 
-// TestStatus_JSON_ProxyDetail_Gateway verifies that --json proxy detail shows
-// "gateway (direct egress)" when no address is configured.
-func TestStatus_JSON_ProxyDetail_Gateway(t *testing.T) {
+// TestStatus_JSON_ProxyDetail_DirectDefault verifies that --json proxy detail
+// shows "direct (bridge networking)" when no proxy address is configured.
+func TestStatus_JSON_ProxyDetail_DirectDefault(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
@@ -628,7 +620,10 @@ func TestStatus_JSON_ProxyDetail_Gateway(t *testing.T) {
 	}
 	installFakeStatusClient(t, false, false)
 
-	stdout, _, _ := runStatusCmd(t, baseDir, "status", "--json")
+	stdout, _, err := runStatusCmd(t, baseDir, "status", "--json")
+	if err != nil {
+		t.Fatalf("status must succeed; err=%v", err)
+	}
 
 	var result statusResult
 	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
@@ -645,15 +640,14 @@ func TestStatus_JSON_ProxyDetail_Gateway(t *testing.T) {
 	if proxyCheck == nil {
 		t.Fatalf("--json missing 'proxy' check; checks: %+v", result.Checks)
 	}
-	if proxyCheck.Detail != "gateway (direct egress)" {
-		t.Errorf("proxy detail = %q, want %q", proxyCheck.Detail, "gateway (direct egress)")
+	if proxyCheck.Detail != "direct (bridge networking)" {
+		t.Errorf("proxy detail = %q, want %q", proxyCheck.Detail, "direct (bridge networking)")
 	}
 }
 
-// TestStatus_JSON_ProxyDetail_LoggingSuffix verifies that when network.log is
-// set, the JSON detail field for the proxy check contains the logging suffix
-// with the full resolved log path.
-func TestStatus_JSON_ProxyDetail_LoggingSuffix(t *testing.T) {
+// TestStatus_JSON_ProxyDetail_UpstreamAddress verifies that when a proxy address
+// is configured, the JSON proxy detail shows the address (no logging suffix).
+func TestStatus_JSON_ProxyDetail_UpstreamAddress(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
@@ -663,8 +657,6 @@ func TestStatus_JSON_ProxyDetail_LoggingSuffix(t *testing.T) {
 		t.Fatalf("init failed: %v", err)
 	}
 
-	// Gateway mode with a log path.
-	const logRel = "makeslop-requests.log"
 	yamlContent := `exclude:
   scan:
     patterns: []
@@ -673,8 +665,7 @@ func TestStatus_JSON_ProxyDetail_LoggingSuffix(t *testing.T) {
   dirs: []
 network:
   proxy:
-    address: ""
-  log: "` + logRel + `"
+    address: "proxy.example.com:8080"
 `
 	if err := os.WriteFile(filepath.Join(pwd, ".makeslop.yaml"), []byte(yamlContent), 0o644); err != nil {
 		t.Fatalf("write .makeslop.yaml: %v", err)
@@ -682,7 +673,10 @@ network:
 
 	installFakeStatusClient(t, false, false)
 
-	stdout, _, _ := runStatusCmd(t, baseDir, "status", "--json")
+	stdout, _, err := runStatusCmd(t, baseDir, "status", "--json")
+	if err != nil {
+		t.Fatalf("status must succeed; err=%v", err)
+	}
 
 	var result statusResult
 	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
@@ -700,18 +694,12 @@ network:
 		t.Fatalf("--json missing 'proxy' check; checks: %+v", result.Checks)
 	}
 
-	// The detail must start with "gateway (direct egress)" and include the
-	// logging suffix with the full resolved absolute path.
-	if !strings.HasPrefix(proxyCheck.Detail, "gateway (direct egress)") {
-		t.Errorf("proxy detail must start with 'gateway (direct egress)'; got %q", proxyCheck.Detail)
+	// The detail must be the proxy address exactly (two-state model: address vs "direct (bridge networking)").
+	if proxyCheck.Detail != "proxy.example.com:8080" {
+		t.Errorf("proxy detail = %q, want %q", proxyCheck.Detail, "proxy.example.com:8080")
 	}
-	if !strings.Contains(proxyCheck.Detail, "logging →") {
-		t.Errorf("proxy detail must contain 'logging →' suffix; got %q", proxyCheck.Detail)
-	}
-	resolvedPwd := evalSymlinks(t, pwd)
-	wantLogPath := filepath.Join(resolvedPwd, logRel)
-	if !strings.Contains(proxyCheck.Detail, wantLogPath) {
-		t.Errorf("proxy detail must contain resolved log path %q; got %q", wantLogPath, proxyCheck.Detail)
+	if strings.Contains(proxyCheck.Detail, "logging →") {
+		t.Errorf("proxy detail must not contain 'logging →' suffix (feature removed); got %q", proxyCheck.Detail)
 	}
 }
 
@@ -802,7 +790,7 @@ func TestStatus_SocatImageAbsent(t *testing.T) {
 	if socatCheck.State != checkWarn {
 		t.Errorf("socat-image absent state = %q, want %q (non-blocking)", socatCheck.State, checkWarn)
 	}
-	if !strings.Contains(socatCheck.Detail, "will pull on first run") {
+	if !strings.Contains(socatCheck.Detail, "will pull on first --proxy run") {
 		t.Errorf("socat-image detail must hint at pull; got %q", socatCheck.Detail)
 	}
 }
@@ -829,7 +817,7 @@ func TestStatus_SocatImageAbsent_PlainOutput(t *testing.T) {
 	if !strings.Contains(stderr, "socat-image") {
 		t.Errorf("plain output must mention 'socat-image'; stderr=%q", stderr)
 	}
-	if !strings.Contains(stderr, "will pull on first run") {
+	if !strings.Contains(stderr, "will pull on first --proxy run") {
 		t.Errorf("plain output must hint at pull; stderr=%q", stderr)
 	}
 	// Non-blocking: ready verdict must still appear.
@@ -899,7 +887,10 @@ func TestStatus_SocatImageCheck_AppearAfterProxy(t *testing.T) {
 
 	installFakeStatusClient(t, false, false)
 
-	stdout, _, _ := runStatusCmd(t, baseDir, "status", "--json")
+	stdout, _, err := runStatusCmd(t, baseDir, "status", "--json")
+	if err != nil {
+		t.Fatalf("status --json failed: %v", err)
+	}
 
 	var result statusResult
 	if jsonErr := json.Unmarshal([]byte(stdout), &result); jsonErr != nil {

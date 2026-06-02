@@ -20,7 +20,7 @@ type apiClient interface {
 	ContainerRemove(ctx context.Context, container string, options moby.ContainerRemoveOptions) (moby.ContainerRemoveResult, error)
 	ContainerInspect(ctx context.Context, containerID string, options moby.ContainerInspectOptions) (moby.ContainerInspectResult, error)
 	ExecCreate(ctx context.Context, container string, options moby.ExecCreateOptions) (moby.ExecCreateResult, error)
-	ExecAttach(ctx context.Context, execID string, options moby.ExecAttachOptions) (moby.ExecAttachResult, error)
+	ExecStart(ctx context.Context, execID string, options moby.ExecStartOptions) (moby.ExecStartResult, error)
 	ExecInspect(ctx context.Context, execID string, options moby.ExecInspectOptions) (moby.ExecInspectResult, error)
 	VolumeCreate(ctx context.Context, options moby.VolumeCreateOptions) (moby.VolumeCreateResult, error)
 	VolumeRemove(ctx context.Context, volumeID string, options moby.VolumeRemoveOptions) (moby.VolumeRemoveResult, error)

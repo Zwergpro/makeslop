@@ -311,17 +311,14 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, jso
 			}
 
 			// ── 6. Proxy config (non-blocking) ───────────────────────────────
-			// Note: status is config-derived and has no --no-proxy knowledge.
-			// When ProxyAddress is empty, the gateway (direct egress) default is in effect.
-			// When ProxyAddress is set, the upstream proxy is used.
+			// Two-state model: config-derived from network.proxy.address.
+			// When ProxyAddress is empty, direct bridge networking is the default.
+			// When ProxyAddress is set, the remote upstream proxy is used.
 			var proxyDetail string
 			if netCfg.ProxyAddress != "" {
 				proxyDetail = netCfg.ProxyAddress
 			} else {
-				proxyDetail = "gateway (direct egress)"
-			}
-			if netCfg.LogPath != "" {
-				proxyDetail = fmt.Sprintf("%s (logging → %s)", proxyDetail, netCfg.LogPath)
+				proxyDetail = "direct (bridge networking)"
 			}
 			checks = append(checks, statusCheck{
 				Name:   "proxy",
@@ -355,7 +352,7 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, jso
 		checks = append(checks, statusCheck{
 			Name:   "socat-image",
 			State:  checkWarn,
-			Detail: "alpine/socat absent — will pull on first run",
+			Detail: "alpine/socat absent — will pull on first --proxy run",
 		})
 	} else {
 		checks = append(checks, statusCheck{
