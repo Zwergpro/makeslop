@@ -16,6 +16,11 @@ import (
 	"github.com/moby/moby/api/types/mount"
 )
 
+// proxySocketDir is the fixed in-container mount point for the proxy volume,
+// shared by both the app container (read-only) and the socat sidecar (read-write).
+// The proxy socket is always /sockets/proxy.sock inside the container.
+const proxySocketDir = "/sockets"
+
 // Options is the caller-supplied input to BuildSpec. Path fields must be
 // absolute and EvalSymlinks-evaluated.
 type Options struct {
@@ -31,14 +36,16 @@ type Options struct {
 	// Under-root guarantee is the caller's. Nil or empty is a no-op.
 	MaskedDirs []string
 
-	// ProxySocketHost is the host-side unix socket for the forward proxy. When
-	// non-empty, BuildSpec emits --network none, a read-only socket bind mount,
-	// and HTTP_PROXY/HTTPS_PROXY pointing at ProxySocketContainer. Empty means
-	// default bridge networking.
-	ProxySocketHost string
-	// ProxySocketContainer is the in-container socket path; use /tmp (guaranteed
-	// writable via --tmpfs /tmp). The env vars reference it via unix:// URL.
-	ProxySocketContainer string
+	// ProxySocketVolume is the name of the Docker volume that the socat sidecar
+	// creates the proxy unix socket in. When non-empty, BuildSpec emits
+	// --network none, a read-only volume mount at proxySocketDir (/sockets), and
+	// HTTP_PROXY/HTTPS_PROXY=unix:///sockets/proxy.sock. Empty means default
+	// bridge networking (no proxy).
+	//
+	// The sidecar mounts the same volume read-write so it can create
+	// the socket inside the VM filesystem — app container and sidecar use
+	// asymmetric read-only vs read-write access to the same volume.
+	ProxySocketVolume string
 
 	// TmpDirSize is the size constraint passed verbatim to --tmpfs /tmp:size=<TmpDirSize>.
 	// config.Load is the single source of the default ("100m"); BuildSpec uses it
@@ -48,9 +55,10 @@ type Options struct {
 
 // Mount is a single docker mount entry.
 //
-// Type: "" or "bind" → type=bind; "tmpfs" → type=tmpfs (Host ignored).
-// ReadOnly: when true, appends ",readonly" to bind mounts; zero value is
-// backward-compatible (existing mounts render byte-identically).
+// Type: "" or "bind" → type=bind; "tmpfs" → type=tmpfs (Host ignored);
+// "volume" → type=volume (Host is the volume name, ReadOnly appends ",readonly").
+// ReadOnly: when true, appends ",readonly" to bind and volume mounts; zero value
+// is backward-compatible (existing mounts render byte-identically).
 type Mount struct {
 	Type            string
 	Host, Container string
@@ -75,7 +83,7 @@ type Spec struct {
 //  2. agent path binds
 //  3. MaskedFiles /dev/null overlays
 //  4. MaskedDirs tmpfs overlays
-//  5. proxy socket bind (when ProxySocketHost is set)
+//  5. proxy socket volume (read-only, when ProxySocketVolume is set)
 //
 // Overlays (3–4) follow the directory bind they shadow so docker's argv-order
 // evaluation makes them win.
@@ -125,16 +133,24 @@ func BuildSpec(o Options) Spec {
 		SecOpt:  []string{"no-new-privileges"},
 	}
 
-	if o.ProxySocketHost != "" {
+	if o.ProxySocketVolume != "" {
 		spec.NetworkMode = "none"
-		unixURL := "unix://" + o.ProxySocketContainer
+		// The socket is always proxy.sock inside the fixed /sockets mount point.
+		// HTTP_PROXY/HTTPS_PROXY use the unix:// URL scheme; container egress is
+		// solely through the volume socket — it stays airtight with --network none.
+		// proxySocketDir and proxySocketName are the single source of truth;
+		// any rename of either constant will update this URL automatically.
+		unixURL := "unix://" + proxySocketDir + "/" + proxySocketName
 		spec.Env = []string{
 			"HTTP_PROXY=" + unixURL,
 			"HTTPS_PROXY=" + unixURL,
 		}
+		// App container mounts the volume read-only; the socat sidecar mounts
+		// the same volume read-write to create the socket inside the VM.
 		spec.Mounts = append(spec.Mounts, Mount{
-			Host:      o.ProxySocketHost,
-			Container: o.ProxySocketContainer,
+			Type:      "volume",
+			Host:      o.ProxySocketVolume, // volume name (not a host path)
+			Container: proxySocketDir,
 			ReadOnly:  true,
 		})
 	}
@@ -164,10 +180,18 @@ func (s Spec) Args() []string {
 		args = append(args, "-e", e)
 	}
 	for _, m := range s.Mounts {
-		if m.Type == "tmpfs" {
+		switch m.Type {
+		case "tmpfs":
 			args = append(args, "--mount",
 				"type=tmpfs,"+csvField("target="+m.Container))
-		} else {
+		case "volume":
+			val := "type=volume," + csvField("source="+m.Host) + "," + csvField("target="+m.Container)
+			if m.ReadOnly {
+				val += ",readonly"
+			}
+			args = append(args, "--mount", val)
+		default:
+			// "" or "bind" both render as type=bind.
 			val := "type=bind," + csvField("source="+m.Host) + "," + csvField("target="+m.Container)
 			if m.ReadOnly {
 				val += ",readonly"
@@ -281,12 +305,21 @@ func mountsFor(mounts []Mount) []mount.Mount {
 	}
 	out := make([]mount.Mount, len(mounts))
 	for i, m := range mounts {
-		if m.Type == "tmpfs" {
+		switch m.Type {
+		case "tmpfs":
 			out[i] = mount.Mount{
 				Type:   mount.TypeTmpfs,
 				Target: m.Container,
 			}
-		} else {
+		case "volume":
+			// Host field carries the Docker volume name for volume mounts.
+			out[i] = mount.Mount{
+				Type:     mount.TypeVolume,
+				Source:   m.Host,
+				Target:   m.Container,
+				ReadOnly: m.ReadOnly,
+			}
+		default:
 			// "" or "bind" both map to bind mount.
 			out[i] = mount.Mount{
 				Type:     mount.TypeBind,

@@ -3,20 +3,23 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
+	"net"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 
 	"github.com/spf13/cobra"
 
 	"github.com/Zwergpro/makeslop/internal/config"
 	"github.com/Zwergpro/makeslop/internal/docker"
-	"github.com/Zwergpro/makeslop/internal/networks"
 	"github.com/Zwergpro/makeslop/internal/projectconfig"
 	"github.com/Zwergpro/makeslop/internal/security"
 	"github.com/Zwergpro/makeslop/internal/workspace"
@@ -29,10 +32,23 @@ import (
 // The default "dev" value is used when the binary is built without ldflags.
 var version = "dev"
 
-// newGatewayFn is the seam used by tests to capture or replace NewGateway calls.
-// It mirrors the docker.newClientFn pattern: swapped via a test helper so tests
-// can assert on (sockPath, proxy, logPath) args without running a real socket.
-var newGatewayFn = networks.NewGateway
+// validHostRe is a strict allowlist for the host portion of a proxy address.
+// It permits hostnames, IPv4 addresses, and bracketed IPv6 (net.SplitHostPort
+// strips the brackets, so the host seen here is already unwrapped).
+var validHostRe = regexp.MustCompile(`^[a-zA-Z0-9.\-\[\]:]+$`)
+
+// sidecarRunner is the interface used by runRun for the socat sidecar lifecycle.
+// Satisfied by *docker.Sidecar; tests swap newSidecarFn to return a fake.
+type sidecarRunner interface {
+	Start(ctx context.Context, upstream string, volumeName string) error
+	Close() error
+}
+
+// newSidecarFn is the seam used by tests to capture or replace Sidecar creation.
+// The default returns a real *docker.Sidecar; tests swap it via setSidecarFnForTest.
+var newSidecarFn = func(quiet bool, stderr io.Writer) sidecarRunner {
+	return docker.NewSidecar(quiet, stderr)
+}
 
 // errSilent signals that a RunE has already written a tailored message to
 // stderr; main() should exit non-zero without reprinting.
@@ -103,7 +119,18 @@ func mergeUniqueSorted(a, b []string) []string {
 }
 
 // runRun implements the docker-launch logic for the "run" subcommand.
-func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfHome, dryRun, quiet, noProxy bool) error {
+//
+// Two-state network model:
+//
+//   - Direct (default): no --proxy flag and no network.proxy.address → bridge
+//     networking; no socat sidecar, no volume, no --network none.
+//   - Proxy: --proxy ip:port OR network.proxy.address (flag wins) → --network none;
+//     egress = volume unix socket → socat sidecar → TCP-CONNECT:<ip>:<port> → remote
+//     HTTP proxy. The app is airtight: apps that ignore HTTP_PROXY cannot leak.
+//
+// The host-side Gateway (internal/networks) is gone; socat connects directly to the
+// remote upstream over bridge networking, so no host process is required.
+func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfHome, dryRun, quiet bool, proxyFlag string) error {
 	pwd, err := resolvePwd()
 	if err != nil {
 		return err
@@ -143,6 +170,38 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfH
 		return err
 	}
 
+	// Resolve the effective proxy upstream: --proxy flag wins over network.proxy.address.
+	// When both are empty, direct/bridge networking is used (no socat, no volume).
+	upstream := proxyFlag
+	if upstream == "" {
+		upstream = netCfg.ProxyAddress
+	}
+	// Fail loud for a malformed upstream address before daemon pre-flight checks.
+	if upstream != "" {
+		h, p, err := net.SplitHostPort(upstream)
+		if err != nil || h == "" || p == "" {
+			fmt.Fprintf(cmd.ErrOrStderr(),
+				"makeslop: invalid proxy address %q — must be host:port\n", upstream)
+			return errSilent
+		}
+		if !validHostRe.MatchString(h) {
+			fmt.Fprintf(cmd.ErrOrStderr(),
+				"makeslop: invalid proxy address %q — host contains illegal characters\n", upstream)
+			return errSilent
+		}
+		portNum, atoiErr := strconv.Atoi(p)
+		if atoiErr != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(),
+				"makeslop: invalid proxy address %q — port must be a plain integer\n", upstream)
+			return errSilent
+		}
+		if portNum < 1 || portNum > 65535 {
+			fmt.Fprintf(cmd.ErrOrStderr(),
+				"makeslop: invalid proxy address %q — port must be in range [1, 65535]\n", upstream)
+			return errSilent
+		}
+	}
+
 	// Proxy socket path computed here to keep docker.BuildSpec pure (PID-based, so impure).
 	opts := docker.Options{
 		ProjectRoot:   workspaceRoot,
@@ -155,23 +214,13 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfH
 		MaskedDirs:    yamlExcludes.Dirs,
 	}
 
-	// sha256(workspaceDir)[:12] + PID: unique across projects and concurrent runs,
-	// ~39 bytes (safely under the 108-byte sockaddr_un limit).
-	//
-	// Socket-by-default: UNLESS --no-proxy, always wire the gateway so the
-	// container is locked to --network none and egresses via the host socket.
-	// When network.proxy.address is set, the gateway tunnels to that upstream.
-	// --no-proxy bypasses entirely → docker bridge networking (escape hatch for
-	// non-HTTP traffic such as raw TCP or git+ssh).
-	// logPath comes from netCfg.LogPath (resolved under project root); it is a
-	// NewGateway arg and therefore invisible to --dry-run/ShellCommand().
-	var gw *networks.Gateway
-	if !noProxy {
+	// sha256(workspaceDir)[:12] + PID: unique volume name across projects and concurrent runs.
+	// Only set when proxy mode is active (upstream != "").
+	var volumeName string
+	if upstream != "" {
 		h := sha256.Sum256([]byte(workspaceDir))
-		sockPath := filepath.Join("/tmp", fmt.Sprintf("makeslop-%x-%d.sock", h[:6], os.Getpid()))
-		opts.ProxySocketHost = sockPath
-		opts.ProxySocketContainer = "/tmp/makeslop-proxy.sock"
-		gw = newGatewayFn(sockPath, netCfg.ProxyAddress, netCfg.LogPath)
+		volumeName = fmt.Sprintf("makeslop-sock-%x-%d", h[:6], os.Getpid())
+		opts.ProxySocketVolume = volumeName
 	}
 
 	// ProjectRoot must be the registered ancestor (workspaceRoot), not pwd:
@@ -205,12 +254,16 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfH
 		return errSilent
 	}
 
-	// Gateway must exist before the container starts; a Start failure aborts the launch.
-	if gw != nil {
-		if err := gw.Start(cmd.Context()); err != nil {
+	// Proxy mode: start the socat sidecar that bridges the volume unix socket to
+	// the remote upstream TCP address. Any Start failure aborts the launch
+	// (fail-loud invariant). Teardown via defer.
+	if upstream != "" {
+		// --quiet gates the "pulling socat image" notice.
+		sc := newSidecarFn(quiet, cmd.ErrOrStderr())
+		if err := sc.Start(cmd.Context(), upstream, volumeName); err != nil {
 			return err
 		}
-		defer gw.Close() //nolint:errcheck // teardown; error not actionable here
+		defer sc.Close() //nolint:errcheck // teardown; error not actionable here
 	}
 
 	if err := docker.Run(cmd.Context(), spec); err != nil {
@@ -248,7 +301,7 @@ func newRootCmd(baseDir string) *cobra.Command {
 		outOfHomeRun  bool
 		dryRun        bool
 		quiet         bool
-		noProxy       bool
+		proxyFlag     string
 	)
 
 	rootCmd := &cobra.Command{
@@ -349,7 +402,7 @@ func newRootCmd(baseDir string) *cobra.Command {
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runRun(cmd, ws, baseDir, outOfHomeRun, dryRun, quiet, noProxy)
+			return runRun(cmd, ws, baseDir, outOfHomeRun, dryRun, quiet, proxyFlag)
 		},
 	}
 
@@ -358,11 +411,11 @@ func newRootCmd(baseDir string) *cobra.Command {
 	// --out-of-home is scoped to run only (not a persistent flag on root).
 	runCmd.Flags().BoolVar(&outOfHomeRun, "out-of-home", false,
 		"allow running outside the user's home directory")
-	// --no-proxy is scoped to run only (not a persistent flag on root).
-	// Disables socket-by-default gateway → docker bridge networking (escape hatch
-	// for non-HTTP traffic). Rejected as unknown by version/config/migrate/build/status.
-	runCmd.Flags().BoolVar(&noProxy, "no-proxy", false,
-		"skip the gateway socket; use docker bridge networking instead (for non-HTTP traffic)")
+	// --proxy is scoped to run only (not a persistent flag on root).
+	// Enables proxy mode: routes container egress through a remote HTTP proxy.
+	// Flag wins over network.proxy.address. Rejected as unknown by other commands.
+	runCmd.Flags().StringVar(&proxyFlag, "proxy", "",
+		"route container egress through a remote HTTP proxy (host:port)")
 
 	migrateCmd := &cobra.Command{
 		Use:          "migrate",
