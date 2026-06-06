@@ -11,10 +11,12 @@ import (
 	"io/fs"
 	"net"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
+	"syscall"
 
 	"github.com/spf13/cobra"
 
@@ -239,14 +241,27 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfH
 
 	// Pre-flight: daemon reachability. Must happen after workspace/config resolution
 	// (so we have the image name) but before proxy start.
-	if err := docker.CheckDaemon(cmd.Context()); err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(),
-			"makeslop: %v — is docker running?\n", err)
-		return errSilent
+	// Bound by preflightTimeout so a black-hole DOCKER_HOST does not hang forever.
+	{
+		pfCtx, pfCancel := docker.WithPreflightTimeout(cmd.Context())
+		daemonErr := docker.CheckDaemon(pfCtx)
+		pfCancel()
+		if daemonErr != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(),
+				"makeslop: %v — is docker running?\n", daemonErr)
+			return errSilent
+		}
 	}
 
 	// Pre-flight: image existence. No auto-build; a clear remedy is provided.
-	imageFound, imageErr := docker.ImageExists(cmd.Context(), s.Image)
+	// Bound by preflightTimeout.
+	var imageFound bool
+	var imageErr error
+	{
+		pfCtx, pfCancel := docker.WithPreflightTimeout(cmd.Context())
+		imageFound, imageErr = docker.ImageExists(pfCtx, s.Image)
+		pfCancel()
+	}
 	if imageErr != nil {
 		return imageErr
 	}
@@ -564,17 +579,34 @@ func newRootCmd(baseDir string) *cobra.Command {
 	return rootCmd
 }
 
-// runWithExitCode maps an Execute() error to a host exit code:
+// onContextForTest is called by runWithExitCode with the signal-cancellable
+// context immediately after it is created. It is nil in production and swapped
+// by tests to observe the context passed to ExecuteContext. Guarded by the
+// test binary only; never set in normal operation.
+var onContextForTest func(ctx context.Context)
+
+// runWithExitCode maps an ExecuteContext() error to a host exit code:
 //   - *docker.ExitError passes through its Code (the daemon-reported exit status,
 //     e.g. 137 for SIGKILL); this is the primary path for `makeslop run`.
 //   - errSilent -> 1 with no reprint.
 //   - other errors -> 1 prefixed "makeslop: ".
+//
+// A signal-cancellable context (SIGINT / SIGTERM) is created here and passed
+// to ExecuteContext so every subcommand's cmd.Context() is cancellable. The
+// context is always a non-Background context, which lets subcommands observe
+// cancellation via select { case <-cmd.Context().Done(): }.
 func runWithExitCode(baseDir string, stdout, stderr io.Writer, args []string) int {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if onContextForTest != nil {
+		onContextForTest(ctx)
+	}
+
 	cmd := newRootCmd(baseDir)
 	cmd.SetArgs(args)
 	cmd.SetOut(stdout)
 	cmd.SetErr(stderr)
-	err := cmd.Execute()
+	err := cmd.ExecuteContext(ctx)
 	if err == nil {
 		return 0
 	}

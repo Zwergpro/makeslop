@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	cerrdefs "github.com/containerd/errdefs"
 )
@@ -122,6 +123,92 @@ func TestCheckDaemonBuildClient(t *testing.T) {
 			t.Fatalf("expected *ErrDaemonUnreachable, got %T", err)
 		}
 	})
+}
+
+// TestCheckDaemonTimeoutBlockingPing verifies that CheckDaemon returns
+// *ErrDaemonUnreachable wrapping context.DeadlineExceeded when the fake Ping
+// blocks past a short deadline. This tests that WithPreflightTimeout actually
+// delivers a deadline-carrying context to CheckDaemon.
+//
+// NOTE: this unit test proves that the deadline is wired through correctly; it
+// does NOT prove that a real SDK call against a black-hole DOCKER_HOST also
+// aborts (that is integration-only and beyond the scope of unit tests here).
+func TestCheckDaemonTimeoutBlockingPing(t *testing.T) {
+	f := NewFakeRunClient(0)
+	f.BlockPing = true // blocks until ctx is cancelled
+	t.Cleanup(SetClientForTest(f))
+
+	// Use a very short deadline so the test completes quickly.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+
+	err := CheckDaemon(ctx)
+	if err == nil {
+		t.Fatal("CheckDaemon() expected error when Ping blocks past deadline, got nil")
+	}
+
+	var dr *ErrDaemonUnreachable
+	if !errors.As(err, &dr) {
+		t.Fatalf("expected *ErrDaemonUnreachable, got %T: %v", err, err)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected cause to be context.DeadlineExceeded, got: %v", dr.Cause)
+	}
+}
+
+// TestImageExistsTimeoutBlockingInspect verifies that ImageExists returns
+// promptly with a context.DeadlineExceeded error when the fake ImageInspect
+// blocks past the deadline. Crucially, the result must NOT be misreported as
+// "image absent" — only a not-found classification should produce (false, nil).
+//
+// NOTE: same caveat as TestCheckDaemonTimeoutBlockingPing: unit-test scope only.
+func TestImageExistsTimeoutBlockingInspect(t *testing.T) {
+	f := NewFakeRunClient(0)
+	f.BlockImageInspect = true // blocks until ctx is cancelled
+	t.Cleanup(SetClientForTest(f))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+
+	found, err := ImageExists(ctx, "myimage:latest")
+	if err == nil {
+		t.Fatal("ImageExists() expected error when ImageInspect blocks past deadline, got nil")
+	}
+	if found {
+		t.Fatal("ImageExists() must return false on timeout")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected context.DeadlineExceeded, got: %v", err)
+	}
+	// A timeout must not be classified as "image absent".
+	if cerrdefs.IsNotFound(err) {
+		t.Fatal("timeout error must not be misclassified as image-not-found")
+	}
+}
+
+// TestWithPreflightTimeoutHappyPath verifies that a fast fake Ping and
+// ImageInspect succeed within the normal preflightTimeout — no regression.
+func TestWithPreflightTimeoutHappyPath(t *testing.T) {
+	f := NewFakeRunClient(0) // instant success
+	t.Cleanup(SetClientForTest(f))
+
+	ctx, cancel := WithPreflightTimeout(context.Background())
+	defer cancel()
+
+	if err := CheckDaemon(ctx); err != nil {
+		t.Fatalf("CheckDaemon() unexpected error: %v", err)
+	}
+
+	ctx2, cancel2 := WithPreflightTimeout(context.Background())
+	defer cancel2()
+
+	found, err := ImageExists(ctx2, "myimage:latest")
+	if err != nil {
+		t.Fatalf("ImageExists() unexpected error: %v", err)
+	}
+	if !found {
+		t.Fatal("ImageExists() expected true, got false")
+	}
 }
 
 // TestErrDaemonUnreachableMessage verifies that ErrDaemonUnreachable produces

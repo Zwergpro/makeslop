@@ -229,6 +229,16 @@ type FakeRunClient struct {
 	// as a non-not-found error (simulating a daemon I/O error specifically for
 	// the socat image, while letting the app image inspect succeed).
 	SocatImageErr error
+
+	// BlockPing, when true, causes Ping to block until ctx is cancelled, then
+	// return ctx.Err(). This lets tests verify that a timeout deadline is
+	// propagated through to the Ping call site.
+	BlockPing bool
+
+	// BlockImageInspect, when true, causes ImageInspect to block until ctx is
+	// cancelled, then return ctx.Err(). This lets tests verify that a timeout
+	// deadline is propagated through to the ImageInspect call site.
+	BlockImageInspect bool
 }
 
 // NewFakeRunClient creates a FakeRunClient that will return the given exit code
@@ -238,7 +248,13 @@ func NewFakeRunClient(exitCode int) *FakeRunClient {
 }
 
 // Ping returns PingErr if set, otherwise delegates to noopClient (success).
-func (f *FakeRunClient) Ping(_ context.Context, _ moby.PingOptions) (moby.PingResult, error) {
+// If BlockPing is true, Ping blocks until ctx is cancelled and returns ctx.Err().
+// This allows tests to verify that a timeout deadline is propagated to Ping.
+func (f *FakeRunClient) Ping(ctx context.Context, _ moby.PingOptions) (moby.PingResult, error) {
+	if f.BlockPing {
+		<-ctx.Done()
+		return moby.PingResult{}, ctx.Err()
+	}
 	if f.PingErr != nil {
 		return moby.PingResult{}, f.PingErr
 	}
@@ -247,13 +263,20 @@ func (f *FakeRunClient) Ping(_ context.Context, _ moby.PingOptions) (moby.PingRe
 
 // ImageInspect returns a not-found error when ImageMissing is true, ImageErr
 // when ImageErr is set, or a found result otherwise.
+// If BlockImageInspect is true, ImageInspect blocks until ctx is cancelled and
+// returns ctx.Err(). This allows tests to verify that a timeout deadline is
+// propagated to ImageInspect.
 // If SocatImageMissing is true, calls for the socat image (identified by
 // matching imageID against SocatImage) return not-found. Other images are
 // unaffected by SocatImageMissing, allowing tests to model the case where the
 // app image is present but alpine/socat has not been pulled yet.
 // If SocatImageErr is non-nil, calls for the socat image return that error
 // (non-not-found, simulating daemon I/O errors specifically for the socat image).
-func (f *FakeRunClient) ImageInspect(_ context.Context, imageID string, _ ...moby.ImageInspectOption) (moby.ImageInspectResult, error) {
+func (f *FakeRunClient) ImageInspect(ctx context.Context, imageID string, _ ...moby.ImageInspectOption) (moby.ImageInspectResult, error) {
+	if f.BlockImageInspect {
+		<-ctx.Done()
+		return moby.ImageInspectResult{}, ctx.Err()
+	}
 	if f.ImageMissing {
 		return moby.ImageInspectResult{}, fmt.Errorf("image %q: %w", imageID, errdefs.ErrNotFound)
 	}
@@ -414,6 +437,14 @@ type FakeBuildClient struct {
 	PingErr          error // if non-nil, Ping returns this error
 	ImageMissing     bool  // if true, ImageInspect returns a not-found error
 	ImageErr         error // if non-nil (and ImageMissing false), ImageInspect returns this error
+
+	// BlockPing, when true, causes Ping to block until ctx is cancelled and
+	// return ctx.Err(). Lets tests verify timeout propagation.
+	BlockPing bool
+
+	// BlockImageInspect, when true, causes ImageInspect to block until ctx is
+	// cancelled and return ctx.Err(). Lets tests verify timeout propagation.
+	BlockImageInspect bool
 }
 
 // NewFakeBuildClient creates a FakeBuildClient. exitCode 0 means success.
@@ -422,7 +453,12 @@ func NewFakeBuildClient(exitCode int) *FakeBuildClient {
 }
 
 // Ping returns PingErr if set, otherwise delegates to noopClient (success).
-func (f *FakeBuildClient) Ping(_ context.Context, _ moby.PingOptions) (moby.PingResult, error) {
+// If BlockPing is true, Ping blocks until ctx is cancelled and returns ctx.Err().
+func (f *FakeBuildClient) Ping(ctx context.Context, _ moby.PingOptions) (moby.PingResult, error) {
+	if f.BlockPing {
+		<-ctx.Done()
+		return moby.PingResult{}, ctx.Err()
+	}
 	if f.PingErr != nil {
 		return moby.PingResult{}, f.PingErr
 	}
@@ -431,7 +467,13 @@ func (f *FakeBuildClient) Ping(_ context.Context, _ moby.PingOptions) (moby.Ping
 
 // ImageInspect returns a not-found error when ImageMissing is true, ImageErr
 // when ImageErr is set, or a found result otherwise.
-func (f *FakeBuildClient) ImageInspect(_ context.Context, imageID string, _ ...moby.ImageInspectOption) (moby.ImageInspectResult, error) {
+// If BlockImageInspect is true, ImageInspect blocks until ctx is cancelled and
+// returns ctx.Err().
+func (f *FakeBuildClient) ImageInspect(ctx context.Context, imageID string, _ ...moby.ImageInspectOption) (moby.ImageInspectResult, error) {
+	if f.BlockImageInspect {
+		<-ctx.Done()
+		return moby.ImageInspectResult{}, ctx.Err()
+	}
 	if f.ImageMissing {
 		return moby.ImageInspectResult{}, fmt.Errorf("image %q: %w", imageID, errdefs.ErrNotFound)
 	}

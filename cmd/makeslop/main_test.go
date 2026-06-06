@@ -4592,3 +4592,49 @@ func TestGlobalOnly_RejectedOnNonInitCommands(t *testing.T) {
 		})
 	}
 }
+
+// TestRunWithExitCode_ContextIsCancellable verifies that runWithExitCode wires a
+// signal.NotifyContext-based context (not context.Background()) into ExecuteContext.
+// The test installs onContextForTest to observe the context created inside
+// runWithExitCode. The check is structural (non-Background, has Done channel) —
+// full signal delivery is not exercised in a unit test environment.
+func TestRunWithExitCode_ContextIsCancellable(t *testing.T) {
+	baseDir := t.TempDir()
+
+	var captured context.Context
+	orig := onContextForTest
+	onContextForTest = func(ctx context.Context) { captured = ctx }
+	t.Cleanup(func() { onContextForTest = orig })
+
+	var stdout, stderr bytes.Buffer
+	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"version"})
+	if code != 0 {
+		t.Fatalf("runWithExitCode(version) = %d, want 0; stderr=%q", code, stderr.String())
+	}
+	if captured == nil {
+		t.Fatal("onContextForTest was not called — runWithExitCode did not invoke the hook")
+	}
+	if captured == context.Background() {
+		t.Error("context passed to ExecuteContext must not be context.Background() — signal.NotifyContext wiring is missing")
+	}
+	// A cancellable context always has a non-nil Done channel.
+	if captured.Done() == nil {
+		t.Error("context.Done() must be non-nil — context must be cancellable")
+	}
+}
+
+// TestRunWithExitCode_VersionSucceeds verifies that switching from cmd.Execute()
+// to cmd.ExecuteContext() does not regress the normal success path.
+func TestRunWithExitCode_VersionSucceeds(t *testing.T) {
+	baseDir := t.TempDir()
+
+	var stdout, stderr bytes.Buffer
+	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"version"})
+	if code != 0 {
+		t.Errorf("runWithExitCode(version) = %d, want 0; stderr=%q", code, stderr.String())
+	}
+	out := strings.TrimSpace(stdout.String())
+	if out == "" {
+		t.Error("version command produced empty stdout")
+	}
+}

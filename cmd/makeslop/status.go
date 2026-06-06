@@ -136,7 +136,11 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, jso
 	ready := true // guilty when any blocking check fails
 
 	// 1. Daemon check
-	if err := docker.CheckDaemon(ctx); err != nil {
+	// Bound by preflightTimeout so a black-hole DOCKER_HOST does not hang forever.
+	pfCtx1, pfCancel1 := docker.WithPreflightTimeout(ctx)
+	daemonErr := docker.CheckDaemon(pfCtx1)
+	pfCancel1()
+	if err := daemonErr; err != nil {
 		checks = append(checks, statusCheck{
 			Name:   "daemon",
 			State:  checkFail,
@@ -198,11 +202,14 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, jso
 	}
 
 	// 3. Image check
+	// Bound by preflightTimeout.
 	imageName := config.DefaultImage
 	if loadedSettings != nil {
 		imageName = loadedSettings.Image
 	}
-	imageFound, imageErr := docker.ImageExists(ctx, imageName)
+	pfCtx2, pfCancel2 := docker.WithPreflightTimeout(ctx)
+	imageFound, imageErr := docker.ImageExists(pfCtx2, imageName)
+	pfCancel2()
 	if imageErr != nil {
 		checks = append(checks, statusCheck{
 			Name:   "image",
@@ -328,7 +335,10 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, jso
 	// 7. Socat image check (non-blocking)
 	// alpine/socat is pulled on demand at `makeslop run` time; absence is not
 	// a hard failure but worth surfacing so users know the first run will pull.
-	socatFound, socatErr := docker.ImageExists(ctx, docker.SocatImage)
+	// Bound by preflightTimeout.
+	pfCtx3, pfCancel3 := docker.WithPreflightTimeout(ctx)
+	socatFound, socatErr := docker.ImageExists(pfCtx3, docker.SocatImage)
+	pfCancel3()
 	if socatErr != nil {
 		checks = append(checks, statusCheck{
 			Name:   "socat-image",

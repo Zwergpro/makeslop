@@ -3,10 +3,23 @@ package docker
 import (
 	"context"
 	"fmt"
+	"time"
 
 	cerrdefs "github.com/containerd/errdefs"
 	moby "github.com/moby/moby/client"
 )
+
+// preflightTimeout is the deadline applied to daemon-ping and image-inspect
+// calls on the preflight paths (runRun, status). It does NOT apply to the
+// long-lived docker.Run or docker.Build calls.
+const preflightTimeout = 10 * time.Second
+
+// WithPreflightTimeout wraps parent with a preflightTimeout deadline and
+// returns the derived context and its cancel function. Callers must defer
+// the returned cancel.
+func WithPreflightTimeout(parent context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(parent, preflightTimeout)
+}
 
 // ErrDaemonUnreachable is returned by CheckDaemon when the Docker daemon cannot
 // be reached. The wrapped error carries the underlying cause.
