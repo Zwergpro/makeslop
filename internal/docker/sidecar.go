@@ -38,7 +38,7 @@ import (
 // Using a digest pin avoids pulling a different tag across updates.
 // Digest obtained from docker.io/alpine/socat (multi-arch manifest).
 // Exported so that status.go can check for the image presence.
-const SocatImage = "alpine/socat@sha256:8d83acbdc16f926f3d7ffc9a6d50a6a63e51b2b8c88bba6c4b68bc07028c0bb7"
+const SocatImage = "alpine/socat@sha256:beb4a68d9e4fe6b0f21ea774a0fde6c31f580dde6368939ed70100c5385b015e"
 
 // proxySocketName is the unix socket filename created by socat inside the volume.
 const proxySocketName = "proxy.sock"
