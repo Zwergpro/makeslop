@@ -140,7 +140,7 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, jso
 	pfCtx1, pfCancel1 := docker.WithPreflightTimeout(ctx)
 	daemonErr := docker.CheckDaemon(pfCtx1)
 	pfCancel1()
-	if err := daemonErr; err != nil {
+	if daemonErr != nil {
 		checks = append(checks, statusCheck{
 			Name:   "daemon",
 			State:  checkFail,

@@ -263,7 +263,9 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfH
 		pfCancel()
 	}
 	if imageErr != nil {
-		return imageErr
+		fmt.Fprintf(cmd.ErrOrStderr(),
+			"makeslop: check image %q: %v — is docker running?\n", s.Image, imageErr)
+		return errSilent
 	}
 	if !imageFound {
 		fmt.Fprintf(cmd.ErrOrStderr(),
@@ -602,6 +604,8 @@ func newRootCmd(baseDir string) *cobra.Command {
 // context immediately after it is created. It is nil in production and swapped
 // by tests to observe the context passed to ExecuteContext. Guarded by the
 // test binary only; never set in normal operation.
+// Must NOT be used with t.Parallel() — it is a package-level variable with no
+// synchronisation, matching the pattern of newSidecarFn and other seams here.
 var onContextForTest func(ctx context.Context)
 
 // runWithExitCode maps an ExecuteContext() error to a host exit code:

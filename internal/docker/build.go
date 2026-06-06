@@ -106,7 +106,7 @@ func stageDockerfile(path string) (dir string, cleanup func(), err error) {
 		return "", func() {}, fmt.Errorf("create dockerfile stage dir: %w", err)
 	}
 	dest := filepath.Join(tmp, "Dockerfile")
-	if err := os.WriteFile(dest, data, 0o600); err != nil {
+	if err := os.WriteFile(dest, data, 0o644); err != nil {
 		_ = os.RemoveAll(tmp)
 		return "", func() {}, fmt.Errorf("write staged Dockerfile: %w", err)
 	}

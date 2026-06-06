@@ -12,7 +12,11 @@ agent-facing notes live in `CLAUDE.md`; this file is a self-contained human-read
 - [newSidecarFn seam](#newsidecarfn-seam)
 - [Socat sidecar lifecycle](#socat-sidecar-lifecycle)
 - [BuildKit session build flow](#buildkit-session-build-flow)
+- [Dockerfile staging (build isolation)](#dockerfile-staging-build-isolation)
 - [Preflight helpers](#preflight-helpers)
+- [Preflight timeouts](#preflight-timeouts)
+- [Signal-cancellable root context](#signal-cancellable-root-context)
+- [Settings RMW locking (config.WithLock)](#settings-rmw-locking-configwithlock)
 - [Config-driven scan engine](#config-driven-scan-engine)
 - [Version constants](#version-constants)
 - [POSIX-only invariant](#posix-only-invariant)
@@ -185,11 +189,28 @@ checks its presence via `docker.ImageExists(docker.SocatImage)`.
 
 `build.go` depends on `github.com/moby/buildkit` (direct dep, pinned in `go.mod`).
 
-`build` passes an empty temporary directory as the docker build context — the Dockerfile downloads
-everything, so no local files need shipping. This keeps the context transfer instant.
+`build` passes only the Dockerfile (via `stageDockerfile`) as the build context — credentials and
+workspace files in `~/.makeslop/` are never sent to the daemon. See
+[Dockerfile staging](#dockerfile-staging-build-isolation).
 
 An integration test (gated by `MAKESLOP_DOCKER_IT=1`) exercises the full `Build` flow against a
 live Docker daemon. See [Contributing / Build](#contributing--build) for the command.
+
+---
+
+## Dockerfile staging (build isolation)
+
+`stageDockerfile(path string) (dir string, cleanup func(), err error)` (in `build.go`) isolates
+the build context so that only the `Dockerfile` itself is sent to the daemon.
+
+**Why it matters:** the Dockerfile lives in `~/.makeslop/`, which also contains `.claude.json`
+credentials and the `workspaces/` cache tree. Syncing the parent directory would leak all of that
+to the Docker daemon's build context. `stageDockerfile` copies only the single Dockerfile byte
+into a fresh `os.MkdirTemp` dir and returns a `cleanup` func that removes it. `build()` syncs
+that staged dir under `dockerui.DefaultLocalNameDockerfile` instead of `filepath.Dir(path)`.
+
+No `.dockerignore` is written into the staged dir (none is expected in `~/.makeslop`; the only
+file present is the Dockerfile itself).
 
 ---
 
@@ -205,6 +226,70 @@ live Docker daemon. See [Contributing / Build](#contributing--build) for the com
 
 Both helpers build and close their own client (two constructions per `status` run — accepted for
 simplicity).
+
+---
+
+## Preflight timeouts
+
+Daemon-ping and image-inspect calls are bounded by `const preflightTimeout = 10 * time.Second`
+(declared in `internal/docker/preflight.go`). `WithPreflightTimeout(parent context.Context)`
+returns a derived context with this deadline and a cancel func.
+
+Call sites in `runRun` (main.go) and `runStatus` (status.go) wrap each blocking preflight call:
+
+```go
+pfCtx, pfCancel := docker.WithPreflightTimeout(ctx)
+err := docker.CheckDaemon(pfCtx)
+pfCancel()
+```
+
+`pfCancel()` is called **immediately after** the synchronous blocking call — not deferred — so the
+deadline is released as soon as the preflight step completes. The long-running `docker.Run` and
+`docker.Build` use the original (signal-cancellable) parent context with no artificial deadline.
+
+---
+
+## Signal-cancellable root context
+
+`runWithExitCode` (in `cmd/makeslop/main.go`) creates a signal-cancellable context and calls
+`cmd.ExecuteContext(ctx)`:
+
+```go
+ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+defer stop()
+if err := cmd.ExecuteContext(ctx); err != nil { ... }
+```
+
+Every subcommand receives this context via `cmd.Context()`. Ctrl-C or SIGTERM cancels the context,
+which propagates to Docker SDK calls, preflight checks, and the BuildKit display goroutine.
+
+`main()` itself is unchanged — it just calls `os.Exit(runWithExitCode())`.
+
+---
+
+## Settings RMW locking (config.WithLock)
+
+`config.WithLock(baseDir string, fn func() error) error` (in `internal/config/lock.go`) prevents
+lost updates when multiple `makeslop` processes write `settings.json` concurrently.
+
+It uses a two-level lock:
+- **Intra-process:** a `sync.Mutex` keyed on `baseDir` (protects goroutines in the same process —
+  necessary because Linux `flock(2)` is per-process, not per-file-descriptor within the same PID).
+- **Cross-process:** `syscall.Flock(fd, LOCK_EX)` on `<baseDir>/.settings.lock` (serializes
+  distinct `makeslop` invocations).
+
+**No-nesting invariant:** `WithLock` MUST NOT be nested on the same goroutine — same-process
+re-entry self-deadlocks on the `sync.Mutex`. Each Load→mutate→Save site takes its own short-lived
+sequential `WithLock`; no caller wraps another `WithLock`-protected call.
+
+**Lock file:** `<baseDir>/.settings.lock` is created on first use and never deleted. It carries no
+data — its role is purely advisory.
+
+**Callers:**
+- `workspace.Init` — registers a new workspace.
+- `init` RunE (fresh-seed re-stamp) — stamps `MigratedVersion` on first `init`.
+- `configSetCmd` RunE — writes a config key.
+- `migrate.Migrate` — stamps `MigratedVersion` after migration.
 
 ---
 

@@ -151,18 +151,18 @@ Locking boundary (see Technical Details): each Load→mutate→Save site takes i
 
 ### Task 6: Verify acceptance criteria
 
-- [ ] verify Ctrl-C / SIGTERM interrupts `build`/`status`/preflight (signal context live) and a blocking daemon times out within `preflightTimeout`.
-- [ ] verify a `build` no longer exposes `~/.makeslop` contents to the daemon (only `Dockerfile` staged).
-- [ ] verify concurrent `init` registrations are not lost.
-- [ ] verify the proxy verification result is documented.
-- [ ] run full suite: `go test ./...`.
-- [ ] run integration suite where possible: `MAKESLOP_DOCKER_IT=1 go test -tags integration ./internal/docker/`.
+- [x] verify Ctrl-C / SIGTERM interrupts `build`/`status`/preflight (signal context live) and a blocking daemon times out within `preflightTimeout`. (signal.NotifyContext wired in runWithExitCode; TestRunWithExitCode_ContextIsCancellable + TestCheckDaemon_Timeout cover the intent; live Ctrl-C manual test is not automatable in unit test)
+- [x] verify a `build` no longer exposes `~/.makeslop` contents to the daemon (only `Dockerfile` staged). (stageDockerfile implemented and tested; build.go uses staged dir under DefaultLocalNameDockerfile; TestStageDockerfile_OnlyDockerfileEntry asserts only one file in staged dir)
+- [x] verify concurrent `init` registrations are not lost. (workspace_test.go: concurrent N Init goroutines all persist; config/lock_test.go: WithLock serializes concurrent RMW; tests pass)
+- [x] verify the proxy verification result is documented. (docs/security.md "Known limitation — unix:// proxy URL scheme" block added; TCP-listener redesign noted as Post-Completion)
+- [x] run full suite: `go test ./...`. (all packages pass with GOTMPDIR=/workspace/tmp to work around /tmp size limit in sandbox)
+- [x] run integration suite where possible: `MAKESLOP_DOCKER_IT=1 go test -tags integration ./internal/docker/`. (manual test — skipped, no live Docker daemon in sandbox; integration test in proxy_integration_test.go is gated and ready)
 
 ### Task 7: [Final] Update documentation
 
-- [ ] update `CLAUDE.md`: note the signal-cancellable root context + preflight timeout, the Dockerfile-staging behavior, and the `config.WithLock` RMW invariant.
-- [ ] update `docs/reference.md`/`docs/architecture.md` as needed (cancellation, build isolation, proxy verification result).
-- [ ] move this plan to `docs/plans/completed/`.
+- [x] update `CLAUDE.md`: note the signal-cancellable root context + preflight timeout, the Dockerfile-staging behavior, and the `config.WithLock` RMW invariant.
+- [x] update `docs/reference.md`/`docs/architecture.md` as needed (cancellation, build isolation, proxy verification result).
+- [x] move this plan to `docs/plans/completed/`.
 
 ## Post-Completion
 

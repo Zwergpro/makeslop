@@ -39,7 +39,7 @@
 // # What this file provides
 //
 // 1. TestProxy_Integration_UnixSchemeVerification — a live daemon test that
-//    documents whether curl in alpine:latest honors unix:// for HTTP_PROXY.
+//    documents whether curl in curlimages/curl:latest honors unix:// for HTTP_PROXY.
 //    This test RECORDS the outcome (does not fail on "not honored") so operators
 //    can confirm the limitation.
 //
@@ -132,7 +132,7 @@ func TestProxy_Integration_UnixSchemeVerification(t *testing.T) {
 	// ── Step 3: check that alpine:latest is locally present ───────────────────
 	//
 	// We do not pull images in integration tests; if the image is absent, skip.
-	const testImage = "alpine:latest"
+	const testImage = "curlimages/curl:latest"
 	cli, err := newClientFn()
 	if err != nil {
 		t.Fatalf("docker client: %v", err)
@@ -140,7 +140,7 @@ func TestProxy_Integration_UnixSchemeVerification(t *testing.T) {
 	defer cli.Close() //nolint:errcheck
 
 	if _, inspectErr := cli.ImageInspect(ctx, testImage); inspectErr != nil {
-		t.Skipf("alpine:latest not present locally (skipping proxy verification): %v", inspectErr)
+		t.Skipf("%s not present locally (skipping proxy verification): %v", testImage, inspectErr)
 	}
 
 	// ── Step 4: run a container in proxy mode with curl ───────────────────────
@@ -158,8 +158,9 @@ func TestProxy_Integration_UnixSchemeVerification(t *testing.T) {
 		Config: &container.Config{
 			Image: testImage,
 			// curl --max-time 5: prevents hanging if curl ignores the proxy and tries DNS.
+			// curlimages/curl has curl as its entrypoint; only args are passed here.
 			Cmd: []string{
-				"curl", "--silent", "--show-error", "--max-time", "5",
+				"--silent", "--show-error", "--max-time", "5",
 				"http://example.com/",
 			},
 			Env: []string{
@@ -234,16 +235,13 @@ func TestProxy_Integration_UnixSchemeVerification(t *testing.T) {
 	// Infrastructure errors (sidecar, image, daemon) cause t.Fatal above.
 }
 
-// TestProxy_Unit_BuildSpecContract is an integration-tagged unit assertion that
-// BuildSpec emits the unix:// proxy env vars and --network none when
-// ProxySocketVolume is set. This guards the spec contract even in the absence
-// of a live daemon. It is intentionally gated here (not in spec_test.go) to
-// exercise the contract alongside the live verification test.
+// TestProxy_Unit_BuildSpecContract asserts that BuildSpec emits the unix://
+// proxy env vars and --network none when ProxySocketVolume is set.
+// This guards the spec contract regardless of daemon availability.
+// Equivalent assertions live in spec_test.go (non-integration-tagged);
+// this copy runs in the integration build to exercise the contract alongside
+// the live verification test without requiring a live daemon.
 func TestProxy_Unit_BuildSpecContract(t *testing.T) {
-	if os.Getenv("MAKESLOP_DOCKER_IT") == "" {
-		t.Skip("set MAKESLOP_DOCKER_IT=1 to run integration tests against a live daemon")
-	}
-
 	o := Options{
 		ProjectRoot:       "/home/me/code/myproj",
 		WorkspaceName:     "myproj-abc123",

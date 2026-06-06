@@ -3368,8 +3368,8 @@ func TestRun_ImageMissing_AbortsWithRemedy(t *testing.T) {
 
 // TestRun_ImageOtherError_PropagatesError verifies that when ImageExists returns
 // a non-not-found error (e.g. permission denied reading image store), `makeslop run`
-// propagates that error instead of silently treating it as "image absent". This
-// distinguishes a transient daemon/store error from a missing image.
+// prints a user-friendly message to stderr and exits non-zero without starting the
+// container. This distinguishes a transient daemon/store error from a missing image.
 func TestRun_ImageOtherError_PropagatesError(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -3390,11 +3390,14 @@ func TestRun_ImageOtherError_PropagatesError(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error when ImageExists returns other-error, got nil; stderr=%q", stderr)
 	}
-	// Must NOT be errSilent — this is a real propagated error, not a tailored message.
-	if errors.Is(err, errSilent) {
-		t.Errorf("image other-error must propagate as real error, not errSilent; got errSilent")
+	// errSilent is returned — the message was already printed to stderr.
+	if !errors.Is(err, errSilent) {
+		t.Errorf("image other-error should return errSilent (message printed to stderr); got %v", err)
 	}
-	// Must NOT silently report "not built" hint (that's for a missing image only).
+	// Must print a user-friendly message with "is docker running?" hint — not "not built".
+	if !strings.Contains(stderr, "is docker running?") {
+		t.Errorf("image other-error must emit 'is docker running?' hint; stderr=%q", stderr)
+	}
 	if strings.Contains(stderr, "not built") {
 		t.Errorf("image other-error must not emit 'not built' hint; stderr=%q", stderr)
 	}

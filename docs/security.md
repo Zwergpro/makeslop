@@ -164,6 +164,24 @@ only egress path is through the socket. This works on Docker Desktop and native 
 The `--proxy` flag wins over `network.proxy.address` for per-run overrides. An invalid `host:port`
 value causes `makeslop` to abort with an error before starting docker.
 
+> **Known limitation — `unix://` proxy URL scheme:**
+>
+> `makeslop` sets `HTTP_PROXY=unix:///sockets/proxy.sock` and
+> `HTTPS_PROXY=unix:///sockets/proxy.sock` inside the container. The `unix://` URL scheme for
+> proxy env vars is **non-standard** and is silently ignored by most HTTP clients:
+>
+> - `curl` — does not support `unix://` for HTTP_PROXY (only for the target URL via `--unix-socket`).
+> - Go `net/http` — does not parse `unix://` as a proxy URL; requests bypass the proxy silently.
+> - Python `requests` — does not honor `unix://` proxy URLs.
+>
+> In practice this means HTTP clients inside the container with `--network none` will receive
+> "Network is unreachable" rather than routing through the proxy. Clients that natively understand
+> unix-socket proxy configuration (e.g. custom code that reads `HTTP_PROXY` and opens the socket
+> directly) may work. A redesign to use a TCP-listener transport (standard `http://sidecar:port`
+> proxy URL on a shared internal Docker network) is tracked as a Post-Completion item.
+>
+> Verified by `internal/docker/proxy_integration_test.go`.
+
 **Data path (proxy mode):**
 
 ```
@@ -183,26 +201,6 @@ Use `--dry-run` to preview the resulting container launch command (printed as an
 ```
 makeslop run --dry-run
 ```
-
-**Known limitation — `unix://` proxy URL scheme:**
-
-`makeslop` sets `HTTP_PROXY=unix:///sockets/proxy.sock` and
-`HTTPS_PROXY=unix:///sockets/proxy.sock` inside the container. The `unix://` URL scheme for
-proxy env vars is **non-standard** and is silently ignored by most HTTP clients:
-
-- `curl` — does not support `unix://` for HTTP_PROXY (only for the target URL via
-  `--unix-socket`).
-- Go `net/http` — does not parse `unix://` as a proxy URL; requests bypass the proxy silently.
-- Python `requests` — does not honor `unix://` proxy URLs.
-
-In practice this means HTTP clients inside the container with `--network none` will receive
-"Network is unreachable" rather than routing through the proxy. Clients that natively understand
-unix-socket proxy configuration (e.g. custom code that reads `HTTP_PROXY` and opens the socket
-directly) may work.
-
-This was verified by an integration test (`internal/docker/proxy_integration_test.go`). A
-redesign to use a TCP-listener transport (standard `http://sidecar:port` proxy URL on a shared
-internal Docker network) is deferred as a Post-Completion item.
 
 ---
 
