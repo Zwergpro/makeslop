@@ -20,6 +20,14 @@
 //   - network.proxy.address ("host:port"): when set, container traffic is routed
 //     through this remote HTTP proxy via a socat sidecar. When absent (the
 //     default), the container uses direct bridge networking.
+//
+// The cache block controls per-workspace cache overlay mounts:
+//   - cache.content (default true): mount docs/ + CLAUDE.md from the per-workspace
+//     cache directory on top of the project. Set to false to let the project's own
+//     docs/ and CLAUDE.md show through inside the container.
+//   - cache.agent (default true): mount .claude/ + .codex/ from the per-workspace
+//     cache directory on top of the project. Set to false to use the project's own
+//     agent state directories inside the container.
 package projectconfig
 
 import (
@@ -91,9 +99,24 @@ type Network struct {
 	ProxyAddress string // "host:port"; "" when unconfigured (direct bridge)
 }
 
+// Cache is the parsed cache-overlay configuration. Both fields default to true
+// when the cache: block is absent from .makeslop.yaml (backward-compatible).
+//
+// Content controls whether the per-workspace cache docs/ and CLAUDE.md
+// directories are mounted on top of the project inside the container. When
+// false, the project's own docs/ and CLAUDE.md are visible instead.
+//
+// Agent controls whether the per-workspace cache .claude/ and .codex/
+// directories are mounted on top of the project inside the container. When
+// false, the project's own agent state directories are visible instead.
+type Cache struct {
+	Content bool // mount per-workspace cache docs/ + CLAUDE.md (default true)
+	Agent   bool // mount per-workspace cache .claude/ + .codex/ (default true)
+}
+
 // yamlSchema is the strict decode target. Using KnownFields(true) means any
-// top-level key other than "exclude" / "network" (and their sub-keys) is
-// rejected immediately with a meaningful decoder error.
+// top-level key other than "exclude" / "network" / "cache" (and their sub-keys)
+// is rejected immediately with a meaningful decoder error.
 type yamlSchema struct {
 	Exclude struct {
 		Scan struct {
@@ -108,6 +131,10 @@ type yamlSchema struct {
 			Address string `yaml:"address"`
 		} `yaml:"proxy"`
 	} `yaml:"network"`
+	Cache struct {
+		Content *bool `yaml:"content"`
+		Agent   *bool `yaml:"agent"`
+	} `yaml:"cache"`
 }
 
 // Scaffold creates <root>/.makeslop.yaml with an empty stub. Idempotent:
@@ -137,20 +164,21 @@ func Scaffold(root string) error {
 }
 
 // Load parses <root>/.makeslop.yaml and returns validated Excludes, Network,
-// and any error. Missing file yields zero values with no error. Malformed YAML,
-// unknown fields, cross-list duplicates, reserved-path collisions, and invalid
-// paths are errors wrapped with "projectconfig: ". Symlinks and missing entries
-// are silently dropped. ProxyAddress is stored as a raw string without
+// Cache, and any error. Missing file yields zero values with no error. Malformed
+// YAML, unknown fields, cross-list duplicates, reserved-path collisions, and
+// invalid paths are errors wrapped with "projectconfig: ". Symlinks and missing
+// entries are silently dropped. ProxyAddress is stored as a raw string without
 // validation — callers validate the effective upstream after flag overrides.
+// Absent cache: block defaults both Cache fields to true (backward-compatible).
 // root must be absolute and EvalSymlinks-evaluated.
-func Load(root string) (Excludes, Network, error) {
+func Load(root string) (Excludes, Network, Cache, error) {
 	path := filepath.Join(root, Filename)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return Excludes{}, Network{}, nil
+			return Excludes{}, Network{}, Cache{Content: true, Agent: true}, nil
 		}
-		return Excludes{}, Network{}, fmt.Errorf("projectconfig: read %s: %w", Filename, err)
+		return Excludes{}, Network{}, Cache{}, fmt.Errorf("projectconfig: read %s: %w", Filename, err)
 	}
 
 	// Decode with strict mode: unknown top-level fields cause an error, surfacing
@@ -162,27 +190,27 @@ func Load(root string) (Excludes, Network, error) {
 	if err := dec.Decode(&schema); err != nil {
 		if errors.Is(err, io.EOF) {
 			// Empty file, whitespace-only, or comment-only YAML: treat as zero config.
-			return Excludes{}, Network{}, nil
+			return Excludes{}, Network{}, Cache{Content: true, Agent: true}, nil
 		}
-		return Excludes{}, Network{}, fmt.Errorf("projectconfig: parse %s: %w", Filename, err)
+		return Excludes{}, Network{}, Cache{}, fmt.Errorf("projectconfig: parse %s: %w", Filename, err)
 	}
 
 	patterns, err := validatePatterns(schema.Exclude.Scan.Patterns)
 	if err != nil {
-		return Excludes{}, Network{}, err
+		return Excludes{}, Network{}, Cache{}, err
 	}
 	skipDirs, err := validateSkipDirs(schema.Exclude.Scan.SkipDirs)
 	if err != nil {
-		return Excludes{}, Network{}, err
+		return Excludes{}, Network{}, Cache{}, err
 	}
 
 	cleanedFiles, err := validateEntries(schema.Exclude.Files, "exclude.files")
 	if err != nil {
-		return Excludes{}, Network{}, err
+		return Excludes{}, Network{}, Cache{}, err
 	}
 	cleanedDirs, err := validateEntries(schema.Exclude.Dirs, "exclude.dirs")
 	if err != nil {
-		return Excludes{}, Network{}, err
+		return Excludes{}, Network{}, Cache{}, err
 	}
 
 	// Cross-list duplicate check: a path in both lists is an error. Done before
@@ -193,17 +221,17 @@ func Load(root string) (Excludes, Network, error) {
 	}
 	for _, rel := range cleanedDirs {
 		if _, ok := seen[rel]; ok {
-			return Excludes{}, Network{}, fmt.Errorf("projectconfig: path %q listed in both exclude.files and exclude.dirs", rel)
+			return Excludes{}, Network{}, Cache{}, fmt.Errorf("projectconfig: path %q listed in both exclude.files and exclude.dirs", rel)
 		}
 	}
 
 	files, err := statFilter(root, cleanedFiles, func(info os.FileInfo) bool { return info.Mode().IsRegular() })
 	if err != nil {
-		return Excludes{}, Network{}, err
+		return Excludes{}, Network{}, Cache{}, err
 	}
 	dirs, err := statFilter(root, cleanedDirs, func(info os.FileInfo) bool { return info.IsDir() })
 	if err != nil {
-		return Excludes{}, Network{}, err
+		return Excludes{}, Network{}, Cache{}, err
 	}
 
 	files = dedupSorted(files)
@@ -215,7 +243,14 @@ func Load(root string) (Excludes, Network, error) {
 	// when a valid --proxy flag would override the bad config value.
 	netCfg := Network{ProxyAddress: schema.Network.Proxy.Address}
 
-	return Excludes{Files: files, Dirs: dirs, Patterns: patterns, SkipDirs: skipDirs}, netCfg, nil
+	// Resolve cache defaults: absent pointer (nil) means the field was not set in
+	// YAML, which defaults to true (backward-compatible: absent block = both mounted).
+	cacheCfg := Cache{
+		Content: schema.Cache.Content == nil || *schema.Cache.Content,
+		Agent:   schema.Cache.Agent == nil || *schema.Cache.Agent,
+	}
+
+	return Excludes{Files: files, Dirs: dirs, Patterns: patterns, SkipDirs: skipDirs}, netCfg, cacheCfg, nil
 }
 
 // validateEntries cleans and validates user-supplied relative paths for the

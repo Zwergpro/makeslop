@@ -114,19 +114,19 @@ notes in CLAUDE.md).
 **Files:**
 - Modify: `internal/projectconfig/projectconfig.go`
 
-- [ ] add `Cache` sub-struct to `yamlSchema`: `Content *bool` / `Agent *bool` with
+- [x] add `Cache` sub-struct to `yamlSchema`: `Content *bool` / `Agent *bool` with
       `yaml:"content"` / `yaml:"agent"` tags, under a `yaml:"cache"` key
-- [ ] add exported result type `type Cache struct { Content bool; Agent bool }` with
+- [x] add exported result type `type Cache struct { Content bool; Agent bool }` with
       doc comments describing the two groups
-- [ ] widen `Load` to return `(Excludes, Network, Cache, error)`; resolve defaults via
+- [x] widen `Load` to return `(Excludes, Network, Cache, error)`; resolve defaults via
       the `== nil || *ptr` idiom (absent ⇒ `true`); return `Cache{}` on every error path
-- [ ] update the package doc comment to describe the `cache:` block alongside
+- [x] update the package doc comment to describe the `cache:` block alongside
       `exclude:` and `network:`
-- [ ] write tests in `internal/projectconfig/projectconfig_test.go`: absent block ⇒
+- [x] write tests in `internal/projectconfig/projectconfig_test.go`: absent block ⇒
       `{true,true}`; `content:false`+`agent:false` ⇒ `{false,false}`; mixed
       `content:false` with `agent` absent ⇒ `{false,true}`
-- [ ] write error-case test: unknown key under `cache:` ⇒ strict-decode error
-- [ ] run `go test ./internal/projectconfig/` — must pass before next task
+- [x] write error-case test: unknown key under `cache:` ⇒ strict-decode error
+- [x] run `go test ./internal/projectconfig/` — must pass before next task
 
 ### Task 2: Parameterize Scaffold/Stub with cache defaults
 

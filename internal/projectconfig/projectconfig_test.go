@@ -63,7 +63,7 @@ func TestLoad_MissingFile(t *testing.T) {
 	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
-	excl, _, err := Load(root)
+	excl, _, _, err := Load(root)
 	if err != nil {
 		t.Fatalf("Load on missing file: %v", err)
 	}
@@ -86,7 +86,7 @@ func TestLoad_DefaultStub_RoundTrips(t *testing.T) {
 		t.Fatalf("write stub: %v", err)
 	}
 
-	excl, netCfg, err := Load(root)
+	excl, netCfg, _, err := Load(root)
 	if err != nil {
 		t.Fatalf("Load on default stub: %v", err)
 	}
@@ -141,7 +141,7 @@ func TestLoad_EmptyAndCommentOnlyFiles(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(root, Filename), tc.content, 0o644); err != nil {
 				t.Fatalf("write: %v", err)
 			}
-			excl, _, err := Load(root)
+			excl, _, _, err := Load(root)
 			if err != nil {
 				t.Fatalf("Load returned error for %q: %v", tc.name, err)
 			}
@@ -166,7 +166,7 @@ func TestLoad_MalformedYAML(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, _, err := Load(root)
+	_, _, _, err := Load(root)
 	if err == nil {
 		t.Fatal("expected error for malformed YAML, got nil")
 	}
@@ -183,7 +183,7 @@ func TestLoad_UnknownField(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, _, err := Load(root)
+	_, _, _, err := Load(root)
 	if err == nil {
 		t.Fatal("expected error for unknown field, got nil")
 	}
@@ -258,7 +258,7 @@ func TestLoad_ValidationRules(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(root, Filename), []byte(tc.yaml), 0o644); err != nil {
 				t.Fatalf("write: %v", err)
 			}
-			_, _, err := Load(root)
+			_, _, _, err := Load(root)
 			if err == nil {
 				t.Fatalf("expected error containing %q, got nil", tc.wantErrFrag)
 			}
@@ -282,7 +282,7 @@ func TestLoad_ReservedPaths(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(root, Filename), []byte(content), 0o644); err != nil {
 				t.Fatalf("write: %v", err)
 			}
-			_, _, err := Load(root)
+			_, _, _, err := Load(root)
 			if err == nil {
 				t.Fatalf("expected collision error for %q in dirs, got nil", reserved)
 			}
@@ -296,7 +296,7 @@ func TestLoad_ReservedPaths(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(root, Filename), []byte(content), 0o644); err != nil {
 				t.Fatalf("write: %v", err)
 			}
-			_, _, err := Load(root)
+			_, _, _, err := Load(root)
 			if err == nil {
 				t.Fatalf("expected collision error for %q in files, got nil", reserved)
 			}
@@ -316,7 +316,7 @@ func TestLoad_CrossListDuplicate(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, _, err := Load(root)
+	_, _, _, err := Load(root)
 	if err == nil {
 		t.Fatal("expected error for cross-list duplicate, got nil")
 	}
@@ -337,7 +337,7 @@ func TestLoad_CrossListDuplicate_NoFileOnDisk(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, _, err := Load(root)
+	_, _, _, err := Load(root)
 	if err == nil {
 		t.Fatal("expected error for cross-list duplicate (path absent), got nil")
 	}
@@ -355,7 +355,7 @@ func TestLoad_SilentlyDropsMissingEntries(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	excl, _, err := Load(root)
+	excl, _, _, err := Load(root)
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -382,7 +382,7 @@ func TestLoad_DropsWrongType(t *testing.T) {
 		t.Fatalf("write config: %v", err)
 	}
 
-	excl, _, err := Load(root)
+	excl, _, _, err := Load(root)
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -418,7 +418,7 @@ func TestLoad_DropsSymlinks(t *testing.T) {
 		t.Fatalf("write config: %v", err)
 	}
 
-	excl, _, err := Load(root)
+	excl, _, _, err := Load(root)
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -450,7 +450,7 @@ func TestLoad_DeduplicatesWithinLists(t *testing.T) {
 		t.Fatalf("write config: %v", err)
 	}
 
-	excl, _, err := Load(root)
+	excl, _, _, err := Load(root)
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -487,7 +487,7 @@ func TestLoad_ReturnsAbsoluteSortedPaths(t *testing.T) {
 		t.Fatalf("write config: %v", err)
 	}
 
-	excl, _, err := Load(root)
+	excl, _, _, err := Load(root)
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -541,7 +541,7 @@ func TestLoad_Network_ValidAddress(t *testing.T) {
 				t.Fatalf("write: %v", err)
 			}
 
-			_, netCfg, err := Load(root)
+			_, netCfg, _, err := Load(root)
 			if err != nil {
 				t.Fatalf("Load returned error: %v", err)
 			}
@@ -560,7 +560,7 @@ func TestLoad_Network_AbsentSection(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, netCfg, err := Load(root)
+	_, netCfg, _, err := Load(root)
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -573,7 +573,7 @@ func TestLoad_Network_MissingFile(t *testing.T) {
 	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
-	_, netCfg, err := Load(root)
+	_, netCfg, _, err := Load(root)
 	if err != nil {
 		t.Fatalf("Load on missing file: %v", err)
 	}
@@ -626,7 +626,7 @@ func TestLoad_Network_InvalidAddress(t *testing.T) {
 			}
 
 			// Load must succeed — validation is deferred to runRun.
-			_, _, err := Load(root)
+			_, _, _, err := Load(root)
 			if err != nil {
 				t.Fatalf("Load must not validate proxy address syntax (got unexpected error for %q): %v", tc.address, err)
 			}
@@ -650,7 +650,7 @@ func TestLoad_Network_ExcludesUnchanged(t *testing.T) {
 		t.Fatalf("write config: %v", err)
 	}
 
-	excl, netCfg, err := Load(root)
+	excl, netCfg, _, err := Load(root)
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -679,7 +679,7 @@ func TestLoad_Network_LogFieldRejected(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, _, err := Load(root)
+	_, _, _, err := Load(root)
 	if err == nil {
 		t.Fatal("expected error for unknown network.log field, got nil")
 	}
@@ -737,7 +737,7 @@ func TestLoad_Scan_ValidPatternsAndSkipDirs(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(root, Filename), []byte(tc.yaml), 0o644); err != nil {
 				t.Fatalf("write: %v", err)
 			}
-			excl, _, err := Load(root)
+			excl, _, _, err := Load(root)
 			if err != nil {
 				t.Fatalf("Load returned error: %v", err)
 			}
@@ -777,7 +777,7 @@ func TestLoad_Scan_InvalidPatterns(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(root, Filename), []byte(tc.yaml), 0o644); err != nil {
 				t.Fatalf("write: %v", err)
 			}
-			_, _, err := Load(root)
+			_, _, _, err := Load(root)
 			if err == nil {
 				t.Fatalf("expected error containing %q, got nil", tc.wantErrFrag)
 			}
@@ -827,7 +827,7 @@ func TestLoad_Scan_InvalidSkipDirs(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(root, Filename), []byte(tc.yaml), 0o644); err != nil {
 				t.Fatalf("write: %v", err)
 			}
-			_, _, err := Load(root)
+			_, _, _, err := Load(root)
 			if err == nil {
 				t.Fatalf("expected error containing %q, got nil", tc.wantErrFrag)
 			}
@@ -851,9 +851,164 @@ func TestLoad_Scan_UnknownKeyRejected(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, _, err := Load(root)
+	_, _, _, err := Load(root)
 	if err == nil {
 		t.Fatal("expected error for unknown key under exclude.scan, got nil")
+	}
+	if !strings.HasPrefix(err.Error(), "projectconfig:") {
+		t.Errorf("error missing 'projectconfig:' prefix: %q", err.Error())
+	}
+}
+
+// ---- cache: block tests ----
+
+// TestLoad_Cache_AbsentBlock verifies that an absent cache: block defaults both
+// Cache.Content and Cache.Agent to true (backward-compatible).
+func TestLoad_Cache_AbsentBlock(t *testing.T) {
+	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	root := evalSymlinks(t, t.TempDir())
+
+	// Write a config without any cache: key.
+	content := "exclude:\n  dirs: []\n  files: []\n"
+	if err := os.WriteFile(filepath.Join(root, Filename), []byte(content), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	_, _, cacheCfg, err := Load(root)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if !cacheCfg.Content {
+		t.Errorf("Cache.Content: got false, want true (absent block should default to true)")
+	}
+	if !cacheCfg.Agent {
+		t.Errorf("Cache.Agent: got false, want true (absent block should default to true)")
+	}
+}
+
+// TestLoad_Cache_MissingFile verifies that a missing file also defaults Cache to {true,true}.
+func TestLoad_Cache_MissingFile(t *testing.T) {
+	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	root := evalSymlinks(t, t.TempDir())
+
+	_, _, cacheCfg, err := Load(root)
+	if err != nil {
+		t.Fatalf("Load on missing file: %v", err)
+	}
+	if !cacheCfg.Content {
+		t.Errorf("Cache.Content: got false, want true for missing file")
+	}
+	if !cacheCfg.Agent {
+		t.Errorf("Cache.Agent: got false, want true for missing file")
+	}
+}
+
+// TestLoad_Cache_BothFalse verifies that explicit content:false + agent:false
+// produces Cache{false,false}.
+func TestLoad_Cache_BothFalse(t *testing.T) {
+	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	root := evalSymlinks(t, t.TempDir())
+
+	content := "cache:\n  content: false\n  agent: false\n"
+	if err := os.WriteFile(filepath.Join(root, Filename), []byte(content), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	_, _, cacheCfg, err := Load(root)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if cacheCfg.Content {
+		t.Errorf("Cache.Content: got true, want false")
+	}
+	if cacheCfg.Agent {
+		t.Errorf("Cache.Agent: got true, want false")
+	}
+}
+
+// TestLoad_Cache_BothTrue verifies that explicit content:true + agent:true
+// produces Cache{true,true}.
+func TestLoad_Cache_BothTrue(t *testing.T) {
+	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	root := evalSymlinks(t, t.TempDir())
+
+	content := "cache:\n  content: true\n  agent: true\n"
+	if err := os.WriteFile(filepath.Join(root, Filename), []byte(content), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	_, _, cacheCfg, err := Load(root)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if !cacheCfg.Content {
+		t.Errorf("Cache.Content: got false, want true")
+	}
+	if !cacheCfg.Agent {
+		t.Errorf("Cache.Agent: got false, want true")
+	}
+}
+
+// TestLoad_Cache_MixedContentFalseAgentAbsent verifies that content:false with
+// agent absent produces Cache{false,true} (absent field defaults to true).
+func TestLoad_Cache_MixedContentFalseAgentAbsent(t *testing.T) {
+	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	root := evalSymlinks(t, t.TempDir())
+
+	content := "cache:\n  content: false\n"
+	if err := os.WriteFile(filepath.Join(root, Filename), []byte(content), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	_, _, cacheCfg, err := Load(root)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if cacheCfg.Content {
+		t.Errorf("Cache.Content: got true, want false")
+	}
+	if !cacheCfg.Agent {
+		t.Errorf("Cache.Agent: got false, want true (absent field defaults to true)")
+	}
+}
+
+// TestLoad_Cache_MixedAgentFalseContentAbsent verifies that agent:false with
+// content absent produces Cache{true,false}.
+func TestLoad_Cache_MixedAgentFalseContentAbsent(t *testing.T) {
+	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	root := evalSymlinks(t, t.TempDir())
+
+	content := "cache:\n  agent: false\n"
+	if err := os.WriteFile(filepath.Join(root, Filename), []byte(content), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	_, _, cacheCfg, err := Load(root)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if !cacheCfg.Content {
+		t.Errorf("Cache.Content: got false, want true (absent field defaults to true)")
+	}
+	if cacheCfg.Agent {
+		t.Errorf("Cache.Agent: got true, want false")
+	}
+}
+
+// TestLoad_Cache_UnknownKeyRejected verifies that KnownFields(true) rejects an
+// unknown key nested under cache:.
+func TestLoad_Cache_UnknownKeyRejected(t *testing.T) {
+	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	root := evalSymlinks(t, t.TempDir())
+
+	content := "cache:\n  content: true\n  agent: true\n  typo: bad\n"
+	if err := os.WriteFile(filepath.Join(root, Filename), []byte(content), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	_, _, _, err := Load(root)
+	if err == nil {
+		t.Fatal("expected error for unknown key under cache:, got nil")
 	}
 	if !strings.HasPrefix(err.Error(), "projectconfig:") {
 		t.Errorf("error missing 'projectconfig:' prefix: %q", err.Error())

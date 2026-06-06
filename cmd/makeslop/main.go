@@ -150,7 +150,7 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfH
 	}
 	// YAML parse error aborts launch before docker.Run — symmetric with security.Scan
 	// failure to preserve the no-.env-leak invariant.
-	yamlExcludes, netCfg, err := projectconfig.Load(workspaceRoot)
+	yamlExcludes, netCfg, _, err := projectconfig.Load(workspaceRoot)
 	if err != nil {
 		return err
 	}
