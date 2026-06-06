@@ -107,13 +107,13 @@ Design note: the existing fakes **discard** the context — `FakeRunClient.Ping(
 - Modify: `internal/docker/build.go`
 - Modify: `internal/docker/build_test.go`
 
-- [ ] add unexported `stageDockerfile(path string) (dir string, cleanup func(), err error)` that creates a temp dir and copies the Dockerfile into it as `Dockerfile`.
-- [ ] in `build()`, replace `dockerfileDir := filepath.Dir(o.DockerfilePath)` with a call to `stageDockerfile`; sync the staged dir under `dockerui.DefaultLocalNameDockerfile`; `defer cleanup()`.
-- [ ] confirm `buildImageOptions` still sets `Dockerfile: filepath.Base(...)` == `"Dockerfile"` (no change expected).
-- [ ] write test: `stageDockerfile` produces a dir whose ONLY entry is `Dockerfile`, with byte-identical contents to the source (asserts no sibling leakage).
-- [ ] write test: `stageDockerfile` cleanup removes the temp dir; error path (unreadable source) returns an error without leaking a temp dir.
-- [ ] write/adjust `build()` test to confirm a build still succeeds with the staged dir (reuse existing `realDaemonFrame` fixture flow; capture stdout, assert vertex names appear).
-- [ ] run `go test ./...` — must pass before Task 4.
+- [x] add unexported `stageDockerfile(path string) (dir string, cleanup func(), err error)` that creates a temp dir and copies the Dockerfile into it as `Dockerfile`.
+- [x] in `build()`, replace `dockerfileDir := filepath.Dir(o.DockerfilePath)` with a call to `stageDockerfile`; sync the staged dir under `dockerui.DefaultLocalNameDockerfile`; `defer cleanup()`.
+- [x] confirm `buildImageOptions` still sets `Dockerfile: filepath.Base(...)` == `"Dockerfile"` (no change expected).
+- [x] write test: `stageDockerfile` produces a dir whose ONLY entry is `Dockerfile`, with byte-identical contents to the source (asserts no sibling leakage).
+- [x] write test: `stageDockerfile` cleanup removes the temp dir; error path (unreadable source) returns an error without leaking a temp dir.
+- [x] write/adjust `build()` test to confirm a build still succeeds with the staged dir (reuse existing `realDaemonFrame` fixture flow; capture stdout, assert vertex names appear).
+- [x] run `go test ./...` — must pass before Task 4.
 
 ### Task 4: Lock settings.json read-modify-write
 

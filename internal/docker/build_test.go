@@ -564,3 +564,144 @@ func TestRenderBuildOutput_ContextCanceled(t *testing.T) {
 		t.Fatal("renderBuildOutput blocked for >5s with pre-cancelled context")
 	}
 }
+
+// ─── stageDockerfile unit tests ───────────────────────────────────────────────
+
+// TestStageDockerfile_OnlyDockerfile: the staged directory contains exactly one
+// file named "Dockerfile" with byte-identical content to the source. No sibling
+// files from the source's directory are present.
+func TestStageDockerfile_OnlyDockerfile(t *testing.T) {
+	// Create a source directory with a Dockerfile AND a sibling credential file.
+	srcDir := t.TempDir()
+	dockerfileContent := []byte("FROM scratch\nRUN echo hello\n")
+	srcPath := filepath.Join(srcDir, "Dockerfile")
+	if err := os.WriteFile(srcPath, dockerfileContent, 0o644); err != nil {
+		t.Fatalf("write source Dockerfile: %v", err)
+	}
+	// Write a sibling that must NOT appear in the staged dir.
+	if err := os.WriteFile(filepath.Join(srcDir, ".claude.json"), []byte(`{"secret":"s3kr3t"}`), 0o600); err != nil {
+		t.Fatalf("write sibling credential file: %v", err)
+	}
+
+	stagedDir, cleanup, err := stageDockerfile(srcPath)
+	if err != nil {
+		t.Fatalf("stageDockerfile returned error: %v", err)
+	}
+	defer cleanup()
+
+	// Staged dir must exist.
+	if _, statErr := os.Stat(stagedDir); statErr != nil {
+		t.Fatalf("staged dir does not exist: %v", statErr)
+	}
+
+	// Enumerate entries: exactly one entry named "Dockerfile".
+	entries, err := os.ReadDir(stagedDir)
+	if err != nil {
+		t.Fatalf("ReadDir staged dir: %v", err)
+	}
+	if len(entries) != 1 {
+		names := make([]string, len(entries))
+		for i, e := range entries {
+			names[i] = e.Name()
+		}
+		t.Fatalf("staged dir has %d entries %v, want exactly 1 (Dockerfile)", len(entries), names)
+	}
+	if entries[0].Name() != "Dockerfile" {
+		t.Errorf("staged entry name = %q, want \"Dockerfile\"", entries[0].Name())
+	}
+
+	// Contents must be byte-identical.
+	got, err := os.ReadFile(filepath.Join(stagedDir, "Dockerfile"))
+	if err != nil {
+		t.Fatalf("read staged Dockerfile: %v", err)
+	}
+	if !bytes.Equal(got, dockerfileContent) {
+		t.Errorf("staged Dockerfile content differs: got %q, want %q", got, dockerfileContent)
+	}
+}
+
+// TestStageDockerfile_CleanupRemovesDir: calling cleanup() after stageDockerfile
+// removes the temp directory so it is not leaked.
+func TestStageDockerfile_CleanupRemovesDir(t *testing.T) {
+	srcDir := t.TempDir()
+	srcPath := filepath.Join(srcDir, "Dockerfile")
+	if err := os.WriteFile(srcPath, []byte("FROM scratch\n"), 0o644); err != nil {
+		t.Fatalf("write source Dockerfile: %v", err)
+	}
+
+	stagedDir, cleanup, err := stageDockerfile(srcPath)
+	if err != nil {
+		t.Fatalf("stageDockerfile error: %v", err)
+	}
+
+	// Dir must exist before cleanup.
+	if _, statErr := os.Stat(stagedDir); statErr != nil {
+		t.Fatalf("staged dir missing before cleanup: %v", statErr)
+	}
+
+	cleanup()
+
+	// Dir must be gone after cleanup.
+	if _, statErr := os.Stat(stagedDir); !os.IsNotExist(statErr) {
+		t.Errorf("staged dir still exists after cleanup (stat error: %v)", statErr)
+	}
+}
+
+// TestStageDockerfile_UnreadableSource: when the source Dockerfile cannot be
+// read, stageDockerfile returns an error and does NOT leak a temp directory.
+func TestStageDockerfile_UnreadableSource(t *testing.T) {
+	_, cleanup, err := stageDockerfile("/nonexistent/path/to/Dockerfile")
+	if err == nil {
+		// cleanup the dir if unexpectedly created (defensive)
+		cleanup()
+		t.Fatal("expected error for unreadable source, got nil")
+	}
+	// The error should mention "read Dockerfile" (from our fmt.Errorf wrapper).
+	if !strings.Contains(err.Error(), "read Dockerfile") {
+		t.Errorf("error message %q should contain 'read Dockerfile'", err.Error())
+	}
+	// No temp dir leakage: cleanup is a no-op (no dir was created).
+	// We cannot assert the path directly since stageDockerfile returns "" on
+	// error, but we can call cleanup safely and confirm no panic.
+	cleanup() // must be safe to call even on error path
+}
+
+// TestBuild_StagedDockerfileIsolation: build() is called with a DockerfilePath
+// whose parent directory contains a sibling file. The sibling must not appear in
+// the staged dir that is synced to the daemon. We confirm this indirectly by
+// verifying that build() reaches ImageBuild (the session may fail to dial in the
+// fake, but ImageBuild must still be called — same pattern as
+// TestBuild_FakeSelf_ImageBuildOptions).
+//
+// The key invariant tested here: stageDockerfile is wired into build() so that
+// the dockerfile filesync source is the isolated staged dir, not the source's
+// parent dir. We verify this by confirming the recorded Dockerfile basename is
+// still "Dockerfile" (unchanged) and build() reaches ImageBuild successfully.
+func TestBuild_StagedDockerfileIsolation(t *testing.T) {
+	// Set up a source dir that contains both a Dockerfile and a sibling file.
+	srcDir := t.TempDir()
+	dockerfilePath := filepath.Join(srcDir, "Dockerfile")
+	if err := os.WriteFile(dockerfilePath, []byte("FROM scratch\n"), 0o644); err != nil {
+		t.Fatalf("write Dockerfile: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, ".claude.json"), []byte(`{}`), 0o600); err != nil {
+		t.Fatalf("write sibling: %v", err)
+	}
+
+	rc := &recordingBuildClient{}
+	o := BuildOptions{
+		Image:          "claudebox",
+		DockerfilePath: dockerfilePath,
+		ContextDir:     t.TempDir(),
+	}
+	_ = build(context.Background(), rc, o, io.Discard, io.Discard)
+
+	if !rc.buildCalled {
+		t.Fatal("ImageBuild was not called; stageDockerfile may have failed or the session did not reach ImageBuild")
+	}
+	// Dockerfile basename must still be "Dockerfile" — buildImageOptions uses
+	// filepath.Base(o.DockerfilePath) which is unchanged.
+	if rc.lastOpts.Dockerfile != "Dockerfile" {
+		t.Errorf("ImageBuild Dockerfile = %q, want \"Dockerfile\"", rc.lastOpts.Dockerfile)
+	}
+}

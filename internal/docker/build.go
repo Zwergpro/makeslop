@@ -84,6 +84,35 @@ func dialerFor(cli apiClient) session.Dialer {
 	}
 }
 
+// stageDockerfile copies the Dockerfile at path into a fresh temporary
+// directory, returning the directory path and a cleanup function that removes
+// it. The staged directory contains ONLY the Dockerfile, so the BuildKit
+// filesync sync for the dockerfile key never exposes sibling files (e.g.
+// credentials or workspace cache) to the build daemon.
+//
+// The caller must invoke cleanup() exactly once, typically via defer.
+// If stageDockerfile returns an error, cleanup is a no-op (the temp dir, if
+// any, has already been removed before returning).
+//
+// Note: .dockerignore siblings are intentionally not staged — none are
+// expected in ~/.makeslop and the build context sent to the daemon is empty.
+func stageDockerfile(path string) (dir string, cleanup func(), err error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", func() {}, fmt.Errorf("read Dockerfile %q: %w", path, err)
+	}
+	tmp, err := os.MkdirTemp("", "makeslop-dockerfile-*")
+	if err != nil {
+		return "", func() {}, fmt.Errorf("create dockerfile stage dir: %w", err)
+	}
+	dest := filepath.Join(tmp, "Dockerfile")
+	if err := os.WriteFile(dest, data, 0o600); err != nil {
+		_ = os.RemoveAll(tmp)
+		return "", func() {}, fmt.Errorf("write staged Dockerfile: %w", err)
+	}
+	return tmp, func() { _ = os.RemoveAll(tmp) }, nil
+}
+
 // Build builds the docker image described by o, writing build output to stdout
 // and stderr. When o.ContextDir is empty, Build creates a temporary empty
 // directory as the build context (the Dockerfile never COPYs from context) and
@@ -110,14 +139,22 @@ func build(ctx context.Context, cli apiClient, o BuildOptions, stdout, stderr io
 	}
 	defer cli.Close() //nolint:errcheck
 
+	// Stage the Dockerfile in an isolated temp dir so that only the Dockerfile
+	// is synced to the daemon — not the entire ~/.makeslop/ directory (which
+	// contains credentials and workspace cache trees).
+	stagedDir, cleanupStaged, err := stageDockerfile(o.DockerfilePath)
+	if err != nil {
+		return fmt.Errorf("stage Dockerfile: %w", err)
+	}
+	defer cleanupStaged()
+
 	// Build the filesync DirSource: both the (empty) build-context dir and the
-	// dockerfile's parent directory must be synced so the daemon can read them.
+	// staged dockerfile dir must be synced so the daemon can read them.
 	ctxFS, err := fsutil.NewFS(o.ContextDir)
 	if err != nil {
 		return fmt.Errorf("create context dir FS: %w", err)
 	}
-	dockerfileDir := filepath.Dir(o.DockerfilePath)
-	dfFS, err := fsutil.NewFS(dockerfileDir)
+	dfFS, err := fsutil.NewFS(stagedDir)
 	if err != nil {
 		return fmt.Errorf("create dockerfile dir FS: %w", err)
 	}
