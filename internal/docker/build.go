@@ -27,6 +27,7 @@ import (
 	controlapi "github.com/moby/buildkit/api/services/control"
 	bkclient "github.com/moby/buildkit/client"
 	"github.com/moby/buildkit/session"
+	"github.com/moby/buildkit/frontend/dockerui"
 	"github.com/moby/buildkit/session/auth/authprovider"
 	"github.com/moby/buildkit/session/filesync"
 	"github.com/moby/buildkit/util/progress/progressui"
@@ -120,9 +121,12 @@ func build(ctx context.Context, cli apiClient, o BuildOptions, stdout, stderr io
 	if err != nil {
 		return fmt.Errorf("create dockerfile dir FS: %w", err)
 	}
+	// Keys must be the logical names the BuildKit dockerfile frontend requests
+	// over the filesync protocol ("context" / "dockerfile"), NOT the on-disk
+	// paths — the daemon looks dirs up by name, not by path.
 	dirSource := filesync.StaticDirSource{
-		o.ContextDir:  ctxFS,
-		dockerfileDir: dfFS,
+		dockerui.DefaultLocalNameContext:    ctxFS,
+		dockerui.DefaultLocalNameDockerfile: dfFS,
 	}
 
 	sess, err := session.NewSession(ctx, "makeslop")

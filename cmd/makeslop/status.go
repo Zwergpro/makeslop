@@ -22,11 +22,19 @@ import (
 type checkState string
 
 const (
-	checkOK      checkState = "ok"       // ✓
-	checkFail    checkState = "fail"     // ✗
-	checkWarn    checkState = "warn"     // !
-	checkInfo    checkState = "info"     // –
+	checkOK   checkState = "ok"
+	checkFail checkState = "fail"
+	checkWarn checkState = "warn"
+	checkInfo checkState = "info"
 )
+
+// statusGlyphs maps each check state to its TTY glyph and plain-text fallback.
+var statusGlyphs = map[checkState]struct{ tty, plain string }{
+	checkOK:   {"✓", "[ok]"},
+	checkFail: {"✗", "[fail]"},
+	checkWarn: {"!", "[!]"},
+	checkInfo: {"–", "[–]"},
+}
 
 // statusCheck is the result of one ordered status check.
 type statusCheck struct {
@@ -71,34 +79,13 @@ func renderChecks(w io.Writer, checks []statusCheck, ready bool, tty bool) {
 
 	rows := make([]row, len(checks))
 	for i, c := range checks {
-		var g string
-		switch c.State {
-		case checkOK:
+		g := "?"
+		if gl, ok := statusGlyphs[c.State]; ok {
 			if tty {
-				g = "✓"
+				g = gl.tty
 			} else {
-				g = "[ok]"
+				g = gl.plain
 			}
-		case checkFail:
-			if tty {
-				g = "✗"
-			} else {
-				g = "[fail]"
-			}
-		case checkWarn:
-			if tty {
-				g = "!"
-			} else {
-				g = "[!]"
-			}
-		case checkInfo:
-			if tty {
-				g = "–"
-			} else {
-				g = "[–]"
-			}
-		default:
-			g = "?"
 		}
 		rows[i] = row{glyph: g, name: c.Name, detail: c.Detail}
 	}
@@ -148,7 +135,7 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, jso
 	var checks []statusCheck
 	ready := true // guilty when any blocking check fails
 
-	// ── 1. Daemon check ────────────────────────────────────────────────────
+	// 1. Daemon check
 	if err := docker.CheckDaemon(ctx); err != nil {
 		checks = append(checks, statusCheck{
 			Name:   "daemon",
@@ -163,7 +150,7 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, jso
 		})
 	}
 
-	// ── 2. Base config check ──────────────────────────────────────────────
+	// 2. Base config check
 	// loadedSettings is set when config loads successfully; shared with the
 	// image check below to avoid a second Load call.
 	var loadedSettings *config.Settings
@@ -210,7 +197,7 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, jso
 		}
 	}
 
-	// ── 3. Image check ────────────────────────────────────────────────────
+	// 3. Image check
 	imageName := config.DefaultImage
 	if loadedSettings != nil {
 		imageName = loadedSettings.Image
@@ -237,7 +224,7 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, jso
 		})
 	}
 
-	// ── 4. Workspace check ────────────────────────────────────────────────
+	// 4. Workspace check
 	var pwd string
 	var workspaceRoot string
 	pwd, err = resolvePwd()
@@ -273,7 +260,7 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, jso
 		}
 	}
 
-	// ── 5. Secret scan summary (non-blocking) ────────────────────────────
+	// 5. Secret scan summary (non-blocking)
 	// Only run when workspace was successfully resolved.
 	if workspaceRoot != "" {
 		yamlExcludes, netCfg, _, pcErr := projectconfig.Load(workspaceRoot)
@@ -310,7 +297,7 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, jso
 				})
 			}
 
-			// ── 6. Proxy config (non-blocking) ───────────────────────────────
+			// 6. Proxy config (non-blocking)
 			// Two-state model: config-derived from network.proxy.address.
 			// When ProxyAddress is empty, direct bridge networking is the default.
 			// When ProxyAddress is set, the remote upstream proxy is used.
@@ -338,7 +325,7 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, jso
 		})
 	}
 
-	// ── 7. Socat image check (non-blocking) ──────────────────────────────
+	// 7. Socat image check (non-blocking)
 	// alpine/socat is pulled on demand at `makeslop run` time; absence is not
 	// a hard failure but worth surfacing so users know the first run will pull.
 	socatFound, socatErr := docker.ImageExists(ctx, docker.SocatImage)
@@ -362,7 +349,7 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, jso
 		})
 	}
 
-	// ── Output ────────────────────────────────────────────────────────────
+	// Output
 	if jsonMode {
 		result := statusResult{Checks: checks, Ready: ready}
 		enc := json.NewEncoder(cmd.OutOrStdout())
@@ -400,4 +387,3 @@ func newStatusCmd(ws *workspace.Workspaces, baseDir string, ttyPred isTTYFunc) *
 		"emit JSON instead of human-readable output")
 	return cmd
 }
-

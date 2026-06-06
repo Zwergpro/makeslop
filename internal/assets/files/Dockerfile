@@ -24,13 +24,13 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     && update-locale LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 \
     && rm -rf /tmp/* /var/tmp/*
 
-ARG GO_VERSION=1.26.3
+ARG GO_VERSION=1.26.4
 RUN ARCH=$(dpkg --print-architecture) \
     && curl -fsSL https://go.dev/dl/go${GO_VERSION}.linux-${ARCH}.tar.gz -o /tmp/go.tgz \
     && tar -C /usr/local -xzf /tmp/go.tgz \
     && rm /tmp/go.tgz \
     && rm -rf /usr/local/go/test /usr/local/go/api /usr/local/go/doc \
-              /usr/local/go/pkg/*/cmd /usr/local/go/.git* \
+        /usr/local/go/pkg/*/cmd /usr/local/go/.git* \
     && go version
 
 RUN groupadd --gid 1000 user && \
@@ -52,15 +52,16 @@ RUN --mount=type=cache,target=/home/user/.npm,uid=1000,gid=1000 \
 
 ENV SHELL=/bin/zsh \
     EDITOR=vim \
-    VISUAL=vim
+    VISUAL=vim \
+    POWERLEVEL9K_DISABLE_GITSTATUS=true
 
 ARG ZSH_IN_DOCKER_VERSION=1.2.1
 RUN sh -c "$(wget -O- https://github.com/deluan/zsh-in-docker/releases/download/v${ZSH_IN_DOCKER_VERSION}/zsh-in-docker.sh)" -- \
-  -p git \
-  -p fzf \
-  -a 'eval "$(fzf --zsh)"' \
-  -a "export PROMPT_COMMAND='history -a' && export HISTFILE=/commandhistory/.bash_history" \
-  -x
+    -p git \
+    -p fzf \
+    -a 'eval "$(fzf --zsh)"' \
+    -a "export PROMPT_COMMAND='history -a' && export HISTFILE=/commandhistory/.bash_history" \
+    -x
 
 RUN echo 'export PATH="$HOME/.npm-global/bin:/go/bin:$HOME/.local/bin:$PATH"' >> ~/.zshrc
 
