@@ -70,6 +70,11 @@ func writeDockerfile(baseDir string) error {
 	return nil
 }
 
+// WriteDockerfile atomically overwrites <baseDir>/Dockerfile with the embedded
+// assets.Dockerfile. It is used by `build --refresh` to reset the base Dockerfile
+// to the shipped version WITHOUT running a migration or touching MigratedVersion.
+func WriteDockerfile(baseDir string) error { return writeDockerfile(baseDir) }
+
 // MigrationStatus returns the current migrated version stored in s, the latest
 // known MigrationVersion constant, and whether the config is stale (current <
 // latest). A freshly-loaded Settings with MigratedVersion == 0 is always stale

@@ -204,6 +204,81 @@ func TestMigrate_VersionAheadSkips(t *testing.T) {
 	}
 }
 
+// TestWriteDockerfile verifies that WriteDockerfile overwrites an existing file
+// with the embedded assets.Dockerfile content.
+func TestWriteDockerfile(t *testing.T) {
+	base := filepath.Join(t.TempDir(), ".makeslop")
+	if err := os.MkdirAll(base, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	// Write junk bytes to an existing Dockerfile.
+	junk := []byte("# STALE junk that should be overwritten\n")
+	if err := os.WriteFile(filepath.Join(base, DockerfileFile), junk, 0o644); err != nil {
+		t.Fatalf("seed Dockerfile: %v", err)
+	}
+
+	if err := WriteDockerfile(base); err != nil {
+		t.Fatalf("WriteDockerfile: %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(base, DockerfileFile))
+	if err != nil {
+		t.Fatalf("read Dockerfile: %v", err)
+	}
+	if !bytes.Equal(got, assets.Dockerfile) {
+		t.Errorf("Dockerfile content mismatch: got %d bytes, want %d bytes", len(got), len(assets.Dockerfile))
+	}
+}
+
+// TestWriteDockerfile_FreshDir verifies that WriteDockerfile succeeds on a
+// fresh temp dir (no prior Dockerfile) and creates the file with the correct content.
+func TestWriteDockerfile_FreshDir(t *testing.T) {
+	base := filepath.Join(t.TempDir(), ".makeslop")
+	// Do not pre-create the dir; writeDockerfile must call MkdirAll.
+
+	if err := WriteDockerfile(base); err != nil {
+		t.Fatalf("WriteDockerfile on fresh dir: %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(base, DockerfileFile))
+	if err != nil {
+		t.Fatalf("read Dockerfile: %v", err)
+	}
+	if !bytes.Equal(got, assets.Dockerfile) {
+		t.Errorf("Dockerfile content mismatch: got %d bytes, want %d bytes", len(got), len(assets.Dockerfile))
+	}
+}
+
+// TestWriteDockerfile_ReadOnlyDir verifies that WriteDockerfile returns an error
+// when the base directory is read-only (cannot create temp file).
+func TestWriteDockerfile_ReadOnlyDir(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root bypasses permission checks")
+	}
+	base := filepath.Join(t.TempDir(), ".makeslop")
+	if err := os.MkdirAll(base, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// Make the directory read-only so CreateTemp inside writeDockerfile fails.
+	if err := os.Chmod(base, 0o555); err != nil {
+		t.Fatalf("chmod read-only: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(base, 0o755) }) // restore for cleanup
+
+	// Verify chmod took effect; some filesystems (e.g. fakeowner) ignore it.
+	if f, err := os.CreateTemp(base, "probe-*"); err == nil {
+		f.Close()
+		os.Remove(f.Name())
+		t.Skip("filesystem does not enforce directory permissions; skipping read-only test")
+	}
+
+	err := WriteDockerfile(base)
+	if err == nil {
+		t.Error("WriteDockerfile on read-only dir must return an error, got nil")
+	}
+}
+
 // TestMigrate_NonExistentBaseDirSucceeds verifies that Migrate on a
 // non-existent baseDir succeeds (writers call MkdirAll internally).
 func TestMigrate_NonExistentBaseDirSucceeds(t *testing.T) {
