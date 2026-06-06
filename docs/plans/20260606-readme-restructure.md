@@ -155,13 +155,13 @@ Content ownership map (where each current-README section goes):
 **Files:**
 - Modify: `README.md`
 
-- [ ] snapshot the original README first (`git show HEAD:README.md > /tmp/readme-orig.md`) so Task 5's no-loss diff has a baseline
-- [ ] write header + tagline; "What & why" (2–3 sentences + short "why use it" bullets)
-- [ ] add Requirements (Docker daemon reachable) and Install (`go install` + GitHub Releases binaries)
-- [ ] write Quickstart (init→build→run, one line each) and "How it works" (4–5 sentences + minimal ASCII diagram)
-- [ ] write brief Configuration (`.makeslop.yaml` a user actually edits) and "Security at a glance" (1 paragraph)
-- [ ] add Commands one-line-per-command table + Documentation section linking `docs/reference.md`, `docs/security.md`, `docs/architecture.md`; add License line
-- [ ] verify README is ~120–150 lines and reads top-to-bottom without needing a reference file to finish a first run
+- [x] snapshot the original README first (`git show HEAD:README.md > /tmp/readme-orig.md`) so Task 5's no-loss diff has a baseline
+- [x] write header + tagline; "What & why" (2–3 sentences + short "why use it" bullets)
+- [x] add Requirements (Docker daemon reachable) and Install (`go install` + GitHub Releases binaries)
+- [x] write Quickstart (init→build→run, one line each) and "How it works" (4–5 sentences + minimal ASCII diagram)
+- [x] write brief Configuration (`.makeslop.yaml` a user actually edits) and "Security at a glance" (1 paragraph)
+- [x] add Commands one-line-per-command table + Documentation section linking `docs/reference.md`, `docs/security.md`, `docs/architecture.md`; add License line
+- [x] verify README is ~120–150 lines and reads top-to-bottom without needing a reference file to finish a first run
 
 ### Task 5: Verify acceptance criteria
 - [ ] confirm no information loss: diff against the `/tmp/readme-orig.md` snapshot and walk the content-ownership map; every old-README section exists in README or a docs file
