@@ -235,7 +235,7 @@ func TestWriteDockerfile(t *testing.T) {
 // fresh temp dir (no prior Dockerfile) and creates the file with the correct content.
 func TestWriteDockerfile_FreshDir(t *testing.T) {
 	base := filepath.Join(t.TempDir(), ".makeslop")
-	// Do not pre-create the dir; writeDockerfile must call MkdirAll.
+	// Do not pre-create the dir; WriteDockerfile must call MkdirAll.
 
 	if err := WriteDockerfile(base); err != nil {
 		t.Fatalf("WriteDockerfile on fresh dir: %v", err)
@@ -260,7 +260,7 @@ func TestWriteDockerfile_ReadOnlyDir(t *testing.T) {
 	if err := os.MkdirAll(base, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	// Make the directory read-only so CreateTemp inside writeDockerfile fails.
+	// Make the directory read-only so CreateTemp inside WriteDockerfile fails.
 	if err := os.Chmod(base, 0o555); err != nil {
 		t.Fatalf("chmod read-only: %v", err)
 	}

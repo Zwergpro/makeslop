@@ -23,14 +23,16 @@ type migration struct {
 // MigrationVersion (including a binary downgrade that later re-upgrades), all
 // steps are re-run in full — there is no per-step skip logic.
 var migrations = []migration{
-	{name: DockerfileFile, run: writeDockerfile},
+	{name: DockerfileFile, run: WriteDockerfile},
 }
 
-// writeDockerfile atomically writes the embedded assets.Dockerfile to
+// WriteDockerfile atomically writes the embedded assets.Dockerfile to
 // <baseDir>/Dockerfile, always overwriting any existing file. The write uses
 // a temp-file + rename pattern so a crash mid-write cannot leave a partial
-// file behind.
-func writeDockerfile(baseDir string) error {
+// file behind. It is also called by `build --refresh` to reset a hand-edited
+// base Dockerfile to the shipped version WITHOUT running a migration or
+// touching MigratedVersion.
+func WriteDockerfile(baseDir string) error {
 	if err := os.MkdirAll(baseDir, 0o755); err != nil {
 		return fmt.Errorf("create base dir %s: %w", baseDir, err)
 	}
@@ -69,11 +71,6 @@ func writeDockerfile(baseDir string) error {
 	}
 	return nil
 }
-
-// WriteDockerfile atomically overwrites <baseDir>/Dockerfile with the embedded
-// assets.Dockerfile. It is used by `build --refresh` to reset the base Dockerfile
-// to the shipped version WITHOUT running a migration or touching MigratedVersion.
-func WriteDockerfile(baseDir string) error { return writeDockerfile(baseDir) }
 
 // MigrationStatus returns the current migrated version stored in s, the latest
 // known MigrationVersion constant, and whether the config is stale (current <

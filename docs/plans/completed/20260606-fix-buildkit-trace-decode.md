@@ -145,20 +145,20 @@ for tests that only need a decodable frame.)
 - Modify: `internal/docker/build.go`
 - Modify: `internal/docker/build_test.go`
 
-- [ ] replace `decodeBuildKitAux` body with the id-keyed decoder (see Technical
+- [x] replace `decodeBuildKitAux` body with the id-keyed decoder (see Technical
       Details); update its doc comment to describe the real wire format
-- [ ] confirm no import changes needed (`controlapi`, `bkclient`, `jsonstream`,
+- [x] confirm no import changes needed (`controlapi`, `bkclient`, `jsonstream`,
       `proto`, `json` already imported)
-- [ ] add `realDaemonFrame(t, sr)` helper to `build_test.go`
-- [ ] add `TestDecodeBuildKitAux_RealFrame`: build a frame with a known vertex
+- [x] add `realDaemonFrame(t, sr)` helper to `build_test.go`
+- [x] add `TestDecodeBuildKitAux_RealFrame`: build a frame with a known vertex
       (e.g. digest `sha256:abc`, name `[1/2] FROM alpine`) via `realDaemonFrame`,
       assert `decodeBuildKitAux` returns non-nil with that vertex — this is the
       test that would have caught the bug
-- [ ] add `TestDecodeBuildKitAux_WrongID`: returns nil when `ID` is not
+- [x] add `TestDecodeBuildKitAux_WrongID`: returns nil when `ID` is not
       `moby.buildkit.trace`; include an explicit **empty-`ID` + valid-Aux** sub-case
       (the daemon also emits non-trace aux frames like `moby.image.id` and bare-Aux
       frames — both must be ignored)
-- [ ] run tests — must pass before Task 2
+- [x] run tests — must pass before Task 2
       (`GOTMPDIR=$PWD/.tmpexec TMPDIR=$PWD/.tmpexec go test ./internal/docker/`)
 
 ### Task 2: Migrate existing fixtures and trace tests to the real frame shape
@@ -166,47 +166,47 @@ for tests that only need a decodable frame.)
 **Files:**
 - Modify: `internal/docker/build_test.go`
 
-- [ ] remove `makeAuxMessage` (the fake nested-map helper) and repoint
+- [x] remove `makeAuxMessage` (the fake nested-map helper) and repoint
       `TestRenderBuildOutput_StreamingTrace`, `TestRenderBuildOutput_TraceFollowedByError`,
       `TestRenderBuildOutput_TraceAndPlainMixed`, and `TestRenderBuildOutput_ContextCanceled`
       to `realDaemonFrame`
-- [ ] rewrite `TestDecodeBuildKitAux_NoTraceKey` → `TestDecodeBuildKitAux_NoID`
+- [x] rewrite `TestDecodeBuildKitAux_NoTraceKey` → `TestDecodeBuildKitAux_NoID`
       (frame with some other `ID` / no `ID`) so the negative test is meaningful
       under the new format
-- [ ] rewrite `TestDecodeBuildKitAux_InvalidProto` to use the real shape: valid
+- [x] rewrite `TestDecodeBuildKitAux_InvalidProto` to use the real shape: valid
       base64 string Aux + `ID:"moby.buildkit.trace"` but junk proto bytes → nil,
       no panic. **Pin a known-failing byte sequence** (e.g. the existing
       `"this is not a valid proto message"`, verified to fail, or `[]byte{0xff,0xff}`)
       with a comment — `proto.Unmarshal` is lenient and some arbitrary bytes decode
       to an empty valid message (non-nil), so the junk value must be one that
       reliably fails
-- [ ] keep `TestDecodeBuildKitAux_NilAux` (still valid: nil Aux → nil)
-- [ ] keep the plain-fallback / error / empty-body tests unchanged (they don't use
+- [x] keep `TestDecodeBuildKitAux_NilAux` (still valid: nil Aux → nil)
+- [x] keep the plain-fallback / error / empty-body tests unchanged (they don't use
       trace frames)
-- [ ] (optional) strengthen `TestRenderBuildOutput_StreamingTrace` to assert at
+- [x] (optional) strengthen `TestRenderBuildOutput_StreamingTrace` to assert at
       least one frame reached the display path (e.g. non-empty stdout in PlainMode,
       or a vertex name appears) so a future format regression isn't a silent no-op
-- [ ] run tests — must pass before Task 3
+- [x] run tests — must pass before Task 3
 
 ### Task 3: Verify acceptance criteria
-- [ ] verify a real daemon-shaped trace frame is decoded (not dropped) — covered by
+- [x] verify a real daemon-shaped trace frame is decoded (not dropped) — covered by
       `TestDecodeBuildKitAux_RealFrame`
-- [ ] verify negative paths still degrade gracefully (nil Aux, wrong ID, bad proto)
-- [ ] run full suite: `GOTMPDIR=$PWD/.tmpexec TMPDIR=$PWD/.tmpexec go test ./...`
-- [ ] confirm no `MigrationVersion` / `CurrentVersion` bump (no Dockerfile/Settings
+- [x] verify negative paths still degrade gracefully (nil Aux, wrong ID, bad proto)
+- [x] run full suite: `GOTMPDIR=$PWD/.tmpexec TMPDIR=$PWD/.tmpexec go test ./...`
+- [x] confirm no `MigrationVersion` / `CurrentVersion` bump (no Dockerfile/Settings
       change — per CLAUDE.md rules)
-- [ ] note (do not run here — needs a daemon): the gated end-to-end check is
+- [x] note (do not run here — needs a daemon): the gated end-to-end check is
       `MAKESLOP_DOCKER_IT=1 go test -tags integration ./internal/docker/`
 
 ### Task 4: [Final] Documentation and cleanup
-- [ ] update the "renderBuildOutput lazy-display pattern" note in `CLAUDE.md`:
+- [x] update the "renderBuildOutput lazy-display pattern" note in `CLAUDE.md`:
       `decodeBuildKitAux` decodes the **id-keyed** trace frame
       (`msg.ID == "moby.buildkit.trace"`, Aux = base64 JSON string of proto
       `StatusResponse`) — and that test fixtures must be built via `realDaemonFrame`,
       never the nested-map shape
-- [ ] update `docs/` user-facing build docs only if they describe progress output
+- [x] update `docs/` user-facing build docs only if they describe progress output
       (likely none needed)
-- [ ] move this plan to `docs/plans/completed/`
+- [x] move this plan to `docs/plans/completed/`
 
 ## Post-Completion
 *Items requiring manual intervention or external systems — informational only*

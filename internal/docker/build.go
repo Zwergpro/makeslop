@@ -166,7 +166,7 @@ func build(ctx context.Context, cli apiClient, o BuildOptions, stdout, stderr io
 	// Render build progress. We attempt the progressui / build-trace decoder
 	// first; if the decode channel receives nothing within the first message,
 	// we fall back to the plain jsonmessage stream renderer.
-	if err := renderBuildOutput(ctx, resp.Body, stdout, stderr); err != nil {
+	if err := renderBuildOutput(ctx, resp.Body, stdout); err != nil {
 		_ = drainSession() //nolint:errcheck // render error takes precedence
 		return fmt.Errorf("render build output: %w", err)
 	}
@@ -186,7 +186,7 @@ func build(ctx context.Context, cli apiClient, o BuildOptions, stdout, stderr io
 // trace frame arrives, so pure-plain and empty/error streams never spin up a
 // progressui display. This preserves existing test semantics while enabling
 // live streaming for BuildKit builds.
-func renderBuildOutput(ctx context.Context, body io.ReadCloser, stdout, stderr io.Writer) error {
+func renderBuildOutput(ctx context.Context, body io.ReadCloser, stdout io.Writer) error {
 	dec := json.NewDecoder(body)
 
 	// statusCh and dispErrCh are nil until the first BuildKit trace frame.
@@ -196,16 +196,16 @@ func renderBuildOutput(ctx context.Context, body io.ReadCloser, stdout, stderr i
 
 	// ensureDisplay lazily creates the progressui display and starts the
 	// goroutine that drains statusCh. It is idempotent after first call.
+	// AutoMode falls back internally to PlainMode when stdout is not a TTY
+	// (e.g. under go test or when piped), so a separate PlainMode fallback
+	// is unnecessary — NewDisplay(_, AutoMode) never errors in practice.
 	ensureDisplay := func() error {
 		if statusCh != nil {
 			return nil
 		}
 		d, err := progressui.NewDisplay(stdout, progressui.AutoMode)
 		if err != nil {
-			// AutoMode requires a console; fall back to plain text on stderr.
-			if d, err = progressui.NewDisplay(stderr, progressui.PlainMode); err != nil {
-				return fmt.Errorf("create progress display: %w", err)
-			}
+			return fmt.Errorf("create progress display: %w", err)
 		}
 		statusCh = make(chan *bkclient.SolveStatus)
 		dispErrCh = make(chan error, 1)
@@ -267,31 +267,28 @@ func renderBuildOutput(ctx context.Context, body io.ReadCloser, stdout, stderr i
 	return nil
 }
 
-// decodeBuildKitAux extracts a *bkclient.SolveStatus from the
-// "moby.buildkit.trace" aux field of a jsonstream.Message, or returns nil if
-// the message has no such field or decoding fails. The field value is a JSON
-// string containing base64-encoded proto-marshalled StatusResponse bytes.
+// decodeBuildKitAux extracts a *bkclient.SolveStatus from a BuildKit trace
+// jsonstream.Message, or returns nil if the message is not a trace frame or
+// decoding fails.
+//
+// The real daemon wire format is an id-keyed message:
+//
+//	{ "id": "moby.buildkit.trace", "aux": "<base64-of-proto-StatusResponse>" }
+//
+// i.e. msg.ID == "moby.buildkit.trace" and msg.Aux is a JSON string whose
+// base64 contents are the proto-marshalled controlapi.StatusResponse. Other aux
+// frames (e.g. "moby.image.id") and plain stream frames must be ignored.
 func decodeBuildKitAux(msg jsonstream.Message) *bkclient.SolveStatus {
-	if msg.Aux == nil {
+	if msg.ID != "moby.buildkit.trace" || msg.Aux == nil {
 		return nil
 	}
-	// The aux field is a JSON object whose only key of interest is
-	// "moby.buildkit.trace", mapping to a base64-encoded proto payload.
-	var outer map[string]json.RawMessage
-	if err := json.Unmarshal(*msg.Aux, &outer); err != nil {
-		return nil
-	}
-	raw, ok := outer["moby.buildkit.trace"]
-	if !ok {
-		return nil
-	}
-	// The value is a JSON-encoded byte-slice (base64 via encoding/json).
-	var b []byte
-	if err := json.Unmarshal(raw, &b); err != nil {
+	// msg.Aux is a JSON string containing base64-encoded proto bytes.
+	var dt []byte
+	if err := json.Unmarshal(*msg.Aux, &dt); err != nil {
 		return nil
 	}
 	var sr controlapi.StatusResponse
-	if err := proto.Unmarshal(b, &sr); err != nil {
+	if err := proto.Unmarshal(dt, &sr); err != nil {
 		return nil
 	}
 	return bkclient.NewSolveStatus(&sr)

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -17,6 +16,7 @@ import (
 	"github.com/moby/moby/api/types/jsonstream"
 	moby "github.com/moby/moby/client"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // ─── parseBuildArgs unit tests ───────────────────────────────────────────────
@@ -239,7 +239,7 @@ func TestRenderBuildOutput_PlainFallback(t *testing.T) {
 	body := encodeMessages(t, msgs)
 
 	var out bytes.Buffer
-	if err := renderBuildOutput(context.Background(), body, &out, io.Discard); err != nil {
+	if err := renderBuildOutput(context.Background(), body, &out); err != nil {
 		t.Fatalf("renderBuildOutput returned error: %v", err)
 	}
 	got := out.String()
@@ -261,7 +261,7 @@ func TestRenderBuildOutput_ErrorMessage(t *testing.T) {
 	}
 	body := encodeMessages(t, msgs)
 
-	if err := renderBuildOutput(context.Background(), body, io.Discard, io.Discard); err == nil {
+	if err := renderBuildOutput(context.Background(), body, io.Discard); err == nil {
 		t.Fatal("expected error from build error message, got nil")
 	} else if !strings.Contains(err.Error(), "build failed") {
 		t.Errorf("error should contain 'build failed', got %v", err)
@@ -271,94 +271,196 @@ func TestRenderBuildOutput_ErrorMessage(t *testing.T) {
 // TestRenderBuildOutput_EmptyBody: empty body returns nil (no messages = no error).
 func TestRenderBuildOutput_EmptyBody(t *testing.T) {
 	body := io.NopCloser(bytes.NewReader(nil))
-	if err := renderBuildOutput(context.Background(), body, io.Discard, io.Discard); err != nil {
+	if err := renderBuildOutput(context.Background(), body, io.Discard); err != nil {
 		t.Errorf("empty body: expected nil error, got %v", err)
+	}
+}
+
+// TestRenderBuildOutput_MalformedJSON: a body that is not valid JSON returns a
+// "decode build stream" error — the decoder must not panic or hang.
+func TestRenderBuildOutput_MalformedJSON(t *testing.T) {
+	body := io.NopCloser(strings.NewReader("this is not json\n"))
+	err := renderBuildOutput(context.Background(), body, io.Discard)
+	if err == nil {
+		t.Fatal("expected error for malformed JSON body, got nil")
+	}
+	if !strings.Contains(err.Error(), "decode build stream") {
+		t.Errorf("error should mention 'decode build stream', got %v", err)
 	}
 }
 
 // ─── decodeBuildKitAux unit tests ─────────────────────────────────────────────
 
-// TestDecodeBuildKitAux_NilAux: nil Aux returns nil.
+// TestDecodeBuildKitAux_NilAux: nil Aux returns nil, even when the ID is correct.
+// This isolates the nil-Aux guard specifically (not the ID-gate).
 func TestDecodeBuildKitAux_NilAux(t *testing.T) {
-	msg := jsonstream.Message{Aux: nil}
+	msg := jsonstream.Message{ID: "moby.buildkit.trace", Aux: nil}
 	if got := decodeBuildKitAux(msg); got != nil {
 		t.Errorf("nil Aux: expected nil, got %v", got)
 	}
 }
 
-// TestDecodeBuildKitAux_NoTracKey: Aux without "moby.buildkit.trace" returns nil.
-func TestDecodeBuildKitAux_NoTraceKey(t *testing.T) {
-	raw := json.RawMessage(`{"other.key":"value"}`)
-	msg := jsonstream.Message{Aux: &raw}
-	if got := decodeBuildKitAux(msg); got != nil {
-		t.Errorf("no trace key: expected nil, got %v", got)
-	}
-}
-
-// TestDecodeBuildKitAux_InvalidProto: malformed proto bytes return nil (no panic).
+// TestDecodeBuildKitAux_InvalidProto: a real id-keyed frame with
+// ID="moby.buildkit.trace" but junk proto bytes in Aux must return nil (no
+// panic). The junk bytes are chosen to reliably fail proto.Unmarshal — 0xff 0xff
+// is an invalid protobuf tag/wire-type combination.
 func TestDecodeBuildKitAux_InvalidProto(t *testing.T) {
-	// Encode junk bytes as the trace value (valid JSON base64, but bad proto).
-	junk := []byte("this is not a valid proto message")
-	junkJSON, err := json.Marshal(junk)
+	// Use real id-keyed shape: ID="moby.buildkit.trace", Aux = base64 JSON
+	// string of invalid proto bytes. 0xff,0xff reliably fails proto.Unmarshal.
+	junk := []byte{0xff, 0xff}
+	auxBytes, err := json.Marshal(junk) // []byte → base64 JSON string
 	if err != nil {
-		t.Fatalf("marshal junk: %v", err)
+		t.Fatalf("json.Marshal junk: %v", err)
 	}
-	auxJSON := fmt.Sprintf(`{"moby.buildkit.trace":%s}`, string(junkJSON))
-	raw := json.RawMessage(auxJSON)
-	msg := jsonstream.Message{Aux: &raw}
+	raw := json.RawMessage(auxBytes)
+	msg := jsonstream.Message{ID: "moby.buildkit.trace", Aux: &raw}
 	// Should return nil (graceful degradation), not panic.
 	if got := decodeBuildKitAux(msg); got != nil {
 		t.Errorf("invalid proto: expected nil, got %v", got)
 	}
 }
 
-// ─── streaming renderBuildOutput tests ───────────────────────────────────────
+// ─── realDaemonFrame helper ───────────────────────────────────────────────────
 
-// makeAuxMessage builds a jsonstream.Message with a valid "moby.buildkit.trace"
-// aux payload from an empty StatusResponse (so the message decodes cleanly).
-func makeAuxMessage(t *testing.T) jsonstream.Message {
+// realDaemonFrame builds a jsonstream.Message that matches the real daemon wire
+// format for a BuildKit trace frame:
+//
+//	{ "id": "moby.buildkit.trace", "aux": "<base64-of-proto-StatusResponse>" }
+//
+// msg.ID is "moby.buildkit.trace" and msg.Aux is a JSON string whose base64
+// contents are the proto-marshalled sr.
+func realDaemonFrame(t *testing.T, sr *controlapi.StatusResponse) jsonstream.Message {
 	t.Helper()
-	sr := &controlapi.StatusResponse{}
-	b, err := proto.Marshal(sr)
+	dt, err := proto.Marshal(sr)
 	if err != nil {
-		t.Fatalf("proto.Marshal StatusResponse: %v", err)
+		t.Fatalf("proto.Marshal: %v", err)
 	}
-	bJSON, err := json.Marshal(b)
+	auxBytes, err := json.Marshal(dt) // []byte → base64 JSON string
 	if err != nil {
-		t.Fatalf("json.Marshal bytes: %v", err)
+		t.Fatalf("json.Marshal: %v", err)
 	}
-	auxStr := fmt.Sprintf(`{"moby.buildkit.trace":%s}`, string(bJSON))
-	auxJSON := json.RawMessage(auxStr)
-	return jsonstream.Message{Aux: &auxJSON}
+	raw := json.RawMessage(auxBytes)
+	return jsonstream.Message{ID: "moby.buildkit.trace", Aux: &raw}
 }
+
+// ─── decodeBuildKitAux ID-gate and decode tests ──────────────────────────────
+
+// TestDecodeBuildKitAux_RealFrame: a real daemon-shaped trace frame (id-keyed,
+// Aux = base64 JSON string of proto StatusResponse) must decode to a non-nil
+// SolveStatus with the expected vertex. This is the regression test that would
+// have caught the original bug where decodeBuildKitAux assumed a nested-map Aux
+// shape and silently dropped every frame.
+func TestDecodeBuildKitAux_RealFrame(t *testing.T) {
+	digest := "sha256:abc"
+	name := "[1/2] FROM alpine"
+	now := timestamppb.Now()
+	sr := &controlapi.StatusResponse{
+		Vertexes: []*controlapi.Vertex{
+			{Digest: digest, Name: name, Started: now},
+		},
+	}
+	msg := realDaemonFrame(t, sr)
+	ss := decodeBuildKitAux(msg)
+	if ss == nil {
+		t.Fatal("decodeBuildKitAux returned nil for a real daemon-shaped frame")
+	}
+	if len(ss.Vertexes) == 0 {
+		t.Fatal("SolveStatus has no vertexes")
+	}
+	got := ss.Vertexes[0]
+	if got.Name != name {
+		t.Errorf("vertex Name = %q, want %q", got.Name, name)
+	}
+	if got.Digest.String() != digest {
+		t.Errorf("vertex Digest = %q, want %q", got.Digest.String(), digest)
+	}
+}
+
+// TestDecodeBuildKitAux_WrongID: frames with a wrong or absent ID must be
+// ignored, even when Aux is a parseable base64 proto payload. The daemon also
+// emits non-trace aux frames (e.g. "moby.image.id") and bare-Aux frames with
+// no ID — all must return nil. Uses realDaemonFrame's payload shape with
+// different IDs to isolate the ID-gate from decode failures.
+func TestDecodeBuildKitAux_WrongID(t *testing.T) {
+	// Build a valid Aux payload the same way realDaemonFrame does.
+	frame := realDaemonFrame(t, &controlapi.StatusResponse{})
+	raw := *frame.Aux // valid base64 proto string
+
+	cases := []struct {
+		name string
+		id   string
+	}{
+		{"no ID (bare-Aux frame)", ""},
+		{"non-trace ID moby.image.id", "moby.image.id"},
+		{"unrelated ID", "something.else"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			msg := jsonstream.Message{ID: tc.id, Aux: &raw}
+			if got := decodeBuildKitAux(msg); got != nil {
+				t.Errorf("ID=%q: expected nil, got %v", tc.id, got)
+			}
+		})
+	}
+}
+
+// ─── streaming renderBuildOutput tests ───────────────────────────────────────
 
 // TestRenderBuildOutput_StreamingTrace: a valid aux frame feeds the display and
 // renderBuildOutput returns nil without hanging (no goroutine leak). Running
 // under go test (no TTY) exercises the AutoMode→PlainMode fallback path.
+// stdout is captured (not discarded) so we can assert the vertex name actually
+// reached the display — a future format regression would produce empty output
+// and fail this test rather than silently passing.
 func TestRenderBuildOutput_StreamingTrace(t *testing.T) {
-	msgs := []jsonstream.Message{makeAuxMessage(t)}
+	sr := &controlapi.StatusResponse{
+		Vertexes: []*controlapi.Vertex{
+			{Digest: "sha256:abc", Name: "[1/2] FROM alpine", Started: timestamppb.Now()},
+		},
+	}
+	msgs := []jsonstream.Message{realDaemonFrame(t, sr)}
 	body := encodeMessages(t, msgs)
 
-	if err := renderBuildOutput(context.Background(), body, io.Discard, io.Discard); err != nil {
+	var out bytes.Buffer
+	if err := renderBuildOutput(context.Background(), body, &out); err != nil {
 		t.Fatalf("renderBuildOutput with trace frame returned error: %v", err)
+	}
+	// The vertex name must appear in stdout: if decodeBuildKitAux drops the frame
+	// (e.g. wire-format regression), the display goroutine never starts and output
+	// is empty, catching the bug at test time instead of silently at build time.
+	if !strings.Contains(out.String(), "[1/2] FROM alpine") {
+		t.Errorf("vertex '[1/2] FROM alpine' not found in display output: %q", out.String())
 	}
 }
 
 // TestRenderBuildOutput_TraceFollowedByError: a trace frame followed by a build
 // error message must return an error and not hang (channel is closed, goroutine joined).
+// stdout is captured so we can verify the trace frame was processed (display goroutine
+// started) before the error message stopped decoding.
 func TestRenderBuildOutput_TraceFollowedByError(t *testing.T) {
+	sr := &controlapi.StatusResponse{
+		Vertexes: []*controlapi.Vertex{
+			{Digest: "sha256:def", Name: "[1/2] FROM scratch", Started: timestamppb.Now()},
+		},
+	}
 	msgs := []jsonstream.Message{
-		makeAuxMessage(t),
+		realDaemonFrame(t, sr),
 		{Error: &jsonstream.Error{Message: "layer pull failed"}},
 	}
 	body := encodeMessages(t, msgs)
 
-	err := renderBuildOutput(context.Background(), body, io.Discard, io.Discard)
+	var out bytes.Buffer
+	err := renderBuildOutput(context.Background(), body, &out)
 	if err == nil {
 		t.Fatal("expected error from error message after trace frame, got nil")
 	}
 	if !strings.Contains(err.Error(), "layer pull failed") {
 		t.Errorf("error should contain 'layer pull failed', got %v", err)
+	}
+	// The trace frame must have been processed: if decodeBuildKitAux dropped it,
+	// the display goroutine would never have started and the vertex would be absent.
+	if !strings.Contains(out.String(), "[1/2] FROM scratch") {
+		t.Errorf("vertex '[1/2] FROM scratch' not found in display output: %q — trace frame was not processed", out.String())
 	}
 }
 
@@ -369,13 +471,13 @@ func TestRenderBuildOutput_TraceFollowedByError(t *testing.T) {
 func TestRenderBuildOutput_TraceAndPlainMixed(t *testing.T) {
 	msgs := []jsonstream.Message{
 		{Stream: "pre-trace line\n"},
-		makeAuxMessage(t),
+		realDaemonFrame(t, &controlapi.StatusResponse{}),
 		{Stream: "post-trace line\n"},
 	}
 	body := encodeMessages(t, msgs)
 
 	var out bytes.Buffer
-	if err := renderBuildOutput(context.Background(), body, &out, io.Discard); err != nil {
+	if err := renderBuildOutput(context.Background(), body, &out); err != nil {
 		t.Fatalf("renderBuildOutput returned error: %v", err)
 	}
 	got := out.String()
@@ -406,13 +508,13 @@ func TestRenderBuildOutput_ContextCanceled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // pre-cancel so the select in the decode loop fires immediately
 
-	msgs := []jsonstream.Message{makeAuxMessage(t)}
+	msgs := []jsonstream.Message{realDaemonFrame(t, &controlapi.StatusResponse{})}
 	body := encodeMessages(t, msgs)
 
 	// The sole contract: must return (no hang). Error may be nil or non-nil.
 	done := make(chan struct{})
 	go func() {
-		renderBuildOutput(ctx, body, io.Discard, io.Discard) //nolint:errcheck
+		renderBuildOutput(ctx, body, io.Discard) //nolint:errcheck
 		close(done)
 	}()
 	select {
