@@ -178,60 +178,91 @@ func build(ctx context.Context, cli apiClient, o BuildOptions, stdout, stderr io
 // renderBuildOutput renders the daemon's build output stream. It decodes the
 // JSON message stream and:
 //   - If the stream contains BuildKit trace aux payloads (moby.buildkit.trace),
-//     routes them to progressui for the "[+] Building" UI.
+//     routes them to progressui for the "[+] Building" UI (display created lazily
+//     on the first trace frame so concurrent streaming starts immediately).
 //   - Otherwise falls back to plain text rendering of stream/status messages.
 //
-// The stream is buffered entirely before rendering so we can detect whether
-// trace data is present; build logs are small relative to actual image layers.
+// The display is created lazily: it is not allocated until the first BuildKit
+// trace frame arrives, so pure-plain and empty/error streams never spin up a
+// progressui display. This preserves existing test semantics while enabling
+// live streaming for BuildKit builds.
 func renderBuildOutput(ctx context.Context, body io.ReadCloser, stdout, stderr io.Writer) error {
-	// Decode all JSON messages from the daemon response.
 	dec := json.NewDecoder(body)
-	var msgs []jsonstream.Message
-	var statuses []*bkclient.SolveStatus
-	for {
-		var msg jsonstream.Message
-		if err := dec.Decode(&msg); err != nil {
-			if errors.Is(err, io.EOF) {
-				break
-			}
-			return fmt.Errorf("decode build stream: %w", err)
-		}
-		if msg.Error != nil {
-			return fmt.Errorf("build error: %s", msg.Error.Message)
-		}
-		msgs = append(msgs, msg)
-		// Attempt to decode BuildKit trace aux payload.
-		if ss := decodeBuildKitAux(msg); ss != nil {
-			statuses = append(statuses, ss)
-		}
-	}
 
-	if len(statuses) > 0 {
-		// Route BuildKit trace through progressui.
-		statusCh := make(chan *bkclient.SolveStatus, len(statuses))
-		for _, ss := range statuses {
-			statusCh <- ss
+	// statusCh and dispErrCh are nil until the first BuildKit trace frame.
+	var statusCh chan *bkclient.SolveStatus
+	var dispErrCh chan error
+	var decodeErr error
+
+	// ensureDisplay lazily creates the progressui display and starts the
+	// goroutine that drains statusCh. It is idempotent after first call.
+	ensureDisplay := func() error {
+		if statusCh != nil {
+			return nil
 		}
-		close(statusCh)
-		disp, err := progressui.NewDisplay(stdout, progressui.AutoMode)
+		d, err := progressui.NewDisplay(stdout, progressui.AutoMode)
 		if err != nil {
-			// AutoMode requires a console; fall back to plain text.
-			disp, err = progressui.NewDisplay(stderr, progressui.PlainMode)
-			if err != nil {
-				return fmt.Errorf("create plain progress display: %w", err)
+			// AutoMode requires a console; fall back to plain text on stderr.
+			if d, err = progressui.NewDisplay(stderr, progressui.PlainMode); err != nil {
+				return fmt.Errorf("create progress display: %w", err)
 			}
 		}
-		_, _ = disp.UpdateFrom(ctx, statusCh)
+		statusCh = make(chan *bkclient.SolveStatus)
+		dispErrCh = make(chan error, 1)
+		go func() { _, derr := d.UpdateFrom(ctx, statusCh); dispErrCh <- derr }()
 		return nil
 	}
 
-	// Plain fallback: print stream and status lines to stdout.
-	for _, msg := range msgs {
-		if msg.Stream != "" {
-			_, _ = fmt.Fprint(stdout, msg.Stream)
-		} else if msg.Status != "" {
-			_, _ = fmt.Fprintln(stdout, msg.Status)
+	for {
+		var msg jsonstream.Message
+		if err := dec.Decode(&msg); err != nil {
+			if !errors.Is(err, io.EOF) {
+				decodeErr = fmt.Errorf("decode build stream: %w", err)
+			}
+			break
 		}
+		if msg.Error != nil {
+			decodeErr = fmt.Errorf("build error: %s", msg.Error.Message)
+			break
+		}
+		if ss := decodeBuildKitAux(msg); ss != nil {
+			// First BuildKit trace frame: spin up the display.
+			if err := ensureDisplay(); err != nil {
+				decodeErr = err
+				break
+			}
+			select {
+			case statusCh <- ss:
+			case <-ctx.Done():
+				decodeErr = ctx.Err()
+			}
+			if decodeErr != nil {
+				break
+			}
+		} else if statusCh == nil {
+			// Plain fallback: write stream/status lines to stdout immediately.
+			// Once the display goroutine is active (statusCh != nil) we discard
+			// plain messages to avoid a concurrent write to stdout from both the
+			// decode loop and the progressui goroutine.
+			if msg.Stream != "" {
+				_, _ = fmt.Fprint(stdout, msg.Stream)
+			} else if msg.Status != "" {
+				_, _ = fmt.Fprintln(stdout, msg.Status)
+			}
+		}
+	}
+
+	// Always close the display channel and drain the goroutine before returning.
+	var dispErr error
+	if statusCh != nil {
+		close(statusCh)
+		dispErr = <-dispErrCh
+	}
+	if decodeErr != nil {
+		return decodeErr
+	}
+	if dispErr != nil && !errors.Is(dispErr, context.Canceled) && !errors.Is(dispErr, context.DeadlineExceeded) {
+		return fmt.Errorf("render progress: %w", dispErr)
 	}
 	return nil
 }

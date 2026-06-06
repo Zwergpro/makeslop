@@ -2583,6 +2583,109 @@ func TestBuild_BuildKitVersion_IsSet(t *testing.T) {
 	}
 }
 
+// TestBuild_Refresh_OverwritesDockerfileAndBuilds verifies that `makeslop build
+// --refresh` overwrites a stale Dockerfile with the embedded assets version and
+// still calls ImageBuild via the SDK.
+func TestBuild_Refresh_OverwritesDockerfileAndBuilds(t *testing.T) {
+	baseDir := t.TempDir()
+	fbc := installFakeBuildClient(t, 0)
+
+	// Bootstrap creates the Dockerfile from embedded assets; then overwrite it
+	// with a STALE marker. Bootstrap is no-overwrite, so the next build (without
+	// --refresh) would preserve the STALE content. With --refresh it must reset.
+	if err := config.Bootstrap(baseDir); err != nil {
+		t.Fatalf("bootstrap: %v", err)
+	}
+	staleContent := []byte("# STALE\nFROM scratch\n")
+	dockerfilePath := filepath.Join(baseDir, config.DockerfileFile)
+	if err := os.WriteFile(dockerfilePath, staleContent, 0o644); err != nil {
+		t.Fatalf("write stale Dockerfile: %v", err)
+	}
+
+	_, stderr, err := runCmd(t, baseDir, "build", "--refresh")
+	if err != nil {
+		t.Fatalf("build --refresh failed: %v; stderr=%q", err, stderr)
+	}
+
+	// On-disk Dockerfile must equal assets.Dockerfile (the STALE marker is gone).
+	got, err := os.ReadFile(dockerfilePath)
+	if err != nil {
+		t.Fatalf("read Dockerfile after --refresh: %v", err)
+	}
+	if !bytes.Equal(got, assets.Dockerfile) {
+		t.Errorf("Dockerfile after --refresh does not match embedded assets:\ngot  (%d bytes)\nwant (%d bytes)",
+			len(got), len(assets.Dockerfile))
+	}
+
+	// ImageBuild must have been called (LastBuildOptions.Tags must be non-empty).
+	if len(fbc.LastBuildOptions.Tags) == 0 {
+		t.Error("ImageBuild was not called after --refresh")
+	}
+}
+
+// TestBuild_NoRefresh_LeavesDockerfileIntact verifies that a plain `makeslop
+// build` (without --refresh) does NOT overwrite a hand-edited Dockerfile.
+func TestBuild_NoRefresh_LeavesDockerfileIntact(t *testing.T) {
+	baseDir := t.TempDir()
+	installFakeBuildClient(t, 0)
+
+	// Bootstrap, then overwrite Dockerfile with a STALE marker.
+	if err := config.Bootstrap(baseDir); err != nil {
+		t.Fatalf("bootstrap: %v", err)
+	}
+	staleContent := []byte("# STALE\nFROM scratch\n")
+	dockerfilePath := filepath.Join(baseDir, config.DockerfileFile)
+	if err := os.WriteFile(dockerfilePath, staleContent, 0o644); err != nil {
+		t.Fatalf("write stale Dockerfile: %v", err)
+	}
+
+	_, stderr, err := runCmd(t, baseDir, "build")
+	if err != nil {
+		t.Fatalf("build (no --refresh) failed: %v; stderr=%q", err, stderr)
+	}
+
+	got, err := os.ReadFile(dockerfilePath)
+	if err != nil {
+		t.Fatalf("read Dockerfile after plain build: %v", err)
+	}
+	if !bytes.Equal(got, staleContent) {
+		t.Errorf("plain build must not overwrite Dockerfile:\ngot  %q\nwant %q", got, staleContent)
+	}
+}
+
+// TestBuild_Refresh_Quiet_SuppressesNotice verifies that --quiet suppresses the
+// "refreshed…" stderr notice, while the non-quiet path emits it.
+func TestBuild_Refresh_Quiet_SuppressesNotice(t *testing.T) {
+	t.Run("quiet suppresses notice", func(t *testing.T) {
+		baseDir := t.TempDir()
+		installFakeBuildClient(t, 0)
+
+		_, stderr, err := runCmd(t, baseDir, "build", "--refresh", "--quiet")
+		if err != nil {
+			t.Fatalf("build --refresh --quiet failed: %v; stderr=%q", err, stderr)
+		}
+		if strings.Contains(stderr, "refreshed") {
+			t.Errorf("--quiet must suppress the 'refreshed' notice; stderr=%q", stderr)
+		}
+	})
+
+	t.Run("non-quiet emits notice", func(t *testing.T) {
+		baseDir := t.TempDir()
+		installFakeBuildClient(t, 0)
+
+		_, stderr, err := runCmd(t, baseDir, "build", "--refresh")
+		if err != nil {
+			t.Fatalf("build --refresh failed: %v; stderr=%q", err, stderr)
+		}
+		if !strings.Contains(stderr, "refreshed") {
+			t.Errorf("without --quiet the 'refreshed' notice must appear; stderr=%q", stderr)
+		}
+		if !strings.Contains(stderr, "~/.makeslop/Dockerfile") {
+			t.Errorf("notice must mention ~/.makeslop/Dockerfile; stderr=%q", stderr)
+		}
+	})
+}
+
 // ── config subcommand tests ───────────────────────────────────────────────────
 
 // TestConfig_BareInvocation_PrintsSettings verifies that bare `makeslop config`

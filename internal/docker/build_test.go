@@ -10,10 +10,13 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	controlapi "github.com/moby/buildkit/api/services/control"
 	buildtypes "github.com/moby/moby/api/types/build"
 	"github.com/moby/moby/api/types/jsonstream"
 	moby "github.com/moby/moby/client"
+	"google.golang.org/protobuf/proto"
 )
 
 // ─── parseBuildArgs unit tests ───────────────────────────────────────────────
@@ -306,5 +309,116 @@ func TestDecodeBuildKitAux_InvalidProto(t *testing.T) {
 	// Should return nil (graceful degradation), not panic.
 	if got := decodeBuildKitAux(msg); got != nil {
 		t.Errorf("invalid proto: expected nil, got %v", got)
+	}
+}
+
+// ─── streaming renderBuildOutput tests ───────────────────────────────────────
+
+// makeAuxMessage builds a jsonstream.Message with a valid "moby.buildkit.trace"
+// aux payload from an empty StatusResponse (so the message decodes cleanly).
+func makeAuxMessage(t *testing.T) jsonstream.Message {
+	t.Helper()
+	sr := &controlapi.StatusResponse{}
+	b, err := proto.Marshal(sr)
+	if err != nil {
+		t.Fatalf("proto.Marshal StatusResponse: %v", err)
+	}
+	bJSON, err := json.Marshal(b)
+	if err != nil {
+		t.Fatalf("json.Marshal bytes: %v", err)
+	}
+	auxStr := fmt.Sprintf(`{"moby.buildkit.trace":%s}`, string(bJSON))
+	auxJSON := json.RawMessage(auxStr)
+	return jsonstream.Message{Aux: &auxJSON}
+}
+
+// TestRenderBuildOutput_StreamingTrace: a valid aux frame feeds the display and
+// renderBuildOutput returns nil without hanging (no goroutine leak). Running
+// under go test (no TTY) exercises the AutoMode→PlainMode fallback path.
+func TestRenderBuildOutput_StreamingTrace(t *testing.T) {
+	msgs := []jsonstream.Message{makeAuxMessage(t)}
+	body := encodeMessages(t, msgs)
+
+	if err := renderBuildOutput(context.Background(), body, io.Discard, io.Discard); err != nil {
+		t.Fatalf("renderBuildOutput with trace frame returned error: %v", err)
+	}
+}
+
+// TestRenderBuildOutput_TraceFollowedByError: a trace frame followed by a build
+// error message must return an error and not hang (channel is closed, goroutine joined).
+func TestRenderBuildOutput_TraceFollowedByError(t *testing.T) {
+	msgs := []jsonstream.Message{
+		makeAuxMessage(t),
+		{Error: &jsonstream.Error{Message: "layer pull failed"}},
+	}
+	body := encodeMessages(t, msgs)
+
+	err := renderBuildOutput(context.Background(), body, io.Discard, io.Discard)
+	if err == nil {
+		t.Fatal("expected error from error message after trace frame, got nil")
+	}
+	if !strings.Contains(err.Error(), "layer pull failed") {
+		t.Errorf("error should contain 'layer pull failed', got %v", err)
+	}
+}
+
+// TestRenderBuildOutput_TraceAndPlainMixed: a stream with a plain message before
+// a trace frame delivers the pre-trace plain message to stdout; plain messages
+// arriving after the first trace frame are silently discarded (not written to
+// stdout) to avoid a concurrent-write race with the progressui goroutine.
+func TestRenderBuildOutput_TraceAndPlainMixed(t *testing.T) {
+	msgs := []jsonstream.Message{
+		{Stream: "pre-trace line\n"},
+		makeAuxMessage(t),
+		{Stream: "post-trace line\n"},
+	}
+	body := encodeMessages(t, msgs)
+
+	var out bytes.Buffer
+	if err := renderBuildOutput(context.Background(), body, &out, io.Discard); err != nil {
+		t.Fatalf("renderBuildOutput returned error: %v", err)
+	}
+	got := out.String()
+	// Pre-trace plain lines must reach stdout (the display is not yet active).
+	if !strings.Contains(got, "pre-trace line") {
+		t.Errorf("output missing 'pre-trace line': %q", got)
+	}
+	// Post-trace plain lines must NOT appear on stdout: once the progressui
+	// display is active, plain messages are discarded to prevent a concurrent
+	// write from the decode loop and the display goroutine.
+	if strings.Contains(got, "post-trace line") {
+		t.Errorf("post-trace plain line must not appear on stdout (would race with progressui): %q", got)
+	}
+}
+
+// TestRenderBuildOutput_ContextCanceled: with a pre-cancelled context the
+// function must return promptly (no hang). The error value is intentionally
+// not asserted here because the outcome is non-deterministic: Go's select
+// chooses randomly when both `case statusCh <- ss:` (the decode loop) and
+// `case <-ctx.Done():` are simultaneously ready. If the channel send wins,
+// the decode loop advances, decodeErr stays nil, the display goroutine drains
+// with context.Canceled (which renderBuildOutput filters), and the function
+// legitimately returns nil. If ctx.Done() wins first, decodeErr = Canceled
+// and the function returns non-nil. Both are correct — context cancellation is
+// surfaced opportunistically. The only invariant guaranteed by the
+// implementation is that it returns without blocking.
+func TestRenderBuildOutput_ContextCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // pre-cancel so the select in the decode loop fires immediately
+
+	msgs := []jsonstream.Message{makeAuxMessage(t)}
+	body := encodeMessages(t, msgs)
+
+	// The sole contract: must return (no hang). Error may be nil or non-nil.
+	done := make(chan struct{})
+	go func() {
+		renderBuildOutput(ctx, body, io.Discard, io.Discard) //nolint:errcheck
+		close(done)
+	}()
+	select {
+	case <-done:
+		// returned promptly — pass
+	case <-time.After(5 * time.Second):
+		t.Fatal("renderBuildOutput blocked for >5s with pre-cancelled context")
 	}
 }

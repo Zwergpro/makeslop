@@ -448,6 +448,7 @@ func newRootCmd(baseDir string) *cobra.Command {
 	var (
 		buildNoCache bool
 		buildArgs    []string
+		buildRefresh bool
 	)
 
 	buildCmd := &cobra.Command{
@@ -458,6 +459,15 @@ func newRootCmd(baseDir string) *cobra.Command {
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if err := config.Bootstrap(baseDir); err != nil {
 				return err
+			}
+			if buildRefresh {
+				if err := config.WriteDockerfile(baseDir); err != nil {
+					return err
+				}
+				if !quiet {
+					fmt.Fprintln(cmd.ErrOrStderr(),
+						"makeslop: refreshed ~/.makeslop/Dockerfile from embedded assets")
+				}
 			}
 			s, err := config.Load(baseDir)
 			if err != nil {
@@ -476,6 +486,8 @@ func newRootCmd(baseDir string) *cobra.Command {
 		"do not use cache when building the image")
 	buildCmd.Flags().StringArrayVar(&buildArgs, "build-arg", nil,
 		"set build-time variables (repeatable)")
+	buildCmd.Flags().BoolVar(&buildRefresh, "refresh", false,
+		"overwrite ~/.makeslop/Dockerfile from embedded assets before building")
 
 	// runConfigList is the shared implementation for `config` (bare) and
 	// `config list` — both print key = value lines from ConfigList.
