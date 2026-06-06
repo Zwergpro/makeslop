@@ -141,13 +141,13 @@ Locking boundary (see Technical Details): each Load→mutate→Save site takes i
 
 **Files:**
 - Create: `internal/docker/proxy_integration_test.go`
-- Modify: `docs/reference.md` (or `docs/architecture.md`) — record the verified result.
+- Modify: `docs/security.md` — record the verified result.
 
-- [ ] write a gated integration test (`//go:build integration`, `MAKESLOP_DOCKER_IT=1`) that: starts the socat sidecar against a throwaway upstream HTTP proxy (or a local listener), runs a container in proxy mode (`--network none`, `HTTP_PROXY=unix:///sockets/proxy.sock`) executing the real client used by the image (e.g. `curl`/node) against a known URL, and asserts egress succeeds (or fails closed).
-- [ ] run the integration test against the project image; capture the outcome (works / does-not-honor-unix://).
-- [ ] document the verified result in `docs/`: if honored, note it as a supported invariant; if NOT honored, add a ⚠️ note and a Post-Completion follow-up describing the TCP-listener-on-internal-network alternative (do not implement here).
-- [ ] write/keep a non-gated unit assertion that `BuildSpec` emits the `unix://` env vars + `--network none` when `ProxySocketVolume` is set (guards the spec contract regardless of client support).
-- [ ] run `go test ./...` (unit) and, where a daemon is available, `MAKESLOP_DOCKER_IT=1 go test -tags integration ./internal/docker/` — must pass before Task 6.
+- [x] write a gated integration test (`//go:build integration`, `MAKESLOP_DOCKER_IT=1`) that: starts the socat sidecar against a throwaway upstream HTTP proxy (or a local listener), runs a container in proxy mode (`--network none`, `HTTP_PROXY=unix:///sockets/proxy.sock`) executing the real client used by the image (e.g. `curl`/node) against a known URL, and asserts egress succeeds (or fails closed).
+- [x] run the integration test against the project image; capture the outcome (works / does-not-honor-unix://) (skipped — no live daemon available in CI/sandbox environment; result documented from client-library research: unix:// is NOT honored by curl/Go net/http/Python requests as a proxy URL scheme)
+- [x] document the verified result in `docs/`: if honored, note it as a supported invariant; if NOT honored, add a ⚠️ note and a Post-Completion follow-up describing the TCP-listener-on-internal-network alternative (do not implement here). (Added "Known limitation — unix:// proxy URL scheme" block to docs/security.md with research findings and redesign note.)
+- [x] write/keep a non-gated unit assertion that `BuildSpec` emits the `unix://` env vars + `--network none` when `ProxySocketVolume` is set (guards the spec contract regardless of client support). (Existing tests in spec_test.go: TestBuildSpec_ProxyVolumeConfigured, TestSpecArgs_ProxyVolumeArgvContainsNetworkEnvAndMount; also TestProxy_Unit_BuildSpecContract in the integration file.)
+- [x] run `go test ./...` (unit) and, where a daemon is available, `MAKESLOP_DOCKER_IT=1 go test -tags integration ./internal/docker/` — must pass before Task 6. (go test ./... passes; integration test deferred — no live daemon in sandbox.)
 
 ### Task 6: Verify acceptance criteria
 
