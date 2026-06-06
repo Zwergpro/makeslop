@@ -88,7 +88,17 @@ const Filename = ".makeslop.yaml"
 // and network:.
 var Stub = renderStub(Cache{Content: true, Agent: true})
 
-// Already mounted by docker.BuildSpec; user overlays would silently shadow them.
+// reservedPaths lists paths that docker.BuildSpec may mount over the project
+// root; user overlays in exclude.dirs/exclude.files would silently shadow them
+// when both are active.
+//
+// Note: when MountContentCache=false, docs/ and CLAUDE.md are not mounted, and
+// when MountAgentCache=false, .claude/ and .codex/ are not mounted. The
+// reservation check fires regardless of the cache config, so a user who
+// disables a cache group and also lists those paths in exclude.dirs/exclude.files
+// will get a "collides with a reserved agent path" error even though the mount
+// is not active. This is conservative (safe) but may be surprising; an error
+// message calling the path "reserved" is slightly misleading in that case.
 var reservedPaths = map[string]struct{}{
 	".claude":   {},
 	".codex":    {},
@@ -165,8 +175,7 @@ func Scaffold(root string, c Cache) error {
 		return fmt.Errorf("scaffold %s: %w", Filename, err)
 	}
 	defer f.Close()
-	stub := renderStub(c)
-	if _, err := f.Write(stub); err != nil {
+	if _, err := f.Write(renderStub(c)); err != nil {
 		// Remove the empty/partial file so a subsequent Scaffold call can retry
 		// (otherwise O_EXCL would see ErrExist and return nil, leaving the file
 		// corrupt forever).
@@ -180,12 +189,14 @@ func Scaffold(root string, c Cache) error {
 }
 
 // Load parses <root>/.makeslop.yaml and returns validated Excludes, Network,
-// Cache, and any error. Missing file yields zero values with no error. Malformed
-// YAML, unknown fields, cross-list duplicates, reserved-path collisions, and
-// invalid paths are errors wrapped with "projectconfig: ". Symlinks and missing
-// entries are silently dropped. ProxyAddress is stored as a raw string without
-// validation — callers validate the effective upstream after flag overrides.
-// Absent cache: block defaults both Cache fields to true (backward-compatible).
+// Cache, and any error. A missing file yields zero Excludes and Network values,
+// but Cache defaults to {Content:true, Agent:true} (backward-compatible: no
+// config file means all overlay mounts are enabled). Malformed YAML, unknown
+// fields, cross-list duplicates, reserved-path collisions, and invalid paths are
+// errors wrapped with "projectconfig: ". Symlinks and missing entries are
+// silently dropped. ProxyAddress is stored as a raw string without validation —
+// callers validate the effective upstream after flag overrides. An absent cache:
+// block within an existing config file also defaults both Cache fields to true.
 // root must be absolute and EvalSymlinks-evaluated.
 func Load(root string) (Excludes, Network, Cache, error) {
 	path := filepath.Join(root, Filename)

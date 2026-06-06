@@ -8,7 +8,7 @@
 // BuildSpec emits three mount groups:
 //   - global (always): BaseDir/.claude/, BaseDir/.claude.json, BaseDir/.codex/
 //   - agent-state cache (when MountAgentCache is true): workspace .claude/ + .codex/
-//   - content cache    (when MountContentCache is true): workspace docs/ + CLAUDE.md
+//   - content cache (when MountContentCache is true): workspace docs/ + CLAUDE.md
 package docker
 
 import (
@@ -59,22 +59,26 @@ type Options struct {
 
 	// MountAgentCache controls whether the per-workspace agent-state cache
 	// directories are mounted into the container:
-	//   workspaceHost/.claude/ → workspacePath/.claude/
-	//   workspaceHost/.codex/  → workspacePath/.codex/
+	//
+	//	workspaceHost/.claude/ → workspacePath/.claude/
+	//	workspaceHost/.codex/  → workspacePath/.codex/
+	//
 	// When false, those two per-workspace overlays are omitted; the global
 	// ~/.makeslop/.claude/ and ~/.makeslop/.codex/ mounts are always present.
-	// Defaults to false; callers should set true unless the user has disabled
-	// this group via the project cache: config block.
+	// Zero value is false; set from projectconfig.Cache by the caller
+	// (absent cache: block ⇒ true).
 	MountAgentCache bool
 
 	// MountContentCache controls whether the per-workspace content cache
 	// directories are mounted into the container:
-	//   workspaceHost/docs/     → workspacePath/docs/
-	//   workspaceHost/CLAUDE.md → workspacePath/CLAUDE.md
+	//
+	//	workspaceHost/docs/     → workspacePath/docs/
+	//	workspaceHost/CLAUDE.md → workspacePath/CLAUDE.md
+	//
 	// When false, those two per-workspace overlays are omitted, allowing the
 	// project's own docs/ and CLAUDE.md to be visible inside the container.
-	// Defaults to false; callers should set true unless the user has disabled
-	// this group via the project cache: config block.
+	// Zero value is false; set from projectconfig.Cache by the caller
+	// (absent cache: block ⇒ true).
 	MountContentCache bool
 }
 
@@ -104,15 +108,14 @@ type Spec struct {
 }
 
 // BuildSpec is pure: same Options → same Spec. Mount order is deterministic:
-//  1. project root bind
-//  2. global agent binds (BaseDir/.claude/, .claude.json, .codex/) — always present
-//  3. agent-state cache mounts (workspaceHost/.claude/, .codex/) — when MountAgentCache is true
-//  4. content cache mounts (workspaceHost/docs/, CLAUDE.md) — when MountContentCache is true
-//  5. MaskedFiles /dev/null overlays
-//  6. MaskedDirs tmpfs overlays
-//  7. proxy socket volume (read-only, when ProxySocketVolume is set)
+//  1. Group 1: project root bind + global agent binds (BaseDir/.claude/, .claude.json, .codex/) — always present
+//  2. Group 2: agent-state cache mounts (workspaceHost/.claude/, .codex/) — when MountAgentCache is true
+//  3. Group 3: content cache mounts (workspaceHost/docs/, CLAUDE.md) — when MountContentCache is true
+//  4. MaskedFiles /dev/null overlays
+//  5. MaskedDirs tmpfs overlays
+//  6. proxy socket volume (read-only, when ProxySocketVolume is set)
 //
-// Overlays (5–6) follow the directory bind they shadow so docker's argv-order
+// Overlays (4–5) follow the directory bind they shadow so docker's argv-order
 // evaluation makes them win. Entries are omitted when their group is disabled —
 // they are never reordered.
 func BuildSpec(o Options) Spec {

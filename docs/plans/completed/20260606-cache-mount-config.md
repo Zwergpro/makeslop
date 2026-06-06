@@ -212,23 +212,23 @@ notes in CLAUDE.md).
 - [x] run `go test ./...` — must pass before next task
 
 ### Task 6: Verify acceptance criteria
-- [ ] absent `cache:` block ⇒ byte-identical mounts to pre-change behavior
-- [ ] `content:false` lets project `docs/`+`CLAUDE.md` show through; `agent:false` lets
+- [x] absent `cache:` block ⇒ byte-identical mounts to pre-change behavior
+- [x] `content:false` lets project `docs/`+`CLAUDE.md` show through; `agent:false` lets
       project `.claude/`+`.codex/` show through; global mounts unaffected in all cases
-- [ ] `--global-only` is a no-op on an already-scaffolded project (no clobber)
-- [ ] run full suite: `go test ./...`
-- [ ] confirm no `CurrentVersion`/`MigrationVersion` change crept in
+- [x] `--global-only` is a no-op on an already-scaffolded project (no clobber)
+- [x] run full suite: `go test ./...`
+- [x] confirm no `CurrentVersion`/`MigrationVersion` change crept in
 
 ### Task 7: [Final] Update documentation
-- [ ] `docs/reference.md` — document the `cache:` block and the `init --global-only` flag
+- [x] `docs/reference.md` — document the `cache:` block and the `init --global-only` flag
       (including the no-op-on-existing-file caveat)
-- [ ] `docs/architecture.md` — describe the three mount groups (global / agent-state
+- [x] `docs/architecture.md` — describe the three mount groups (global / agent-state
       cache / content cache) and that the latter two are config-gated
-- [ ] `CLAUDE.md` — add `--global-only` to the flag-scope section; note the `cache:`
+- [x] `CLAUDE.md` — add `--global-only` to the flag-scope section; note the `cache:`
       block in the projectconfig description; record that this change does **not** bump
       `CurrentVersion`/`MigrationVersion` (Settings struct & embedded Dockerfile
       unchanged)
-- [ ] move this plan to `docs/plans/completed/`
+- [x] move this plan to `docs/plans/completed/`
 
 ## Post-Completion
 *Informational only — no checkboxes.*

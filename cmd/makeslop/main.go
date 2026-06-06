@@ -204,16 +204,16 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfH
 
 	// Proxy socket path computed here to keep docker.BuildSpec pure (PID-based, so impure).
 	opts := docker.Options{
-		ProjectRoot:      workspaceRoot,
-		WorkspaceName:    filepath.Base(workspaceDir),
-		BaseDir:          baseDir,
-		Image:            s.Image,
-		Command:          s.Shell,
-		TmpDirSize:       s.TmpDirSize,
-		MaskedFiles:      maskedFiles,
-		MaskedDirs:       yamlExcludes.Dirs,
+		ProjectRoot:       workspaceRoot,
+		WorkspaceName:     filepath.Base(workspaceDir),
+		BaseDir:           baseDir,
+		Image:             s.Image,
+		Command:           s.Shell,
+		TmpDirSize:        s.TmpDirSize,
+		MaskedFiles:       maskedFiles,
+		MaskedDirs:        yamlExcludes.Dirs,
 		MountContentCache: cacheCfg.Content,
-		MountAgentCache:  cacheCfg.Agent,
+		MountAgentCache:   cacheCfg.Agent,
 	}
 
 	// sha256(workspaceDir)[:12] + PID: unique volume name across projects and concurrent runs.

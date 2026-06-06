@@ -4327,7 +4327,58 @@ func TestRun_DryRun_CacheDefault(t *testing.T) {
 	}
 }
 
-// ── --global-only flag tests (Task 5) ─────────────────────────────────────────
+// TestRun_DryRun_CacheMixed verifies that cache:{content:false} (agent=true, content=false)
+// keeps .claude/ and .codex/ workspace mounts but drops docs/ and CLAUDE.md.
+// This catches a wiring bug that would swap Content/Agent assignments in runRun.
+func TestRun_DryRun_CacheMixed(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	initOut, _, err := runCmd(t, baseDir, "init")
+	if err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	workspaceDir := strings.TrimSpace(initOut)
+	workspaceName := filepath.Base(workspaceDir)
+
+	// Write .makeslop.yaml: content cache off, agent cache defaults to true.
+	resolvedPwd := evalSymlinks(t, pwd)
+	yamlContent := "cache:\n  content: false\n"
+	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(yamlContent), 0o644); err != nil {
+		t.Fatalf("write .makeslop.yaml: %v", err)
+	}
+
+	stubTTY(t, false)
+
+	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
+	if err != nil {
+		t.Fatalf("--dry-run failed: %v; stderr=%q", err, stderr)
+	}
+
+	workspacePath := "/workspace/" + workspaceName
+	workspaceHost := filepath.Join(baseDir, "workspaces", workspaceName)
+
+	// Per-workspace content mounts must be ABSENT (content=false).
+	if strings.Contains(stdout, workspacePath+"/docs/") {
+		t.Errorf("content docs/ must be absent when content cache disabled; stdout:\n%s", stdout)
+	}
+	if strings.Contains(stdout, workspacePath+"/CLAUDE.md") {
+		t.Errorf("content CLAUDE.md must be absent when content cache disabled; stdout:\n%s", stdout)
+	}
+	// Per-workspace agent-state mounts must be PRESENT (agent defaults to true).
+	wantAgentClaude := "source=" + filepath.Join(workspaceHost, ".claude") + "/,target=" + workspacePath + "/.claude/"
+	if !strings.Contains(stdout, wantAgentClaude) {
+		t.Errorf("agent .claude/ mount must be present (agent=true); stdout:\n%s", stdout)
+	}
+	wantAgentCodex := "source=" + filepath.Join(workspaceHost, ".codex") + "/,target=" + workspacePath + "/.codex/"
+	if !strings.Contains(stdout, wantAgentCodex) {
+		t.Errorf("agent .codex/ mount must be present (agent=true); stdout:\n%s", stdout)
+	}
+}
+
+// ── Task 5: --global-only flag tests ──────────────────────────────────────────
 
 // TestInit_GlobalOnly_ScaffoldsCacheDisabled verifies that `init --global-only`
 // writes a .makeslop.yaml that Load parses to Cache{false, false}.
@@ -4421,11 +4472,11 @@ func TestGlobalOnly_RejectedOnNonInitCommands(t *testing.T) {
 
 	for _, cmd := range [][]string{
 		{"run", "--global-only"},
-		{"build", "--global-only"},
+		{"version", "--global-only"},
 		{"migrate", "--global-only"},
+		{"build", "--global-only"},
 		{"config", "--global-only"},
 		{"status", "--global-only"},
-		{"version", "--global-only"},
 	} {
 		t.Run(cmd[0], func(t *testing.T) {
 			_, _, err := runCmd(t, baseDir, cmd...)

@@ -86,7 +86,7 @@ func TestLoad_DefaultStub_RoundTrips(t *testing.T) {
 		t.Fatalf("write stub: %v", err)
 	}
 
-	excl, netCfg, _, err := Load(root)
+	excl, netCfg, cacheCfg, err := Load(root)
 	if err != nil {
 		t.Fatalf("Load on default stub: %v", err)
 	}
@@ -97,6 +97,10 @@ func TestLoad_DefaultStub_RoundTrips(t *testing.T) {
 	// network proxy address is empty
 	if netCfg.ProxyAddress != "" {
 		t.Errorf("expected empty ProxyAddress, got %q", netCfg.ProxyAddress)
+	}
+	// default Stub must round-trip to Cache{true,true}.
+	if !cacheCfg.Content || !cacheCfg.Agent {
+		t.Errorf("Cache from default Stub: got {Content:%v Agent:%v}, want {true, true}", cacheCfg.Content, cacheCfg.Agent)
 	}
 	// default scan patterns are seeded — these must mirror Stub exactly (sorted).
 	// If you change Stub, update this list to match.
@@ -141,7 +145,7 @@ func TestLoad_EmptyAndCommentOnlyFiles(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(root, Filename), tc.content, 0o644); err != nil {
 				t.Fatalf("write: %v", err)
 			}
-			excl, _, _, err := Load(root)
+			excl, _, cacheCfg, err := Load(root)
 			if err != nil {
 				t.Fatalf("Load returned error for %q: %v", tc.name, err)
 			}
@@ -153,6 +157,13 @@ func TestLoad_EmptyAndCommentOnlyFiles(t *testing.T) {
 			}
 			if excl.SkipDirs != nil {
 				t.Errorf("expected nil SkipDirs for %q, got %v", tc.name, excl.SkipDirs)
+			}
+			// io.EOF branch must also default Cache to {true,true}.
+			if !cacheCfg.Content {
+				t.Errorf("Cache.Content: got false, want true for empty/comment-only file %q", tc.name)
+			}
+			if !cacheCfg.Agent {
+				t.Errorf("Cache.Agent: got false, want true for empty/comment-only file %q", tc.name)
 			}
 		})
 	}
@@ -602,14 +613,14 @@ func TestLoad_Network_InvalidAddress(t *testing.T) {
 	}{
 		{"missing port", "proxy.example.com", false},
 		{"empty host", ":8888", true},
-		{"socat delimiter in port", "10.0.0.1:3128,foo", true},  // port must be a plain integer
-		{"comma in host", "proxy,forever:3128", true},            // comma is socat option delimiter
-		{"negative port", "host:-1", true},                       // port out of range
-		{"port above max", "host:99999", true},                   // port > 65535
-		{"port zero", "host:0", true},                            // port 0 is not a valid TCP port
-		{"tab in host", "host\t.evil:3128", true},                // tab not in allowlist
-		{"pipe in host", "host|evil:3128", true},                 // pipe not in allowlist
-		{"exclamation in host", "host!evil:3128", true},          // exclamation not in allowlist
+		{"socat delimiter in port", "10.0.0.1:3128,foo", true}, // port must be a plain integer
+		{"comma in host", "proxy,forever:3128", true},          // comma is socat option delimiter
+		{"negative port", "host:-1", true},                     // port out of range
+		{"port above max", "host:99999", true},                 // port > 65535
+		{"port zero", "host:0", true},                          // port 0 is not a valid TCP port
+		{"tab in host", "host\t.evil:3128", true},              // tab not in allowlist
+		{"pipe in host", "host|evil:3128", true},               // pipe not in allowlist
+		{"exclamation in host", "host!evil:3128", true},        // exclamation not in allowlist
 	}
 
 	for _, tc := range cases {

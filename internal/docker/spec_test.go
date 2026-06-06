@@ -1390,15 +1390,26 @@ func TestBuildSpec_CacheMountCombos_Args(t *testing.T) {
 			name:              "content off — workspace docs and CLAUDE.md absent",
 			mountAgentCache:   true,
 			mountContentCache: false,
-			absent:            []string{"/docs/", "/CLAUDE.md"},
+			absent:            []string{"workspaces/myproj-abc123/docs", "workspaces/myproj-abc123/CLAUDE.md"},
 			present:           []string{base + "/.claude/", base + "/.codex/", "workspaces/myproj-abc123/.claude", "workspaces/myproj-abc123/.codex"},
 		},
 		{
 			name:              "both off — only global paths present",
 			mountAgentCache:   false,
 			mountContentCache: false,
-			absent:            []string{"workspaces/myproj-abc123/.claude", "workspaces/myproj-abc123/.codex", "/docs/", "/CLAUDE.md"},
+			absent:            []string{"workspaces/myproj-abc123/.claude", "workspaces/myproj-abc123/.codex", "workspaces/myproj-abc123/docs", "workspaces/myproj-abc123/CLAUDE.md"},
 			present:           []string{base + "/.claude/", base + "/.codex/"},
+		},
+		{
+			name:              "both on — all per-workspace paths present",
+			mountAgentCache:   true,
+			mountContentCache: true,
+			absent:            nil,
+			present: []string{
+				base + "/.claude/", base + "/.codex/",
+				"workspaces/myproj-abc123/.claude", "workspaces/myproj-abc123/.codex",
+				"docs/", "CLAUDE.md",
+			},
 		},
 	}
 

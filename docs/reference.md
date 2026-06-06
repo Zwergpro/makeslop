@@ -58,6 +58,11 @@ Registers the current working directory as a workspace and seeds `~/.makeslop/` 
 
 **Flags:**
 - `--out-of-home` — bypass the home-directory guard (see [security.md](security.md#home-directory-guard))
+- `--global-only` — scaffold `.makeslop.yaml` with both per-workspace cache overlay groups disabled
+  (only the global `~/.makeslop` mounts remain). This only affects a **fresh** scaffold:
+  `Scaffold` is idempotent (EEXIST = success, never clobbers existing user edits), so on an
+  already-init'd project the flag is a no-op — a note is not printed in that case, but the
+  existing YAML is left unchanged.
 
 ---
 
@@ -86,8 +91,9 @@ Builds (or rebuilds) the base Docker image from `~/.makeslop/Dockerfile` via the
 ### run
 
 From within a registered workspace, launches an interactive, project-scoped Docker container with
-the workspace source tree and per-workspace + global agent config (`.claude/`, `.codex/`,
-`CLAUDE.md`, `docs/`) mounted in.
+the workspace source tree mounted in. By default, per-workspace + global agent config
+(`.claude/`, `.codex/`, `CLAUDE.md`, `docs/`) are also mounted as overlay groups; individual
+groups can be disabled via `cache.content` and `cache.agent` in `.makeslop.yaml`.
 
 - Exits with the container's exit code.
 - Refuses to launch when stdin or stdout is not a TTY (see [TTY policy](#tty-policy)).
@@ -205,16 +211,30 @@ The per-workspace cache directory under `workspaces/` holds per-project agent st
 `makeslop run` runs with workdir `/workspace/<name>` (where `<name>` is the registered workspace's
 cache-dir basename):
 
-| Host                                                  | Container                          |
-| ----------------------------------------------------- | ---------------------------------- |
-| `<projectRoot>`                                       | `/workspace/<name>`                |
-| `~/.makeslop/.claude/`                                | `/home/user/.claude/`              |
-| `~/.makeslop/.claude.json`                            | `/home/user/.claude.json`          |
-| `~/.makeslop/.codex/`                                 | `/home/user/.codex/`               |
-| `~/.makeslop/workspaces/<name>/.claude/`              | `/workspace/<name>/.claude/`       |
-| `~/.makeslop/workspaces/<name>/.codex/`               | `/workspace/<name>/.codex/`        |
-| `~/.makeslop/workspaces/<name>/docs/`                 | `/workspace/<name>/docs/`          |
-| `~/.makeslop/workspaces/<name>/CLAUDE.md`             | `/workspace/<name>/CLAUDE.md`      |
+| Host                                                  | Container                          | Group         |
+| ----------------------------------------------------- | ---------------------------------- | ------------- |
+| `<projectRoot>`                                       | `/workspace/<name>`                | always        |
+| `~/.makeslop/.claude/`                                | `/home/user/.claude/`              | global        |
+| `~/.makeslop/.claude.json`                            | `/home/user/.claude.json`          | global        |
+| `~/.makeslop/.codex/`                                 | `/home/user/.codex/`               | global        |
+| `~/.makeslop/workspaces/<name>/.claude/`              | `/workspace/<name>/.claude/`       | agent-state   |
+| `~/.makeslop/workspaces/<name>/.codex/`               | `/workspace/<name>/.codex/`        | agent-state   |
+| `~/.makeslop/workspaces/<name>/docs/`                 | `/workspace/<name>/docs/`          | content       |
+| `~/.makeslop/workspaces/<name>/CLAUDE.md`             | `/workspace/<name>/CLAUDE.md`      | content       |
+
+The **global** mounts (rows 2–4) are always present. The **agent-state** and **content** overlay
+mounts (rows 5–8) can be disabled per-project via the `cache:` block in `.makeslop.yaml`:
+
+```yaml
+cache:
+  content: true   # mount docs/ + CLAUDE.md from per-workspace cache (default: true)
+  agent: true     # mount .claude/ + .codex/ from per-workspace cache (default: true)
+```
+
+Setting a group to `false` omits those overlay mounts so the project's real files show through.
+An absent `cache:` block is equivalent to `{content: true, agent: true}` — behavior is identical
+to before this feature was added. The `init --global-only` flag is a convenience shortcut that
+scaffolds `.makeslop.yaml` with both groups disabled.
 
 ---
 
