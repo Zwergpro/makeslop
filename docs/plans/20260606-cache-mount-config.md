@@ -181,18 +181,18 @@ notes in CLAUDE.md).
 - Modify: `cmd/makeslop/status.go`
 - Modify: `internal/security/security_test.go`
 
-- [ ] `cmd/makeslop/main.go:153` — capture the new `Cache` return from
+- [x] `cmd/makeslop/main.go:153` — capture the new `Cache` return from
       `projectconfig.Load`; set `opts.MountContentCache = cacheCfg.Content` and
       `opts.MountAgentCache = cacheCfg.Agent` at the `docker.Options` literal (~line 206)
-- [ ] `cmd/makeslop/status.go:279` — update the `projectconfig.Load` call for the new
+- [x] `cmd/makeslop/status.go:279` — update the `projectconfig.Load` call for the new
       4th return value (discard the `Cache` with `_` unless a status check needs it)
-- [ ] `internal/security/security_test.go:55` — update the `Scaffold` call to pass
+- [x] `internal/security/security_test.go:55` — update the `Scaffold` call to pass
       `projectconfig.Cache{Content: true, Agent: true}`; update the
       `projectconfig.Load` call at line 58 for the 4th return value
-- [ ] write/extend a test in `cmd/makeslop/main_test.go`: a `.makeslop.yaml` with
+- [x] write/extend a test in `cmd/makeslop/main_test.go`: a `.makeslop.yaml` with
       `cache: {content:false, agent:false}` produces a `docker.Options` (or dry-run
       `ShellCommand`) with the cache mounts absent; absent block keeps them present
-- [ ] run `go test ./...` — must pass before next task
+- [x] run `go test ./...` — must pass before next task
 
 ### Task 5: Add the `init --global-only` flag
 

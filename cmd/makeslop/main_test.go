@@ -1211,13 +1211,16 @@ func TestRun_DryRun_StdoutEqualsBuildSpecShellCommand(t *testing.T) {
 		t.Fatalf("load settings: %v", loadErr)
 	}
 	// Direct is the default: spec must NOT include proxy socket plumbing.
+	// Cache mounts default to true (absent cache: block ⇒ both groups enabled).
 	want := docker.BuildSpec(docker.Options{
-		ProjectRoot:   resolvedPwd,
-		WorkspaceName: filepath.Base(workspaceDir),
-		BaseDir:       baseDir,
-		Image:         s.Image,
-		Command:       s.Shell,
-		TmpDirSize:    s.TmpDirSize,
+		ProjectRoot:       resolvedPwd,
+		WorkspaceName:     filepath.Base(workspaceDir),
+		BaseDir:           baseDir,
+		Image:             s.Image,
+		Command:           s.Shell,
+		TmpDirSize:        s.TmpDirSize,
+		MountContentCache: true,
+		MountAgentCache:   true,
 	}).ShellCommand()
 
 	got := strings.TrimSuffix(stdout, "\n")
@@ -1766,13 +1769,16 @@ func TestRun_YamlAbsentIsBitIdenticalArgv(t *testing.T) {
 		t.Fatalf("load settings: %v", loadErr)
 	}
 	// Direct is default: spec must NOT include proxy socket plumbing.
+	// Cache mounts default to true (absent yaml ⇒ both groups enabled).
 	want := docker.BuildSpec(docker.Options{
-		ProjectRoot:   resolvedPwd,
-		WorkspaceName: filepath.Base(workspaceDir),
-		BaseDir:       baseDir,
-		Image:         s.Image,
-		Command:       s.Shell,
-		TmpDirSize:    s.TmpDirSize,
+		ProjectRoot:       resolvedPwd,
+		WorkspaceName:     filepath.Base(workspaceDir),
+		BaseDir:           baseDir,
+		Image:             s.Image,
+		Command:           s.Shell,
+		TmpDirSize:        s.TmpDirSize,
+		MountContentCache: true,
+		MountAgentCache:   true,
 	}).ShellCommand()
 
 	got := strings.TrimSuffix(stdout, "\n")
@@ -2075,17 +2081,20 @@ func TestRun_DryRun_DefaultIsBridge(t *testing.T) {
 	}
 
 	// Verify the output matches plain BuildSpec (no proxy options).
+	// Cache mounts default to true (absent yaml ⇒ both groups enabled).
 	s, loadErr := config.Load(baseDir)
 	if loadErr != nil {
 		t.Fatalf("load settings: %v", loadErr)
 	}
 	want := docker.BuildSpec(docker.Options{
-		ProjectRoot:   resolvedPwd,
-		WorkspaceName: filepath.Base(workspaceDir),
-		BaseDir:       baseDir,
-		Image:         s.Image,
-		Command:       s.Shell,
-		TmpDirSize:    s.TmpDirSize,
+		ProjectRoot:       resolvedPwd,
+		WorkspaceName:     filepath.Base(workspaceDir),
+		BaseDir:           baseDir,
+		Image:             s.Image,
+		Command:           s.Shell,
+		TmpDirSize:        s.TmpDirSize,
+		MountContentCache: true,
+		MountAgentCache:   true,
 	}).ShellCommand()
 	got := strings.TrimSuffix(stdout, "\n")
 	if got != want {
@@ -2153,6 +2162,7 @@ func TestRun_DryRun_ProxyFlag_EnablesProxy(t *testing.T) {
 	}
 
 	// Verify full argv matches BuildSpec with the expected volume name.
+	// Cache mounts default to true (absent yaml ⇒ both groups enabled).
 	s, loadErr := config.Load(baseDir)
 	if loadErr != nil {
 		t.Fatalf("load settings: %v", loadErr)
@@ -2165,6 +2175,8 @@ func TestRun_DryRun_ProxyFlag_EnablesProxy(t *testing.T) {
 		Command:           s.Shell,
 		TmpDirSize:        s.TmpDirSize,
 		ProxySocketVolume: expectedProxyVolumeName(workspaceDir),
+		MountContentCache: true,
+		MountAgentCache:   true,
 	}).ShellCommand()
 	got := strings.TrimSuffix(stdout, "\n")
 	if got != want {
@@ -4111,6 +4123,7 @@ func TestRun_DryRun_ConfigProxy_WiresSocket(t *testing.T) {
 	}
 
 	// Verify full argv matches BuildSpec with the expected volume name.
+	// Cache mounts default to true (absent cache: block ⇒ both groups enabled).
 	s, loadErr := config.Load(baseDir)
 	if loadErr != nil {
 		t.Fatalf("load settings: %v", loadErr)
@@ -4123,6 +4136,8 @@ func TestRun_DryRun_ConfigProxy_WiresSocket(t *testing.T) {
 		Command:           s.Shell,
 		TmpDirSize:        s.TmpDirSize,
 		ProxySocketVolume: expectedProxyVolumeName(workspaceDir),
+		MountContentCache: true,
+		MountAgentCache:   true,
 	}).ShellCommand()
 	got := strings.TrimSuffix(stdout, "\n")
 	if got != want {
@@ -4193,5 +4208,121 @@ func TestRun_Proxy_ImageMissing(t *testing.T) {
 	}
 	if fc.Started {
 		t.Error("docker container must not be started when base image is missing")
+	}
+}
+
+// ── cache mount config tests ──────────────────────────────────────────────────
+
+// TestRun_DryRun_CacheDisabled verifies that a .makeslop.yaml with
+// cache:{content:false, agent:false} causes the per-workspace cache mounts
+// to be absent from the dry-run output.
+func TestRun_DryRun_CacheDisabled(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	initOut, _, err := runCmd(t, baseDir, "init")
+	if err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	workspaceDir := strings.TrimSpace(initOut)
+	workspaceName := filepath.Base(workspaceDir)
+
+	// Write .makeslop.yaml with both cache groups disabled.
+	resolvedPwd := evalSymlinks(t, pwd)
+	yamlContent := "cache:\n  content: false\n  agent: false\n"
+	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(yamlContent), 0o644); err != nil {
+		t.Fatalf("write .makeslop.yaml: %v", err)
+	}
+
+	stubTTY(t, false)
+
+	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
+	if err != nil {
+		t.Fatalf("--dry-run failed: %v; stderr=%q", err, stderr)
+	}
+
+	workspacePath := "/workspace/" + workspaceName
+	// Per-workspace agent-state mounts must be absent.
+	if strings.Contains(stdout, workspacePath+"/.claude/") {
+		t.Errorf("agent .claude/ mount must be absent when agent cache disabled; stdout:\n%s", stdout)
+	}
+	if strings.Contains(stdout, workspacePath+"/.codex/") {
+		t.Errorf("agent .codex/ mount must be absent when agent cache disabled; stdout:\n%s", stdout)
+	}
+	// Per-workspace content mounts must be absent.
+	if strings.Contains(stdout, workspacePath+"/docs/") {
+		t.Errorf("content docs/ mount must be absent when content cache disabled; stdout:\n%s", stdout)
+	}
+	if strings.Contains(stdout, workspacePath+"/CLAUDE.md") {
+		t.Errorf("content CLAUDE.md mount must be absent when content cache disabled; stdout:\n%s", stdout)
+	}
+	// Global mounts (BaseDir/.claude/, .claude.json, .codex/) must still be present.
+	if !strings.Contains(stdout, "target=/home/user/.claude/") {
+		t.Errorf("global .claude/ mount must be present; stdout:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "target=/home/user/.claude.json") {
+		t.Errorf("global .claude.json mount must be present; stdout:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "target=/home/user/.codex/") {
+		t.Errorf("global .codex/ mount must be present; stdout:\n%s", stdout)
+	}
+	// Project root bind must be present.
+	if !strings.Contains(stdout, "source="+resolvedPwd+",target="+workspacePath) {
+		t.Errorf("project root bind must be present; stdout:\n%s", stdout)
+	}
+}
+
+// TestRun_DryRun_CacheDefault verifies that an absent cache: block (the default)
+// keeps all per-workspace cache mounts present — byte-identical behavior to
+// pre-change operation.
+func TestRun_DryRun_CacheDefault(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	initOut, _, err := runCmd(t, baseDir, "init")
+	if err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	workspaceDir := strings.TrimSpace(initOut)
+	workspaceName := filepath.Base(workspaceDir)
+
+	// Write .makeslop.yaml with no cache: block at all (uses defaults).
+	resolvedPwd := evalSymlinks(t, pwd)
+	yamlContent := "exclude:\n  scan:\n    patterns: []\n  files: []\n  dirs: []\n"
+	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(yamlContent), 0o644); err != nil {
+		t.Fatalf("write .makeslop.yaml: %v", err)
+	}
+
+	stubTTY(t, false)
+
+	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
+	if err != nil {
+		t.Fatalf("--dry-run failed: %v; stderr=%q", err, stderr)
+	}
+
+	workspacePath := "/workspace/" + workspaceName
+	workspaceHost := filepath.Join(baseDir, "workspaces", workspaceName)
+
+	// Per-workspace agent-state mounts must be present (default = true).
+	wantAgentClaude := "source=" + filepath.Join(workspaceHost, ".claude") + "/,target=" + workspacePath + "/.claude/"
+	if !strings.Contains(stdout, wantAgentClaude) {
+		t.Errorf("agent .claude/ mount must be present by default; stdout:\n%s", stdout)
+	}
+	wantAgentCodex := "source=" + filepath.Join(workspaceHost, ".codex") + "/,target=" + workspacePath + "/.codex/"
+	if !strings.Contains(stdout, wantAgentCodex) {
+		t.Errorf("agent .codex/ mount must be present by default; stdout:\n%s", stdout)
+	}
+	// Per-workspace content mounts must be present (default = true).
+	wantDocs := "source=" + filepath.Join(workspaceHost, "docs") + "/,target=" + workspacePath + "/docs/"
+	if !strings.Contains(stdout, wantDocs) {
+		t.Errorf("content docs/ mount must be present by default; stdout:\n%s", stdout)
+	}
+	wantClaude := "source=" + filepath.Join(workspaceHost, "CLAUDE.md") + ",target=" + workspacePath + "/CLAUDE.md"
+	if !strings.Contains(stdout, wantClaude) {
+		t.Errorf("content CLAUDE.md mount must be present by default; stdout:\n%s", stdout)
 	}
 }
