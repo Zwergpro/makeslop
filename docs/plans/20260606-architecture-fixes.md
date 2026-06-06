@@ -127,15 +127,15 @@ Design note: the existing fakes **discard** the context — `FakeRunClient.Ping(
 
 Locking boundary (see Technical Details): each Load→mutate→Save site takes its **own** short-lived `WithLock` *sequentially*; `WithLock` is **never nested** (same-goroutine re-entry self-deadlocks on flock). The `init` RunE therefore relies on `ws.Init` locking internally and the re-stamp locking separately and sequentially — the RunE itself does NOT wrap both in an outer `WithLock`.
 
-- [ ] add `config.WithLock(baseDir string, fn func() error) error` using `syscall.Flock(fd, LOCK_EX)` on `<baseDir>/.settings.lock` (create `0o600`); `defer` unlock+close; `MkdirAll(baseDir)` first for safety. Document the no-nesting invariant in the doc comment.
-- [ ] wrap the Load→mutate→Save sequence inside `workspace.Init` with `config.WithLock` (internal — so concurrent `ws.Init` is safe).
-- [ ] wrap the fresh-seed re-stamp block (main.go:364-371) and the `config set` (Load→ConfigSet→Save, main.go:528-535) blocks with `config.WithLock` — each its own acquisition, not wrapping `ws.Init`.
-- [ ] wrap the `Migrate` Load→stamp→Save sequence (migrate.go) with `config.WithLock` so a concurrent `init`/`config set` cannot lose the `MigratedVersion` stamp.
-- [ ] verify no nesting: `ws.Init` is only invoked from the `init` RunE and is NOT called from within another `WithLock` block (audit `config.Save` callers: main.go:369, main.go:535, migrate.go, workspace.go).
-- [ ] write test: `WithLock` serializes — two goroutines incrementing a counter via Load/Save under the lock both persist (no lost update).
-- [ ] write test (concurrency): N concurrent `workspace.Init` calls for N distinct pwds under one `baseDir` all end registered in `settings.json` (the lost-update regression test).
-- [ ] write test: `WithLock` releases on `fn` error (panic/error path unlocks) and is re-acquirable afterward; back-to-back *sequential* acquisitions in one goroutine succeed (documents the no-nesting boundary).
-- [ ] run `go test ./...` — must pass before Task 5.
+- [x] add `config.WithLock(baseDir string, fn func() error) error` using `syscall.Flock(fd, LOCK_EX)` on `<baseDir>/.settings.lock` (create `0o600`); `defer` unlock+close; `MkdirAll(baseDir)` first for safety. Document the no-nesting invariant in the doc comment.
+- [x] wrap the Load→mutate→Save sequence inside `workspace.Init` with `config.WithLock` (internal — so concurrent `ws.Init` is safe).
+- [x] wrap the fresh-seed re-stamp block (main.go:364-371) and the `config set` (Load→ConfigSet→Save, main.go:528-535) blocks with `config.WithLock` — each its own acquisition, not wrapping `ws.Init`.
+- [x] wrap the `Migrate` Load→stamp→Save sequence (migrate.go) with `config.WithLock` so a concurrent `init`/`config set` cannot lose the `MigratedVersion` stamp.
+- [x] verify no nesting: `ws.Init` is only invoked from the `init` RunE and is NOT called from within another `WithLock` block (audit `config.Save` callers: main.go:369, main.go:535, migrate.go, workspace.go).
+- [x] write test: `WithLock` serializes — two goroutines incrementing a counter via Load/Save under the lock both persist (no lost update).
+- [x] write test (concurrency): N concurrent `workspace.Init` calls for N distinct pwds under one `baseDir` all end registered in `settings.json` (the lost-update regression test).
+- [x] write test: `WithLock` releases on `fn` error (panic/error path unlocks) and is re-acquirable afterward; back-to-back *sequential* acquisitions in one goroutine succeed (documents the no-nesting boundary).
+- [x] run `go test ./...` — must pass before Task 5.
 
 ### Task 5: Verify the `unix://` HTTP proxy actually works
 

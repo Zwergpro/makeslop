@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -574,6 +575,55 @@ func TestFindAncestor_StopsAtRoot(t *testing.T) {
 	_, _, ok := w.findAncestor(s, "/a/b/c/d/e/f")
 	if ok {
 		t.Errorf("findAncestor returned ok=true on empty settings")
+	}
+}
+
+// TestInit_ConcurrentDistinctPwdsAllRegistered is the lost-update regression
+// test: N concurrent Init calls for N distinct pwds under one baseDir must all
+// end up registered in settings.json (none silently dropped).
+func TestInit_ConcurrentDistinctPwdsAllRegistered(t *testing.T) {
+	base := t.TempDir()
+	w := New(base)
+
+	const n = 10
+	root := evalSymlinks(t, t.TempDir())
+	pwds := make([]string, n)
+	for i := 0; i < n; i++ {
+		pwds[i] = filepath.Join(root, strings.Repeat("a", i+1))
+		if err := os.MkdirAll(pwds[i], 0o755); err != nil {
+			t.Fatalf("mkdir pwd[%d]: %v", i, err)
+		}
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(n)
+	errs := make([]error, n)
+	for i := 0; i < n; i++ {
+		i := i
+		go func() {
+			defer wg.Done()
+			_, errs[i] = w.Init(pwds[i])
+		}()
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("goroutine %d Init(%q): %v", i, pwds[i], err)
+		}
+	}
+
+	s, err := config.Load(base)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	for i, pwd := range pwds {
+		if _, ok := s.Workspaces[pwd]; !ok {
+			t.Errorf("pwd[%d] %q missing from settings (lost update)", i, pwd)
+		}
+	}
+	if len(s.Workspaces) != n {
+		t.Errorf("Workspaces count = %d, want %d", len(s.Workspaces), n)
 	}
 }
 

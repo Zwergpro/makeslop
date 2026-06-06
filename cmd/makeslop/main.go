@@ -373,16 +373,18 @@ func newRootCmd(baseDir string) *cobra.Command {
 			}
 
 			// Fresh seed: stamp MigratedVersion so a newly-init'd dir is never
-			// reported stale. ws.Init already called Save once; reload and re-save
-			// with the stamp so we don't race against any field changes.
+			// reported stale. ws.Init's lock has already been released; this is
+			// a separate sequential acquisition — no nesting, no deadlock.
 			if freshSeed {
-				s, loadErr := config.Load(baseDir)
-				if loadErr != nil {
-					return loadErr
-				}
-				s.MigratedVersion = config.MigrationVersion
-				if saveErr := config.Save(baseDir, s); saveErr != nil {
-					return saveErr
+				if lockErr := config.WithLock(baseDir, func() error {
+					s, loadErr := config.Load(baseDir)
+					if loadErr != nil {
+						return loadErr
+					}
+					s.MigratedVersion = config.MigrationVersion
+					return config.Save(baseDir, s)
+				}); lockErr != nil {
+					return lockErr
 				}
 			} else {
 				// Existing base config: check for staleness and nudge if behind.
@@ -540,21 +542,38 @@ func newRootCmd(baseDir string) *cobra.Command {
 		Args:         cobra.ExactArgs(2),
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			s, err := config.Load(baseDir)
-			if err != nil {
+			// Pre-validate the key/value before acquiring the lock so that the
+			// lock file is not created as a side effect of a bad input. Use a
+			// scratch Settings for validation; the actual mutation runs under
+			// the lock below. If pre-load fails (e.g. corrupt JSON), skip
+			// pre-validation and let the locked path surface the error.
+			if scratch, err := config.Load(baseDir); err == nil {
+				if err := config.ConfigSet(scratch, args[0], args[1]); err != nil {
+					return err
+				}
+			}
+
+			var storedVal string
+			if err := config.WithLock(baseDir, func() error {
+				s, err := config.Load(baseDir)
+				if err != nil {
+					return err
+				}
+				if err := config.ConfigSet(s, args[0], args[1]); err != nil {
+					return err
+				}
+				if err := config.Save(baseDir, s); err != nil {
+					return err
+				}
+				// Echo the stored value (not the raw CLI argument) so the output
+				// reflects what ConfigList would show (e.g. whitespace is trimmed).
+				// ConfigSet only succeeds for registered keys, so ConfigGet is
+				// guaranteed to find the entry.
+				storedVal, _ = config.ConfigGet(s, args[0])
+				return nil
+			}); err != nil {
 				return err
 			}
-			if err := config.ConfigSet(s, args[0], args[1]); err != nil {
-				return err
-			}
-			if err := config.Save(baseDir, s); err != nil {
-				return err
-			}
-			// Echo the stored value (not the raw CLI argument) so the output
-			// reflects what ConfigList would show (e.g. whitespace is trimmed).
-			// ConfigSet only succeeds for registered keys, so ConfigGet is
-			// guaranteed to find the entry.
-			storedVal, _ := config.ConfigGet(s, args[0])
 			fmt.Fprintf(cmd.OutOrStdout(), "%s = %s\n", args[0], storedVal)
 			return nil
 		},
