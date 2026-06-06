@@ -52,10 +52,10 @@ func mustWriteFile(t *testing.T, path, content string) {
 func loadStubConfig(t *testing.T) (patterns, skipDirs []string) {
 	t.Helper()
 	dir := t.TempDir()
-	if err := projectconfig.Scaffold(dir); err != nil {
+	if err := projectconfig.Scaffold(dir, projectconfig.Cache{Content: true, Agent: true}); err != nil {
 		t.Fatalf("loadStubConfig: scaffold: %v", err)
 	}
-	excl, _, err := projectconfig.Load(dir)
+	excl, _, _, err := projectconfig.Load(dir)
 	if err != nil {
 		t.Fatalf("loadStubConfig: load: %v", err)
 	}

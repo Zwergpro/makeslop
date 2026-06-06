@@ -7,6 +7,7 @@ agent-facing notes live in `CLAUDE.md`; this file is a self-contained human-read
 ## Table of Contents
 
 - [Pure/impure split](#pureimpure-split)
+- [Mount groups and cache overlays](#mount-groups-and-cache-overlays)
 - [apiClient seam and fake clients](#apiclient-seam-and-fake-clients)
 - [newSidecarFn seam](#newsidecarfn-seam)
 - [Socat sidecar lifecycle](#socat-sidecar-lifecycle)
@@ -33,6 +34,39 @@ the filesystem or exec anything.
 
 A drift-guard test keeps both renderings honest. The "printed == executed" invariant holds: what
 `--dry-run` prints is what `run` passes to the Docker daemon.
+
+---
+
+## Mount groups and cache overlays
+
+`BuildSpec` in `internal/docker/spec.go` organises the 8 mounts into three logical groups:
+
+**Global** (always present — not configurable):
+- `~/.makeslop/.claude/` → `/home/user/.claude/`
+- `~/.makeslop/.claude.json` → `/home/user/.claude.json`
+- `~/.makeslop/.codex/` → `/home/user/.codex/`
+
+**Agent-state cache overlay** (gated by `Options.MountAgentCache`):
+- `workspaceHost/.claude/` → `/workspace/<name>/.claude/`
+- `workspaceHost/.codex/` → `/workspace/<name>/.codex/`
+
+**Content cache overlay** (gated by `Options.MountContentCache`):
+- `workspaceHost/docs/` → `/workspace/<name>/docs/`
+- `workspaceHost/CLAUDE.md` → `/workspace/<name>/CLAUDE.md`
+
+When a group is disabled (`false`), its mounts are **omitted** from the spec (never reordered).
+The project source root is always mounted at position 0. Secret masking (masked files `/dev/null`,
+masked dirs tmpfs) appends after all group mounts, so a masked path under `docs/` still wins even
+when the content group is disabled.
+
+The two booleans originate from the project `cache:` block in `.makeslop.yaml`, resolved by
+`projectconfig.Load`. Absent block ⇒ both `true` ⇒ identical to pre-feature behavior. The
+`init --global-only` flag scaffolds the YAML with both groups set to `false`.
+
+**`Options.MountContentCache`** and **`Options.MountAgentCache`** both default to `false` in Go's
+zero-value; callers that want the traditional full-mount behavior must explicitly set them to
+`true`. `runRun` does this by reading the project config; tests that exercise full-mount behavior
+must set them on their `sampleOptions()` or equivalent fixture.
 
 ---
 

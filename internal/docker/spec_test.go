@@ -11,12 +11,14 @@ import (
 
 func sampleOptions() Options {
 	return Options{
-		ProjectRoot:   "/home/me/code/myproj",
-		WorkspaceName: "myproj-abc123",
-		BaseDir:       "/home/me/.makeslop",
-		Image:         "claudebox",
-		Command:       "/bin/zsh",
-		TmpDirSize:    "100m",
+		ProjectRoot:       "/home/me/code/myproj",
+		WorkspaceName:     "myproj-abc123",
+		BaseDir:           "/home/me/.makeslop",
+		Image:             "claudebox",
+		Command:           "/bin/zsh",
+		TmpDirSize:        "100m",
+		MountAgentCache:   true,
+		MountContentCache: true,
 	}
 }
 
@@ -1281,5 +1283,216 @@ func TestDriftGuard_ArgsAndSDKProjectionsAgree(t *testing.T) {
 	}
 	if argsHasRM != hc.AutoRemove {
 		t.Errorf("--rm/AutoRemove mismatch: Args.hasRM=%v, HostConfig.AutoRemove=%v", argsHasRM, hc.AutoRemove)
+	}
+}
+
+// ── Cache mount group tests ───────────────────────────────────────────────────
+
+// TestBuildSpec_CacheMountCombos exercises all 4 combos of MountAgentCache /
+// MountContentCache and asserts which per-workspace mounts are present or absent.
+// Global mounts (BaseDir/.claude/, .claude.json, .codex/) must always be present
+// regardless of the combination.
+func TestBuildSpec_CacheMountCombos(t *testing.T) {
+	base := "/home/me/.makeslop"
+	ws := "/home/me/.makeslop/workspaces/myproj-abc123"
+	wcp := "/workspace/myproj-abc123"
+
+	globalMounts := []Mount{
+		{Host: "/home/me/code/myproj", Container: wcp},
+		{Host: base + "/.claude/", Container: "/home/user/.claude/"},
+		{Host: base + "/.claude.json", Container: "/home/user/.claude.json"},
+		{Host: base + "/.codex/", Container: "/home/user/.codex/"},
+	}
+
+	agentMounts := []Mount{
+		{Host: ws + "/.claude/", Container: wcp + "/.claude/"},
+		{Host: ws + "/.codex/", Container: wcp + "/.codex/"},
+	}
+
+	contentMounts := []Mount{
+		{Host: ws + "/docs/", Container: wcp + "/docs/"},
+		{Host: ws + "/CLAUDE.md", Container: wcp + "/CLAUDE.md"},
+	}
+
+	tests := []struct {
+		name              string
+		mountAgentCache   bool
+		mountContentCache bool
+		wantMounts        []Mount
+	}{
+		{
+			name:              "both true — full mount set (current default behavior)",
+			mountAgentCache:   true,
+			mountContentCache: true,
+			wantMounts:        append(append(globalMounts, agentMounts...), contentMounts...),
+		},
+		{
+			name:              "agent off, content on — no per-workspace .claude/.codex",
+			mountAgentCache:   false,
+			mountContentCache: true,
+			wantMounts:        append(globalMounts, contentMounts...),
+		},
+		{
+			name:              "agent on, content off — no per-workspace docs/CLAUDE.md",
+			mountAgentCache:   true,
+			mountContentCache: false,
+			wantMounts:        append(globalMounts, agentMounts...),
+		},
+		{
+			name:              "both off — global mounts only (--global-only mode)",
+			mountAgentCache:   false,
+			mountContentCache: false,
+			wantMounts:        globalMounts,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			o := Options{
+				ProjectRoot:       "/home/me/code/myproj",
+				WorkspaceName:     "myproj-abc123",
+				BaseDir:           "/home/me/.makeslop",
+				Image:             "claudebox",
+				Command:           "/bin/zsh",
+				TmpDirSize:        "100m",
+				MountAgentCache:   tc.mountAgentCache,
+				MountContentCache: tc.mountContentCache,
+			}
+			spec := BuildSpec(o)
+			if !reflect.DeepEqual(spec.Mounts, tc.wantMounts) {
+				t.Errorf("Mounts mismatch for %s\n got: %+v\nwant: %+v",
+					tc.name, spec.Mounts, tc.wantMounts)
+			}
+		})
+	}
+}
+
+// TestBuildSpec_CacheMountCombos_Args ensures that when cache groups are
+// disabled, the corresponding paths are absent from Args() output.
+func TestBuildSpec_CacheMountCombos_Args(t *testing.T) {
+	base := "/home/me/.makeslop"
+
+	tests := []struct {
+		name              string
+		mountAgentCache   bool
+		mountContentCache bool
+		absent            []string // substrings that must NOT appear in any --mount arg
+		present           []string // substrings that must appear in at least one --mount arg
+	}{
+		{
+			name:              "agent off — workspace .claude and .codex absent",
+			mountAgentCache:   false,
+			mountContentCache: true,
+			absent:            []string{"workspaces/myproj-abc123/.claude", "workspaces/myproj-abc123/.codex"},
+			present:           []string{base + "/.claude/", base + "/.codex/", "docs/", "CLAUDE.md"},
+		},
+		{
+			name:              "content off — workspace docs and CLAUDE.md absent",
+			mountAgentCache:   true,
+			mountContentCache: false,
+			absent:            []string{"workspaces/myproj-abc123/docs", "workspaces/myproj-abc123/CLAUDE.md"},
+			present:           []string{base + "/.claude/", base + "/.codex/", "workspaces/myproj-abc123/.claude", "workspaces/myproj-abc123/.codex"},
+		},
+		{
+			name:              "both off — only global paths present",
+			mountAgentCache:   false,
+			mountContentCache: false,
+			absent:            []string{"workspaces/myproj-abc123/.claude", "workspaces/myproj-abc123/.codex", "workspaces/myproj-abc123/docs", "workspaces/myproj-abc123/CLAUDE.md"},
+			present:           []string{base + "/.claude/", base + "/.codex/"},
+		},
+		{
+			name:              "both on — all per-workspace paths present",
+			mountAgentCache:   true,
+			mountContentCache: true,
+			absent:            nil,
+			present: []string{
+				base + "/.claude/", base + "/.codex/",
+				"workspaces/myproj-abc123/.claude", "workspaces/myproj-abc123/.codex",
+				"docs/", "CLAUDE.md",
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			o := Options{
+				ProjectRoot:       "/home/me/code/myproj",
+				WorkspaceName:     "myproj-abc123",
+				BaseDir:           "/home/me/.makeslop",
+				Image:             "claudebox",
+				Command:           "/bin/zsh",
+				TmpDirSize:        "100m",
+				MountAgentCache:   tc.mountAgentCache,
+				MountContentCache: tc.mountContentCache,
+			}
+			spec := BuildSpec(o)
+			args := spec.Args()
+
+			mountArgs := collectMountArgs(args)
+			allMountStr := strings.Join(mountArgs, " ")
+
+			for _, sub := range tc.absent {
+				if strings.Contains(allMountStr, sub) {
+					t.Errorf("--mount args should NOT contain %q but do:\n%v", sub, mountArgs)
+				}
+			}
+			for _, sub := range tc.present {
+				if !strings.Contains(allMountStr, sub) {
+					t.Errorf("--mount args should contain %q but don't:\n%v", sub, mountArgs)
+				}
+			}
+		})
+	}
+}
+
+// TestDriftGuard_CacheMountCombos extends the drift-guard to cover all 4 combos
+// of MountAgentCache/MountContentCache — ensuring Args() and HostConfig() agree
+// on mount counts for each combination.
+func TestDriftGuard_CacheMountCombos(t *testing.T) {
+	combos := []struct {
+		name              string
+		mountAgentCache   bool
+		mountContentCache bool
+	}{
+		{"both_true", true, true},
+		{"agent_only", true, false},
+		{"content_only", false, true},
+		{"both_false", false, false},
+	}
+
+	for _, c := range combos {
+		t.Run(c.name, func(t *testing.T) {
+			o := sampleOptions()
+			o.MountAgentCache = c.mountAgentCache
+			o.MountContentCache = c.mountContentCache
+
+			spec := BuildSpec(o)
+			args := spec.Args()
+			hc := spec.HostConfig()
+
+			argsMounts := collectMountArgs(args)
+			var argsBindCount int
+			for _, raw := range argsMounts {
+				if !strings.HasPrefix(raw, "type=tmpfs") && !strings.HasPrefix(raw, "type=volume") {
+					argsBindCount++
+				}
+			}
+			var hcBindCount int
+			for _, m := range hc.Mounts {
+				if m.Type == "bind" || m.Type == "" {
+					hcBindCount++
+				}
+			}
+			if argsBindCount != hcBindCount {
+				t.Errorf("bind mount count: Args=%d, HostConfig=%d (combo: %s)",
+					argsBindCount, hcBindCount, c.name)
+			}
+
+			// Also cross-check total mount counts (bind + tmpfs + volume) agree.
+			if len(argsMounts) != len(hc.Mounts) {
+				t.Errorf("total mount count: Args=%d, HostConfig=%d (combo: %s)",
+					len(argsMounts), len(hc.Mounts), c.name)
+			}
+		})
 	}
 }

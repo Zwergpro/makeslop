@@ -92,6 +92,9 @@ exclude:
       - .venv
   files: []
   dirs: []
+cache:
+  content: true
+  agent: true
 network:
   proxy:
     address: ""

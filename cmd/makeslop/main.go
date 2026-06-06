@@ -150,7 +150,7 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfH
 	}
 	// YAML parse error aborts launch before docker.Run — symmetric with security.Scan
 	// failure to preserve the no-.env-leak invariant.
-	yamlExcludes, netCfg, err := projectconfig.Load(workspaceRoot)
+	yamlExcludes, netCfg, cacheCfg, err := projectconfig.Load(workspaceRoot)
 	if err != nil {
 		return err
 	}
@@ -204,14 +204,16 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfH
 
 	// Proxy socket path computed here to keep docker.BuildSpec pure (PID-based, so impure).
 	opts := docker.Options{
-		ProjectRoot:   workspaceRoot,
-		WorkspaceName: filepath.Base(workspaceDir),
-		BaseDir:       baseDir,
-		Image:         s.Image,
-		Command:       s.Shell,
-		TmpDirSize:    s.TmpDirSize,
-		MaskedFiles:   maskedFiles,
-		MaskedDirs:    yamlExcludes.Dirs,
+		ProjectRoot:       workspaceRoot,
+		WorkspaceName:     filepath.Base(workspaceDir),
+		BaseDir:           baseDir,
+		Image:             s.Image,
+		Command:           s.Shell,
+		TmpDirSize:        s.TmpDirSize,
+		MaskedFiles:       maskedFiles,
+		MaskedDirs:        yamlExcludes.Dirs,
+		MountContentCache: cacheCfg.Content,
+		MountAgentCache:   cacheCfg.Agent,
 	}
 
 	// sha256(workspaceDir)[:12] + PID: unique volume name across projects and concurrent runs.
@@ -302,6 +304,7 @@ func newRootCmd(baseDir string) *cobra.Command {
 		dryRun        bool
 		quiet         bool
 		proxyFlag     string
+		globalOnly    bool
 	)
 
 	rootCmd := &cobra.Command{
@@ -350,7 +353,7 @@ func newRootCmd(baseDir string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := projectconfig.Scaffold(workspaceRoot); err != nil {
+			if err := projectconfig.Scaffold(workspaceRoot, projectconfig.Cache{Content: !globalOnly, Agent: !globalOnly}); err != nil {
 				return err
 			}
 
@@ -395,6 +398,12 @@ func newRootCmd(baseDir string) *cobra.Command {
 	// --out-of-home is scoped to init only (not a persistent flag on root).
 	initCmd.Flags().BoolVar(&outOfHomeInit, "out-of-home", false,
 		"allow running outside the user's home directory")
+	// --global-only is scoped to init only (not a persistent flag on root).
+	// Scaffolds .makeslop.yaml with both cache groups disabled so only the global
+	// ~/.makeslop mounts are active. No-op when .makeslop.yaml already exists
+	// (Scaffold is idempotent).
+	initCmd.Flags().BoolVar(&globalOnly, "global-only", false,
+		"scaffold .makeslop.yaml with project cache overlays disabled (only global ~/.makeslop mounts)")
 
 	runCmd := &cobra.Command{
 		Use:          "run",

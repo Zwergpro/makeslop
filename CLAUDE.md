@@ -150,6 +150,26 @@ project `.makeslop.yaml` files are **never** auto-migrated — `MigrationVersion
 `~/.makeslop/`, not project-local files. Users with an old stub must manually add an
 `exclude.scan` block to restore masking.
 
+### Per-workspace cache mount overlays (`cache:` block in `.makeslop.yaml`)
+`internal/projectconfig/projectconfig.go` parses an optional `cache:` block:
+
+```yaml
+cache:
+  content: true   # mount docs/ + CLAUDE.md from per-workspace cache (default: true)
+  agent: true     # mount .claude/ + .codex/ from per-workspace cache (default: true)
+```
+
+`projectconfig.Load` returns a `Cache{Content bool, Agent bool}` (fourth return value). Absent
+block ⇒ `{true, true}` ⇒ identical to pre-feature behavior (backward compatible).
+
+The values flow into `docker.Options.MountContentCache` and `docker.Options.MountAgentCache` in
+`runRun`. `BuildSpec` gates the two per-workspace mount groups on these booleans; global mounts
+(`~/.makeslop/.claude/`, `.claude.json`, `.codex/`) are always present.
+
+`Scaffold(root, Cache)` writes the stub with the `cache:` block; `Stub` is the default rendering
+(`{true, true}`). The `init --global-only` flag calls `Scaffold(root, Cache{false, false})`,
+scaffolding a file that disables both overlay groups. `Scaffold` is idempotent (EEXIST = success).
+
 ### POSIX-only invariant
 makeslop targets POSIX systems only. Tests that rely on TTY/signal behavior call `SkipNonPOSIX` at the top.
 Do not add Windows compatibility paths.
@@ -178,6 +198,12 @@ unchanged and the embedded Dockerfile is unchanged.
 **Note:** the network-default inversion (proxy off by default, opt-in via `--proxy`/`network.proxy.address`)
 does **not** bump either `CurrentVersion` or `MigrationVersion` — the `Settings` struct fields are
 unchanged and the embedded Dockerfile is unchanged.
+
+**Note:** the configurable per-workspace cache mount overlays (`cache:` block in `.makeslop.yaml`,
+`init --global-only` flag, `MountContentCache`/`MountAgentCache` in `docker.Options`) do **not**
+bump either `CurrentVersion` or `MigrationVersion` — the `Settings` struct fields are unchanged
+and the embedded Dockerfile is unchanged. The `cache:` block lives in the per-project
+`.makeslop.yaml`, not in `~/.makeslop/settings.json`.
 
 ### init seed-at-latest and stale-nudge behavior
 `makeslop init` detects whether `~/.makeslop/settings.json` already exists **before** calling
@@ -223,6 +249,12 @@ TTY and `NO_COLOR` is unset.
 ### --proxy flag scope
 `--proxy` is registered only on `run` (not a persistent root flag). Commands `version`,
 `config`, `migrate`, `build`, `init`, and `status` reject it as an unknown flag.
+
+### --global-only flag scope
+`--global-only` is registered only on `init` (not a persistent root flag). Commands `run`,
+`version`, `config`, `migrate`, `build`, and `status` reject it as an unknown flag.
+It only affects a **fresh** scaffold: `Scaffold` is idempotent (EEXIST = success, never clobbers
+user edits), so on an already-init'd project `--global-only` is a no-op — documented, not silent.
 
 ### --quiet flag
 `--quiet` is a persistent root flag. When set, stderr chrome (notices, nudges, progress lines such
