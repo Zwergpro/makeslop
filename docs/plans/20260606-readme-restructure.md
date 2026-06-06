@@ -115,13 +115,13 @@ Content ownership map (where each current-README section goes):
 - Create: `docs/reference.md`
 - Read (source): `README.md`
 
-- [ ] add an intro line + table of contents for the reference file
-- [ ] relocate full per-command docs: `init`, `run`, `status`, `migrate`, `build`, `config`, `version` (with all flags: `--dry-run`/`-n`, `--out-of-home`, `--proxy`, `--no-cache`, `--build-arg`, `--json`, `--quiet`)
-- [ ] merge the "Setup commands" prose (init/migrate/build self-heal + stale-nudge) into the per-command docs — **one canonical description per command**, preserving the "migrate is an explicit upgrade step, not part of normal flow" framing
-- [ ] relocate Requirements (daemon/moby SDK note), Cache layout, container layout + mount table, in-container security flags (`--cap-drop ALL`, `no-new-privileges`, `--tmpfs`, bind-mount rationale), Host UID, TTY policy
-- [ ] relocate Dry run, Exit codes, Output conventions, Path resolution (keep as a distinct block)
-- [ ] relocate Docker container settings + `settings.json` schema — **reconcile version terminology**: replace the stale `version`/`migrated_version` example with the merged single `CurrentVersion` field (confirm shape from `internal/config/config.go`; ⚠️ if unconfirmable)
-- [ ] verify content-integrity: every relocated block matches the original README text (no drops/edits of meaning), except the deliberately-corrected version schema
+- [x] add an intro line + table of contents for the reference file
+- [x] relocate full per-command docs: `init`, `run`, `status`, `migrate`, `build`, `config`, `version` (with all flags: `--dry-run`/`-n`, `--out-of-home`, `--proxy`, `--no-cache`, `--build-arg`, `--json`, `--quiet`)
+- [x] merge the "Setup commands" prose (init/migrate/build self-heal + stale-nudge) into the per-command docs — **one canonical description per command**, preserving the "migrate is an explicit upgrade step, not part of normal flow" framing
+- [x] relocate Requirements (daemon/moby SDK note), Cache layout, container layout + mount table, in-container security flags (`--cap-drop ALL`, `no-new-privileges`, `--tmpfs`, bind-mount rationale), Host UID, TTY policy
+- [x] relocate Dry run, Exit codes, Output conventions, Path resolution (keep as a distinct block)
+- [x] relocate Docker container settings + `settings.json` schema — **reconcile version terminology**: confirmed from `internal/config/config.go` that both `version` (CurrentVersion=1) and `migrated_version` (MigrationVersion=2) are separate fields in `Settings`; documented both with clear distinction of purpose
+- [x] verify content-integrity: every relocated block matches the original README text (no drops/edits of meaning), except the deliberately-corrected version schema
 
 ### Task 2: Create `docs/security.md` (masking + network + guard)
 
