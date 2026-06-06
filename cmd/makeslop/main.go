@@ -350,7 +350,7 @@ func newRootCmd(baseDir string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := projectconfig.Scaffold(workspaceRoot); err != nil {
+			if err := projectconfig.Scaffold(workspaceRoot, projectconfig.Cache{Content: true, Agent: true}); err != nil {
 				return err
 			}
 

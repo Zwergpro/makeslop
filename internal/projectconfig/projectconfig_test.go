@@ -24,7 +24,7 @@ func TestScaffold_WritesStub(t *testing.T) {
 	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
-	if err := Scaffold(root); err != nil {
+	if err := Scaffold(root, Cache{Content: true, Agent: true}); err != nil {
 		t.Fatalf("Scaffold returned error: %v", err)
 	}
 
@@ -46,7 +46,7 @@ func TestScaffold_Idempotent(t *testing.T) {
 		t.Fatalf("pre-write: %v", err)
 	}
 
-	if err := Scaffold(root); err != nil {
+	if err := Scaffold(root, Cache{Content: true, Agent: true}); err != nil {
 		t.Fatalf("Scaffold on existing file returned error: %v", err)
 	}
 
@@ -1012,6 +1012,126 @@ func TestLoad_Cache_UnknownKeyRejected(t *testing.T) {
 	}
 	if !strings.HasPrefix(err.Error(), "projectconfig:") {
 		t.Errorf("error missing 'projectconfig:' prefix: %q", err.Error())
+	}
+}
+
+// ---- renderStub / Scaffold(cache) round-trip tests ----
+
+// TestRenderStub_TrueTrue verifies that renderStub(Cache{true,true}) round-trips
+// through Load to Cache{Content:true, Agent:true}.
+func TestRenderStub_TrueTrue(t *testing.T) {
+	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	root := evalSymlinks(t, t.TempDir())
+
+	data := renderStub(Cache{Content: true, Agent: true})
+	if err := os.WriteFile(filepath.Join(root, Filename), data, 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	_, _, cacheCfg, err := Load(root)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if !cacheCfg.Content {
+		t.Errorf("Cache.Content: got false, want true")
+	}
+	if !cacheCfg.Agent {
+		t.Errorf("Cache.Agent: got false, want true")
+	}
+}
+
+// TestRenderStub_FalseFalse verifies that renderStub(Cache{false,false})
+// round-trips through Load to Cache{Content:false, Agent:false}.
+func TestRenderStub_FalseFalse(t *testing.T) {
+	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	root := evalSymlinks(t, t.TempDir())
+
+	data := renderStub(Cache{Content: false, Agent: false})
+	if err := os.WriteFile(filepath.Join(root, Filename), data, 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	_, _, cacheCfg, err := Load(root)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if cacheCfg.Content {
+		t.Errorf("Cache.Content: got true, want false")
+	}
+	if cacheCfg.Agent {
+		t.Errorf("Cache.Agent: got true, want false")
+	}
+}
+
+// TestScaffold_CacheFalseFalse verifies that Scaffold(root, Cache{false,false})
+// writes a file that Load parses as Cache{false,false}.
+func TestScaffold_CacheFalseFalse(t *testing.T) {
+	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	root := evalSymlinks(t, t.TempDir())
+
+	if err := Scaffold(root, Cache{Content: false, Agent: false}); err != nil {
+		t.Fatalf("Scaffold returned error: %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(root, Filename))
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	want := renderStub(Cache{Content: false, Agent: false})
+	if string(got) != string(want) {
+		t.Errorf("file content mismatch:\ngot:  %q\nwant: %q", got, want)
+	}
+
+	_, _, cacheCfg, err := Load(root)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if cacheCfg.Content {
+		t.Errorf("Cache.Content: got true, want false")
+	}
+	if cacheCfg.Agent {
+		t.Errorf("Cache.Agent: got true, want false")
+	}
+}
+
+// TestScaffold_IdempotentWithDifferentCache verifies that calling Scaffold a
+// second time with different Cache values is a no-op (idempotent: EEXIST wins,
+// no clobber of user edits).
+func TestScaffold_IdempotentWithDifferentCache(t *testing.T) {
+	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	root := evalSymlinks(t, t.TempDir())
+
+	// First scaffold with both=true.
+	if err := Scaffold(root, Cache{Content: true, Agent: true}); err != nil {
+		t.Fatalf("first Scaffold returned error: %v", err)
+	}
+
+	first, err := os.ReadFile(filepath.Join(root, Filename))
+	if err != nil {
+		t.Fatalf("ReadFile after first scaffold: %v", err)
+	}
+
+	// Second scaffold with both=false — must not clobber.
+	if err := Scaffold(root, Cache{Content: false, Agent: false}); err != nil {
+		t.Fatalf("second Scaffold returned error: %v", err)
+	}
+
+	second, err := os.ReadFile(filepath.Join(root, Filename))
+	if err != nil {
+		t.Fatalf("ReadFile after second scaffold: %v", err)
+	}
+
+	if string(first) != string(second) {
+		t.Errorf("second Scaffold clobbered the file:\nfirst:  %q\nsecond: %q", first, second)
+	}
+}
+
+// TestStub_MatchesDefaultRenderStub verifies the exported Stub variable equals
+// renderStub(Cache{true,true}), so callers that compare against Stub still work.
+func TestStub_MatchesDefaultRenderStub(t *testing.T) {
+	want := renderStub(Cache{Content: true, Agent: true})
+	if string(Stub) != string(want) {
+		t.Errorf("Stub does not match renderStub(Cache{true,true}):\nStub:  %q\nwant: %q", Stub, want)
 	}
 }
 

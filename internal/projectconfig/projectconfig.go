@@ -44,13 +44,12 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Filename is the project-local config file name, relative to the project root.
-const Filename = ".makeslop.yaml"
-
-// Stub is the content Scaffold writes. Exported so tests can compare without hardcoding.
-// It seeds the default scan filters (patterns + skip-dirs) as active values so that
-// new projects get secret masking out of the box without requiring manual configuration.
-var Stub = []byte(`exclude:
+// renderStub returns the canonical .makeslop.yaml stub bytes for the given
+// Cache defaults. The cache: block is placed between exclude: and network:.
+// Callers that want the default rendering (both groups enabled) should pass
+// Cache{Content: true, Agent: true}.
+func renderStub(c Cache) []byte {
+	return []byte(fmt.Sprintf(`exclude:
   scan:
     patterns:
       - "*.env"
@@ -69,10 +68,25 @@ var Stub = []byte(`exclude:
       - .venv
   files: []
   dirs: []
+cache:
+  content: %t
+  agent: %t
 network:
   proxy:
     address: ""
-`)
+`, c.Content, c.Agent))
+}
+
+// Filename is the project-local config file name, relative to the project root.
+const Filename = ".makeslop.yaml"
+
+// Stub is the content Scaffold writes when called with the default Cache
+// (Content: true, Agent: true). Exported so tests can compare without
+// hardcoding. It seeds the default scan filters (patterns + skip-dirs) as
+// active values so that new projects get secret masking out of the box without
+// requiring manual configuration. The cache: block appears between exclude:
+// and network:.
+var Stub = renderStub(Cache{Content: true, Agent: true})
 
 // Already mounted by docker.BuildSpec; user overlays would silently shadow them.
 var reservedPaths = map[string]struct{}{
@@ -137,10 +151,11 @@ type yamlSchema struct {
 	} `yaml:"cache"`
 }
 
-// Scaffold creates <root>/.makeslop.yaml with an empty stub. Idempotent:
-// EEXIST is success, user edits are never clobbered. root must be absolute
-// and EvalSymlinks-evaluated.
-func Scaffold(root string) error {
+// Scaffold creates <root>/.makeslop.yaml with the stub rendered for the given
+// Cache defaults. Idempotent: EEXIST is success, user edits are never
+// clobbered (the c parameter is a no-op on an already-present file). root
+// must be absolute and EvalSymlinks-evaluated.
+func Scaffold(root string, c Cache) error {
 	path := filepath.Join(root, Filename)
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
 	if err != nil {
@@ -150,7 +165,8 @@ func Scaffold(root string) error {
 		return fmt.Errorf("scaffold %s: %w", Filename, err)
 	}
 	defer f.Close()
-	if _, err := f.Write(Stub); err != nil {
+	stub := renderStub(c)
+	if _, err := f.Write(stub); err != nil {
 		// Remove the empty/partial file so a subsequent Scaffold call can retry
 		// (otherwise O_EXCL would see ErrExist and return nil, leaving the file
 		// corrupt forever).

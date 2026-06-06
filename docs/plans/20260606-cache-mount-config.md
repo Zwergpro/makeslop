@@ -133,22 +133,22 @@ notes in CLAUDE.md).
 **Files:**
 - Modify: `internal/projectconfig/projectconfig.go`
 
-- [ ] add `func renderStub(c Cache) []byte` that renders the existing stub content plus
+- [x] add `func renderStub(c Cache) []byte` that renders the existing stub content plus
       a `cache:\n  content: %t\n  agent: %t` block placed **between** `exclude:` and
       `network:`
-- [ ] redefine `var Stub = renderStub(Cache{Content: true, Agent: true})` (stays
+- [x] redefine `var Stub = renderStub(Cache{Content: true, Agent: true})` (stays
       exported; now the default rendering)
-- [ ] change `Scaffold(root string)` → `Scaffold(root string, c Cache)` writing
+- [x] change `Scaffold(root string)` → `Scaffold(root string, c Cache)` writing
       `renderStub(c)`; preserve idempotency (EEXIST = success, partial-write cleanup)
-- [ ] write test: `renderStub(Cache{true,true})` round-trips through `Load` to
+- [x] write test: `renderStub(Cache{true,true})` round-trips through `Load` to
       `{true,true}`; `renderStub(Cache{false,false})` round-trips to `{false,false}`
-- [ ] write test: scaffolded file from `Scaffold(root, Cache{false,false})` parses to
+- [x] write test: scaffolded file from `Scaffold(root, Cache{false,false})` parses to
       `{false,false}`
-- [ ] note: `Stub`'s rendered bytes now include the `cache:` block. Confirm callers that
+- [x] note: `Stub`'s rendered bytes now include the `cache:` block. Confirm callers that
       compare against the `Stub` **variable** (`main_test.go:586,1526`) stay green (they
       do — they reference the variable, not a literal); update any hardcoded-literal stub
       assertion if one surfaces
-- [ ] run `go test ./internal/projectconfig/` — must pass before next task
+- [x] run `go test ./internal/projectconfig/` — must pass before next task
 
 ### Task 3: Conditional cache mounts in BuildSpec
 
