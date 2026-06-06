@@ -304,6 +304,7 @@ func newRootCmd(baseDir string) *cobra.Command {
 		dryRun        bool
 		quiet         bool
 		proxyFlag     string
+		globalOnly    bool
 	)
 
 	rootCmd := &cobra.Command{
@@ -352,7 +353,7 @@ func newRootCmd(baseDir string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := projectconfig.Scaffold(workspaceRoot, projectconfig.Cache{Content: true, Agent: true}); err != nil {
+			if err := projectconfig.Scaffold(workspaceRoot, projectconfig.Cache{Content: !globalOnly, Agent: !globalOnly}); err != nil {
 				return err
 			}
 
@@ -397,6 +398,12 @@ func newRootCmd(baseDir string) *cobra.Command {
 	// --out-of-home is scoped to init only (not a persistent flag on root).
 	initCmd.Flags().BoolVar(&outOfHomeInit, "out-of-home", false,
 		"allow running outside the user's home directory")
+	// --global-only is scoped to init only (not a persistent flag on root).
+	// Scaffolds .makeslop.yaml with both cache groups disabled so only the global
+	// ~/.makeslop mounts are active. No-op when .makeslop.yaml already exists
+	// (Scaffold is idempotent).
+	initCmd.Flags().BoolVar(&globalOnly, "global-only", false,
+		"scaffold .makeslop.yaml with project cache overlays disabled (only global ~/.makeslop mounts)")
 
 	runCmd := &cobra.Command{
 		Use:          "run",

@@ -199,17 +199,17 @@ notes in CLAUDE.md).
 **Files:**
 - Modify: `cmd/makeslop/main.go`
 
-- [ ] declare `var globalOnly bool` in `newRootCmd` alongside the other flag vars
-- [ ] register on `initCmd` only:
+- [x] declare `var globalOnly bool` in `newRootCmd` alongside the other flag vars
+- [x] register on `initCmd` only:
       `initCmd.Flags().BoolVar(&globalOnly, "global-only", false, "scaffold .makeslop.yaml with project cache overlays disabled (only global ~/.makeslop mounts)")`
-- [ ] update the `Scaffold` call (`main.go:353`) to
+- [x] update the `Scaffold` call (`main.go:353`) to
       `projectconfig.Scaffold(workspaceRoot, projectconfig.Cache{Content: !globalOnly, Agent: !globalOnly})`
-- [ ] write test in `cmd/makeslop/main_test.go`: `init --global-only` writes a YAML that
+- [x] write test in `cmd/makeslop/main_test.go`: `init --global-only` writes a YAML that
       `Load`s to `{false,false}`; `init` without the flag ⇒ `{true,true}`
-- [ ] write scope test: `--global-only` is rejected as an unknown flag on
+- [x] write scope test: `--global-only` is rejected as an unknown flag on
       `run`/`build`/`migrate`/`config`/`status`/`version` (mirror the existing
       `--out-of-home` scope tests)
-- [ ] run `go test ./...` — must pass before next task
+- [x] run `go test ./...` — must pass before next task
 
 ### Task 6: Verify acceptance criteria
 - [ ] absent `cache:` block ⇒ byte-identical mounts to pre-change behavior

@@ -4326,3 +4326,115 @@ func TestRun_DryRun_CacheDefault(t *testing.T) {
 		t.Errorf("content CLAUDE.md mount must be present by default; stdout:\n%s", stdout)
 	}
 }
+
+// ── --global-only flag tests (Task 5) ─────────────────────────────────────────
+
+// TestInit_GlobalOnly_ScaffoldsCacheDisabled verifies that `init --global-only`
+// writes a .makeslop.yaml that Load parses to Cache{false, false}.
+func TestInit_GlobalOnly_ScaffoldsCacheDisabled(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	_, stderr, err := runCmd(t, baseDir, "init", "--global-only")
+	if err != nil {
+		t.Fatalf("init --global-only failed: %v; stderr=%q", err, stderr)
+	}
+
+	resolvedPwd := evalSymlinks(t, pwd)
+	_, _, cache, err := projectconfig.Load(resolvedPwd)
+	if err != nil {
+		t.Fatalf("projectconfig.Load after init --global-only: %v", err)
+	}
+	if cache.Content {
+		t.Errorf("cache.Content must be false after init --global-only; got true")
+	}
+	if cache.Agent {
+		t.Errorf("cache.Agent must be false after init --global-only; got true")
+	}
+}
+
+// TestInit_NoGlobalOnly_ScaffoldsCacheEnabled verifies that `init` without
+// --global-only writes a .makeslop.yaml that Load parses to Cache{true, true}.
+func TestInit_NoGlobalOnly_ScaffoldsCacheEnabled(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	_, stderr, err := runCmd(t, baseDir, "init")
+	if err != nil {
+		t.Fatalf("init failed: %v; stderr=%q", err, stderr)
+	}
+
+	resolvedPwd := evalSymlinks(t, pwd)
+	_, _, cache, err := projectconfig.Load(resolvedPwd)
+	if err != nil {
+		t.Fatalf("projectconfig.Load after init: %v", err)
+	}
+	if !cache.Content {
+		t.Errorf("cache.Content must be true after plain init; got false")
+	}
+	if !cache.Agent {
+		t.Errorf("cache.Agent must be true after plain init; got false")
+	}
+}
+
+// TestInit_GlobalOnly_IsNopOnExistingFile verifies that `init --global-only` is
+// a no-op when .makeslop.yaml already exists (Scaffold is idempotent: EEXIST = success,
+// no clobber). The existing content must be preserved unchanged.
+func TestInit_GlobalOnly_IsNopOnExistingFile(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	resolvedPwd := evalSymlinks(t, pwd)
+	// Seed a hand-written config with cache explicitly enabled.
+	existing := []byte("exclude:\n  dirs: []\n  files: []\n  scan:\n    patterns: []\ncache:\n  content: true\n  agent: true\n")
+	configPath := filepath.Join(resolvedPwd, projectconfig.Filename)
+	if err := os.WriteFile(configPath, existing, 0o644); err != nil {
+		t.Fatalf("write pre-existing config: %v", err)
+	}
+
+	// init --global-only must succeed but must not clobber the existing file.
+	_, stderr, err := runCmd(t, baseDir, "init", "--global-only")
+	if err != nil {
+		t.Fatalf("init --global-only on existing config failed: %v; stderr=%q", err, stderr)
+	}
+
+	after, readErr := os.ReadFile(configPath)
+	if readErr != nil {
+		t.Fatalf("read config after init --global-only: %v", readErr)
+	}
+	if !bytes.Equal(after, existing) {
+		t.Errorf(".makeslop.yaml was modified by init --global-only\ngot:  %q\nwant: %q", after, existing)
+	}
+}
+
+// TestGlobalOnly_RejectedOnNonInitCommands verifies that --global-only is
+// registered only on `init` and is rejected as unknown by run, build, migrate,
+// config, status, and version.
+func TestGlobalOnly_RejectedOnNonInitCommands(t *testing.T) {
+	baseDir := t.TempDir()
+
+	for _, cmd := range [][]string{
+		{"run", "--global-only"},
+		{"build", "--global-only"},
+		{"migrate", "--global-only"},
+		{"config", "--global-only"},
+		{"status", "--global-only"},
+		{"version", "--global-only"},
+	} {
+		t.Run(cmd[0], func(t *testing.T) {
+			_, _, err := runCmd(t, baseDir, cmd...)
+			if err == nil {
+				t.Fatalf("%v --global-only should fail with unknown flag, got nil", cmd[0])
+			}
+			if !strings.Contains(err.Error(), "unknown flag") && !strings.Contains(err.Error(), "global-only") {
+				t.Errorf("%v --global-only error should mention unknown flag or global-only; got: %v", cmd[0], err)
+			}
+		})
+	}
+}
