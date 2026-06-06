@@ -6,17 +6,17 @@ agent-facing notes live in `CLAUDE.md`; this file is a self-contained human-read
 
 ## Table of Contents
 
-1. [Pure/impure split](#pureimpure-split)
-2. [apiClient seam and fake clients](#apiclient-seam-and-fake-clients)
-3. [newSidecarFn seam](#newsidecarfn-seam)
-4. [Socat sidecar lifecycle](#socat-sidecar-lifecycle)
-5. [BuildKit session build flow](#buildkit-session-build-flow)
-6. [Preflight helpers](#preflight-helpers)
-7. [Config-driven scan engine](#config-driven-scan-engine)
-8. [Version constants](#version-constants)
-9. [POSIX-only invariant](#posix-only-invariant)
-10. [Exit-code contract](#exit-code-contract)
-11. [Contributing / Build](#contributing--build)
+- [Pure/impure split](#pureimpure-split)
+- [apiClient seam and fake clients](#apiclient-seam-and-fake-clients)
+- [newSidecarFn seam](#newsidecarfn-seam)
+- [Socat sidecar lifecycle](#socat-sidecar-lifecycle)
+- [BuildKit session build flow](#buildkit-session-build-flow)
+- [Preflight helpers](#preflight-helpers)
+- [Config-driven scan engine](#config-driven-scan-engine)
+- [Version constants](#version-constants)
+- [POSIX-only invariant](#posix-only-invariant)
+- [Exit-code contract](#exit-code-contract)
+- [Contributing / Build](#contributing--build)
 
 ---
 
@@ -112,10 +112,11 @@ Docker volume and connects it to a remote upstream address. This is used in prox
 1. `ImageInspect` to check presence; if absent, `ImagePull` with a one-line notice (suppressed by
    `--quiet`); pull failure is fatal with a registry hint.
 2. `VolumeCreate` (per-run name, `managed-by: makeslop` label).
-3. `ContainerCreate` + `ContainerStart` — detached socat container on bridge networking, volume
-   mounted **read-write** at `/sockets`. Socat args:
+3. `ContainerCreate` — detached socat container on bridge networking, volume mounted **read-write**
+   at `/sockets`. Socat args:
    `UNIX-LISTEN:/sockets/proxy.sock,fork,mode=0666 TCP-CONNECT:<upstream>,reuseaddr`.
-4. Readiness poll (~5 s, 100 ms intervals): `ContainerInspect` (early-exit detection) →
+4. `ContainerStart` — starts the created container.
+5. Readiness poll (~5 s, 100 ms intervals): `ContainerInspect` (early-exit detection) →
    `ExecCreate` / `ExecStart` / `ExecInspect` (`test -S /sockets/proxy.sock`, exit 0 = ready).
 
 `Sidecar.Close()` — `ContainerRemove(Force:true)` then `VolumeRemove`; best-effort, idempotent.
@@ -153,13 +154,8 @@ checks its presence via `docker.ImageExists(docker.SocatImage)`.
 `build` passes an empty temporary directory as the docker build context — the Dockerfile downloads
 everything, so no local files need shipping. This keeps the context transfer instant.
 
-An integration test exercises the full `Build` flow against a live Docker daemon:
-
-```
-MAKESLOP_DOCKER_IT=1 go test -tags integration ./internal/docker/
-```
-
-This test is skipped during normal `go test ./...`.
+An integration test (gated by `MAKESLOP_DOCKER_IT=1`) exercises the full `Build` flow against a
+live Docker daemon. See [Contributing / Build](#contributing--build) for the command.
 
 ---
 

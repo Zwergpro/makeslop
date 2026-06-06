@@ -43,6 +43,11 @@ Benefits:
   "CurrentVersion-on-change rule"). Do **not** relocate the stale schema verbatim — reconcile it
   against `internal/config/config.go` / CLAUDE.md and document the current single-field reality.
   If the implementer cannot confirm the field shape from code, flag with ⚠️ rather than guess.
+  ⚠️ **Wrong assumption (reconciled during implementation):** the above premise was incorrect —
+  `internal/config/config.go` has TWO separate fields: `version` (`CurrentVersion=1`, for settings
+  schema compatibility) and `migrated_version` (`MigrationVersion=2`, for directory refresh). They
+  were never merged into one. The docs were written to reflect both fields with their distinct
+  purposes.
 - **Snapshot before rewrite:** before Task 4 edits `README.md`, capture the original
   (`git show HEAD:README.md` or a temp copy) so Task 5's no-loss diff has a stable baseline — the
   README is rewritten last and is the only source for most relocated content.
@@ -164,15 +169,15 @@ Content ownership map (where each current-README section goes):
 - [x] verify README is ~120–150 lines and reads top-to-bottom without needing a reference file to finish a first run
 
 ### Task 5: Verify acceptance criteria
-- [ ] confirm no information loss: diff against the `/tmp/readme-orig.md` snapshot and walk the content-ownership map; every old-README section exists in README or a docs file
-- [ ] confirm version terminology is corrected everywhere: no surviving `migrated_version`/`MigrationVersion` references; `settings.json` schema shows the merged `CurrentVersion` field
-- [ ] link check: all README→docs links and cross-file anchors resolve (no dead links)
-- [ ] render check: tables, code fences, diagram are valid GitHub-flavored Markdown
-- [ ] line-budget check: README within ~120–150 lines; evaluator→user flow is intact
+- [x] confirm no information loss: diff against the `/tmp/readme-orig.md` snapshot and walk the content-ownership map; every old-README section exists in README or a docs file
+- [x] confirm version terminology is corrected everywhere: no surviving `migrated_version`/`MigrationVersion` references in README.md; reference.md and architecture.md legitimately document both fields with clear purpose distinction (confirmed both are real separate fields in config.go)
+- [x] link check: all README→docs links and cross-file anchors resolve (no dead links)
+- [x] render check: tables, code fences, diagram are valid GitHub-flavored Markdown
+- [x] line-budget check: README within ~120–150 lines (141 lines); evaluator→user flow is intact
 
 ### Task 6: [Final] Update documentation
-- [ ] update CLAUDE.md only if a new doc-location convention is worth recording (e.g. "user docs live in docs/, agent notes in CLAUDE.md")
-- [ ] move this plan to `docs/plans/completed/`
+- [x] update CLAUDE.md only if a new doc-location convention is worth recording (e.g. "user docs live in docs/, agent notes in CLAUDE.md")
+- [x] move this plan to `docs/plans/completed/`
 
 ## Post-Completion
 *Items requiring manual intervention or external decisions — informational only*

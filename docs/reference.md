@@ -1,8 +1,8 @@
 # makeslop — Command & Runtime Reference
 
-Complete reference for all `makeslop` commands, flags, runtime behaviour, and configuration.
+Complete reference for all `makeslop` commands, flags, runtime behavior, and configuration.
 
-## Contents
+## Table of Contents
 
 - [Requirements](#requirements)
 - [Commands](#commands)
@@ -47,13 +47,14 @@ Registers the current working directory as a workspace and seeds `~/.makeslop/` 
 - On an existing but stale directory a non-blocking nudge is printed to stderr and `init`
   continues without modifying the existing files:
   ```
-  note: base config is v<latest>, yours is v<current> — run 'makeslop migrate'
+  note: your base config is v<current>, latest is v<latest> — run 'makeslop migrate'
   ```
 - If `pwd` is already a subdirectory of a registered workspace, the existing workspace's cache path
   is returned (idempotent, no mutation).
 - Otherwise a new entry is added to `settings.json`, the cache directory is created, and its
   absolute path is printed to stdout.
-- Success message on stderr: `registered <name> — run 'makeslop build' then 'makeslop run'`.
+- Prints to stderr (suppressed by --quiet): `registered <name> — run 'makeslop build' then 'makeslop run'`
+  (emitted on both fresh registration and re-init of an existing workspace).
 
 **Flags:**
 - `--out-of-home` — bypass the home-directory guard (see [security.md](security.md#home-directory-guard))
@@ -64,8 +65,10 @@ Registers the current working directory as a workspace and seeds `~/.makeslop/` 
 
 Builds (or rebuilds) the base Docker image from `~/.makeslop/Dockerfile` via the moby SDK.
 
-- **Self-healing:** if `~/.makeslop/` has not been initialised yet, `build` seeds it first (same as
-  `init`) before building — so `makeslop build` works on a fresh machine with no prior `init`.
+- **Self-healing:** if `~/.makeslop/` has not been initialised yet, `build` seeds the base
+  directory (runs `Bootstrap`) before building. Unlike `init`, it does not register a workspace or
+  create `.makeslop.yaml` — so `makeslop build` works on a fresh machine but a subsequent `run`
+  still requires `init`.
 - The image tag defaults to `claudebox` (configurable via `settings.json`).
 - **Empty context + BuildKit:** `build` passes an empty temporary directory as the Docker build
   context (the Dockerfile downloads everything; no local files need shipping) and uses the BuildKit
@@ -131,7 +134,8 @@ Brings `~/.makeslop/` up to date with the current binary.
 - Compares the binary's `MigrationVersion` constant against the `migrated_version` stored in
   `settings.json`. When they differ, runs all migration steps (force-overwrites
   `~/.makeslop/Dockerfile` from the embedded asset) and stamps the new version.
-- When already up to date, prints `already up to date` and exits immediately.
+- On success prints `makeslop: ~/.makeslop updated` to stdout and exits 0.
+- When already up to date, prints `makeslop: ~/.makeslop already up to date` to stdout and exits 0.
 - Does not require a prior `init` (creates `~/.makeslop/` if it does not exist).
 - `migrate` is an **explicit upgrade step**, not part of the normal setup flow. `init` always seeds
   `~/.makeslop/` at the latest version, so a freshly initialized directory is never stale.
@@ -154,7 +158,8 @@ Manages persistent settings in `~/.makeslop/settings.json`. Works without a prio
 
 Accepted `tmp_dir_size` forms: `100m`, `2g`, `512k`, `1048576` (bare number = bytes).
 
-Self-heals via `Save`'s `MkdirAll` (creates `~/.makeslop/` if absent).
+`config set` self-heals via `Save`'s `MkdirAll` (creates `~/.makeslop/` if absent).
+`config list` reads only; it does not write and does not create the directory.
 
 ---
 
@@ -168,18 +173,14 @@ without ldflags (e.g. via a plain `go build`).
 
 ## Setup flow and self-healing
 
-`init` seeds files that are absent and registers the current directory as a workspace. On a fresh
-machine `init` writes `~/.makeslop/` at the current `MigrationVersion`, so the directory is never
-reported stale.
+Normal first-run order: `init` → `build` → `run`. After a binary update that ships a newer
+Dockerfile: `migrate` → `build`.
 
-`migrate` is the explicit upgrade path: it force-refreshes managed files in `~/.makeslop/`
-whenever the binary ships a newer `MigrationVersion` than what is recorded in `settings.json`. On
-subsequent runs `migrate` prints `already up to date` and exits immediately. Running `migrate`
-without a prior `init` is also safe — it creates `~/.makeslop/` if it does not exist.
+`init` registers the workspace **and** seeds `~/.makeslop/` atomically, so a freshly initialized
+directory is always stamped at the current `MigrationVersion` — never reported stale on first run.
 
-`build` is safe to run without a prior `init` — it seeds `~/.makeslop/` if absent (self-heal) and
-then builds the image. After a `migrate` that refreshes the `Dockerfile`, re-run `build` to pick
-up the changes.
+`migrate` is the explicit upgrade path for existing installs. `build` self-heals `~/.makeslop/`
+(seeds if absent), but does not register a workspace.
 
 ---
 
@@ -259,7 +260,7 @@ shells.
 Pass `--dry-run` (short: `-n`) to print the equivalent shell command for the container launch that
 `makeslop` would execute and then exit without launching the container. The output is a multi-line,
 backslash-continued, paste-ready shell command on stdout. All pre-launch checks still run
-(home-dir guard, workspace lookup, secret scan, settings load), so the printed command equals the
+(home-directory guard, workspace lookup, secret scan, settings load), so the printed command equals the
 real invocation byte-for-byte. Daemon and image pre-flight checks are skipped on `--dry-run`.
 
 ```
@@ -284,7 +285,7 @@ makeslop run -n > cmd.sh   # capture only the command; masked-file count goes to
   exit code.
 - `1` — `makeslop build` exits 1 on any build failure (the docker SDK returns an error; there is no
   child docker process to propagate an exit code from).
-- `1` — `makeslop status` exits 1 when any blocking check (daemon, image, workspace) fails.
+- `1` — `makeslop status` exits 1 when any blocking check (daemon, base config, image, or workspace) fails.
 - `1` — any other failure: no workspace registered for pwd, no TTY available, corrupt
   `settings.json`, invalid `--proxy` address, I/O error, etc. The reason is written to stderr.
 

@@ -7,7 +7,7 @@ container with controlled mounts, secret masking, and optional egress filtering.
 
 makeslop gives each project its own container launched from a single shared base image. The agent
 gets your source tree plus its own persistent state directories (`.claude/`, `.codex/`, `docs/`),
-but nothing else from your host — no credentials, no other projects, no ambient environment.
+but nothing else from your host — no other projects, no ambient host environment (credentials in the shared agent config dirs like `.claude/` are present by design).
 
 Why use it:
 - **Isolation** — each project runs in its own container; no credential leakage between projects.
@@ -45,7 +45,7 @@ makeslop run
 ```
 
 That's the normal flow. `migrate` is an explicit upgrade step, not part of first-run setup —
-`init` always seeds at the latest version so a freshly-initialised directory is never stale.
+`init` always seeds at the latest version so a freshly initialized directory is never stale.
 
 ## How it works
 
@@ -55,10 +55,10 @@ That's the normal flow. `migrate` is an explicit upgrade step, not part of first
 │    │  scans for secrets (masks with /dev/null)                           │
 │    │  mounts project root + per-project agent state                      │
 │    ▼                                                                      │
-│  ┌── claudebox container (--cap-drop ALL, --security-opt no-new-priv) ── │
+│  ┌── claudebox container (--cap-drop ALL, --security-opt no-new-privileges) ─ │
 │  │  /workspace/<name>   ← your project root (bind-mounted)               │
 │  │  /home/user/.claude/ ← global agent config                            │
-│  │  /tmp                ← tmpfs (default 100 m, not on disk)             │
+│  │  /tmp                ← tmpfs (default 100m, not on disk)              │
 │  │  HTTP_PROXY / HTTPS_PROXY  ← set only in --proxy mode                 │
 │  └──────────────────────────────────────────────────────────────────────  │
 │  optional: socat sidecar (bridge) ──► remote HTTP proxy                  │
@@ -122,8 +122,8 @@ home-directory guard.
 | `makeslop init` | Register project, seed `~/.makeslop/` at latest version |
 | `makeslop build` | Build (or rebuild) the `claudebox` Docker image |
 | `makeslop run` | Launch an interactive agent container (TTY required) |
-| `makeslop status` | Ordered readiness check: daemon, image, config, workspace, proxy |
-| `makeslop migrate` | Upgrade `~/.makeslop/` when the binary ships a newer config version |
+| `makeslop status` | Ordered readiness check: daemon, config, image, workspace, proxy |
+| `makeslop migrate` | Upgrade `~/.makeslop/` when the binary ships a newer migration version |
 | `makeslop config` | View or set global settings (`image`, `shell`, `tmp_dir_size`) |
 | `makeslop version` | Print the build version |
 
@@ -132,7 +132,7 @@ home-directory guard.
 
 ## Documentation
 
-- [Command & runtime reference](docs/reference.md) — all flags, mount table, exit codes, settings schema
+- [Command & Runtime Reference](docs/reference.md) — all flags, mount table, exit codes, settings schema
 - [Security](docs/security.md) — secret masking, egress model, home-directory guard
 - [Architecture](docs/architecture.md) — design patterns, module boundaries, contributing
 

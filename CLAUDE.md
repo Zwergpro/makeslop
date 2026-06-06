@@ -1,5 +1,8 @@
 # CLAUDE.md — makeslop project notes
 
+## Documentation layout
+User-facing docs live in `docs/` (`reference.md`, `security.md`, `architecture.md`). CLAUDE.md is agent-facing notes only.
+
 ## Key architectural patterns
 
 ### Pure/impure split
@@ -184,7 +187,7 @@ reported as stale. On an **existing-but-stale** directory (`s.MigratedVersion < 
 it prints a non-blocking nudge to stderr:
 
 ```
-note: base config is v<latest>, yours is v<current> — run 'makeslop migrate'
+note: your base config is v<current>, latest is v<latest> — run 'makeslop migrate'
 ```
 
 and continues without failing. `init` does NOT stamp `MigratedVersion` for existing installs — that
