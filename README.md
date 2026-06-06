@@ -129,6 +129,7 @@ home-directory guard.
 
 `makeslop run --dry-run` prints the equivalent `docker run` command without launching.
 `makeslop run --proxy host:port` enables proxy mode for a single run.
+`makeslop build --refresh` resets `~/.makeslop/Dockerfile` to the embedded shipped version before building (useful after hand-editing).
 
 ## Documentation
 
