@@ -129,13 +129,13 @@ Content ownership map (where each current-README section goes):
 - Create: `docs/security.md`
 - Read (source): `README.md`
 
-- [ ] add intro + table of contents
-- [ ] relocate Secret masking section (config-driven opt-in, default patterns/skip-dirs, walk-error fail-loud, pre-existing-project note, `masked N` notice, `.gitignore`-ignored rationale, symlinks-dropped detail)
-- [ ] add a 1-line cross-link back to the in-container security flags documented in `reference.md`
-- [ ] relocate Project-local exclusions (`exclude.scan` / `exclude.dirs` / `exclude.files`, reserved paths, merge behavior, example YAML)
-- [ ] relocate Network egress two-state model (direct default vs opt-in proxy, `--proxy`/`network.proxy.address`, socat sidecar + volume data path + diagram)
-- [ ] relocate Home-directory guard (default refusal, `--out-of-home` scope, exempt commands)
-- [ ] verify content-integrity against original README sections
+- [x] add intro + table of contents
+- [x] relocate Secret masking section (config-driven opt-in, default patterns/skip-dirs, walk-error fail-loud, pre-existing-project note, `masked N` notice, `.gitignore`-ignored rationale, symlinks-dropped detail)
+- [x] add a 1-line cross-link back to the in-container security flags documented in `reference.md`
+- [x] relocate Project-local exclusions (`exclude.scan` / `exclude.dirs` / `exclude.files`, reserved paths, merge behavior, example YAML)
+- [x] relocate Network egress two-state model (direct default vs opt-in proxy, `--proxy`/`network.proxy.address`, socat sidecar + volume data path + diagram)
+- [x] relocate Home-directory guard (default refusal, `--out-of-home` scope, exempt commands)
+- [x] verify content-integrity against original README sections
 
 ### Task 3: Create `docs/architecture.md` (internals/design)
 
