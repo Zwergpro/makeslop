@@ -143,12 +143,12 @@ Content ownership map (where each current-README section goes):
 - Create: `docs/architecture.md`
 - Read (source): `CLAUDE.md`, `README.md`
 
-- [ ] add intro framing this as design/internals for contributors
-- [ ] summarize key patterns from CLAUDE.md: pure/impure split (`spec.go` vs `run.go`/`build.go`), `apiClient` seam + `newClientFn`, `newSidecarFn` seam, preflight helpers
-- [ ] document the socat sidecar lifecycle and BuildKit session build flow
-- [ ] document the config-driven scan engine, `CurrentVersion`-on-change rule, POSIX-only invariant
-- [ ] relocate the README "Build" section (`go build ./cmd/makeslop`, `go test ./...`) as a Contributing/Build subsection
-- [ ] verify self-containment: a reader who never opens CLAUDE.md still understands the design
+- [x] add intro framing this as design/internals for contributors
+- [x] summarize key patterns from CLAUDE.md: pure/impure split (`spec.go` vs `run.go`/`build.go`), `apiClient` seam + `newClientFn`, `newSidecarFn` seam, preflight helpers
+- [x] document the socat sidecar lifecycle and BuildKit session build flow
+- [x] document the config-driven scan engine, `CurrentVersion`-on-change rule, POSIX-only invariant
+- [x] relocate the README "Build" section (`go build ./cmd/makeslop`, `go test ./...`) as a Contributing/Build subsection
+- [x] verify self-containment: a reader who never opens CLAUDE.md still understands the design
 
 ### Task 4: Rewrite `README.md` (landing page, single flow)
 
