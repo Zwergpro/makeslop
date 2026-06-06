@@ -155,24 +155,24 @@ notes in CLAUDE.md).
 **Files:**
 - Modify: `internal/docker/spec.go`
 
-- [ ] add `MountContentCache bool` and `MountAgentCache bool` to `docker.Options` with
+- [x] add `MountContentCache bool` and `MountAgentCache bool` to `docker.Options` with
       doc comments
-- [ ] split the mount slice in `BuildSpec`: keep the project-root bind + 3 global mounts
+- [x] split the mount slice in `BuildSpec`: keep the project-root bind + 3 global mounts
       unconditional; gate the two agent-state mounts behind `if o.MountAgentCache` and
       the two content mounts behind `if o.MountContentCache` (omit only, never reorder)
-- [ ] update the `BuildSpec` doc comment to note the two per-workspace groups are
+- [x] update the `BuildSpec` doc comment to note the two per-workspace groups are
       config-gated while global mounts are always present
-- [ ] ⚠️ update `sampleOptions()` (`internal/docker/spec_test.go:13`) to set
+- [x] ⚠️ update `sampleOptions()` (`internal/docker/spec_test.go:13`) to set
       `MountContentCache: true, MountAgentCache: true` — the new fields default to `false`,
       which would otherwise drop 4 mounts and break every existing full-mount assertion
       (e.g. `TestBuildSpec_MountListMatchesReferenceOrder`) and the drift guard
-- [ ] write table-driven tests in `internal/docker/spec_test.go` covering all 4 combos
+- [x] write table-driven tests in `internal/docker/spec_test.go` covering all 4 combos
       of `MountContentCache`/`MountAgentCache`, asserting the exact mount set per combo
       (content off ⇒ no `docs/`+`CLAUDE.md`; agent off ⇒ no `.claude/`+`.codex/`; global
       always present)
-- [ ] confirm the existing `Args()`-vs-`HostConfig()` drift-guard test exercises the new
+- [x] confirm the existing `Args()`-vs-`HostConfig()` drift-guard test exercises the new
       combos (extend its cases if it is not parameterized over `Options`)
-- [ ] run `go test ./internal/docker/` — must pass before next task
+- [x] run `go test ./internal/docker/` — must pass before next task
 
 ### Task 4: Wire Cache through runRun and status (Load callers)
 

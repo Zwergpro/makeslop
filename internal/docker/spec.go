@@ -4,6 +4,11 @@
 // are also pure — they never touch the filesystem or exec anything — and
 // produce the same result for the same Spec, consistent with the CLAUDE.md
 // pure/impure split contract.
+//
+// BuildSpec emits three mount groups:
+//   - global (always): BaseDir/.claude/, BaseDir/.claude.json, BaseDir/.codex/
+//   - agent-state cache (when MountAgentCache is true): workspace .claude/ + .codex/
+//   - content cache    (when MountContentCache is true): workspace docs/ + CLAUDE.md
 package docker
 
 import (
@@ -51,6 +56,26 @@ type Options struct {
 	// config.Load is the single source of the default ("100m"); BuildSpec uses it
 	// verbatim without re-defaulting, matching how Image/Command are handled.
 	TmpDirSize string
+
+	// MountAgentCache controls whether the per-workspace agent-state cache
+	// directories are mounted into the container:
+	//   workspaceHost/.claude/ → workspacePath/.claude/
+	//   workspaceHost/.codex/  → workspacePath/.codex/
+	// When false, those two per-workspace overlays are omitted; the global
+	// ~/.makeslop/.claude/ and ~/.makeslop/.codex/ mounts are always present.
+	// Defaults to false; callers should set true unless the user has disabled
+	// this group via the project cache: config block.
+	MountAgentCache bool
+
+	// MountContentCache controls whether the per-workspace content cache
+	// directories are mounted into the container:
+	//   workspaceHost/docs/     → workspacePath/docs/
+	//   workspaceHost/CLAUDE.md → workspacePath/CLAUDE.md
+	// When false, those two per-workspace overlays are omitted, allowing the
+	// project's own docs/ and CLAUDE.md to be visible inside the container.
+	// Defaults to false; callers should set true unless the user has disabled
+	// this group via the project cache: config block.
+	MountContentCache bool
 }
 
 // Mount is a single docker mount entry.
@@ -80,13 +105,16 @@ type Spec struct {
 
 // BuildSpec is pure: same Options → same Spec. Mount order is deterministic:
 //  1. project root bind
-//  2. agent path binds
-//  3. MaskedFiles /dev/null overlays
-//  4. MaskedDirs tmpfs overlays
-//  5. proxy socket volume (read-only, when ProxySocketVolume is set)
+//  2. global agent binds (BaseDir/.claude/, .claude.json, .codex/) — always present
+//  3. agent-state cache mounts (workspaceHost/.claude/, .codex/) — when MountAgentCache is true
+//  4. content cache mounts (workspaceHost/docs/, CLAUDE.md) — when MountContentCache is true
+//  5. MaskedFiles /dev/null overlays
+//  6. MaskedDirs tmpfs overlays
+//  7. proxy socket volume (read-only, when ProxySocketVolume is set)
 //
-// Overlays (3–4) follow the directory bind they shadow so docker's argv-order
-// evaluation makes them win.
+// Overlays (5–6) follow the directory bind they shadow so docker's argv-order
+// evaluation makes them win. Entries are omitted when their group is disabled —
+// they are never reordered.
 func BuildSpec(o Options) Spec {
 	workspacePath := "/workspace/" + o.WorkspaceName
 	workspaceHost := filepath.Join(o.BaseDir, config.WorkspacesDir, o.WorkspaceName)
@@ -94,15 +122,29 @@ func BuildSpec(o Options) Spec {
 	// Trailing slashes on directory mounts are intentional — they match the
 	// reference claude.sh exactly, and a trailing slash on the host side coaxes
 	// docker into failing fast if the path is unexpectedly a file.
+
+	// Group 1: project root + global mounts (always present).
 	mounts := []Mount{
 		{Host: o.ProjectRoot, Container: workspacePath},
 		{Host: filepath.Join(o.BaseDir, ".claude") + "/", Container: "/home/user/.claude/"},
 		{Host: filepath.Join(o.BaseDir, ".claude.json"), Container: "/home/user/.claude.json"},
 		{Host: filepath.Join(o.BaseDir, ".codex") + "/", Container: "/home/user/.codex/"},
-		{Host: filepath.Join(workspaceHost, ".claude") + "/", Container: workspacePath + "/.claude/"},
-		{Host: filepath.Join(workspaceHost, ".codex") + "/", Container: workspacePath + "/.codex/"},
-		{Host: filepath.Join(workspaceHost, "docs") + "/", Container: workspacePath + "/docs/"},
-		{Host: filepath.Join(workspaceHost, "CLAUDE.md"), Container: workspacePath + "/CLAUDE.md"},
+	}
+
+	// Group 2: per-workspace agent-state cache (config-gated).
+	if o.MountAgentCache {
+		mounts = append(mounts,
+			Mount{Host: filepath.Join(workspaceHost, ".claude") + "/", Container: workspacePath + "/.claude/"},
+			Mount{Host: filepath.Join(workspaceHost, ".codex") + "/", Container: workspacePath + "/.codex/"},
+		)
+	}
+
+	// Group 3: per-workspace content cache (config-gated).
+	if o.MountContentCache {
+		mounts = append(mounts,
+			Mount{Host: filepath.Join(workspaceHost, "docs") + "/", Container: workspacePath + "/docs/"},
+			Mount{Host: filepath.Join(workspaceHost, "CLAUDE.md"), Container: workspacePath + "/CLAUDE.md"},
+		)
 	}
 
 	for _, host := range o.MaskedFiles {
