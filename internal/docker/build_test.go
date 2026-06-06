@@ -239,7 +239,7 @@ func TestRenderBuildOutput_PlainFallback(t *testing.T) {
 	body := encodeMessages(t, msgs)
 
 	var out bytes.Buffer
-	if err := renderBuildOutput(context.Background(), body, &out); err != nil {
+	if err := renderBuildOutput(context.Background(), body, &out, false); err != nil {
 		t.Fatalf("renderBuildOutput returned error: %v", err)
 	}
 	got := out.String()
@@ -254,6 +254,25 @@ func TestRenderBuildOutput_PlainFallback(t *testing.T) {
 	}
 }
 
+// TestRenderBuildOutput_QuietPlainSuppressed: under --quiet, plain stream/status
+// lines are not written to stdout.
+func TestRenderBuildOutput_QuietPlainSuppressed(t *testing.T) {
+	msgs := []jsonstream.Message{
+		{Stream: "Step 1/3 : FROM scratch\n"},
+		{Status: "Pulling from library/scratch"},
+		{Stream: "Successfully built abc123\n"},
+	}
+	body := encodeMessages(t, msgs)
+
+	var out bytes.Buffer
+	if err := renderBuildOutput(context.Background(), body, &out, true); err != nil {
+		t.Fatalf("renderBuildOutput returned error: %v", err)
+	}
+	if out.Len() != 0 {
+		t.Errorf("quiet plain output should be empty, got %q", out.String())
+	}
+}
+
 // TestRenderBuildOutput_ErrorMessage: a message with an Error field returns an error.
 func TestRenderBuildOutput_ErrorMessage(t *testing.T) {
 	msgs := []jsonstream.Message{
@@ -261,7 +280,7 @@ func TestRenderBuildOutput_ErrorMessage(t *testing.T) {
 	}
 	body := encodeMessages(t, msgs)
 
-	if err := renderBuildOutput(context.Background(), body, io.Discard); err == nil {
+	if err := renderBuildOutput(context.Background(), body, io.Discard, false); err == nil {
 		t.Fatal("expected error from build error message, got nil")
 	} else if !strings.Contains(err.Error(), "build failed") {
 		t.Errorf("error should contain 'build failed', got %v", err)
@@ -271,7 +290,7 @@ func TestRenderBuildOutput_ErrorMessage(t *testing.T) {
 // TestRenderBuildOutput_EmptyBody: empty body returns nil (no messages = no error).
 func TestRenderBuildOutput_EmptyBody(t *testing.T) {
 	body := io.NopCloser(bytes.NewReader(nil))
-	if err := renderBuildOutput(context.Background(), body, io.Discard); err != nil {
+	if err := renderBuildOutput(context.Background(), body, io.Discard, false); err != nil {
 		t.Errorf("empty body: expected nil error, got %v", err)
 	}
 }
@@ -280,7 +299,7 @@ func TestRenderBuildOutput_EmptyBody(t *testing.T) {
 // "decode build stream" error — the decoder must not panic or hang.
 func TestRenderBuildOutput_MalformedJSON(t *testing.T) {
 	body := io.NopCloser(strings.NewReader("this is not json\n"))
-	err := renderBuildOutput(context.Background(), body, io.Discard)
+	err := renderBuildOutput(context.Background(), body, io.Discard, false)
 	if err == nil {
 		t.Fatal("expected error for malformed JSON body, got nil")
 	}
@@ -422,7 +441,7 @@ func TestRenderBuildOutput_StreamingTrace(t *testing.T) {
 	body := encodeMessages(t, msgs)
 
 	var out bytes.Buffer
-	if err := renderBuildOutput(context.Background(), body, &out); err != nil {
+	if err := renderBuildOutput(context.Background(), body, &out, false); err != nil {
 		t.Fatalf("renderBuildOutput with trace frame returned error: %v", err)
 	}
 	// The vertex name must appear in stdout: if decodeBuildKitAux drops the frame
@@ -430,6 +449,27 @@ func TestRenderBuildOutput_StreamingTrace(t *testing.T) {
 	// is empty, catching the bug at test time instead of silently at build time.
 	if !strings.Contains(out.String(), "[1/2] FROM alpine") {
 		t.Errorf("vertex '[1/2] FROM alpine' not found in display output: %q", out.String())
+	}
+}
+
+// TestRenderBuildOutput_QuietSuppressesOutput: under --quiet, a valid trace frame
+// produces no stdout (progressui.QuietMode) yet renderBuildOutput still returns
+// nil and joins the display goroutine cleanly (no hang/leak).
+func TestRenderBuildOutput_QuietSuppressesOutput(t *testing.T) {
+	sr := &controlapi.StatusResponse{
+		Vertexes: []*controlapi.Vertex{
+			{Digest: "sha256:abc", Name: "[1/2] FROM alpine", Started: timestamppb.Now()},
+		},
+	}
+	msgs := []jsonstream.Message{realDaemonFrame(t, sr)}
+	body := encodeMessages(t, msgs)
+
+	var out bytes.Buffer
+	if err := renderBuildOutput(context.Background(), body, &out, true); err != nil {
+		t.Fatalf("renderBuildOutput (quiet) returned error: %v", err)
+	}
+	if out.Len() != 0 {
+		t.Errorf("quiet trace output should be empty, got %q", out.String())
 	}
 }
 
@@ -450,7 +490,7 @@ func TestRenderBuildOutput_TraceFollowedByError(t *testing.T) {
 	body := encodeMessages(t, msgs)
 
 	var out bytes.Buffer
-	err := renderBuildOutput(context.Background(), body, &out)
+	err := renderBuildOutput(context.Background(), body, &out, false)
 	if err == nil {
 		t.Fatal("expected error from error message after trace frame, got nil")
 	}
@@ -477,7 +517,7 @@ func TestRenderBuildOutput_TraceAndPlainMixed(t *testing.T) {
 	body := encodeMessages(t, msgs)
 
 	var out bytes.Buffer
-	if err := renderBuildOutput(context.Background(), body, &out); err != nil {
+	if err := renderBuildOutput(context.Background(), body, &out, false); err != nil {
 		t.Fatalf("renderBuildOutput returned error: %v", err)
 	}
 	got := out.String()
@@ -514,7 +554,7 @@ func TestRenderBuildOutput_ContextCanceled(t *testing.T) {
 	// The sole contract: must return (no hang). Error may be nil or non-nil.
 	done := make(chan struct{})
 	go func() {
-		renderBuildOutput(ctx, body, io.Discard) //nolint:errcheck
+		renderBuildOutput(ctx, body, io.Discard, false) //nolint:errcheck
 		close(done)
 	}()
 	select {

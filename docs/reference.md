@@ -79,9 +79,6 @@ Builds (or rebuilds) the base Docker image from `~/.makeslop/Dockerfile` via the
   context (the Dockerfile downloads everything; no local files need shipping) and uses the BuildKit
   API (`Version: "2"` via the moby SDK) so cache mounts (`--mount=type=cache`) work correctly. No
   `DOCKER_BUILDKIT` environment variable is needed.
-- **Live build progress:** when stdout is a TTY, build steps stream live in the BuildKit `[+] Building`
-  UI. When stdout is not a TTY (piped or redirected), plain-text progress lines are written instead.
-  Build progress always goes to stdout; `--quiet` does not suppress it.
 - After a `migrate` that refreshes the `Dockerfile`, re-run `build` to pick up the changes.
 
 **Flags:**
@@ -92,8 +89,6 @@ Builds (or rebuilds) the base Docker image from `~/.makeslop/Dockerfile` via the
   Use this to reset a hand-edited base Dockerfile to the shipped version without running a
   separate `migrate` step. Does **not** touch `migrated_version` or any migration state —
   `migrate` remains the sole owner of version tracking.
-- `--quiet` (global flag) — suppress stderr notices (e.g. the `--refresh` confirmation message);
-  build progress output is unaffected.
 
 ---
 

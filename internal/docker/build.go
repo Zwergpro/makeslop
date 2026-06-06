@@ -166,7 +166,7 @@ func build(ctx context.Context, cli apiClient, o BuildOptions, stdout, stderr io
 	// Render build progress. We attempt the progressui / build-trace decoder
 	// first; if the decode channel receives nothing within the first message,
 	// we fall back to the plain jsonmessage stream renderer.
-	if err := renderBuildOutput(ctx, resp.Body, stdout); err != nil {
+	if err := renderBuildOutput(ctx, resp.Body, stdout, o.Quiet); err != nil {
 		_ = drainSession() //nolint:errcheck // render error takes precedence
 		return fmt.Errorf("render build output: %w", err)
 	}
@@ -186,7 +186,7 @@ func build(ctx context.Context, cli apiClient, o BuildOptions, stdout, stderr io
 // trace frame arrives, so pure-plain and empty/error streams never spin up a
 // progressui display. This preserves existing test semantics while enabling
 // live streaming for BuildKit builds.
-func renderBuildOutput(ctx context.Context, body io.ReadCloser, stdout io.Writer) error {
+func renderBuildOutput(ctx context.Context, body io.ReadCloser, stdout io.Writer, quiet bool) error {
 	dec := json.NewDecoder(body)
 
 	// statusCh and dispErrCh are nil until the first BuildKit trace frame.
@@ -203,7 +203,13 @@ func renderBuildOutput(ctx context.Context, body io.ReadCloser, stdout io.Writer
 		if statusCh != nil {
 			return nil
 		}
-		d, err := progressui.NewDisplay(stdout, progressui.AutoMode)
+		// QuietMode discards all output; AutoMode renders the live UI (falling
+		// back to PlainMode when stdout is not a TTY).
+		mode := progressui.AutoMode
+		if quiet {
+			mode = progressui.QuietMode
+		}
+		d, err := progressui.NewDisplay(stdout, mode)
 		if err != nil {
 			return fmt.Errorf("create progress display: %w", err)
 		}
@@ -243,11 +249,14 @@ func renderBuildOutput(ctx context.Context, body io.ReadCloser, stdout io.Writer
 			// Plain fallback: write stream/status lines to stdout immediately.
 			// Once the display goroutine is active (statusCh != nil) we discard
 			// plain messages to avoid a concurrent write to stdout from both the
-			// decode loop and the progressui goroutine.
-			if msg.Stream != "" {
-				_, _ = fmt.Fprint(stdout, msg.Stream)
-			} else if msg.Status != "" {
-				_, _ = fmt.Fprintln(stdout, msg.Status)
+			// decode loop and the progressui goroutine. Suppressed entirely
+			// under --quiet.
+			if !quiet {
+				if msg.Stream != "" {
+					_, _ = fmt.Fprint(stdout, msg.Stream)
+				} else if msg.Status != "" {
+					_, _ = fmt.Fprintln(stdout, msg.Status)
+				}
 			}
 		}
 	}

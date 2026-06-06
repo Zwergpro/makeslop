@@ -131,57 +131,10 @@ longer forks the docker binary.
    session ID. No `DOCKER_BUILDKIT` env variable.
 5. The response body is decoded as a BuildKit JSON trace stream; `aux` frames carrying
    `moby.buildkit.trace` payloads are decoded into `*client.SolveStatus` and fed to
-   `progressui.NewDisplay(...).UpdateFrom` for rendering via a **lazy-display** pattern (see below).
+   `progressui.NewDisplay(...).UpdateFrom` for rendering.
 6. The session and client are closed when the build finishes.
 
 `build.go` depends on `github.com/moby/buildkit` (direct dep, pinned in `go.mod`).
-
-### renderBuildOutput lazy-display pattern
-`renderBuildOutput` in `build.go` uses a lazy `progressui` display: the display and its goroutine
-are created only on the **first BuildKit trace frame** (aux frame with `moby.buildkit.trace` key).
-If no trace frame arrives (empty body, plain stream, or immediate error), no display goroutine is
-ever spawned. This design lets the plain-fallback and error paths avoid touching `progressui`
-entirely while still rendering build steps live (the channel is fed concurrently with decoding, not
-after EOF). `decodeBuildKitAux` is a pure helper.
-
-**Wire format for `decodeBuildKitAux`:** the daemon emits each BuildKit trace frame as a
-top-level id-keyed `jsonstream.Message`:
-```json
-{ "id": "moby.buildkit.trace", "aux": "<base64-of-proto-StatusResponse>" }
-```
-`decodeBuildKitAux` gates on `msg.ID == "moby.buildkit.trace"`, unmarshals `*msg.Aux` into
-`[]byte` (base64 JSON string → proto bytes), then `proto.Unmarshal`s into
-`controlapi.StatusResponse` and returns `bkclient.NewSolveStatus(&sr)`. Any other `ID` (e.g.
-`moby.image.id`), nil `Aux`, bad base64, or bad proto bytes returns `nil` (frame dropped
-gracefully).
-
-**Mixed-mode discard:** once the progressui display goroutine is active (after the first trace
-frame), any subsequent `Stream`/`Status` plain messages in the same body are **silently discarded**
-(not written to stdout). This prevents a concurrent-write race between the decode loop and the
-progressui goroutine both writing to the same stdout handle. Pre-trace plain messages (before the
-first trace frame) are written immediately to stdout as always.
-
-**Context error suppression:** `dispErr` from `d.UpdateFrom(ctx, statusCh)` is filtered: if it is
-`context.Canceled` or `context.DeadlineExceeded`, it is suppressed and `renderBuildOutput` returns
-`nil` for the display error. Only the `decodeErr` (from the JSON decode loop) is returned in that
-case. The rationale: a context cancellation is intentional and the caller already knows about it;
-surfacing it as a display error would be noise. Non-context display errors (e.g. a write failure
-to stdout) are still returned wrapped as `"render progress: …"`.
-
-**Test fixture rule:** test fixtures for trace frames must be built via the `realDaemonFrame(t,
-sr)` helper in `build_test.go` — proto.Marshal → json.Marshal → `jsonstream.Message{ID:
-"moby.buildkit.trace", Aux: &raw}`. Never use the nested-map shape
-(`{"moby.buildkit.trace": "<base64>"}` with no `ID` field) — that is the old buggy format that
-caused the silent-build regression. Tests that send trace frames must capture stdout (not use
-`io.Discard`) and assert that expected vertex names appear, so a future decoder regression
-produces a test failure instead of silent empty output.
-
-### `build --refresh` semantics
-`makeslop build --refresh` calls `config.WriteDockerfile(baseDir)` after `config.Bootstrap` and
-before `config.Load`. It atomically overwrites `~/.makeslop/Dockerfile` from the embedded
-`assets.Dockerfile` and prints a stderr notice (suppressed by `--quiet`). It does **not** touch
-`MigratedVersion` or any migration state — `migrate` is the sole owner of version tracking. Use
-`--refresh` to reset a hand-edited Dockerfile to the shipped version without a full `migrate` step.
 
 ### Scan filters are config-driven (no in-code denylist, no engine fallback)
 `internal/security.Scan` uses a native Go `filepath.WalkDir` walk — there is no `fd`/`fdfind`
@@ -231,16 +184,12 @@ Do not add Windows compatibility paths.
 and do not care about the current working directory.
 
 ### MigrationVersion-on-Dockerfile-change rule
-Whenever `internal/assets/files/Dockerfile` is modified, bump `MigrationVersion` in
-`internal/config/config.go` so that existing installs pick up the new Dockerfile on the next
-`makeslop migrate`. Also bump `MigrationVersion` when a migration step is added or changed.
-
-`CurrentVersion` (settings schema version) is separate and only changes when the `Settings`
-struct fields change. The two constants serve different purposes: `CurrentVersion` gates JSON
-schema compatibility; `MigrationVersion` gates the one-shot directory refresh.
-
-One constant per concern. No change to the `Settings` struct = no `CurrentVersion` bump.
-No change to the Dockerfile or migration steps = no `MigrationVersion` bump.
+Whenever `internal/assets/files/Dockerfile` is modified (e.g. multi-arch support), bump
+`MigrationVersion` in `internal/config/config.go` so that existing installs pick up the new
+Dockerfile on the next `makeslop migrate`. `CurrentVersion` (settings schema version) is separate
+and only changes when the `Settings` struct fields change. The two constants serve different
+purposes: `CurrentVersion` gates JSON schema compatibility; `MigrationVersion` gates the one-shot
+directory refresh.
 
 **Note:** the socat-volume proxy transport change (replacing the host-unix-socket transport) does
 **not** bump either `CurrentVersion` or `MigrationVersion` — the `Settings` struct fields are

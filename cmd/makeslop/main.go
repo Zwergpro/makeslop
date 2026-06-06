@@ -478,6 +478,7 @@ func newRootCmd(baseDir string) *cobra.Command {
 				DockerfilePath: filepath.Join(baseDir, config.DockerfileFile),
 				NoCache:        buildNoCache,
 				BuildArgs:      buildArgs,
+				Quiet:          quiet,
 			}
 			return docker.Build(cmd.Context(), o, cmd.OutOrStdout(), cmd.ErrOrStderr())
 		},
