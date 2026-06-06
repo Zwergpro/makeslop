@@ -87,13 +87,12 @@ func (s *Sidecar) Start(ctx context.Context, upstream string, volumeName string)
 	}
 	defer cli.Close() //nolint:errcheck // Start-only client; Close opens its own
 
-	// 1. Ensure SocatImage is present; pull on demand.
+	// Ensure SocatImage is present; pull on demand.
 	if err := s.ensureImage(ctx, cli); err != nil {
 		return err
 	}
 
-	// 2. Create the volume (per-run name passed in by caller).
-	// NOTE: s.volumeName is set only after VolumeCreate succeeds so that Close()
+	// s.volumeName is set only after VolumeCreate succeeds so that Close()
 	// does not attempt to remove a volume that was never created.
 	if _, err := cli.VolumeCreate(ctx, moby.VolumeCreateOptions{
 		Name:   volumeName,
@@ -103,10 +102,10 @@ func (s *Sidecar) Start(ctx context.Context, upstream string, volumeName string)
 	}
 	s.volumeName = volumeName
 
-	// 3. Create the socat container.
-	//    - bridge networking so socat can reach the remote upstream directly
-	//    - volume mounted read-write at /sockets so socat can create the socket
-	//    - detached (no stdin/stdout/tty)
+	// Create the socat container:
+	//   - bridge networking so socat can reach the remote upstream directly
+	//   - volume mounted read-write at /sockets so socat can create the socket
+	//   - detached (no stdin/stdout/tty)
 	socatCmd := []string{
 		fmt.Sprintf("UNIX-LISTEN:%s/%s,fork,mode=0666", proxySocketDir, proxySocketName),
 		fmt.Sprintf("TCP-CONNECT:%s,reuseaddr", upstream),
@@ -137,7 +136,6 @@ func (s *Sidecar) Start(ctx context.Context, upstream string, volumeName string)
 	}
 	s.containerID = createRes.ID
 
-	// 4. Start the container.
 	if _, err := cli.ContainerStart(ctx, s.containerID, moby.ContainerStartOptions{}); err != nil {
 		// Best-effort cleanup.
 		_, _ = cli.ContainerRemove(context.Background(), s.containerID, moby.ContainerRemoveOptions{Force: true})
@@ -145,7 +143,7 @@ func (s *Sidecar) Start(ctx context.Context, upstream string, volumeName string)
 		return fmt.Errorf("sidecar: container start: %w", err)
 	}
 
-	// 5. Poll for readiness: the socket must appear at /sockets/proxy.sock.
+	// Poll for readiness: the socket must appear at /sockets/proxy.sock.
 	if err := s.waitReady(ctx, cli); err != nil {
 		// Tear down: container remove then volume.
 		_, _ = cli.ContainerRemove(context.Background(), s.containerID, moby.ContainerRemoveOptions{Force: true})
