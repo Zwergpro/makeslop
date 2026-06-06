@@ -386,6 +386,7 @@ type BuildOptions struct {
 	ContextDir     string   // positional build context; empty means Build auto-creates a temp dir
 	NoCache        bool     // --no-cache when true
 	BuildArgs      []string // each forwarded as a build argument to the daemon
+	Quiet          bool     // --quiet: suppress build progress output
 }
 
 // csvField returns s as a single RFC 4180 CSV field: unquoted when it contains

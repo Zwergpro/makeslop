@@ -85,6 +85,10 @@ Builds (or rebuilds) the base Docker image from `~/.makeslop/Dockerfile` via the
 - `--no-cache` — bypasses the layer cache (passes `NoCache: true` to the SDK build call)
 - `--build-arg K=V` — repeatable; each value is forwarded to the daemon as a build argument
   (use for proxy settings, version pins, etc.)
+- `--refresh` — overwrite `~/.makeslop/Dockerfile` from the embedded assets before building.
+  Use this to reset a hand-edited base Dockerfile to the shipped version without running a
+  separate `migrate` step. Does **not** touch `migrated_version` or any migration state —
+  `migrate` remains the sole owner of version tracking.
 
 ---
 
