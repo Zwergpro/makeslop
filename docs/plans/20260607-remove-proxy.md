@@ -143,15 +143,15 @@ projectconfig/status tests together.
 - Modify: `internal/security/security_test.go`
 - Modify: `cmd/makeslop/main_test.go`
 
-- [ ] delete `type Network` and the `network.proxy.address` nesting from `yamlSchema`
-- [ ] change `Load` signature `(Excludes, Network, Cache, error)` → `(Excludes, Cache, error)`
-- [ ] stop emitting the `network:` block in `renderStub`/`Scaffold` stub
-- [ ] update **all** `Load` call sites to the 3-value destructure — not just proxy ones:
+- [x] delete `type Network` and the `network.proxy.address` nesting from `yamlSchema`
+- [x] change `Load` signature `(Excludes, Network, Cache, error)` → `(Excludes, Cache, error)`
+- [x] stop emitting the `network:` block in `renderStub`/`Scaffold` stub
+- [x] update **all** `Load` call sites to the 3-value destructure — not just proxy ones:
       - `cmd/makeslop/main.go` (`runRun`), `cmd/makeslop/status.go`
       - `internal/security/security_test.go:~58` (`excl, _, _, err := projectconfig.Load(dir)`)
       - `cmd/makeslop/main_test.go:~4503` and `~4529` (non-proxy init / init-global-only tests)
-- [ ] delete proxy/`ProxyAddress` cases from `projectconfig_test.go`; add/keep a test asserting a `network:` block now fails strict parse with an "unknown field" error
-- [ ] run `go test ./internal/projectconfig/ ./internal/security/` — must pass before next task
+- [x] delete proxy/`ProxyAddress` cases from `projectconfig_test.go`; add/keep a test asserting a `network:` block now fails strict parse with an "unknown field" error
+- [x] run `go test ./internal/projectconfig/ ./internal/security/` — must pass before next task
 
 ### Task 5: Prune the `apiClient` interface
 

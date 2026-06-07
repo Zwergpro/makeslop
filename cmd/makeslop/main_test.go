@@ -4500,7 +4500,7 @@ func TestInit_GlobalOnly_ScaffoldsCacheDisabled(t *testing.T) {
 	}
 
 	resolvedPwd := evalSymlinks(t, pwd)
-	_, _, cache, err := projectconfig.Load(resolvedPwd)
+	_, cache, err := projectconfig.Load(resolvedPwd)
 	if err != nil {
 		t.Fatalf("projectconfig.Load after init --global-only: %v", err)
 	}
@@ -4526,7 +4526,7 @@ func TestInit_NoGlobalOnly_ScaffoldsCacheEnabled(t *testing.T) {
 	}
 
 	resolvedPwd := evalSymlinks(t, pwd)
-	_, _, cache, err := projectconfig.Load(resolvedPwd)
+	_, cache, err := projectconfig.Load(resolvedPwd)
 	if err != nil {
 		t.Fatalf("projectconfig.Load after init: %v", err)
 	}

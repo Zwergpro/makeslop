@@ -63,7 +63,7 @@ func TestLoad_MissingFile(t *testing.T) {
 	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
-	excl, _, _, err := Load(root)
+	excl, _, err := Load(root)
 	if err != nil {
 		t.Fatalf("Load on missing file: %v", err)
 	}
@@ -86,17 +86,13 @@ func TestLoad_DefaultStub_RoundTrips(t *testing.T) {
 		t.Fatalf("write stub: %v", err)
 	}
 
-	excl, netCfg, cacheCfg, err := Load(root)
+	excl, cacheCfg, err := Load(root)
 	if err != nil {
 		t.Fatalf("Load on default stub: %v", err)
 	}
 	// explicit path lists remain empty
 	if len(excl.Files) != 0 || len(excl.Dirs) != 0 {
 		t.Errorf("expected zero Files/Dirs from default stub, got files=%v dirs=%v", excl.Files, excl.Dirs)
-	}
-	// network proxy address is empty
-	if netCfg.ProxyAddress != "" {
-		t.Errorf("expected empty ProxyAddress, got %q", netCfg.ProxyAddress)
 	}
 	// default Stub must round-trip to Cache{true,true}.
 	if !cacheCfg.Content || !cacheCfg.Agent {
@@ -145,7 +141,7 @@ func TestLoad_EmptyAndCommentOnlyFiles(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(root, Filename), tc.content, 0o644); err != nil {
 				t.Fatalf("write: %v", err)
 			}
-			excl, _, cacheCfg, err := Load(root)
+			excl, cacheCfg, err := Load(root)
 			if err != nil {
 				t.Fatalf("Load returned error for %q: %v", tc.name, err)
 			}
@@ -177,7 +173,7 @@ func TestLoad_MalformedYAML(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, _, _, err := Load(root)
+	_, _, err := Load(root)
 	if err == nil {
 		t.Fatal("expected error for malformed YAML, got nil")
 	}
@@ -194,7 +190,7 @@ func TestLoad_UnknownField(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, _, _, err := Load(root)
+	_, _, err := Load(root)
 	if err == nil {
 		t.Fatal("expected error for unknown field, got nil")
 	}
@@ -269,7 +265,7 @@ func TestLoad_ValidationRules(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(root, Filename), []byte(tc.yaml), 0o644); err != nil {
 				t.Fatalf("write: %v", err)
 			}
-			_, _, _, err := Load(root)
+			_, _, err := Load(root)
 			if err == nil {
 				t.Fatalf("expected error containing %q, got nil", tc.wantErrFrag)
 			}
@@ -293,7 +289,7 @@ func TestLoad_ReservedPaths(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(root, Filename), []byte(content), 0o644); err != nil {
 				t.Fatalf("write: %v", err)
 			}
-			_, _, _, err := Load(root)
+			_, _, err := Load(root)
 			if err == nil {
 				t.Fatalf("expected collision error for %q in dirs, got nil", reserved)
 			}
@@ -307,7 +303,7 @@ func TestLoad_ReservedPaths(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(root, Filename), []byte(content), 0o644); err != nil {
 				t.Fatalf("write: %v", err)
 			}
-			_, _, _, err := Load(root)
+			_, _, err := Load(root)
 			if err == nil {
 				t.Fatalf("expected collision error for %q in files, got nil", reserved)
 			}
@@ -327,7 +323,7 @@ func TestLoad_CrossListDuplicate(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, _, _, err := Load(root)
+	_, _, err := Load(root)
 	if err == nil {
 		t.Fatal("expected error for cross-list duplicate, got nil")
 	}
@@ -348,7 +344,7 @@ func TestLoad_CrossListDuplicate_NoFileOnDisk(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, _, _, err := Load(root)
+	_, _, err := Load(root)
 	if err == nil {
 		t.Fatal("expected error for cross-list duplicate (path absent), got nil")
 	}
@@ -366,7 +362,7 @@ func TestLoad_SilentlyDropsMissingEntries(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	excl, _, _, err := Load(root)
+	excl, _, err := Load(root)
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -393,7 +389,7 @@ func TestLoad_DropsWrongType(t *testing.T) {
 		t.Fatalf("write config: %v", err)
 	}
 
-	excl, _, _, err := Load(root)
+	excl, _, err := Load(root)
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -429,7 +425,7 @@ func TestLoad_DropsSymlinks(t *testing.T) {
 		t.Fatalf("write config: %v", err)
 	}
 
-	excl, _, _, err := Load(root)
+	excl, _, err := Load(root)
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -461,7 +457,7 @@ func TestLoad_DeduplicatesWithinLists(t *testing.T) {
 		t.Fatalf("write config: %v", err)
 	}
 
-	excl, _, _, err := Load(root)
+	excl, _, err := Load(root)
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -498,7 +494,7 @@ func TestLoad_ReturnsAbsoluteSortedPaths(t *testing.T) {
 		t.Fatalf("write config: %v", err)
 	}
 
-	excl, _, _, err := Load(root)
+	excl, _, err := Load(root)
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -531,171 +527,46 @@ func TestLoad_ReturnsAbsoluteSortedPaths(t *testing.T) {
 	}
 }
 
-func TestLoad_Network_ValidAddress(t *testing.T) {
+// TestLoad_Network_BlockRejected verifies that a config file containing a
+// "network:" block (from a prior makeslop version that supported proxy egress)
+// is rejected with a strict-decode "unknown field" error. This is the intended
+// loud break — users with stale .makeslop.yaml files must remove the block.
+func TestLoad_Network_BlockRejected(t *testing.T) {
 	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 
 	cases := []struct {
 		name    string
-		address string
+		content string
 	}{
-		{"hostname:port", "proxy.example.com:8888"},
-		{"IPv4:port", "10.0.0.5:3128"},
-		{"localhost:port", "localhost:8080"},
-		{"IP with high port", "192.168.1.100:65535"},
+		{
+			"proxy address set",
+			"exclude:\n  dirs: []\n  files: []\nnetwork:\n  proxy:\n    address: 10.0.0.5:3128\n",
+		},
+		{
+			"empty proxy address",
+			"exclude:\n  dirs: []\n  files: []\nnetwork:\n  proxy:\n    address: \"\"\n",
+		},
+		{
+			"network block only",
+			"network:\n  proxy:\n    address: \"\"\n",
+		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			root := evalSymlinks(t, t.TempDir())
-			content := "exclude:\n  dirs: []\n  files: []\nnetwork:\n  proxy:\n    address: " + tc.address + "\n"
-			if err := os.WriteFile(filepath.Join(root, Filename), []byte(content), 0o644); err != nil {
+			if err := os.WriteFile(filepath.Join(root, Filename), []byte(tc.content), 0o644); err != nil {
 				t.Fatalf("write: %v", err)
 			}
 
-			_, netCfg, _, err := Load(root)
-			if err != nil {
-				t.Fatalf("Load returned error: %v", err)
+			_, _, err := Load(root)
+			if err == nil {
+				t.Fatal("expected error for stale network: block, got nil")
 			}
-			if netCfg.ProxyAddress != tc.address {
-				t.Errorf("ProxyAddress: got %q, want %q", netCfg.ProxyAddress, tc.address)
-			}
-		})
-	}
-}
-
-func TestLoad_Network_AbsentSection(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
-	root := evalSymlinks(t, t.TempDir())
-
-	if err := os.WriteFile(filepath.Join(root, Filename), Stub, 0o644); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-
-	_, netCfg, _, err := Load(root)
-	if err != nil {
-		t.Fatalf("Load returned error: %v", err)
-	}
-	if netCfg.ProxyAddress != "" {
-		t.Errorf("expected empty ProxyAddress for absent section, got %q", netCfg.ProxyAddress)
-	}
-}
-
-func TestLoad_Network_MissingFile(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
-	root := evalSymlinks(t, t.TempDir())
-
-	_, netCfg, _, err := Load(root)
-	if err != nil {
-		t.Fatalf("Load on missing file: %v", err)
-	}
-	if netCfg.ProxyAddress != "" {
-		t.Errorf("expected empty ProxyAddress for missing file, got %q", netCfg.ProxyAddress)
-	}
-}
-
-// TestLoad_Network_InvalidAddress verifies that Load does NOT validate
-// network.proxy.address syntax — it stores the raw string regardless. Proxy
-// address validation is deferred to runRun in main.go, after flag overrides
-// (--proxy wins over network.proxy.address) have been resolved. This allows a
-// run with a valid --proxy flag to succeed even when the config file has a
-// malformed address.
-func TestLoad_Network_InvalidAddress(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
-
-	cases := []struct {
-		name    string
-		address string
-		// quoted controls whether the YAML value is written as a double-quoted
-		// string. Use true for addresses containing YAML-special characters (e.g.
-		// bare ":" is a mapping-value indicator and makes the YAML unparseable
-		// without quoting).
-		quoted bool
-	}{
-		{"missing port", "proxy.example.com", false},
-		{"empty host", ":8888", true},
-		{"socat delimiter in port", "10.0.0.1:3128,foo", true}, // port must be a plain integer
-		{"comma in host", "proxy,forever:3128", true},          // comma is socat option delimiter
-		{"negative port", "host:-1", true},                     // port out of range
-		{"port above max", "host:99999", true},                 // port > 65535
-		{"port zero", "host:0", true},                          // port 0 is not a valid TCP port
-		{"tab in host", "host\t.evil:3128", true},              // tab not in allowlist
-		{"pipe in host", "host|evil:3128", true},               // pipe not in allowlist
-		{"exclamation in host", "host!evil:3128", true},        // exclamation not in allowlist
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			root := evalSymlinks(t, t.TempDir())
-			var content string
-			if tc.quoted {
-				content = "exclude:\n  dirs: []\n  files: []\nnetwork:\n  proxy:\n    address: \"" + tc.address + "\"\n"
-			} else {
-				content = "exclude:\n  dirs: []\n  files: []\nnetwork:\n  proxy:\n    address: " + tc.address + "\n"
-			}
-			if err := os.WriteFile(filepath.Join(root, Filename), []byte(content), 0o644); err != nil {
-				t.Fatalf("write: %v", err)
-			}
-
-			// Load must succeed — validation is deferred to runRun.
-			_, _, _, err := Load(root)
-			if err != nil {
-				t.Fatalf("Load must not validate proxy address syntax (got unexpected error for %q): %v", tc.address, err)
+			if !strings.HasPrefix(err.Error(), "projectconfig:") {
+				t.Errorf("error missing 'projectconfig:' prefix: %q", err.Error())
 			}
 		})
-	}
-}
-
-func TestLoad_Network_ExcludesUnchanged(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
-	root := evalSymlinks(t, t.TempDir())
-
-	if err := os.WriteFile(filepath.Join(root, "secret.env"), []byte("s"), 0o644); err != nil {
-		t.Fatalf("write file: %v", err)
-	}
-	if err := os.Mkdir(filepath.Join(root, "private"), 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-
-	content := "exclude:\n  files:\n    - secret.env\n  dirs:\n    - private\nnetwork:\n  proxy:\n    address: 10.0.0.1:8888\n"
-	if err := os.WriteFile(filepath.Join(root, Filename), []byte(content), 0o644); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-
-	excl, netCfg, _, err := Load(root)
-	if err != nil {
-		t.Fatalf("Load returned error: %v", err)
-	}
-
-	if len(excl.Files) != 1 || excl.Files[0] != filepath.Join(root, "secret.env") {
-		t.Errorf("unexpected Files: %v", excl.Files)
-	}
-	if len(excl.Dirs) != 1 || excl.Dirs[0] != filepath.Join(root, "private") {
-		t.Errorf("unexpected Dirs: %v", excl.Dirs)
-	}
-
-	if netCfg.ProxyAddress != "10.0.0.1:8888" {
-		t.Errorf("ProxyAddress: got %q, want %q", netCfg.ProxyAddress, "10.0.0.1:8888")
-	}
-}
-
-// TestLoad_Network_LogFieldRejected verifies that a config file containing the
-// removed network.log field is rejected with a strict-decode (unknown field) error.
-// This protects users with old configs from silently losing their log configuration.
-func TestLoad_Network_LogFieldRejected(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
-	root := evalSymlinks(t, t.TempDir())
-
-	content := "network:\n  proxy:\n    address: \"\"\n  log: requests.log\n"
-	if err := os.WriteFile(filepath.Join(root, Filename), []byte(content), 0o644); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-
-	_, _, _, err := Load(root)
-	if err == nil {
-		t.Fatal("expected error for unknown network.log field, got nil")
-	}
-	if !strings.HasPrefix(err.Error(), "projectconfig:") {
-		t.Errorf("error missing 'projectconfig:' prefix: %q", err.Error())
 	}
 }
 
@@ -748,7 +619,7 @@ func TestLoad_Scan_ValidPatternsAndSkipDirs(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(root, Filename), []byte(tc.yaml), 0o644); err != nil {
 				t.Fatalf("write: %v", err)
 			}
-			excl, _, _, err := Load(root)
+			excl, _, err := Load(root)
 			if err != nil {
 				t.Fatalf("Load returned error: %v", err)
 			}
@@ -788,7 +659,7 @@ func TestLoad_Scan_InvalidPatterns(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(root, Filename), []byte(tc.yaml), 0o644); err != nil {
 				t.Fatalf("write: %v", err)
 			}
-			_, _, _, err := Load(root)
+			_, _, err := Load(root)
 			if err == nil {
 				t.Fatalf("expected error containing %q, got nil", tc.wantErrFrag)
 			}
@@ -838,7 +709,7 @@ func TestLoad_Scan_InvalidSkipDirs(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(root, Filename), []byte(tc.yaml), 0o644); err != nil {
 				t.Fatalf("write: %v", err)
 			}
-			_, _, _, err := Load(root)
+			_, _, err := Load(root)
 			if err == nil {
 				t.Fatalf("expected error containing %q, got nil", tc.wantErrFrag)
 			}
@@ -862,7 +733,7 @@ func TestLoad_Scan_UnknownKeyRejected(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, _, _, err := Load(root)
+	_, _, err := Load(root)
 	if err == nil {
 		t.Fatal("expected error for unknown key under exclude.scan, got nil")
 	}
@@ -885,7 +756,7 @@ func TestLoad_Cache_AbsentBlock(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, _, cacheCfg, err := Load(root)
+	_, cacheCfg, err := Load(root)
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -902,7 +773,7 @@ func TestLoad_Cache_MissingFile(t *testing.T) {
 	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
-	_, _, cacheCfg, err := Load(root)
+	_, cacheCfg, err := Load(root)
 	if err != nil {
 		t.Fatalf("Load on missing file: %v", err)
 	}
@@ -925,7 +796,7 @@ func TestLoad_Cache_BothFalse(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, _, cacheCfg, err := Load(root)
+	_, cacheCfg, err := Load(root)
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -948,7 +819,7 @@ func TestLoad_Cache_BothTrue(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, _, cacheCfg, err := Load(root)
+	_, cacheCfg, err := Load(root)
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -971,7 +842,7 @@ func TestLoad_Cache_MixedContentFalseAgentAbsent(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, _, cacheCfg, err := Load(root)
+	_, cacheCfg, err := Load(root)
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -994,7 +865,7 @@ func TestLoad_Cache_MixedAgentFalseContentAbsent(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, _, cacheCfg, err := Load(root)
+	_, cacheCfg, err := Load(root)
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -1017,7 +888,7 @@ func TestLoad_Cache_UnknownKeyRejected(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, _, _, err := Load(root)
+	_, _, err := Load(root)
 	if err == nil {
 		t.Fatal("expected error for unknown key under cache:, got nil")
 	}
@@ -1039,7 +910,7 @@ func TestRenderStub_TrueTrue(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, _, cacheCfg, err := Load(root)
+	_, cacheCfg, err := Load(root)
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -1062,7 +933,7 @@ func TestRenderStub_FalseFalse(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, _, cacheCfg, err := Load(root)
+	_, cacheCfg, err := Load(root)
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -1093,7 +964,7 @@ func TestScaffold_CacheFalseFalse(t *testing.T) {
 		t.Errorf("file content mismatch:\ngot:  %q\nwant: %q", got, want)
 	}
 
-	_, _, cacheCfg, err := Load(root)
+	_, cacheCfg, err := Load(root)
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
