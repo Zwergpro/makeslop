@@ -242,5 +242,3 @@ func TestErrDaemonUnreachableMessage(t *testing.T) {
 		}
 	})
 }
-
-

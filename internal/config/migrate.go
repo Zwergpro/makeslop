@@ -113,20 +113,26 @@ func Migrate(baseDir string) (applied bool, err error) {
 
 	// Stamp the new version under the lock to avoid a lost-update race with a
 	// concurrent init re-stamp or config set.
+	var stamped bool
 	lockErr := WithLock(baseDir, func() error {
 		// Re-load under the lock so we don't clobber concurrent workspace edits.
 		fresh, loadErr := Load(baseDir)
 		if loadErr != nil {
 			return fmt.Errorf("migrate load settings: %w", loadErr)
 		}
+		// If a concurrent migration already stamped the version, nothing to do.
+		if fresh.MigratedVersion >= MigrationVersion {
+			return nil
+		}
 		fresh.MigratedVersion = MigrationVersion
 		if saveErr := Save(baseDir, fresh); saveErr != nil {
 			return fmt.Errorf("migrate save settings: %w", saveErr)
 		}
+		stamped = true
 		return nil
 	})
 	if lockErr != nil {
 		return false, lockErr
 	}
-	return true, nil
+	return stamped, nil
 }

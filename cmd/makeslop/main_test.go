@@ -1153,7 +1153,7 @@ func TestRun_DryRun_StdoutEqualsBuildSpecShellCommand(t *testing.T) {
 	if loadErr != nil {
 		t.Fatalf("load settings: %v", loadErr)
 	}
-	// Direct is the default: spec must NOT include proxy socket plumbing.
+	// Bridge networking is the default.
 	// Cache mounts default to true (absent cache: block ⇒ both groups enabled).
 	want := docker.BuildSpec(docker.Options{
 		ProjectRoot:       resolvedPwd,
@@ -1681,8 +1681,7 @@ func TestRun_LoadsYamlMaskedDirs_TmpfsMountInArgv(t *testing.T) {
 }
 
 // TestRun_YamlAbsentIsBitIdenticalArgv verifies that when .makeslop.yaml is absent
-// (no network.proxy.address), the output equals plain BuildSpec with bridge networking
-// (no proxy plumbing). Direct/bridge is the default.
+// the output equals plain BuildSpec with bridge networking. Bridge is the default.
 func TestRun_YamlAbsentIsBitIdenticalArgv(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -1711,7 +1710,7 @@ func TestRun_YamlAbsentIsBitIdenticalArgv(t *testing.T) {
 	if loadErr != nil {
 		t.Fatalf("load settings: %v", loadErr)
 	}
-	// Direct is default: spec must NOT include proxy socket plumbing.
+	// Bridge networking is the default.
 	// Cache mounts default to true (absent yaml ⇒ both groups enabled).
 	want := docker.BuildSpec(docker.Options{
 		ProjectRoot:       resolvedPwd,
@@ -1872,6 +1871,43 @@ func TestRun_YamlDirAndFileDupAborts(t *testing.T) {
 	}
 }
 
+// TestRun_StaleNetworkBlockAbortsBeforeDocker verifies that a .makeslop.yaml
+// file containing a stale "network:" block (from a prior makeslop version that
+// supported proxy egress) causes `run` to abort before contacting the Docker
+// daemon. This is the intended loud break: users with old YAML files must
+// remove the network: block to upgrade.
+func TestRun_StaleNetworkBlockAbortsBeforeDocker(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	resolvedPwd := evalSymlinks(t, pwd)
+
+	staleYAML := "exclude:\n  dirs: []\n  files: []\nnetwork:\n  proxy:\n    address: 10.0.0.5:3128\n"
+	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(staleYAML), 0o644); err != nil {
+		t.Fatalf("write stale yaml: %v", err)
+	}
+
+	fc := installFakeRunClient(t, 0)
+	stubTTY(t, true)
+
+	var stdout, stderr bytes.Buffer
+	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"run"})
+	if code == 0 {
+		t.Fatalf("expected non-zero exit from stale network: block, got 0; stderr=%q", stderr.String())
+	}
+	if !strings.HasPrefix(stderr.String(), "makeslop: ") {
+		t.Errorf("stderr missing 'makeslop: ' prefix: %q", stderr.String())
+	}
+	if fc.Started {
+		t.Errorf("docker client must not be started when yaml has stale network: block")
+	}
+}
+
 func TestRun_YamlMissingPathSkippedSilently(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -1938,10 +1974,6 @@ func TestRun_DryRun_DefaultIsBridge(t *testing.T) {
 	if strings.Contains(stdout, "HTTPS_PROXY") {
 		t.Errorf("default: stdout must not contain HTTPS_PROXY\nstdout:\n%s", stdout)
 	}
-	if strings.Contains(stdout, "makeslop-sock-") {
-		t.Errorf("default: stdout must not contain proxy volume name\nstdout:\n%s", stdout)
-	}
-
 	// Verify the output matches plain BuildSpec (no proxy options).
 	// Cache mounts default to true (absent yaml ⇒ both groups enabled).
 	s, loadErr := config.Load(baseDir)

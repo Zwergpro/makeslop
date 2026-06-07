@@ -38,7 +38,9 @@ The interface covers (raw SDK methods from `github.com/moby/moby/client`):
 duration of a test. Ready-made fakes live in `testing.go`:
 
 - **`FakeRunClient`** — simulates the `Run` container lifecycle with a scripted exit code; also
-  supports `PingErr` to simulate daemon-down and `ImageMissing` to simulate absent images.
+  supports `PingErr` to simulate daemon-down, `ImageMissing` to simulate absent images,
+  `BlockPing` to block `Ping` until the context is cancelled (used in preflight-timeout tests),
+  and `BlockImageInspect` to similarly block `ImageInspect`.
   ```go
   t.Cleanup(docker.SetClientForTest(docker.NewFakeRunClient(0))) // exit 0
   ```
@@ -62,6 +64,10 @@ shell shims, no `dockerBinary` global, no `executableTempDir`.
 `ImageExists(ctx context.Context, image string) (bool, error)` — calls `ImageInspect`; returns
 `(true, nil)` when found, `(false, nil)` only when `cerrdefs.IsNotFound(err)`, and `(false, err)`
 for any other error (so a dead daemon is never misreported as "image absent").
+
+`WithPreflightTimeout(ctx context.Context) (context.Context, context.CancelFunc)` — wraps the
+given context with a short deadline (5 s) so that preflight checks never hang on a black-hole
+`DOCKER_HOST`. Both `runRun` (main.go) and `runStatus` (status.go) use it around each preflight call.
 
 Both helpers build and close their own client (two constructions per `status` run — accepted for
 simplicity).
@@ -128,7 +134,7 @@ cache:
   agent: true     # mount .claude/ + .codex/ from per-workspace cache (default: true)
 ```
 
-`projectconfig.Load` returns a `Cache{Content bool, Agent bool}` (third return value). Absent
+`projectconfig.Load` returns a `Cache{Content bool, Agent bool}` (second return value, before the error). Absent
 block ⇒ `{true, true}` ⇒ identical to pre-feature behavior (backward compatible).
 
 The values flow into `docker.Options.MountContentCache` and `docker.Options.MountAgentCache` in

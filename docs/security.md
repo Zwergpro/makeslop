@@ -126,6 +126,18 @@ The scan results and the `exclude.files` entries are merged; if the same path is
 and listed in `exclude.files`, only one overlay mount is emitted. A YAML parse error aborts the
 launch before docker is invoked.
 
+**YAML parse errors are hard failures.** Any unknown field in `.makeslop.yaml` — including the now-removed
+`network:` block from earlier makeslop versions — causes a strict-decode error that aborts `makeslop run`
+before Docker is contacted. If you upgrade from a version that had proxy support and your `.makeslop.yaml`
+contains a `network:` block, remove it:
+
+```yaml
+# Remove this block entirely if present:
+# network:
+#   proxy:
+#     address: 10.0.0.5:3128
+```
+
 **Reserved paths.** The paths `.claude`, `.codex`, `docs`, and `CLAUDE.md` are already mounted by
 `makeslop run` for agent state. Listing them in `.makeslop.yaml` is rejected with an error
 (`projectconfig: path %q collides with a reserved agent path`).

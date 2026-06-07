@@ -164,5 +164,3 @@ func TestFakeBuildClientImageInspectScripting(t *testing.T) {
 		}
 	})
 }
-
-

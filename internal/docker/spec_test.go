@@ -538,22 +538,20 @@ func collectMountArgs(argv []string) []string {
 	return out
 }
 
-// ── ReadOnly / NetworkMode / Env tests ───────────────────────────────────────
+// ── ReadOnly tests ────────────────────────────────────────────────────────────
 
-func TestBuildSpec_ProxyUnconfigured(t *testing.T) {
+// TestBuildSpec_DefaultMountCount verifies that the default spec produces
+// exactly 8 mounts (no extra proxy or network mounts).
+func TestBuildSpec_DefaultMountCount(t *testing.T) {
 	spec := BuildSpec(sampleOptions())
-	if spec.NetworkMode != "" {
-		t.Errorf("NetworkMode = %q, want empty", spec.NetworkMode)
-	}
-	if len(spec.Env) != 0 {
-		t.Errorf("Env = %v, want nil/empty", spec.Env)
-	}
 	if len(spec.Mounts) != 8 {
 		t.Errorf("Mounts len = %d, want 8", len(spec.Mounts))
 	}
 }
 
-func TestSpecArgs_ProxyUnconfiguredArgvIdentical(t *testing.T) {
+// TestSpecArgs_DefaultArgvHasNoNetworkOrEnv verifies that the default argv
+// contains no --network or -e flags (bridge networking, no env injections).
+func TestSpecArgs_DefaultArgvHasNoNetworkOrEnv(t *testing.T) {
 	spec := BuildSpec(sampleOptions())
 	args := spec.Args()
 
@@ -567,15 +565,15 @@ func TestSpecArgs_ProxyUnconfiguredArgvIdentical(t *testing.T) {
 	}
 }
 
-// TestSpecArgs_ProxyVolumeNameWithComma tests that a volume name containing a
+// TestSpecArgs_VolumeNameWithComma tests that a volume name containing a
 // comma is properly CSV-quoted in the --mount argument.
-func TestSpecArgs_ProxyVolumeNameWithComma(t *testing.T) {
+func TestSpecArgs_VolumeNameWithComma(t *testing.T) {
 	spec := Spec{
 		Image:   "img",
 		Command: "sh",
 		Workdir: "/wd",
 		Mounts: []Mount{
-			{Type: "volume", Host: "vol,with,commas", Container: "/sockets", ReadOnly: true},
+			{Type: "volume", Host: "vol,with,commas", Container: "/data", ReadOnly: true},
 		},
 	}
 	args := spec.Args()
@@ -583,7 +581,7 @@ func TestSpecArgs_ProxyVolumeNameWithComma(t *testing.T) {
 	if len(mountArgs) != 1 {
 		t.Fatalf("want 1 mount arg, got %d", len(mountArgs))
 	}
-	want := `type=volume,"source=vol,with,commas",target=/sockets,readonly`
+	want := `type=volume,"source=vol,with,commas",target=/data,readonly`
 	if mountArgs[0] != want {
 		t.Errorf("mount value = %q, want %q", mountArgs[0], want)
 	}
@@ -671,13 +669,12 @@ func TestSpecArgs_MultiValueSlicesRepeatFlag(t *testing.T) {
 
 // ── ContainerConfig tests ─────────────────────────────────────────────────────
 
-func TestContainerConfig_ImageCmdEnvTTYStdin(t *testing.T) {
+func TestContainerConfig_ImageCmdTTYStdin(t *testing.T) {
 	tests := []struct {
 		name    string
 		spec    Spec
 		wantImg string
 		wantCmd []string
-		wantEnv []string
 		wantWd  string
 	}{
 		{
@@ -685,28 +682,13 @@ func TestContainerConfig_ImageCmdEnvTTYStdin(t *testing.T) {
 			spec:    Spec{Image: "claudebox", Command: "/bin/zsh", Workdir: "/workspace/foo"},
 			wantImg: "claudebox",
 			wantCmd: []string{"/bin/zsh"},
-			wantEnv: nil,
 			wantWd:  "/workspace/foo",
-		},
-		{
-			name: "spec with env vars",
-			spec: Spec{
-				Image:   "claudebox",
-				Command: "/bin/bash",
-				Workdir: "/workspace/bar",
-				Env:     []string{"FOO=bar", "BAZ=qux"},
-			},
-			wantImg: "claudebox",
-			wantCmd: []string{"/bin/bash"},
-			wantEnv: []string{"FOO=bar", "BAZ=qux"},
-			wantWd:  "/workspace/bar",
 		},
 		{
 			name:    "from BuildSpec defaults",
 			spec:    BuildSpec(sampleOptions()),
 			wantImg: "claudebox",
 			wantCmd: []string{"/bin/zsh"},
-			wantEnv: nil,
 			wantWd:  "/workspace/myproj-abc123",
 		},
 	}
@@ -719,8 +701,8 @@ func TestContainerConfig_ImageCmdEnvTTYStdin(t *testing.T) {
 			if !reflect.DeepEqual(cfg.Cmd, tc.wantCmd) {
 				t.Errorf("Cmd = %v, want %v", cfg.Cmd, tc.wantCmd)
 			}
-			if !reflect.DeepEqual(cfg.Env, tc.wantEnv) {
-				t.Errorf("Env = %v, want %v", cfg.Env, tc.wantEnv)
+			if len(cfg.Env) != 0 {
+				t.Errorf("Env = %v, want nil/empty (no env injection)", cfg.Env)
 			}
 			if cfg.WorkingDir != tc.wantWd {
 				t.Errorf("WorkingDir = %q, want %q", cfg.WorkingDir, tc.wantWd)
@@ -762,7 +744,9 @@ func TestHostConfig_AutoRemoveCapDropSecOpt(t *testing.T) {
 	}
 }
 
-func TestHostConfig_NetworkModeDefault(t *testing.T) {
+// TestHostConfig_NetworkModeIsAlwaysBridge verifies that HostConfig always uses
+// the default (empty) NetworkMode, which resolves to bridge networking.
+func TestHostConfig_NetworkModeIsAlwaysBridge(t *testing.T) {
 	spec := Spec{Image: "img", Command: "sh", Workdir: "/wd"}
 	hc := spec.HostConfig()
 	if hc.NetworkMode != "" {
@@ -1029,15 +1013,14 @@ func TestDriftGuard_ArgsAndSDKProjectionsAgree(t *testing.T) {
 		t.Errorf("workdir: Args=%q, ContainerConfig=%q", argsWorkdir, cfg.WorkingDir)
 	}
 
-	// --- env ---
-	var argsEnv []string
+	// --- env: no -e flags should appear (no env injection in bridge-only mode) ---
 	for i := 0; i < len(args)-1; i++ {
 		if args[i] == "-e" {
-			argsEnv = append(argsEnv, args[i+1])
+			t.Errorf("unexpected -e at index %d (no env injection expected)", i)
 		}
 	}
-	if !reflect.DeepEqual(argsEnv, cfg.Env) {
-		t.Errorf("env: Args=%v, ContainerConfig.Env=%v", argsEnv, cfg.Env)
+	if len(cfg.Env) != 0 {
+		t.Errorf("ContainerConfig.Env = %v, want nil/empty (no env injection)", cfg.Env)
 	}
 
 	// --- caps ---
@@ -1062,15 +1045,14 @@ func TestDriftGuard_ArgsAndSDKProjectionsAgree(t *testing.T) {
 		t.Errorf("security-opt: Args=%v, HostConfig=%v", argsSecOpt, hc.SecurityOpt)
 	}
 
-	// --- network ---
-	argsNetwork := ""
+	// --- network: no --network flag should appear (default bridge) ---
 	for i := 0; i < len(args)-1; i++ {
 		if args[i] == "--network" {
-			argsNetwork = args[i+1]
+			t.Errorf("unexpected --network at index %d (default bridge networking expected)", i)
 		}
 	}
-	if argsNetwork != string(hc.NetworkMode) {
-		t.Errorf("network: Args=%q, HostConfig=%q", argsNetwork, hc.NetworkMode)
+	if hc.NetworkMode != "" {
+		t.Errorf("HostConfig.NetworkMode = %q, want empty string (default bridge)", hc.NetworkMode)
 	}
 
 	// --- mounts: count bind/volume/tmpfs mounts in Args, compare to HostConfig ---

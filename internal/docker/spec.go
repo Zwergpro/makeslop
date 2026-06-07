@@ -80,15 +80,13 @@ type Mount struct {
 
 // Spec is the deterministic shape of a `docker run` invocation; Args() is a pure projection.
 type Spec struct {
-	Image       string
-	Command     string
-	Workdir     string
-	Mounts      []Mount
-	Tmpfs       []string
-	CapDrop     []string
-	SecOpt      []string
-	NetworkMode string   // e.g. "none"; empty ⇒ default docker networking
-	Env         []string // KEY=VALUE pairs emitted as -e flags
+	Image   string
+	Command string
+	Workdir string
+	Mounts  []Mount
+	Tmpfs   []string
+	CapDrop []string
+	SecOpt  []string
 }
 
 // BuildSpec is pure: same Options → same Spec. Mount order is deterministic:
@@ -167,9 +165,6 @@ func BuildSpec(o Options) Spec {
 func (s Spec) Args() []string {
 	var args []string
 	args = append(args, "run", "--rm", "-it")
-	if s.NetworkMode != "" {
-		args = append(args, "--network", s.NetworkMode)
-	}
 	args = append(args, "--workdir", s.Workdir)
 	for _, t := range s.Tmpfs {
 		args = append(args, "--tmpfs", t)
@@ -179,9 +174,6 @@ func (s Spec) Args() []string {
 	}
 	for _, so := range s.SecOpt {
 		args = append(args, "--security-opt", so)
-	}
-	for _, e := range s.Env {
-		args = append(args, "-e", e)
 	}
 	for _, m := range s.Mounts {
 		switch m.Type {
@@ -260,7 +252,6 @@ func (s Spec) ContainerConfig() *container.Config {
 		Image:        s.Image,
 		Cmd:          []string{s.Command},
 		WorkingDir:   s.Workdir,
-		Env:          s.Env,
 		Tty:          true,
 		OpenStdin:    true,
 		AttachStdin:  true,
@@ -276,7 +267,6 @@ func (s Spec) HostConfig() *container.HostConfig {
 		AutoRemove:  true,
 		CapDrop:     s.CapDrop,
 		SecurityOpt: s.SecOpt,
-		NetworkMode: container.NetworkMode(s.NetworkMode),
 		Tmpfs:       tmpfsMap(s.Tmpfs),
 		Mounts:      mountsFor(s.Mounts),
 	}

@@ -250,14 +250,6 @@ type FakeBuildClient struct {
 	PingErr          error // if non-nil, Ping returns this error
 	ImageMissing     bool  // if true, ImageInspect returns a not-found error
 	ImageErr         error // if non-nil (and ImageMissing false), ImageInspect returns this error
-
-	// BlockPing, when true, causes Ping to block until ctx is cancelled and
-	// return ctx.Err(). Lets tests verify timeout propagation.
-	BlockPing bool
-
-	// BlockImageInspect, when true, causes ImageInspect to block until ctx is
-	// cancelled and return ctx.Err(). Lets tests verify timeout propagation.
-	BlockImageInspect bool
 }
 
 // NewFakeBuildClient creates a FakeBuildClient. exitCode 0 means success.
@@ -266,12 +258,7 @@ func NewFakeBuildClient(exitCode int) *FakeBuildClient {
 }
 
 // Ping returns PingErr if set, otherwise delegates to noopClient (success).
-// If BlockPing is true, Ping blocks until ctx is cancelled and returns ctx.Err().
-func (f *FakeBuildClient) Ping(ctx context.Context, _ moby.PingOptions) (moby.PingResult, error) {
-	if f.BlockPing {
-		<-ctx.Done()
-		return moby.PingResult{}, ctx.Err()
-	}
+func (f *FakeBuildClient) Ping(_ context.Context, _ moby.PingOptions) (moby.PingResult, error) {
 	if f.PingErr != nil {
 		return moby.PingResult{}, f.PingErr
 	}
@@ -280,13 +267,7 @@ func (f *FakeBuildClient) Ping(ctx context.Context, _ moby.PingOptions) (moby.Pi
 
 // ImageInspect returns a not-found error when ImageMissing is true, ImageErr
 // when ImageErr is set, or a found result otherwise.
-// If BlockImageInspect is true, ImageInspect blocks until ctx is cancelled and
-// returns ctx.Err().
-func (f *FakeBuildClient) ImageInspect(ctx context.Context, imageID string, _ ...moby.ImageInspectOption) (moby.ImageInspectResult, error) {
-	if f.BlockImageInspect {
-		<-ctx.Done()
-		return moby.ImageInspectResult{}, ctx.Err()
-	}
+func (f *FakeBuildClient) ImageInspect(_ context.Context, imageID string, _ ...moby.ImageInspectOption) (moby.ImageInspectResult, error) {
 	if f.ImageMissing {
 		return moby.ImageInspectResult{}, fmt.Errorf("image %q: %w", imageID, errdefs.ErrNotFound)
 	}

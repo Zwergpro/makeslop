@@ -137,9 +137,12 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, jso
 
 	// 1. Daemon check
 	// Bound by preflightTimeout so a black-hole DOCKER_HOST does not hang forever.
-	pfCtx1, pfCancel1 := docker.WithPreflightTimeout(ctx)
-	daemonErr := docker.CheckDaemon(pfCtx1)
-	pfCancel1()
+	var daemonErr error
+	{
+		pfCtx, pfCancel := docker.WithPreflightTimeout(ctx)
+		daemonErr = docker.CheckDaemon(pfCtx)
+		pfCancel()
+	}
 	if daemonErr != nil {
 		checks = append(checks, statusCheck{
 			Name:   "daemon",
@@ -207,9 +210,13 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, jso
 	if loadedSettings != nil {
 		imageName = loadedSettings.Image
 	}
-	pfCtx2, pfCancel2 := docker.WithPreflightTimeout(ctx)
-	imageFound, imageErr := docker.ImageExists(pfCtx2, imageName)
-	pfCancel2()
+	var imageFound bool
+	var imageErr error
+	{
+		pfCtx, pfCancel := docker.WithPreflightTimeout(ctx)
+		imageFound, imageErr = docker.ImageExists(pfCtx, imageName)
+		pfCancel()
+	}
 	if imageErr != nil {
 		checks = append(checks, statusCheck{
 			Name:   "image",

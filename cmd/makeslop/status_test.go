@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/Zwergpro/makeslop/internal/config"
 	"github.com/Zwergpro/makeslop/internal/docker"
+	"github.com/Zwergpro/makeslop/internal/projectconfig"
 )
 
 // runStatusCmd calls the status command and returns stdout, stderr, and the
@@ -220,8 +223,10 @@ func TestStatus_JSON_Shape(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
 		t.Fatalf("--json output is not valid JSON: %v\noutput: %s", err, stdout)
 	}
-	if len(result.Checks) == 0 {
-		t.Errorf("--json result.checks is empty")
+	const wantChecks = 5 // daemon, base config, image, workspace, secret scan
+	if len(result.Checks) != wantChecks {
+		t.Errorf("--json result.checks len = %d, want %d (daemon, base config, image, workspace, secret scan)",
+			len(result.Checks), wantChecks)
 	}
 	// Verify each check has a non-empty name and a valid state.
 	validStates := map[checkState]bool{
@@ -403,6 +408,120 @@ func TestStatus_ListedInHelp(t *testing.T) {
 	}
 }
 
+// TestStatus_Check5_PCErrShowsWarn verifies that when projectconfig.Load fails
+// (e.g. stale network: block in .makeslop.yaml), check 5 shows checkWarn and
+// the status command remains ready (non-blocking check).
+func TestStatus_Check5_PCErrShowsWarn(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	resolvedPwd := evalSymlinks(t, pwd)
+
+	// Write a stale network: block that projectconfig.Load rejects.
+	staleYAML := "exclude:\n  dirs: []\n  files: []\nnetwork:\n  proxy:\n    address: 10.0.0.5:3128\n"
+	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(staleYAML), 0o644); err != nil {
+		t.Fatalf("write stale yaml: %v", err)
+	}
+
+	installFakeStatusClient(t, false, false)
+
+	_, stderr, err := runStatusCmd(t, baseDir, "status")
+	if err != nil {
+		t.Errorf("status must remain ready despite pcErr (non-blocking); err=%v stderr=%q", err, stderr)
+	}
+	if !strings.Contains(stderr, "secret scan") {
+		t.Errorf("stderr missing 'secret scan' check line: %q", stderr)
+	}
+	if !strings.Contains(stderr, ".makeslop.yaml") {
+		t.Errorf("stderr missing .makeslop.yaml reference in scan warn: %q", stderr)
+	}
+}
+
+// TestStatus_Check5_ScanErrShowsWarn verifies that when security.Scan returns
+// an error, check 5 shows checkWarn and status remains ready (non-blocking).
+// We induce a scan error by making the project root unreadable.
+func TestStatus_Check5_ScanErrShowsWarn(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	resolvedPwd := evalSymlinks(t, pwd)
+
+	// Create a subdirectory that is unreadable so WalkDir returns an error.
+	unreadable := filepath.Join(resolvedPwd, "secrets")
+	if err := os.Mkdir(unreadable, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// Write a .makeslop.yaml with a scan pattern so Scan actually walks.
+	yamlContent := "exclude:\n  scan:\n    patterns:\n      - \"*.env\"\n    skip-dirs: []\n  dirs: []\n  files: []\n"
+	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(yamlContent), 0o644); err != nil {
+		t.Fatalf("write yaml: %v", err)
+	}
+	// Make the subdirectory unreadable to trigger a WalkDir error.
+	if err := os.Chmod(unreadable, 0o000); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(unreadable, 0o755) })
+
+	installFakeStatusClient(t, false, false)
+
+	_, stderr, err := runStatusCmd(t, baseDir, "status")
+	// Scan errors are non-blocking (checkWarn), so status must remain ready
+	// (exit 0, err == nil) even when security.Scan returns an error.
+	if err != nil {
+		t.Errorf("scan error must be non-blocking (warn), not blocking; err=%v stderr=%q", err, stderr)
+	}
+	if !strings.Contains(stderr, "scan error") {
+		t.Errorf("stderr missing 'scan error' indicator for failed scan; stderr=%q", stderr)
+	}
+	if !strings.Contains(stderr, "secret scan") {
+		t.Errorf("stderr missing 'secret scan' check name; stderr=%q", stderr)
+	}
+}
+
+// TestStatus_Check5_MaskedFilesShowsOKWithCount verifies that when the secret
+// scan finds masked files, check 5 shows checkOK with a "will mask N file(s)"
+// detail.
+func TestStatus_Check5_MaskedFilesShowsOKWithCount(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	resolvedPwd := evalSymlinks(t, pwd)
+
+	// Create a file that matches the default scan pattern.
+	secretFile := filepath.Join(resolvedPwd, ".env")
+	if err := os.WriteFile(secretFile, []byte("SECRET=val"), 0o644); err != nil {
+		t.Fatalf("write secret file: %v", err)
+	}
+
+	installFakeStatusClient(t, false, false)
+
+	_, stderr, err := runStatusCmd(t, baseDir, "status")
+	if err != nil {
+		t.Errorf("status must be ready when masked files found; err=%v stderr=%q", err, stderr)
+	}
+	if !strings.Contains(stderr, "will mask") {
+		t.Errorf("stderr missing 'will mask' detail: %q", stderr)
+	}
+	if !strings.Contains(stderr, "file(s)") {
+		t.Errorf("stderr missing 'file(s)' in mask count: %q", stderr)
+	}
+}
+
 // TestStatus_RenderReadyVerdict verifies the ready-path verdict line.
 func TestStatus_RenderReadyVerdict(t *testing.T) {
 	var buf bytes.Buffer
@@ -450,4 +569,3 @@ func TestStatus_RenderNotReadyVerdict(t *testing.T) {
 		}
 	}
 }
-

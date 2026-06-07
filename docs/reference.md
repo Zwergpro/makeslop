@@ -188,6 +188,28 @@ directory is always stamped at the current `MigrationVersion` — never reported
 `migrate` is the explicit upgrade path for existing installs. `build` self-heals `~/.makeslop/`
 (seeds if absent), but does not register a workspace.
 
+### Breaking change: `network:` block removed from `.makeslop.yaml`
+
+Earlier versions of makeslop supported an optional egress-proxy feature configured via a `network:`
+block in `.makeslop.yaml`:
+
+```yaml
+network:
+  proxy:
+    address: 10.0.0.5:3128
+```
+
+This feature has been removed. The `network:` block is now an **unknown field** and causes a hard
+parse error that aborts `makeslop run` before Docker is contacted. If your `.makeslop.yaml` contains
+a `network:` block, remove it to upgrade:
+
+```
+# Remove the network: block entirely from .makeslop.yaml
+```
+
+The app container now always uses standard Docker bridge networking with full internet access. No
+socat sidecar, no `--network none`, and no `--proxy` flag.
+
 ---
 
 ## Cache layout
