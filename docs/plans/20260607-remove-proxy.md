@@ -159,11 +159,11 @@ projectconfig/status tests together.
 - Modify: `internal/docker/client.go`
 - Modify: `internal/docker/run_test.go`
 
-- [ ] remove `ContainerInspect`, `ExecCreate`, `ExecStart`, `ExecInspect`, `VolumeCreate`, `VolumeRemove`, `ImagePull` from the `apiClient` interface
-- [ ] confirm `var _ apiClient = (*moby.Client)(nil)` still compiles (interface only shrank)
-- [ ] delete the 7 now-orphaned `fakeClient` methods in `run_test.go` (`ContainerInspect`/`ExecCreate`/`ExecStart`/`ExecInspect`/`VolumeCreate`/`VolumeRemove`/`ImagePull`, ~lines 124-149) — legal extra methods, but dead and uncaught by the grep sweep
-- [ ] keep `noopImagePullResponse` in `testing.go` — still used by the `FakeBuildClient`/Build flow, not the proxy (confirm before deleting any return type)
-- [ ] run `go build ./internal/docker/` — must succeed before next task
+- [x] remove `ContainerInspect`, `ExecCreate`, `ExecStart`, `ExecInspect`, `VolumeCreate`, `VolumeRemove`, `ImagePull` from the `apiClient` interface
+- [x] confirm `var _ apiClient = (*moby.Client)(nil)` still compiles (interface only shrank)
+- [x] delete the 7 now-orphaned `fakeClient` methods in `run_test.go` (`ContainerInspect`/`ExecCreate`/`ExecStart`/`ExecInspect`/`VolumeCreate`/`VolumeRemove`/`ImagePull`, ~lines 124-149) — legal extra methods, but dead and uncaught by the grep sweep
+- [x] keep `noopImagePullResponse` in `testing.go` — still used by the `FakeBuildClient`/Build flow, not the proxy (confirm before deleting any return type)
+- [x] run `go build ./internal/docker/` — must succeed before next task
 
 ### Task 6: Strip sidecar surface from `FakeRunClient` in `testing.go`
 

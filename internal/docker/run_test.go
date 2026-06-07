@@ -121,34 +121,6 @@ func (f *fakeClient) ImageInspect(_ context.Context, _ string, _ ...moby.ImageIn
 	return moby.ImageInspectResult{}, nil
 }
 
-func (f *fakeClient) ContainerInspect(_ context.Context, _ string, _ moby.ContainerInspectOptions) (moby.ContainerInspectResult, error) {
-	return moby.ContainerInspectResult{}, nil
-}
-
-func (f *fakeClient) ExecCreate(_ context.Context, _ string, _ moby.ExecCreateOptions) (moby.ExecCreateResult, error) {
-	return moby.ExecCreateResult{}, nil
-}
-
-func (f *fakeClient) ExecStart(_ context.Context, _ string, _ moby.ExecStartOptions) (moby.ExecStartResult, error) {
-	return moby.ExecStartResult{}, nil
-}
-
-func (f *fakeClient) ExecInspect(_ context.Context, _ string, _ moby.ExecInspectOptions) (moby.ExecInspectResult, error) {
-	return moby.ExecInspectResult{}, nil
-}
-
-func (f *fakeClient) VolumeCreate(_ context.Context, _ moby.VolumeCreateOptions) (moby.VolumeCreateResult, error) {
-	return moby.VolumeCreateResult{}, nil
-}
-
-func (f *fakeClient) VolumeRemove(_ context.Context, _ string, _ moby.VolumeRemoveOptions) (moby.VolumeRemoveResult, error) {
-	return moby.VolumeRemoveResult{}, nil
-}
-
-func (f *fakeClient) ImagePull(_ context.Context, _ string, _ moby.ImagePullOptions) (moby.ImagePullResponse, error) {
-	return noopImagePullResponse{}, nil
-}
-
 func (f *fakeClient) Close() error {
 	f.closed = true
 	return nil
