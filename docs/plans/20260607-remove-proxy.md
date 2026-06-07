@@ -184,22 +184,22 @@ projectconfig/status tests together.
 - Modify: `cmd/makeslop/status.go`
 - Modify: `cmd/makeslop/status_test.go`
 
-- [ ] remove check 6 (proxy config / `Network`) and check 7 (socat image / `docker.SocatImage`) — **note:** the proxy `statusCheck` is appended in THREE branches of `status.go` (the `pcErr` error branch ~line 282, the success branch ~line 317, and the workspace-not-resolved `else` branch ~line 329); remove it from all three. Removing the success-branch entry makes the `netCfg` value unused there (absorbed by the `_` from the new 3-value `Load`).
-- [ ] confirm remaining checks: Daemon, Base config, Image, Workspace, Secret scan (verdict/exit logic unchanged — both removed checks were non-blocking)
-- [ ] update the `--json` expected shape (five checks)
-- [ ] delete socat-image and proxy-detail cases from `status_test.go`
-- [ ] run `go test ./cmd/makeslop/` for status coverage — must pass before next task
+- [x] remove check 6 (proxy config / `Network`) and check 7 (socat image / `docker.SocatImage`) — **note:** the proxy `statusCheck` is appended in THREE branches of `status.go` (the `pcErr` error branch ~line 282, the success branch ~line 317, and the workspace-not-resolved `else` branch ~line 329); remove it from all three. Removing the success-branch entry makes the `netCfg` value unused there (absorbed by the `_` from the new 3-value `Load`).
+- [x] confirm remaining checks: Daemon, Base config, Image, Workspace, Secret scan (verdict/exit logic unchanged — both removed checks were non-blocking)
+- [x] update the `--json` expected shape (five checks)
+- [x] delete socat-image and proxy-detail cases from `status_test.go`
+- [x] run `go test ./cmd/makeslop/` for status coverage — must pass before next task
 
 ### Task 8: Delete proxy tests + fixtures from `main_test.go`
 
 **Files:**
 - Modify: `cmd/makeslop/main_test.go`
 
-- [ ] delete the ~17 proxy-specific tests (dry-run-with-proxy, proxy-flag-enables, sidecar-receives-upstream, config-proxy-wiring, invalid-proxy validations, sidecar-start-failure, proxy daemon-down/image-missing, etc.)
-- [ ] delete the `capturedSidecar`/`fakeSidecar`/`setSidecarFnForTest`/`expectedProxyVolumeName` fixtures
-- [ ] delete the now-vacuous "`--proxy` rejected on non-run commands" tests (generic cobra behavior)
-- [ ] keep surviving bridge-default dry-run/run tests (direct mode was always the default rendering)
-- [ ] run `go test ./cmd/makeslop/` — full package must pass before next task
+- [x] delete the ~17 proxy-specific tests (dry-run-with-proxy, proxy-flag-enables, sidecar-receives-upstream, config-proxy-wiring, invalid-proxy validations, sidecar-start-failure, proxy daemon-down/image-missing, etc.)
+- [x] delete the `capturedSidecar`/`fakeSidecar`/`setSidecarFnForTest`/`expectedProxyVolumeName` fixtures
+- [x] delete the now-vacuous "`--proxy` rejected on non-run commands" tests (generic cobra behavior)
+- [x] keep surviving bridge-default dry-run/run tests (direct mode was always the default rendering)
+- [x] run `go test ./cmd/makeslop/` — full package must pass before next task
 
 ### Task 9: Update documentation
 

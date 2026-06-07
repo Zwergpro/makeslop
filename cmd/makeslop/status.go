@@ -333,7 +333,7 @@ func newStatusCmd(ws *workspace.Workspaces, baseDir string, ttyPred isTTYFunc) *
 
 	cmd := &cobra.Command{
 		Use:          "status",
-		Short:        "Report readiness: daemon, image, workspace, scan, proxy",
+		Short:        "Report readiness: daemon, image, workspace, scan",
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
