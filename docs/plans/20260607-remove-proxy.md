@@ -112,12 +112,12 @@ projectconfig/status tests together.
 - Modify: `internal/docker/spec.go`
 - Modify: `internal/docker/spec_test.go`
 
-- [ ] remove `Options.ProxySocketVolume` field
-- [ ] remove the `proxySocketDir` const
-- [ ] remove the `BuildSpec` proxy conditional (`NetworkMode="none"`, `HTTP_PROXY`/`HTTPS_PROXY` env, read-only `/sockets` volume mount)
-- [ ] keep generic `Mount`/`mountsFor` volume support untouched
-- [ ] delete proxy/`ProxySocketVolume` cases from `spec_test.go`, including `TestHostConfig_NetworkModeNone` (now unreachable); **keep** `TestHostConfig_NetworkModeDefault` (default bridge) and the drift-guard test (still valid)
-- [ ] run `go test ./internal/docker/` for spec coverage — package compiles for spec; must pass before next task
+- [x] remove `Options.ProxySocketVolume` field
+- [x] remove the `proxySocketDir` const
+- [x] remove the `BuildSpec` proxy conditional (`NetworkMode="none"`, `HTTP_PROXY`/`HTTPS_PROXY` env, read-only `/sockets` volume mount)
+- [x] keep generic `Mount`/`mountsFor` volume support untouched
+- [x] delete proxy/`ProxySocketVolume` cases from `spec_test.go`, including `TestHostConfig_NetworkModeNone` (now unreachable); **keep** `TestHostConfig_NetworkModeDefault` (default bridge) and the drift-guard test (still valid)
+- [x] run `go test ./internal/docker/` for spec coverage — package compiles for spec; must pass before next task
 
 ### Task 3: Remove proxy wiring + `--proxy` flag from `main.go`
 

@@ -280,12 +280,6 @@ func (f *FakeRunClient) ImageInspect(ctx context.Context, imageID string, _ ...m
 	if f.ImageMissing {
 		return moby.ImageInspectResult{}, fmt.Errorf("image %q: %w", imageID, errdefs.ErrNotFound)
 	}
-	if f.SocatImageMissing && imageID == SocatImage {
-		return moby.ImageInspectResult{}, fmt.Errorf("image %q: %w", imageID, errdefs.ErrNotFound)
-	}
-	if f.SocatImageErr != nil && imageID == SocatImage {
-		return moby.ImageInspectResult{}, f.SocatImageErr
-	}
 	if f.ImageErr != nil {
 		return moby.ImageInspectResult{}, f.ImageErr
 	}

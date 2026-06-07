@@ -361,32 +361,3 @@ func TestFakeRunClient_ImagePull_Error(t *testing.T) {
 	}
 }
 
-// TestFakeRunClient_SocatImageMissing verifies the pull-on-demand simulation:
-// ImageInspect for SocatImage returns not-found, while other images return found.
-func TestFakeRunClient_SocatImageMissing(t *testing.T) {
-	f := NewFakeRunClient(0)
-	f.SocatImageMissing = true
-
-	// Socat image: not found (triggers pull-on-demand in production).
-	_, err := f.ImageInspect(context.Background(), SocatImage)
-	if err == nil {
-		t.Fatal("socat ImageInspect: expected not-found error, got nil")
-	}
-	if !cerrdefs.IsNotFound(err) {
-		t.Fatalf("socat ImageInspect: expected cerrdefs.IsNotFound, got %v", err)
-	}
-
-	// Other image (e.g. the app image): still found — SocatImageMissing only
-	// affects the socat image reference.
-	_, err = f.ImageInspect(context.Background(), "claudebox:latest")
-	if err != nil {
-		t.Fatalf("app ImageInspect: expected image found, got %v", err)
-	}
-
-	// Repeated socat image check: still not-found (pull state is separate from
-	// the fake — the fake models "socat not yet present").
-	_, err = f.ImageInspect(context.Background(), SocatImage)
-	if err == nil {
-		t.Fatal("second socat ImageInspect: expected not-found error, got nil")
-	}
-}

@@ -538,34 +538,7 @@ func collectMountArgs(argv []string) []string {
 	return out
 }
 
-// ── Proxy / ReadOnly / NetworkMode / Env tests ────────────────────────────────
-
-func TestBuildSpec_ProxyVolumeConfigured(t *testing.T) {
-	o := sampleOptions()
-	o.ProxySocketVolume = "makeslop-sock-abc123-42"
-	spec := BuildSpec(o)
-
-	if spec.NetworkMode != "none" {
-		t.Errorf("NetworkMode = %q, want %q", spec.NetworkMode, "none")
-	}
-	wantEnv := []string{
-		"HTTP_PROXY=unix:///sockets/proxy.sock",
-		"HTTPS_PROXY=unix:///sockets/proxy.sock",
-	}
-	if !reflect.DeepEqual(spec.Env, wantEnv) {
-		t.Errorf("Env = %v, want %v", spec.Env, wantEnv)
-	}
-	lastMount := spec.Mounts[len(spec.Mounts)-1]
-	wantMount := Mount{
-		Type:      "volume",
-		Host:      "makeslop-sock-abc123-42",
-		Container: "/sockets",
-		ReadOnly:  true,
-	}
-	if lastMount != wantMount {
-		t.Errorf("last mount = %+v, want %+v", lastMount, wantMount)
-	}
-}
+// ── ReadOnly / NetworkMode / Env tests ───────────────────────────────────────
 
 func TestBuildSpec_ProxyUnconfigured(t *testing.T) {
 	spec := BuildSpec(sampleOptions())
@@ -577,51 +550,6 @@ func TestBuildSpec_ProxyUnconfigured(t *testing.T) {
 	}
 	if len(spec.Mounts) != 8 {
 		t.Errorf("Mounts len = %d, want 8", len(spec.Mounts))
-	}
-}
-
-func TestSpecArgs_ProxyVolumeArgvContainsNetworkEnvAndMount(t *testing.T) {
-	o := sampleOptions()
-	o.ProxySocketVolume = "makeslop-sock-abc123-42"
-	spec := BuildSpec(o)
-	args := spec.Args()
-
-	foundNetwork := false
-	for i := 0; i < len(args)-1; i++ {
-		if args[i] == "--network" && args[i+1] == "none" {
-			foundNetwork = true
-			break
-		}
-	}
-	if !foundNetwork {
-		t.Errorf("argv missing --network none; got: %v", args)
-	}
-
-	wantEnvFlags := map[string]bool{
-		"HTTP_PROXY=unix:///sockets/proxy.sock":  false,
-		"HTTPS_PROXY=unix:///sockets/proxy.sock": false,
-	}
-	for i := 0; i < len(args)-1; i++ {
-		if args[i] == "-e" {
-			if _, ok := wantEnvFlags[args[i+1]]; ok {
-				wantEnvFlags[args[i+1]] = true
-			}
-		}
-	}
-	for kv, found := range wantEnvFlags {
-		if !found {
-			t.Errorf("argv missing -e %s", kv)
-		}
-	}
-
-	mountArgs := collectMountArgs(args)
-	if len(mountArgs) == 0 {
-		t.Fatal("no --mount args found")
-	}
-	lastMount := mountArgs[len(mountArgs)-1]
-	wantLastMount := "type=volume,source=makeslop-sock-abc123-42,target=/sockets,readonly"
-	if lastMount != wantLastMount {
-		t.Errorf("last --mount value = %q, want %q", lastMount, wantLastMount)
 	}
 }
 
@@ -713,63 +641,6 @@ func TestMount_ReadOnlyIgnoredForTmpfs(t *testing.T) {
 	want := "type=tmpfs,target=/c"
 	if mountArgs[0] != want {
 		t.Errorf("mount value = %q, want %q", mountArgs[0], want)
-	}
-}
-
-func TestShellCommand_ProxyVolumeFlagsRenderedCorrectly(t *testing.T) {
-	o := sampleOptions()
-	o.ProxySocketVolume = "makeslop-sock-abc123-42"
-	spec := BuildSpec(o)
-	out := spec.ShellCommand()
-
-	if !strings.Contains(out, "--network none") {
-		t.Errorf("ShellCommand missing '--network none':\n%s", out)
-	}
-	if !strings.Contains(out, "-e HTTP_PROXY=unix:///sockets/proxy.sock") {
-		t.Errorf("ShellCommand missing HTTP_PROXY env:\n%s", out)
-	}
-	if !strings.Contains(out, "-e HTTPS_PROXY=unix:///sockets/proxy.sock") {
-		t.Errorf("ShellCommand missing HTTPS_PROXY env:\n%s", out)
-	}
-	if !strings.Contains(out, "readonly") {
-		t.Errorf("ShellCommand missing 'readonly' in mount:\n%s", out)
-	}
-	if !strings.Contains(out, "type=volume") {
-		t.Errorf("ShellCommand missing 'type=volume' in mount:\n%s", out)
-	}
-
-	var got []string
-	for _, raw := range strings.Split(out, "\n") {
-		line := strings.TrimSuffix(raw, ` \`)
-		for _, field := range strings.Fields(line) {
-			got = append(got, shellUnquote(field))
-		}
-	}
-	want := append([]string{"docker"}, spec.Args()...)
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("round-trip mismatch\n got: %#v\nwant: %#v", got, want)
-	}
-}
-
-func TestBuildSpec_ProxyVolumeMountPositionAfterOtherGroups(t *testing.T) {
-	o := sampleOptions()
-	o.MaskedFiles = []string{"/home/me/code/myproj/.env"}
-	o.MaskedDirs = []string{"/home/me/code/myproj/secrets"}
-	o.ProxySocketVolume = "makeslop-sock-abc123-42"
-	spec := BuildSpec(o)
-
-	n := len(spec.Mounts)
-	if n < 3 {
-		t.Fatalf("got %d mounts, want at least 3", n)
-	}
-	// Second-to-last should be the tmpfs (MaskedDirs), last should be the volume socket.
-	secondToLast := spec.Mounts[n-2]
-	if secondToLast.Type != "tmpfs" {
-		t.Errorf("second-to-last mount type = %q, want tmpfs", secondToLast.Type)
-	}
-	last := spec.Mounts[n-1]
-	if last.Type != "volume" || last.Host != "makeslop-sock-abc123-42" || last.Container != "/sockets" || !last.ReadOnly {
-		t.Errorf("last mount = %+v, want proxy volume mount (ReadOnly=true)", last)
 	}
 }
 
@@ -896,16 +767,6 @@ func TestHostConfig_NetworkModeDefault(t *testing.T) {
 	hc := spec.HostConfig()
 	if hc.NetworkMode != "" {
 		t.Errorf("NetworkMode = %q, want empty string (default bridge)", hc.NetworkMode)
-	}
-}
-
-func TestHostConfig_NetworkModeNone(t *testing.T) {
-	o := sampleOptions()
-	o.ProxySocketVolume = "makeslop-sock-abc123-42"
-	spec := BuildSpec(o)
-	hc := spec.HostConfig()
-	if hc.NetworkMode != "none" {
-		t.Errorf("NetworkMode = %q, want none", hc.NetworkMode)
 	}
 }
 
@@ -1056,31 +917,6 @@ func TestHostConfig_ReadOnlyPropagated(t *testing.T) {
 	}
 }
 
-func TestHostConfig_ProxyVolumeMountReadOnly(t *testing.T) {
-	o := sampleOptions()
-	o.ProxySocketVolume = "makeslop-sock-abc123-42"
-	spec := BuildSpec(o)
-	hc := spec.HostConfig()
-
-	// Last mount is the proxy volume; must be TypeVolume and ReadOnly.
-	if len(hc.Mounts) == 0 {
-		t.Fatal("no mounts in HostConfig")
-	}
-	last := hc.Mounts[len(hc.Mounts)-1]
-	if last.Type != mount.TypeVolume {
-		t.Errorf("proxy mount type = %q, want TypeVolume", last.Type)
-	}
-	if last.Source != "makeslop-sock-abc123-42" {
-		t.Errorf("proxy mount Source = %q, want makeslop-sock-abc123-42", last.Source)
-	}
-	if last.Target != "/sockets" {
-		t.Errorf("proxy mount Target = %q, want /sockets", last.Target)
-	}
-	if !last.ReadOnly {
-		t.Error("proxy volume mount must be ReadOnly")
-	}
-}
-
 func TestHostConfig_VolumeMountTranslation(t *testing.T) {
 	// Verify that a volume type mount renders correctly in HostConfig.
 	spec := Spec{
@@ -1151,9 +987,8 @@ func TestHostConfig_MixedMountTypesOrder(t *testing.T) {
 // TestDriftGuard_ArgsAndSDKProjectionsAgree asserts that the argv projection
 // (Args/ShellCommand) and the SDK-struct projection (ContainerConfig/HostConfig)
 // agree on all semantically load-bearing fields for a representative Spec that
-// exercises proxy (volume mount), masked files, masked dirs, and the default
-// security/network settings. This catches silent drift where one projection is
-// updated but not the other.
+// exercises masked files, masked dirs, and the default security/network settings.
+// This catches silent drift where one projection is updated but not the other.
 func TestDriftGuard_ArgsAndSDKProjectionsAgree(t *testing.T) {
 	o := sampleOptions()
 	o.MaskedFiles = []string{
@@ -1161,7 +996,6 @@ func TestDriftGuard_ArgsAndSDKProjectionsAgree(t *testing.T) {
 		"/home/me/code/myproj/configs/secret.yaml",
 	}
 	o.MaskedDirs = []string{"/home/me/code/myproj/node_modules"}
-	o.ProxySocketVolume = "makeslop-sock-abc123-42"
 
 	spec := BuildSpec(o)
 	args := spec.Args()
@@ -1195,7 +1029,7 @@ func TestDriftGuard_ArgsAndSDKProjectionsAgree(t *testing.T) {
 		t.Errorf("workdir: Args=%q, ContainerConfig=%q", argsWorkdir, cfg.WorkingDir)
 	}
 
-	// --- env (proxy) ---
+	// --- env ---
 	var argsEnv []string
 	for i := 0; i < len(args)-1; i++ {
 		if args[i] == "-e" {

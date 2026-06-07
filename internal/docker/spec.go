@@ -21,11 +21,6 @@ import (
 	"github.com/moby/moby/api/types/mount"
 )
 
-// proxySocketDir is the fixed in-container mount point for the proxy volume,
-// shared by both the app container (read-only) and the socat sidecar (read-write).
-// The proxy socket is always /sockets/proxy.sock inside the container.
-const proxySocketDir = "/sockets"
-
 // Options is the caller-supplied input to BuildSpec. Path fields must be
 // absolute and EvalSymlinks-evaluated.
 type Options struct {
@@ -40,17 +35,6 @@ type Options struct {
 	// MaskedDirs: absolute host paths under ProjectRoot to replace with tmpfs.
 	// Under-root guarantee is the caller's. Nil or empty is a no-op.
 	MaskedDirs []string
-
-	// ProxySocketVolume is the name of the Docker volume that the socat sidecar
-	// creates the proxy unix socket in. When non-empty, BuildSpec emits
-	// --network none, a read-only volume mount at proxySocketDir (/sockets), and
-	// HTTP_PROXY/HTTPS_PROXY=unix:///sockets/proxy.sock. Empty means default
-	// bridge networking (no proxy).
-	//
-	// The sidecar mounts the same volume read-write so it can create
-	// the socket inside the VM filesystem — app container and sidecar use
-	// asymmetric read-only vs read-write access to the same volume.
-	ProxySocketVolume string
 
 	// TmpDirSize is the size constraint passed verbatim to --tmpfs /tmp:size=<TmpDirSize>.
 	// config.Load is the single source of the default ("100m"); BuildSpec uses it
@@ -113,7 +97,6 @@ type Spec struct {
 //  3. Group 3: content cache mounts (workspaceHost/docs/, CLAUDE.md) — when MountContentCache is true
 //  4. MaskedFiles /dev/null overlays
 //  5. MaskedDirs tmpfs overlays
-//  6. proxy socket volume (read-only, when ProxySocketVolume is set)
 //
 // Overlays (4–5) follow the directory bind they shadow so docker's argv-order
 // evaluation makes them win. Entries are omitted when their group is disabled —
@@ -168,7 +151,7 @@ func BuildSpec(o Options) Spec {
 		})
 	}
 
-	spec := Spec{
+	return Spec{
 		Image:   o.Image,
 		Command: o.Command,
 		Workdir: workspacePath,
@@ -177,30 +160,6 @@ func BuildSpec(o Options) Spec {
 		CapDrop: []string{"ALL"},
 		SecOpt:  []string{"no-new-privileges"},
 	}
-
-	if o.ProxySocketVolume != "" {
-		spec.NetworkMode = "none"
-		// The socket is always proxy.sock inside the fixed /sockets mount point.
-		// HTTP_PROXY/HTTPS_PROXY use the unix:// URL scheme; container egress is
-		// solely through the volume socket — it stays airtight with --network none.
-		// proxySocketDir and proxySocketName are the single source of truth;
-		// any rename of either constant will update this URL automatically.
-		unixURL := "unix://" + proxySocketDir + "/" + proxySocketName
-		spec.Env = []string{
-			"HTTP_PROXY=" + unixURL,
-			"HTTPS_PROXY=" + unixURL,
-		}
-		// App container mounts the volume read-only; the socat sidecar mounts
-		// the same volume read-write to create the socket inside the VM.
-		spec.Mounts = append(spec.Mounts, Mount{
-			Type:      "volume",
-			Host:      o.ProxySocketVolume, // volume name (not a host path)
-			Container: proxySocketDir,
-			ReadOnly:  true,
-		})
-	}
-
-	return spec
 }
 
 // Args returns argv starting with "run". Mount source/target fields use RFC 4180
