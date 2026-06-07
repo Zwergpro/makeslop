@@ -210,12 +210,12 @@ projectconfig/status tests together.
 - Modify: `README.md`
 - Modify: `CLAUDE.md`
 
-- [ ] `docs/security.md`: remove the two-state network model, data-path diagram, and `unix://` section; replace with a short statement that the container uses standard Docker bridge networking with no built-in egress proxy or isolation
-- [ ] `docs/architecture.md`: remove the `newSidecarFn` seam and socat-sidecar lifecycle sections; trim the `apiClient` method list to the surviving set
-- [ ] `docs/reference.md`: drop the `--proxy` flag row and the proxy/socat status-check lines
-- [ ] `README.md`: remove proxy mode, `--proxy`, socat sidecar, `--network none`, and the proxy status-check line
-- [ ] `CLAUDE.md`: delete the "Network model", "Sidecar", "newSidecarFn seam", "--proxy flag scope", socat-volume notes, and sidecar `apiClient` bullets; add a one-line note that proxy/socat was removed and the container always uses bridge networking
-- [ ] do NOT touch the two preserved completed-plan files under `docs/plans/completed/`
+- [x] `docs/security.md`: remove the two-state network model, data-path diagram, and `unix://` section; replace with a short statement that the container uses standard Docker bridge networking with no built-in egress proxy or isolation
+- [x] `docs/architecture.md`: remove the `newSidecarFn` seam and socat-sidecar lifecycle sections; trim the `apiClient` method list to the surviving set
+- [x] `docs/reference.md`: drop the `--proxy` flag row and the proxy/socat status-check lines
+- [x] `README.md`: remove proxy mode, `--proxy`, socat sidecar, `--network none`, and the proxy status-check line
+- [x] `CLAUDE.md`: delete the "Network model", "Sidecar", "newSidecarFn seam", "--proxy flag scope", socat-volume notes, and sidecar `apiClient` bullets; add a one-line note that proxy/socat was removed and the container always uses bridge networking
+- [x] do NOT touch the two preserved completed-plan files under `docs/plans/completed/`
 
 ### Task 10: Verify acceptance criteria
 - [ ] `go build ./...` clean

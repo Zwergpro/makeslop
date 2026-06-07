@@ -79,10 +79,6 @@ Builds (or rebuilds) the base Docker image from `~/.makeslop/Dockerfile` via the
   context (the Dockerfile downloads everything; no local files need shipping) and uses the BuildKit
   API (`Version: "2"` via the moby SDK) so cache mounts (`--mount=type=cache`) work correctly. No
   `DOCKER_BUILDKIT` environment variable is needed.
-- **Live build progress:** when stdout is a TTY, build steps stream live in the BuildKit `[+] Building`
-  UI. When stdout is not a TTY (piped or redirected), plain-text progress lines are written instead.
-  Build progress goes to stdout and is suppressed by `--quiet` (silent on success; build
-  errors still surface on stderr).
 - After a `migrate` that refreshes the `Dockerfile`, re-run `build` to pick up the changes.
 
 **Flags:**
@@ -93,8 +89,6 @@ Builds (or rebuilds) the base Docker image from `~/.makeslop/Dockerfile` via the
   Use this to reset a hand-edited base Dockerfile to the shipped version without running a
   separate `migrate` step. Does **not** touch `migrated_version` or any migration state —
   `migrate` remains the sole owner of version tracking.
-- `--quiet` (global flag) — suppress stderr notices (e.g. the `--refresh` confirmation message)
-  **and** the build progress output on stdout. Build errors still print to stderr.
 
 ---
 
@@ -108,20 +102,14 @@ groups can be disabled via `cache.content` and `cache.agent` in `.makeslop.yaml`
 - Exits with the container's exit code.
 - Refuses to launch when stdin or stdout is not a TTY (see [TTY policy](#tty-policy)).
 - If no ancestor directory is registered, exits non-zero with a hint to run `makeslop init`.
-- Before launching, performs two pre-flight checks (each bounded by a 10-second timeout; a
-  black-hole `DOCKER_HOST` is surfaced as an error rather than hanging indefinitely):
+- Before launching, performs two pre-flight checks:
   1. Daemon reachability (`— is docker running?`)
   2. Image existence (`— run 'makeslop build'`). No auto-build.
-- Ctrl-C / SIGTERM cancels the running container session cleanly.
 - `--dry-run` skips both pre-flight checks and the TTY check (printed == executed invariant).
 
 **Flags:**
 - `--dry-run` / `-n` — print the equivalent shell command and exit without launching the container
 - `--out-of-home` — bypass the home-directory guard
-- `--proxy host:port` — route container traffic through a remote HTTP forward proxy
-  (see [security.md](security.md#network-egress--two-state-model)); note the `unix://` proxy URL
-  scheme used internally is not honored by most HTTP clients — see the Known Limitation note in
-  [security.md](security.md#network-egress--two-state-model)
 
 ---
 
@@ -129,14 +117,12 @@ groups can be disabled via `cache.content` and `cache.agent` in `.makeslop.yaml`
 
 Runs an ordered health check and reports the result. CI-safe; does not require a TTY.
 
-Checks (in order); daemon and image checks are bounded by a 10-second preflight timeout:
+Checks (in order):
 1. Daemon reachability — **blocking**
 2. Base config presence + staleness — absent/corrupt is blocking (`✗`), stale is non-blocking (`!`)
 3. Image existence — **blocking**
 4. Workspace registration — **blocking**
 5. Secret scan summary — non-blocking
-6. Proxy configuration — non-blocking; shows `"direct (bridge networking)"` or the upstream address
-7. Socat image presence — non-blocking; `!` with hint when `alpine/socat` is absent
 
 Each check emits one aligned line with a glyph (`✓ ✗ ! –`). A final verdict line names the next
 action. Exit code is 0 when all blocking checks pass.
@@ -210,7 +196,6 @@ directory is always stamped at the current `MigrationVersion` — never reported
 ~/.makeslop/
 ├── Dockerfile
 ├── settings.json
-├── .settings.lock
 └── workspaces/
     └── <basename>-<sha256[:6]>/
 ```
@@ -218,10 +203,6 @@ directory is always stamped at the current `MigrationVersion` — never reported
 `settings.json` records each registered workspace keyed by its absolute, symlink-evaluated path.
 The per-workspace cache directory under `workspaces/` holds per-project agent state (`.claude/`,
 `.codex/`, `docs/`).
-
-`.settings.lock` is an advisory lock file that serializes concurrent writes to `settings.json`
-(used by `init`, `config set`, and `migrate`). It is a permanent artifact created on first write
-and is safe to ignore in directory listings.
 
 ---
 
@@ -268,8 +249,7 @@ Security flags applied inside the container:
 Mounts are emitted as `--mount type=bind,source=...,target=...` so paths containing `:` do not
 break parsing.
 
-For secret masking, network egress controls, and the home-directory guard, see
-[security.md](security.md).
+For secret masking and the home-directory guard, see [security.md](security.md).
 
 ---
 
@@ -326,7 +306,7 @@ makeslop run -n > cmd.sh   # capture only the command; masked-file count goes to
   child docker process to propagate an exit code from).
 - `1` — `makeslop status` exits 1 when any blocking check (daemon, base config, image, or workspace) fails.
 - `1` — any other failure: no workspace registered for pwd, no TTY available, corrupt
-  `settings.json`, invalid `--proxy` address, I/O error, etc. The reason is written to stderr.
+  `settings.json`, I/O error, etc. The reason is written to stderr.
 
 ---
 
@@ -336,8 +316,7 @@ makeslop run -n > cmd.sh   # capture only the command; masked-file count goes to
 - **stderr**: progress, `masked N` notice, nudges, errors.
 - Actionable errors follow the form `makeslop: <what failed> — <remedy>`.
 - `--quiet` (inherited by all subcommands): silences stderr chrome (notices, nudges, progress)
-  while keeping errors. For `build` it also silences the progress output on stdout (the one
-  command whose stdout the flag affects). Useful in scripts that parse stdout.
+  while keeping errors. Useful in scripts that parse stdout.
 
 ---
 
