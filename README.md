@@ -1,7 +1,7 @@
 # makeslop
 
 A sandboxed runner for Claude Code and Codex: isolates your AI agent in a per-project Docker
-container with controlled mounts, secret masking, and optional egress filtering.
+container with controlled mounts and secret masking.
 
 ## What & why
 
@@ -12,8 +12,6 @@ but nothing else from your host — no other projects, no ambient host environme
 Why use it:
 - **Isolation** — each project runs in its own container; no credential leakage between projects.
 - **Secret masking** — `.env`, PEM keys, and SSH keys are overlaid with `/dev/null` before launch.
-- **Optional egress control** — proxy mode routes all container traffic through a remote HTTP proxy
-  with `--network none`; direct bridge networking is the default.
 - **Reproducible** — one shared `claudebox` image, one Dockerfile, one `makeslop build`.
 
 ## Requirements
@@ -59,20 +57,16 @@ That's the normal flow. `migrate` is an explicit upgrade step, not part of first
 │  │  /workspace/<name>   ← your project root (bind-mounted)               │
 │  │  /home/user/.claude/ ← global agent config                            │
 │  │  /tmp                ← tmpfs (default 100m, not on disk)              │
-│  │  HTTP_PROXY / HTTPS_PROXY  ← set only in --proxy mode                 │
 │  └──────────────────────────────────────────────────────────────────────  │
-│  optional: socat sidecar (bridge) ──► remote HTTP proxy                  │
 └───────────────────────────────────────────────────────────────────────── ┘
 ```
 
-Direct mode (default): the container has normal bridge networking and full internet access.
-Proxy mode (`--proxy host:port`): the container is air-gapped (`--network none`); its only egress
-is a unix socket through an `alpine/socat` sidecar to your remote HTTP forward proxy.
+The container has normal Docker bridge networking and full internet access.
 
 ## Configuration
 
-`makeslop init` creates a `.makeslop.yaml` at the project root. Edit it to control secret masking,
-directory/file exclusions, and proxy settings:
+`makeslop init` creates a `.makeslop.yaml` at the project root. Edit it to control secret masking
+and directory/file exclusions:
 
 ```yaml
 exclude:
@@ -94,9 +88,6 @@ exclude:
       - .venv
   dirs: []    # mount these as empty tmpfs inside the container
   files: []   # overlay these with /dev/null inside the container
-network:
-  proxy:
-    address: ""   # set to host:port to enable proxy mode
 ```
 
 Global settings (`~/.makeslop/settings.json`) control the image tag, shell, and `/tmp` size:
@@ -111,9 +102,7 @@ makeslop config set tmp_dir_size 100m
 Secret masking is config-driven: patterns in `exclude.scan.patterns` are basename globs; matched
 files are overlaid with `/dev/null` so the agent sees a zero-byte file instead of the real secret.
 Walk errors are fatal — if makeslop cannot prove a directory is secret-free it refuses to launch.
-In proxy mode, `--network none` ensures the container's only egress path is the controlled socket.
-See [docs/security.md](docs/security.md) for the full masking spec, network egress model, and
-home-directory guard.
+See [docs/security.md](docs/security.md) for the full masking spec and home-directory guard.
 
 ## Commands
 
@@ -122,13 +111,12 @@ home-directory guard.
 | `makeslop init` | Register project, seed `~/.makeslop/` at latest version |
 | `makeslop build` | Build (or rebuild) the `claudebox` Docker image |
 | `makeslop run` | Launch an interactive agent container (TTY required) |
-| `makeslop status` | Ordered readiness check: daemon, config, image, workspace, proxy |
+| `makeslop status` | Ordered readiness check: daemon, config, image, workspace, secrets |
 | `makeslop migrate` | Upgrade `~/.makeslop/` when the binary ships a newer migration version |
 | `makeslop config` | View or set global settings (`image`, `shell`, `tmp_dir_size`) |
 | `makeslop version` | Print the build version |
 
 `makeslop run --dry-run` prints the equivalent `docker run` command without launching.
-`makeslop run --proxy host:port` enables proxy mode for a single run.
 `makeslop build --refresh` resets `~/.makeslop/Dockerfile` to the embedded shipped version before building (useful after hand-editing).
 
 ## Documentation

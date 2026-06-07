@@ -21,11 +21,6 @@ import (
 	"github.com/moby/moby/api/types/mount"
 )
 
-// proxySocketDir is the fixed in-container mount point for the proxy volume,
-// shared by both the app container (read-only) and the socat sidecar (read-write).
-// The proxy socket is always /sockets/proxy.sock inside the container.
-const proxySocketDir = "/sockets"
-
 // Options is the caller-supplied input to BuildSpec. Path fields must be
 // absolute and EvalSymlinks-evaluated.
 type Options struct {
@@ -40,17 +35,6 @@ type Options struct {
 	// MaskedDirs: absolute host paths under ProjectRoot to replace with tmpfs.
 	// Under-root guarantee is the caller's. Nil or empty is a no-op.
 	MaskedDirs []string
-
-	// ProxySocketVolume is the name of the Docker volume that the socat sidecar
-	// creates the proxy unix socket in. When non-empty, BuildSpec emits
-	// --network none, a read-only volume mount at proxySocketDir (/sockets), and
-	// HTTP_PROXY/HTTPS_PROXY=unix:///sockets/proxy.sock. Empty means default
-	// bridge networking (no proxy).
-	//
-	// The sidecar mounts the same volume read-write so it can create
-	// the socket inside the VM filesystem — app container and sidecar use
-	// asymmetric read-only vs read-write access to the same volume.
-	ProxySocketVolume string
 
 	// TmpDirSize is the size constraint passed verbatim to --tmpfs /tmp:size=<TmpDirSize>.
 	// config.Load is the single source of the default ("100m"); BuildSpec uses it
@@ -96,15 +80,13 @@ type Mount struct {
 
 // Spec is the deterministic shape of a `docker run` invocation; Args() is a pure projection.
 type Spec struct {
-	Image       string
-	Command     string
-	Workdir     string
-	Mounts      []Mount
-	Tmpfs       []string
-	CapDrop     []string
-	SecOpt      []string
-	NetworkMode string   // e.g. "none"; empty ⇒ default docker networking
-	Env         []string // KEY=VALUE pairs emitted as -e flags
+	Image   string
+	Command string
+	Workdir string
+	Mounts  []Mount
+	Tmpfs   []string
+	CapDrop []string
+	SecOpt  []string
 }
 
 // BuildSpec is pure: same Options → same Spec. Mount order is deterministic:
@@ -113,7 +95,6 @@ type Spec struct {
 //  3. Group 3: content cache mounts (workspaceHost/docs/, CLAUDE.md) — when MountContentCache is true
 //  4. MaskedFiles /dev/null overlays
 //  5. MaskedDirs tmpfs overlays
-//  6. proxy socket volume (read-only, when ProxySocketVolume is set)
 //
 // Overlays (4–5) follow the directory bind they shadow so docker's argv-order
 // evaluation makes them win. Entries are omitted when their group is disabled —
@@ -168,7 +149,7 @@ func BuildSpec(o Options) Spec {
 		})
 	}
 
-	spec := Spec{
+	return Spec{
 		Image:   o.Image,
 		Command: o.Command,
 		Workdir: workspacePath,
@@ -177,30 +158,6 @@ func BuildSpec(o Options) Spec {
 		CapDrop: []string{"ALL"},
 		SecOpt:  []string{"no-new-privileges"},
 	}
-
-	if o.ProxySocketVolume != "" {
-		spec.NetworkMode = "none"
-		// The socket is always proxy.sock inside the fixed /sockets mount point.
-		// HTTP_PROXY/HTTPS_PROXY use the unix:// URL scheme; container egress is
-		// solely through the volume socket — it stays airtight with --network none.
-		// proxySocketDir and proxySocketName are the single source of truth;
-		// any rename of either constant will update this URL automatically.
-		unixURL := "unix://" + proxySocketDir + "/" + proxySocketName
-		spec.Env = []string{
-			"HTTP_PROXY=" + unixURL,
-			"HTTPS_PROXY=" + unixURL,
-		}
-		// App container mounts the volume read-only; the socat sidecar mounts
-		// the same volume read-write to create the socket inside the VM.
-		spec.Mounts = append(spec.Mounts, Mount{
-			Type:      "volume",
-			Host:      o.ProxySocketVolume, // volume name (not a host path)
-			Container: proxySocketDir,
-			ReadOnly:  true,
-		})
-	}
-
-	return spec
 }
 
 // Args returns argv starting with "run". Mount source/target fields use RFC 4180
@@ -208,9 +165,6 @@ func BuildSpec(o Options) Spec {
 func (s Spec) Args() []string {
 	var args []string
 	args = append(args, "run", "--rm", "-it")
-	if s.NetworkMode != "" {
-		args = append(args, "--network", s.NetworkMode)
-	}
 	args = append(args, "--workdir", s.Workdir)
 	for _, t := range s.Tmpfs {
 		args = append(args, "--tmpfs", t)
@@ -220,9 +174,6 @@ func (s Spec) Args() []string {
 	}
 	for _, so := range s.SecOpt {
 		args = append(args, "--security-opt", so)
-	}
-	for _, e := range s.Env {
-		args = append(args, "-e", e)
 	}
 	for _, m := range s.Mounts {
 		switch m.Type {
@@ -301,7 +252,6 @@ func (s Spec) ContainerConfig() *container.Config {
 		Image:        s.Image,
 		Cmd:          []string{s.Command},
 		WorkingDir:   s.Workdir,
-		Env:          s.Env,
 		Tty:          true,
 		OpenStdin:    true,
 		AttachStdin:  true,
@@ -317,7 +267,6 @@ func (s Spec) HostConfig() *container.HostConfig {
 		AutoRemove:  true,
 		CapDrop:     s.CapDrop,
 		SecurityOpt: s.SecOpt,
-		NetworkMode: container.NetworkMode(s.NetworkMode),
 		Tmpfs:       tmpfsMap(s.Tmpfs),
 		Mounts:      mountsFor(s.Mounts),
 	}

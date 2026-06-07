@@ -88,7 +88,14 @@ func MigrationStatus(s *Settings) (current, latest int, stale bool) {
 // (true, nil) when migrations were applied and (false, nil) when already
 // up to date. An error is returned only if a migration step or the subsequent
 // Save fails.
+//
+// The Load→stamp→Save sequence is protected by WithLock so a concurrent
+// makeslop init or config set cannot lose the MigratedVersion stamp.
+// The migration steps themselves (e.g. WriteDockerfile) run outside the lock
+// because they are idempotent and do not touch settings.json.
 func Migrate(baseDir string) (applied bool, err error) {
+	// Quick check outside the lock: if already up to date, skip immediately.
+	// This is a best-effort optimisation; the definitive check is under the lock.
 	s, err := Load(baseDir)
 	if err != nil {
 		return false, fmt.Errorf("migrate load settings: %w", err)
@@ -97,15 +104,35 @@ func Migrate(baseDir string) (applied bool, err error) {
 		return false, nil
 	}
 
+	// Run the migration steps (idempotent; do not touch settings.json).
 	for _, m := range migrations {
 		if runErr := m.run(baseDir); runErr != nil {
 			return false, fmt.Errorf("migrate %q: %w", m.name, runErr)
 		}
 	}
 
-	s.MigratedVersion = MigrationVersion
-	if err := Save(baseDir, s); err != nil {
-		return false, fmt.Errorf("migrate save settings: %w", err)
+	// Stamp the new version under the lock to avoid a lost-update race with a
+	// concurrent init re-stamp or config set.
+	var stamped bool
+	lockErr := WithLock(baseDir, func() error {
+		// Re-load under the lock so we don't clobber concurrent workspace edits.
+		fresh, loadErr := Load(baseDir)
+		if loadErr != nil {
+			return fmt.Errorf("migrate load settings: %w", loadErr)
+		}
+		// If a concurrent migration already stamped the version, nothing to do.
+		if fresh.MigratedVersion >= MigrationVersion {
+			return nil
+		}
+		fresh.MigratedVersion = MigrationVersion
+		if saveErr := Save(baseDir, fresh); saveErr != nil {
+			return fmt.Errorf("migrate save settings: %w", saveErr)
+		}
+		stamped = true
+		return nil
+	})
+	if lockErr != nil {
+		return false, lockErr
 	}
-	return true, nil
+	return stamped, nil
 }

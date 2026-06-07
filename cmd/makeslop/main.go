@@ -4,17 +4,15 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
-	"net"
 	"os"
+	"os/signal"
 	"path/filepath"
-	"regexp"
 	"sort"
-	"strconv"
+	"syscall"
 
 	"github.com/spf13/cobra"
 
@@ -31,24 +29,6 @@ import (
 //
 // The default "dev" value is used when the binary is built without ldflags.
 var version = "dev"
-
-// validHostRe is a strict allowlist for the host portion of a proxy address.
-// It permits hostnames, IPv4 addresses, and bracketed IPv6 (net.SplitHostPort
-// strips the brackets, so the host seen here is already unwrapped).
-var validHostRe = regexp.MustCompile(`^[a-zA-Z0-9.\-\[\]:]+$`)
-
-// sidecarRunner is the interface used by runRun for the socat sidecar lifecycle.
-// Satisfied by *docker.Sidecar; tests swap newSidecarFn to return a fake.
-type sidecarRunner interface {
-	Start(ctx context.Context, upstream string, volumeName string) error
-	Close() error
-}
-
-// newSidecarFn is the seam used by tests to capture or replace Sidecar creation.
-// The default returns a real *docker.Sidecar; tests swap it via setSidecarFnForTest.
-var newSidecarFn = func(quiet bool, stderr io.Writer) sidecarRunner {
-	return docker.NewSidecar(quiet, stderr)
-}
 
 // errSilent signals that a RunE has already written a tailored message to
 // stderr; main() should exit non-zero without reprinting.
@@ -119,18 +99,8 @@ func mergeUniqueSorted(a, b []string) []string {
 }
 
 // runRun implements the docker-launch logic for the "run" subcommand.
-//
-// Two-state network model:
-//
-//   - Direct (default): no --proxy flag and no network.proxy.address → bridge
-//     networking; no socat sidecar, no volume, no --network none.
-//   - Proxy: --proxy ip:port OR network.proxy.address (flag wins) → --network none;
-//     egress = volume unix socket → socat sidecar → TCP-CONNECT:<ip>:<port> → remote
-//     HTTP proxy. The app is airtight: apps that ignore HTTP_PROXY cannot leak.
-//
-// The host-side Gateway (internal/networks) is gone; socat connects directly to the
-// remote upstream over bridge networking, so no host process is required.
-func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfHome, dryRun, quiet bool, proxyFlag string) error {
+// The app container always uses standard Docker bridge networking.
+func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfHome, dryRun, quiet bool) error {
 	pwd, err := resolvePwd()
 	if err != nil {
 		return err
@@ -150,7 +120,7 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfH
 	}
 	// YAML parse error aborts launch before docker.Run — symmetric with security.Scan
 	// failure to preserve the no-.env-leak invariant.
-	yamlExcludes, netCfg, cacheCfg, err := projectconfig.Load(workspaceRoot)
+	yamlExcludes, cacheCfg, err := projectconfig.Load(workspaceRoot)
 	if err != nil {
 		return err
 	}
@@ -170,39 +140,6 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfH
 		return err
 	}
 
-	// Resolve the effective proxy upstream: --proxy flag wins over network.proxy.address.
-	// When both are empty, direct/bridge networking is used (no socat, no volume).
-	upstream := proxyFlag
-	if upstream == "" {
-		upstream = netCfg.ProxyAddress
-	}
-	// Fail loud for a malformed upstream address before daemon pre-flight checks.
-	if upstream != "" {
-		h, p, err := net.SplitHostPort(upstream)
-		if err != nil || h == "" || p == "" {
-			fmt.Fprintf(cmd.ErrOrStderr(),
-				"makeslop: invalid proxy address %q — must be host:port\n", upstream)
-			return errSilent
-		}
-		if !validHostRe.MatchString(h) {
-			fmt.Fprintf(cmd.ErrOrStderr(),
-				"makeslop: invalid proxy address %q — host contains illegal characters\n", upstream)
-			return errSilent
-		}
-		portNum, atoiErr := strconv.Atoi(p)
-		if atoiErr != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(),
-				"makeslop: invalid proxy address %q — port must be a plain integer\n", upstream)
-			return errSilent
-		}
-		if portNum < 1 || portNum > 65535 {
-			fmt.Fprintf(cmd.ErrOrStderr(),
-				"makeslop: invalid proxy address %q — port must be in range [1, 65535]\n", upstream)
-			return errSilent
-		}
-	}
-
-	// Proxy socket path computed here to keep docker.BuildSpec pure (PID-based, so impure).
 	opts := docker.Options{
 		ProjectRoot:       workspaceRoot,
 		WorkspaceName:     filepath.Base(workspaceDir),
@@ -216,21 +153,11 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfH
 		MountAgentCache:   cacheCfg.Agent,
 	}
 
-	// sha256(workspaceDir)[:12] + PID: unique volume name across projects and concurrent runs.
-	// Only set when proxy mode is active (upstream != "").
-	var volumeName string
-	if upstream != "" {
-		h := sha256.Sum256([]byte(workspaceDir))
-		volumeName = fmt.Sprintf("makeslop-sock-%x-%d", h[:6], os.Getpid())
-		opts.ProxySocketVolume = volumeName
-	}
-
 	// ProjectRoot must be the registered ancestor (workspaceRoot), not pwd:
 	// running 'makeslop run' from a subdir must still mount the whole project.
 	spec := docker.BuildSpec(opts)
 
-	// Dry-run: print the argv (including proxy plumbing when configured) and
-	// return WITHOUT running pre-flight or starting the proxy — no socket is bound.
+	// Dry-run: print the argv and return WITHOUT running pre-flight.
 	// The printed argv matches what would execute, satisfying the "printed == executed" invariant.
 	if dryRun {
 		fmt.Fprintln(cmd.OutOrStdout(), spec.ShellCommand())
@@ -238,34 +165,37 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfH
 	}
 
 	// Pre-flight: daemon reachability. Must happen after workspace/config resolution
-	// (so we have the image name) but before proxy start.
-	if err := docker.CheckDaemon(cmd.Context()); err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(),
-			"makeslop: %v — is docker running?\n", err)
-		return errSilent
+	// (so we have the image name).
+	// Bound by preflightTimeout so a black-hole DOCKER_HOST does not hang forever.
+	{
+		pfCtx, pfCancel := docker.WithPreflightTimeout(cmd.Context())
+		daemonErr := docker.CheckDaemon(pfCtx)
+		pfCancel()
+		if daemonErr != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(),
+				"makeslop: %v — is docker running?\n", daemonErr)
+			return errSilent
+		}
 	}
 
 	// Pre-flight: image existence. No auto-build; a clear remedy is provided.
-	imageFound, imageErr := docker.ImageExists(cmd.Context(), s.Image)
+	// Bound by preflightTimeout.
+	var imageFound bool
+	var imageErr error
+	{
+		pfCtx, pfCancel := docker.WithPreflightTimeout(cmd.Context())
+		imageFound, imageErr = docker.ImageExists(pfCtx, s.Image)
+		pfCancel()
+	}
 	if imageErr != nil {
-		return imageErr
+		fmt.Fprintf(cmd.ErrOrStderr(),
+			"makeslop: check image %q: %v — is docker running?\n", s.Image, imageErr)
+		return errSilent
 	}
 	if !imageFound {
 		fmt.Fprintf(cmd.ErrOrStderr(),
 			"makeslop: image %q not built — run 'makeslop build'\n", s.Image)
 		return errSilent
-	}
-
-	// Proxy mode: start the socat sidecar that bridges the volume unix socket to
-	// the remote upstream TCP address. Any Start failure aborts the launch
-	// (fail-loud invariant). Teardown via defer.
-	if upstream != "" {
-		// --quiet gates the "pulling socat image" notice.
-		sc := newSidecarFn(quiet, cmd.ErrOrStderr())
-		if err := sc.Start(cmd.Context(), upstream, volumeName); err != nil {
-			return err
-		}
-		defer sc.Close() //nolint:errcheck // teardown; error not actionable here
 	}
 
 	if err := docker.Run(cmd.Context(), spec); err != nil {
@@ -303,7 +233,6 @@ func newRootCmd(baseDir string) *cobra.Command {
 		outOfHomeRun  bool
 		dryRun        bool
 		quiet         bool
-		proxyFlag     string
 		globalOnly    bool
 	)
 
@@ -358,16 +287,18 @@ func newRootCmd(baseDir string) *cobra.Command {
 			}
 
 			// Fresh seed: stamp MigratedVersion so a newly-init'd dir is never
-			// reported stale. ws.Init already called Save once; reload and re-save
-			// with the stamp so we don't race against any field changes.
+			// reported stale. ws.Init's lock has already been released; this is
+			// a separate sequential acquisition — no nesting, no deadlock.
 			if freshSeed {
-				s, loadErr := config.Load(baseDir)
-				if loadErr != nil {
-					return loadErr
-				}
-				s.MigratedVersion = config.MigrationVersion
-				if saveErr := config.Save(baseDir, s); saveErr != nil {
-					return saveErr
+				if lockErr := config.WithLock(baseDir, func() error {
+					s, loadErr := config.Load(baseDir)
+					if loadErr != nil {
+						return loadErr
+					}
+					s.MigratedVersion = config.MigrationVersion
+					return config.Save(baseDir, s)
+				}); lockErr != nil {
+					return lockErr
 				}
 			} else {
 				// Existing base config: check for staleness and nudge if behind.
@@ -411,7 +342,7 @@ func newRootCmd(baseDir string) *cobra.Command {
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runRun(cmd, ws, baseDir, outOfHomeRun, dryRun, quiet, proxyFlag)
+			return runRun(cmd, ws, baseDir, outOfHomeRun, dryRun, quiet)
 		},
 	}
 
@@ -420,11 +351,6 @@ func newRootCmd(baseDir string) *cobra.Command {
 	// --out-of-home is scoped to run only (not a persistent flag on root).
 	runCmd.Flags().BoolVar(&outOfHomeRun, "out-of-home", false,
 		"allow running outside the user's home directory")
-	// --proxy is scoped to run only (not a persistent flag on root).
-	// Enables proxy mode: routes container egress through a remote HTTP proxy.
-	// Flag wins over network.proxy.address. Rejected as unknown by other commands.
-	runCmd.Flags().StringVar(&proxyFlag, "proxy", "",
-		"route container egress through a remote HTTP proxy (host:port)")
 
 	migrateCmd := &cobra.Command{
 		Use:          "migrate",
@@ -525,21 +451,38 @@ func newRootCmd(baseDir string) *cobra.Command {
 		Args:         cobra.ExactArgs(2),
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			s, err := config.Load(baseDir)
-			if err != nil {
+			// Pre-validate the key/value before acquiring the lock so that the
+			// lock file is not created as a side effect of a bad input. Use a
+			// scratch Settings for validation; the actual mutation runs under
+			// the lock below. If pre-load fails (e.g. corrupt JSON), skip
+			// pre-validation and let the locked path surface the error.
+			if scratch, err := config.Load(baseDir); err == nil {
+				if err := config.ConfigSet(scratch, args[0], args[1]); err != nil {
+					return err
+				}
+			}
+
+			var storedVal string
+			if err := config.WithLock(baseDir, func() error {
+				s, err := config.Load(baseDir)
+				if err != nil {
+					return err
+				}
+				if err := config.ConfigSet(s, args[0], args[1]); err != nil {
+					return err
+				}
+				if err := config.Save(baseDir, s); err != nil {
+					return err
+				}
+				// Echo the stored value (not the raw CLI argument) so the output
+				// reflects what ConfigList would show (e.g. whitespace is trimmed).
+				// ConfigSet only succeeds for registered keys, so ConfigGet is
+				// guaranteed to find the entry.
+				storedVal, _ = config.ConfigGet(s, args[0])
+				return nil
+			}); err != nil {
 				return err
 			}
-			if err := config.ConfigSet(s, args[0], args[1]); err != nil {
-				return err
-			}
-			if err := config.Save(baseDir, s); err != nil {
-				return err
-			}
-			// Echo the stored value (not the raw CLI argument) so the output
-			// reflects what ConfigList would show (e.g. whitespace is trimmed).
-			// ConfigSet only succeeds for registered keys, so ConfigGet is
-			// guaranteed to find the entry.
-			storedVal, _ := config.ConfigGet(s, args[0])
 			fmt.Fprintf(cmd.OutOrStdout(), "%s = %s\n", args[0], storedVal)
 			return nil
 		},
@@ -564,17 +507,36 @@ func newRootCmd(baseDir string) *cobra.Command {
 	return rootCmd
 }
 
-// runWithExitCode maps an Execute() error to a host exit code:
+// onContextForTest is called by runWithExitCode with the signal-cancellable
+// context immediately after it is created. It is nil in production and swapped
+// by tests to observe the context passed to ExecuteContext. Guarded by the
+// test binary only; never set in normal operation.
+// Must NOT be used with t.Parallel() — it is a package-level variable with no
+// synchronisation, matching the pattern of other seams here.
+var onContextForTest func(ctx context.Context)
+
+// runWithExitCode maps an ExecuteContext() error to a host exit code:
 //   - *docker.ExitError passes through its Code (the daemon-reported exit status,
 //     e.g. 137 for SIGKILL); this is the primary path for `makeslop run`.
 //   - errSilent -> 1 with no reprint.
 //   - other errors -> 1 prefixed "makeslop: ".
+//
+// A signal-cancellable context (SIGINT / SIGTERM) is created here and passed
+// to ExecuteContext so every subcommand's cmd.Context() is cancellable. The
+// context is always a non-Background context, which lets subcommands observe
+// cancellation via select { case <-cmd.Context().Done(): }.
 func runWithExitCode(baseDir string, stdout, stderr io.Writer, args []string) int {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if onContextForTest != nil {
+		onContextForTest(ctx)
+	}
+
 	cmd := newRootCmd(baseDir)
 	cmd.SetArgs(args)
 	cmd.SetOut(stdout)
 	cmd.SetErr(stderr)
-	err := cmd.Execute()
+	err := cmd.ExecuteContext(ctx)
 	if err == nil {
 		return 0
 	}

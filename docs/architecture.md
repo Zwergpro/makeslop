@@ -9,8 +9,6 @@ agent-facing notes live in `CLAUDE.md`; this file is a self-contained human-read
 - [Pure/impure split](#pureimpure-split)
 - [Mount groups and cache overlays](#mount-groups-and-cache-overlays)
 - [apiClient seam and fake clients](#apiclient-seam-and-fake-clients)
-- [newSidecarFn seam](#newsidecarfn-seam)
-- [Socat sidecar lifecycle](#socat-sidecar-lifecycle)
 - [BuildKit session build flow](#buildkit-session-build-flow)
 - [Preflight helpers](#preflight-helpers)
 - [Config-driven scan engine](#config-driven-scan-engine)
@@ -73,10 +71,12 @@ must set them on their `sampleOptions()` or equivalent fixture.
 ## apiClient seam and fake clients
 
 `internal/docker/client.go` declares a narrow unexported `apiClient` interface covering all SDK
-methods used by `Run`, `Build`, `Ping`, `ImageInspect`, and the socat sidecar lifecycle. A
-package-level `newClientFn` (defaulting to `newClient`, which calls `client.New(client.FromEnv)`)
-constructs the live client. A compile-time assertion `var _ apiClient = (*moby.Client)(nil)` guards
-against signature drift.
+methods used by `Run`, `Build`, `Ping`, and `ImageInspect`. A package-level `newClientFn`
+(defaulting to `newClient`, which calls `client.New(client.FromEnv)`) constructs the live client. A
+compile-time assertion `var _ apiClient = (*moby.Client)(nil)` guards against signature drift.
+
+The interface covers: `ContainerCreate`, `ContainerAttach`, `ContainerStart`, `ContainerWait`,
+`ContainerResize`, `ContainerRemove`, `ImageBuild`, `DialHijack`, `Ping`, `ImageInspect`, `Close`.
 
 `SetClientForTest(c apiClient) (restore func())` (in `internal/docker/testing.go`) replaces
 `newClientFn` for the duration of a test.
@@ -90,8 +90,7 @@ trade-off for testability; the binary size impact is negligible.
 Ready-made fakes live in `testing.go`:
 
 - **`FakeRunClient`** — simulates the `Run` container lifecycle with a scripted exit code. Supports
-  `PingErr` (daemon-down), `ImageMissing` (absent image), `SidecarExited`, and `SocatImageMissing`
-  toggles. Records created/removed volumes and models the create→start→inspect exec handshake.
+  `PingErr` (daemon-down) and `ImageMissing` (absent image) toggles.
 
   ```go
   t.Cleanup(docker.SetClientForTest(docker.NewFakeRunClient(0))) // exit 0
@@ -109,61 +108,6 @@ Ready-made fakes live in `testing.go`:
 
 This replaces the old shell-shim machinery. There are no shell shims, no `dockerBinary` global, no
 `executableTempDir`.
-
----
-
-## newSidecarFn seam
-
-`cmd/makeslop/main.go` has a package-level seam that mirrors the `docker.newClientFn` pattern:
-
-**`newSidecarFn`** defaults to a closure that calls `docker.NewSidecar(quiet, stderr)` and returns
-a `sidecarRunner`. Tests swap it via `setSidecarFnForTest(t)`, which returns a `fakeSidecar` that
-records `(upstream, volumeName)` passed to `Start`. To simulate a `Start` failure, set
-`cap.startErr` before calling `runCmd`.
-
-```go
-cap := setSidecarFnForTest(t)
-// ... run command ...
-// cap.upstream, cap.volumeName, cap.called are available
-```
-
-The `sidecarRunner` interface has `Start(ctx context.Context, upstream string, volumeName string) error`
-and `Close() error`, satisfied by `*docker.Sidecar`.
-
-The seam is used in proxy-wiring tests where a real sidecar container would be unnecessary or would
-race with test teardown.
-
----
-
-## Socat sidecar lifecycle
-
-`internal/docker/sidecar.go` manages an `alpine/socat` container that exposes a unix socket on a
-Docker volume and connects it to a remote upstream address. This is used in proxy mode to give
-`--network none` app containers a controlled egress path.
-
-`Sidecar.Start(ctx, upstream, volumeName)`:
-
-1. `ImageInspect` to check presence; if absent, `ImagePull` with a one-line notice (suppressed by
-   `--quiet`); pull failure is fatal with a registry hint.
-2. `VolumeCreate` (per-run name, `managed-by: makeslop` label).
-3. `ContainerCreate` — detached socat container on bridge networking, volume mounted **read-write**
-   at `/sockets`. Socat args:
-   `UNIX-LISTEN:/sockets/proxy.sock,fork,mode=0666 TCP-CONNECT:<upstream>,reuseaddr`.
-4. `ContainerStart` — starts the created container.
-5. Readiness poll (~5 s, 100 ms intervals): `ContainerInspect` (early-exit detection) →
-   `ExecCreate` / `ExecStart` / `ExecInspect` (`test -S /sockets/proxy.sock`, exit 0 = ready).
-
-`Sidecar.Close()` — `ContainerRemove(Force:true)` then `VolumeRemove`; best-effort, idempotent.
-
-**Orphan containers:** there is no proactive stale-sweep (`VolumeList`/`ContainerList`). Orphans
-from killed runs are tolerated (unique per-run volume names) and prunable with:
-
-```
-docker volume prune --filter label=managed-by=makeslop
-```
-
-The socat image is pinned by digest (`const SocatImage = "alpine/socat@sha256:..."`); `status`
-checks its presence via `docker.ImageExists(docker.SocatImage)`.
 
 ---
 
@@ -252,9 +196,7 @@ The `Settings` struct records both:
 The two constants serve different purposes and are bumped independently.
 
 **When to bump:** if `internal/assets/files/Dockerfile` changes, bump `MigrationVersion`. If
-`Settings` struct fields change, bump `CurrentVersion`. The socat-volume proxy transport change and
-the network-default inversion (direct-by-default) did not change either constant — `Settings`
-fields and the embedded Dockerfile were unchanged.
+`Settings` struct fields change, bump `CurrentVersion`.
 
 ---
 

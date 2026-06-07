@@ -136,7 +136,14 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, jso
 	ready := true // guilty when any blocking check fails
 
 	// 1. Daemon check
-	if err := docker.CheckDaemon(ctx); err != nil {
+	// Bound by preflightTimeout so a black-hole DOCKER_HOST does not hang forever.
+	var daemonErr error
+	{
+		pfCtx, pfCancel := docker.WithPreflightTimeout(ctx)
+		daemonErr = docker.CheckDaemon(pfCtx)
+		pfCancel()
+	}
+	if daemonErr != nil {
 		checks = append(checks, statusCheck{
 			Name:   "daemon",
 			State:  checkFail,
@@ -198,11 +205,18 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, jso
 	}
 
 	// 3. Image check
+	// Bound by preflightTimeout.
 	imageName := config.DefaultImage
 	if loadedSettings != nil {
 		imageName = loadedSettings.Image
 	}
-	imageFound, imageErr := docker.ImageExists(ctx, imageName)
+	var imageFound bool
+	var imageErr error
+	{
+		pfCtx, pfCancel := docker.WithPreflightTimeout(ctx)
+		imageFound, imageErr = docker.ImageExists(pfCtx, imageName)
+		pfCancel()
+	}
 	if imageErr != nil {
 		checks = append(checks, statusCheck{
 			Name:   "image",
@@ -263,18 +277,12 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, jso
 	// 5. Secret scan summary (non-blocking)
 	// Only run when workspace was successfully resolved.
 	if workspaceRoot != "" {
-		yamlExcludes, netCfg, _, pcErr := projectconfig.Load(workspaceRoot)
+		yamlExcludes, _, pcErr := projectconfig.Load(workspaceRoot)
 		if pcErr != nil {
 			checks = append(checks, statusCheck{
 				Name:   "secret scan",
 				State:  checkWarn,
 				Detail: fmt.Sprintf("cannot read .makeslop.yaml: %v", pcErr),
-			})
-			// Proxy config is also unavailable when project config load fails;
-			// append an info entry so the pipeline always has 7 checks.
-			checks = append(checks, statusCheck{
-				Name:  "proxy",
-				State: checkInfo,
 			})
 		} else {
 			masked, scanErr := security.Scan(ctx, workspaceRoot, yamlExcludes.Patterns, yamlExcludes.SkipDirs)
@@ -296,56 +304,12 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, jso
 					State: checkInfo,
 				})
 			}
-
-			// 6. Proxy config (non-blocking)
-			// Two-state model: config-derived from network.proxy.address.
-			// When ProxyAddress is empty, direct bridge networking is the default.
-			// When ProxyAddress is set, the remote upstream proxy is used.
-			var proxyDetail string
-			if netCfg.ProxyAddress != "" {
-				proxyDetail = netCfg.ProxyAddress
-			} else {
-				proxyDetail = "direct (bridge networking)"
-			}
-			checks = append(checks, statusCheck{
-				Name:   "proxy",
-				State:  checkInfo,
-				Detail: proxyDetail,
-			})
 		}
 	} else {
-		// Workspace not resolved: report scan/proxy as info only
+		// Workspace not resolved: report scan as info only
 		checks = append(checks, statusCheck{
 			Name:  "secret scan",
 			State: checkInfo,
-		})
-		checks = append(checks, statusCheck{
-			Name:  "proxy",
-			State: checkInfo,
-		})
-	}
-
-	// 7. Socat image check (non-blocking)
-	// alpine/socat is pulled on demand at `makeslop run` time; absence is not
-	// a hard failure but worth surfacing so users know the first run will pull.
-	socatFound, socatErr := docker.ImageExists(ctx, docker.SocatImage)
-	if socatErr != nil {
-		checks = append(checks, statusCheck{
-			Name:   "socat-image",
-			State:  checkWarn,
-			Detail: fmt.Sprintf("error checking socat image: %v", socatErr),
-		})
-	} else if !socatFound {
-		checks = append(checks, statusCheck{
-			Name:   "socat-image",
-			State:  checkWarn,
-			Detail: "alpine/socat absent — will pull on first --proxy run",
-		})
-	} else {
-		checks = append(checks, statusCheck{
-			Name:   "socat-image",
-			State:  checkOK,
-			Detail: "alpine/socat present",
 		})
 	}
 
@@ -376,7 +340,7 @@ func newStatusCmd(ws *workspace.Workspaces, baseDir string, ttyPred isTTYFunc) *
 
 	cmd := &cobra.Command{
 		Use:          "status",
-		Short:        "Report readiness: daemon, image, workspace, scan, proxy",
+		Short:        "Report readiness: daemon, image, workspace, scan",
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {

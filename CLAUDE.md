@@ -26,30 +26,21 @@ testability. The binary size impact is negligible.
 
 ### apiClient seam and SetClientForTest
 `internal/docker/client.go` declares a narrow unexported `apiClient` interface with the methods
-used by `Run`, `Build`, `Ping`, `ImageInspect`, and the socat sidecar lifecycle. A package-level
-`newClientFn` (defaulting to `newClient`, which calls `client.New(client.FromEnv)`) constructs
-the live client. A compile-time assertion `var _ apiClient = (*moby.Client)(nil)` guards against
-signature drift.
+used by `Run`, `Build`, `Ping`, and `ImageInspect`. A package-level `newClientFn` (defaulting to
+`newClient`, which calls `client.New(client.FromEnv)`) constructs the live client. A compile-time
+assertion `var _ apiClient = (*moby.Client)(nil)` guards against signature drift.
 
-The interface includes (all raw SDK methods from `github.com/moby/moby/client`):
-- `ContainerCreate`, `ContainerAttach`, `ContainerStart`, `ContainerWait`, `ContainerResize`, `ContainerRemove` (existing, reused by sidecar using `Force: true`)
-- `ContainerInspect(ctx, containerID string, options moby.ContainerInspectOptions) (moby.ContainerInspectResult, error)` — used by sidecar early-exit detection
-- `ExecCreate(ctx, container string, options moby.ExecCreateOptions) (moby.ExecCreateResult, error)` — sidecar readiness handshake
-- `ExecStart(ctx, execID string, options moby.ExecStartOptions) (moby.ExecStartResult, error)` — sidecar readiness handshake
-- `ExecInspect(ctx, execID string, options moby.ExecInspectOptions) (moby.ExecInspectResult, error)` — sidecar readiness exit-code read
-- `VolumeCreate(ctx, options moby.VolumeCreateOptions) (moby.VolumeCreateResult, error)` — sidecar volume creation
-- `VolumeRemove(ctx, volumeID string, options moby.VolumeRemoveOptions) (moby.VolumeRemoveResult, error)` — sidecar cleanup
-- `ImagePull(ctx, refStr string, options moby.ImagePullOptions) (moby.ImagePullResponse, error)` — socat image pull-on-demand
-- `ImageBuild`, `DialHijack`, `Ping`, `ImageInspect`, `Close` (existing)
+The interface covers (raw SDK methods from `github.com/moby/moby/client`):
+`ContainerCreate`, `ContainerAttach`, `ContainerStart`, `ContainerWait`, `ContainerResize`,
+`ContainerRemove`, `ImageBuild`, `DialHijack`, `Ping`, `ImageInspect`, `Close`.
 
 `SetClientForTest(c apiClient) (restore func())` (in `testing.go`) replaces `newClientFn` for the
 duration of a test. Ready-made fakes live in `testing.go`:
 
 - **`FakeRunClient`** — simulates the `Run` container lifecycle with a scripted exit code; also
-  supports `PingErr` to simulate daemon-down and `ImageMissing` to simulate absent images.
-  Extended with scriptable sidecar behavior: records created/removed volumes; models the
-  **create→start→inspect** exec handshake; supports `SidecarExited` toggle and
-  `SocatImageMissing` toggle.
+  supports `PingErr` to simulate daemon-down, `ImageMissing` to simulate absent images,
+  `BlockPing` to block `Ping` until the context is cancelled (used in preflight-timeout tests),
+  and `BlockImageInspect` to similarly block `ImageInspect`.
   ```go
   t.Cleanup(docker.SetClientForTest(docker.NewFakeRunClient(0))) // exit 0
   ```
@@ -65,26 +56,6 @@ duration of a test. Ready-made fakes live in `testing.go`:
 This replaces the old shell-shim machinery (`WriteShim`, `SetDockerBinaryForTest`). There are no
 shell shims, no `dockerBinary` global, no `executableTempDir`.
 
-### newSidecarFn seam (cmd/makeslop/main.go)
-One package-level seam in `cmd/makeslop/main.go` mirrors the `docker.newClientFn` pattern:
-
-**`newSidecarFn`** defaults to a closure that calls `docker.NewSidecar(quiet, stderr)` and returns
-a `sidecarRunner`. Tests swap it via `setSidecarFnForTest(t)`, which returns a `fakeSidecar` that
-records `(upstream, volumeName)` passed to `Start`. To simulate a `Start` failure, set
-`cap.startErr` before calling `runCmd`.
-
-```go
-cap := setSidecarFnForTest(t)
-// ... run command ...
-// cap.upstream, cap.volumeName, cap.called are available
-```
-
-The `sidecarRunner` interface (in `main.go`) has `Start(ctx context.Context, upstream string, volumeName string) error`
-and `Close() error`; satisfied by `*docker.Sidecar`.
-
-The seam is used in proxy-wiring tests in `main_test.go` where a real sidecar container would be
-unnecessary or would race with test teardown.
-
 ### Shared preflight helpers (`internal/docker/preflight.go`)
 
 `CheckDaemon(ctx context.Context) error` — pings the daemon via `newClientFn`; returns
@@ -93,6 +64,10 @@ unnecessary or would race with test teardown.
 `ImageExists(ctx context.Context, image string) (bool, error)` — calls `ImageInspect`; returns
 `(true, nil)` when found, `(false, nil)` only when `cerrdefs.IsNotFound(err)`, and `(false, err)`
 for any other error (so a dead daemon is never misreported as "image absent").
+
+`WithPreflightTimeout(ctx context.Context) (context.Context, context.CancelFunc)` — wraps the
+given context with a short deadline (5 s) so that preflight checks never hang on a black-hole
+`DOCKER_HOST`. Both `runRun` (main.go) and `runStatus` (status.go) use it around each preflight call.
 
 Both helpers build and close their own client (two constructions per `status` run — accepted for
 simplicity).
@@ -159,7 +134,7 @@ cache:
   agent: true     # mount .claude/ + .codex/ from per-workspace cache (default: true)
 ```
 
-`projectconfig.Load` returns a `Cache{Content bool, Agent bool}` (fourth return value). Absent
+`projectconfig.Load` returns a `Cache{Content bool, Agent bool}` (second return value, before the error). Absent
 block ⇒ `{true, true}` ⇒ identical to pre-feature behavior (backward compatible).
 
 The values flow into `docker.Options.MountContentCache` and `docker.Options.MountAgentCache` in
@@ -190,14 +165,6 @@ Dockerfile on the next `makeslop migrate`. `CurrentVersion` (settings schema ver
 and only changes when the `Settings` struct fields change. The two constants serve different
 purposes: `CurrentVersion` gates JSON schema compatibility; `MigrationVersion` gates the one-shot
 directory refresh.
-
-**Note:** the socat-volume proxy transport change (replacing the host-unix-socket transport) does
-**not** bump either `CurrentVersion` or `MigrationVersion` — the `Settings` struct fields are
-unchanged and the embedded Dockerfile is unchanged.
-
-**Note:** the network-default inversion (proxy off by default, opt-in via `--proxy`/`network.proxy.address`)
-does **not** bump either `CurrentVersion` or `MigrationVersion` — the `Settings` struct fields are
-unchanged and the embedded Dockerfile is unchanged.
 
 **Note:** the configurable per-workspace cache mount overlays (`cache:` block in `.makeslop.yaml`,
 `init --global-only` flag, `MountContentCache`/`MountAgentCache` in `docker.Options`) do **not**
@@ -234,8 +201,6 @@ Config helpers added in `internal/config/config.go`:
 3. Image (`ImageExists`) — blocking
 4. Workspace (`ws.Lookup`) — blocking
 5. Secret scan summary (`security.Scan` count) — non-blocking (`–`/`✓`)
-6. Proxy (`projectconfig.Load`) — non-blocking; detail is config-derived: `"direct (bridge networking)"` when `ProxyAddress` is empty, the upstream address when set (e.g. `"10.0.0.5:3128"`)
-7. Socat image (`docker.ImageExists(docker.SocatImage)`) — non-blocking; `✓` when present, `!` with `"alpine/socat absent — will pull on first --proxy run"` when absent
 
 Output: aligned lines with glyphs `✓/✗/–/!`; final verdict line + single next action. `--json`
 emits `{checks:[{name,state,detail}], ready:bool}`. Exits non-zero when any blocking check fails.
@@ -245,10 +210,6 @@ TTY and `NO_COLOR` is unset.
 ### --out-of-home flag scope
 `--out-of-home` is registered only on `init` and `run` (not a persistent root flag). Commands
 `version`, `config`, `migrate`, `build`, and `status` reject it as an unknown flag.
-
-### --proxy flag scope
-`--proxy` is registered only on `run` (not a persistent root flag). Commands `version`,
-`config`, `migrate`, `build`, `init`, and `status` reject it as an unknown flag.
 
 ### --global-only flag scope
 `--global-only` is registered only on `init` (not a persistent root flag). Commands `run`,
@@ -260,85 +221,8 @@ user edits), so on an already-init'd project `--global-only` is a no-op — docu
 `--quiet` is a persistent root flag. When set, stderr chrome (notices, nudges, progress lines such
 as `masked N`) is suppressed. Error messages still print to stderr.
 
-### Network model — direct default, opt-in proxy
-
-**Direct bridge networking is the default.** The app container has normal Docker bridge networking
-and full internet access. No socat sidecar, no volume, no `--network none`.
-
-**Proxy mode is opt-in.** Enabled by `--proxy ip:port` (flag) or `network.proxy.address` in
-`.makeslop.yaml` (config). The flag wins over config. When proxy mode is active, the app is
-airtight (`--network none`; its sole egress is a unix socket → socat → `TCP-CONNECT:<ip>:<port>`
-→ the remote HTTP proxy).
-
-There is **no host-side Gateway process**, no `host.docker.internal`, no probe-dial, and no
-request logging. The socat sidecar connects to the remote upstream directly over bridge networking,
-so proxy mode works on native Linux as well as Docker Desktop.
-
-#### Two-state model
-
-| State | Trigger | Behavior |
-|---|---|---|
-| **Direct (default)** | no `--proxy`, no `network.proxy.address` | bridge networking; no socat, no volume, no `--network none` |
-| **Proxy** | `--proxy ip:port` OR `network.proxy.address` (flag wins) | `--network none`; egress = volume unix socket → socat → `TCP-CONNECT:<ip>:<port>` → remote HTTP proxy |
-
-#### Data path (proxy mode)
-```
-app (--network none, HTTP_PROXY=unix:///sockets/proxy.sock)
-  → read-only volume → socat sidecar (bridge)
-       UNIX-LISTEN:/sockets/proxy.sock,fork,mode=0666
-       TCP-CONNECT:<remote-ip>:<remote-port>,reuseaddr
-         → remote HTTP proxy
-```
-
-#### Sidecar (`internal/docker/sidecar.go`)
-`Sidecar` manages an `alpine/socat` container that exposes a unix socket on a Docker **volume**
-and connects it to a remote upstream address.
-
-- `const SocatImage = "alpine/socat@sha256:<digest>"` — pinned by digest; exported so `status.go`
-  can check its presence via `docker.ImageExists`.
-- `NewSidecar(quiet bool, stderr io.Writer) *Sidecar`
-- `Start(ctx context.Context, upstream string, volumeName string) error`
-  1. `ImageInspect` to check presence; if absent, `ImagePull` with a one-line notice (suppressed by `--quiet`); pull failure is fatal with a registry hint.
-  2. `VolumeCreate` (per-run name, `managed-by: makeslop` label).
-  3. `ContainerCreate` + `ContainerStart` — detached socat container on bridge networking, volume
-     mounted **read-write** at `/sockets`. Socat args:
-     `UNIX-LISTEN:/sockets/proxy.sock,fork,mode=0666 TCP-CONNECT:<upstream>,reuseaddr`.
-  4. Readiness poll (~5 s, 100 ms intervals): `ContainerInspect` (early-exit detection) →
-     `ExecCreate`/`ExecStart`/`ExecInspect` (`test -S /sockets/proxy.sock`, exit code 0 = ready).
-- `Close() error` — `ContainerRemove(Force:true)` then `VolumeRemove`; best-effort, idempotent.
-
-**No proactive stale-sweep** (no `VolumeList`/`ContainerList`): orphans from killed runs are
-tolerated (unique per-run volume name) and prunable via `docker volume prune --filter label=managed-by=makeslop`.
-
-#### Volume mount in `spec.go`
-`Options.ProxySocketVolume string` — when non-empty, `BuildSpec` emits:
-- `--network none`
-- A **read-only** volume mount at `proxySocketDir` (`/sockets`) for the app container.
-  (`Args()` → `type=volume,source=<name>,target=/sockets,readonly`; `mountsFor` → `mount.TypeVolume`.)
-- `HTTP_PROXY=unix:///sockets/proxy.sock` and `HTTPS_PROXY=unix:///sockets/proxy.sock`.
-
-The socat sidecar mounts the same volume **read-write** (it must create the socket file); the app
-container is read-only.
-
-#### runRun wiring
-`runRun` in `cmd/makeslop/main.go` resolves the effective upstream:
-
-```go
-upstream := proxyFlag
-if upstream == "" {
-    upstream = netCfg.ProxyAddress
-}
-```
-
-When `upstream != ""`:
-1. Validates with `net.SplitHostPort`; fails loud (prints `makeslop: …` to stderr, returns `errSilent`) on malformed address.
-2. Derives the per-run volume name `makeslop-sock-<hash>-<pid>`.
-3. Sets `opts.ProxySocketVolume = volumeName`.
-4. Constructs the Sidecar via `newSidecarFn(quiet, stderr)` and calls `sc.Start(ctx, upstream, volumeName)`.
-5. Calls `docker.Run(...)`.
-6. Defers teardown: `sc.Close()`.
-
-When `upstream == ""` (direct mode): skips all proxy wiring; `opts.ProxySocketVolume` is empty.
-
-Dry-run: the app container spec shows the read-only volume mount + `--network none` when proxy is
-active, or plain bridge networking when direct. "Printed == executed" holds for the app container spec.
+### Network model
+The app container always uses Docker bridge networking with full internet access. The socat-sidecar
+egress proxy feature (--proxy flag, network.proxy.address config, Sidecar type, SocatImage,
+ProxySocketVolume) was removed entirely. There is no proxy mode, no --network none, and no
+sidecar lifecycle.

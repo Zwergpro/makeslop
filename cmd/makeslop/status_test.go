@@ -11,6 +11,7 @@ import (
 
 	"github.com/Zwergpro/makeslop/internal/config"
 	"github.com/Zwergpro/makeslop/internal/docker"
+	"github.com/Zwergpro/makeslop/internal/projectconfig"
 )
 
 // runStatusCmd calls the status command and returns stdout, stderr, and the
@@ -26,20 +27,11 @@ func runStatusCmd(t *testing.T, baseDir string, args ...string) (stdout, stderr 
 // daemon/image state for status tests. The fake is torn down via t.Cleanup.
 func installFakeStatusClient(t *testing.T, daemonDown bool, imageMissing bool) *docker.FakeRunClient {
 	t.Helper()
-	return installFakeStatusClientFull(t, daemonDown, imageMissing, false)
-}
-
-// installFakeStatusClientFull is the full-control variant of
-// installFakeStatusClient. socatMissing controls whether the socat image
-// inspect returns not-found (simulating alpine/socat not yet pulled).
-func installFakeStatusClientFull(t *testing.T, daemonDown bool, imageMissing bool, socatMissing bool) *docker.FakeRunClient {
-	t.Helper()
 	fc := docker.NewFakeRunClient(0)
 	if daemonDown {
 		fc.PingErr = errors.New("connection refused")
 	}
 	fc.ImageMissing = imageMissing
-	fc.SocatImageMissing = socatMissing
 	t.Cleanup(docker.SetClientForTest(fc))
 	return fc
 }
@@ -231,8 +223,10 @@ func TestStatus_JSON_Shape(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
 		t.Fatalf("--json output is not valid JSON: %v\noutput: %s", err, stdout)
 	}
-	if len(result.Checks) == 0 {
-		t.Errorf("--json result.checks is empty")
+	const wantChecks = 5 // daemon, base config, image, workspace, secret scan
+	if len(result.Checks) != wantChecks {
+		t.Errorf("--json result.checks len = %d, want %d (daemon, base config, image, workspace, secret scan)",
+			len(result.Checks), wantChecks)
 	}
 	// Verify each check has a non-empty name and a valid state.
 	validStates := map[checkState]bool{
@@ -301,7 +295,7 @@ func TestStatus_PlainOutput_NoGlyphs(t *testing.T) {
 		{Name: "daemon", State: checkOK},
 		{Name: "image", State: checkFail, Detail: "image not found"},
 		{Name: "workspace", State: checkWarn, Detail: "stale"},
-		{Name: "proxy", State: checkInfo},
+		{Name: "secret scan", State: checkInfo},
 	}
 	renderChecks(&buf, checks, false, false /* tty=false */)
 
@@ -414,6 +408,120 @@ func TestStatus_ListedInHelp(t *testing.T) {
 	}
 }
 
+// TestStatus_Check5_PCErrShowsWarn verifies that when projectconfig.Load fails
+// (e.g. stale network: block in .makeslop.yaml), check 5 shows checkWarn and
+// the status command remains ready (non-blocking check).
+func TestStatus_Check5_PCErrShowsWarn(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	resolvedPwd := evalSymlinks(t, pwd)
+
+	// Write a stale network: block that projectconfig.Load rejects.
+	staleYAML := "exclude:\n  dirs: []\n  files: []\nnetwork:\n  proxy:\n    address: 10.0.0.5:3128\n"
+	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(staleYAML), 0o644); err != nil {
+		t.Fatalf("write stale yaml: %v", err)
+	}
+
+	installFakeStatusClient(t, false, false)
+
+	_, stderr, err := runStatusCmd(t, baseDir, "status")
+	if err != nil {
+		t.Errorf("status must remain ready despite pcErr (non-blocking); err=%v stderr=%q", err, stderr)
+	}
+	if !strings.Contains(stderr, "secret scan") {
+		t.Errorf("stderr missing 'secret scan' check line: %q", stderr)
+	}
+	if !strings.Contains(stderr, ".makeslop.yaml") {
+		t.Errorf("stderr missing .makeslop.yaml reference in scan warn: %q", stderr)
+	}
+}
+
+// TestStatus_Check5_ScanErrShowsWarn verifies that when security.Scan returns
+// an error, check 5 shows checkWarn and status remains ready (non-blocking).
+// We induce a scan error by making the project root unreadable.
+func TestStatus_Check5_ScanErrShowsWarn(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	resolvedPwd := evalSymlinks(t, pwd)
+
+	// Create a subdirectory that is unreadable so WalkDir returns an error.
+	unreadable := filepath.Join(resolvedPwd, "secrets")
+	if err := os.Mkdir(unreadable, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// Write a .makeslop.yaml with a scan pattern so Scan actually walks.
+	yamlContent := "exclude:\n  scan:\n    patterns:\n      - \"*.env\"\n    skip-dirs: []\n  dirs: []\n  files: []\n"
+	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(yamlContent), 0o644); err != nil {
+		t.Fatalf("write yaml: %v", err)
+	}
+	// Make the subdirectory unreadable to trigger a WalkDir error.
+	if err := os.Chmod(unreadable, 0o000); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(unreadable, 0o755) })
+
+	installFakeStatusClient(t, false, false)
+
+	_, stderr, err := runStatusCmd(t, baseDir, "status")
+	// Scan errors are non-blocking (checkWarn), so status must remain ready
+	// (exit 0, err == nil) even when security.Scan returns an error.
+	if err != nil {
+		t.Errorf("scan error must be non-blocking (warn), not blocking; err=%v stderr=%q", err, stderr)
+	}
+	if !strings.Contains(stderr, "scan error") {
+		t.Errorf("stderr missing 'scan error' indicator for failed scan; stderr=%q", stderr)
+	}
+	if !strings.Contains(stderr, "secret scan") {
+		t.Errorf("stderr missing 'secret scan' check name; stderr=%q", stderr)
+	}
+}
+
+// TestStatus_Check5_MaskedFilesShowsOKWithCount verifies that when the secret
+// scan finds masked files, check 5 shows checkOK with a "will mask N file(s)"
+// detail.
+func TestStatus_Check5_MaskedFilesShowsOKWithCount(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	resolvedPwd := evalSymlinks(t, pwd)
+
+	// Create a file that matches the default scan pattern.
+	secretFile := filepath.Join(resolvedPwd, ".env")
+	if err := os.WriteFile(secretFile, []byte("SECRET=val"), 0o644); err != nil {
+		t.Fatalf("write secret file: %v", err)
+	}
+
+	installFakeStatusClient(t, false, false)
+
+	_, stderr, err := runStatusCmd(t, baseDir, "status")
+	if err != nil {
+		t.Errorf("status must be ready when masked files found; err=%v stderr=%q", err, stderr)
+	}
+	if !strings.Contains(stderr, "will mask") {
+		t.Errorf("stderr missing 'will mask' detail: %q", stderr)
+	}
+	if !strings.Contains(stderr, "file(s)") {
+		t.Errorf("stderr missing 'file(s)' in mask count: %q", stderr)
+	}
+}
+
 // TestStatus_RenderReadyVerdict verifies the ready-path verdict line.
 func TestStatus_RenderReadyVerdict(t *testing.T) {
 	var buf bytes.Buffer
@@ -459,461 +567,5 @@ func TestStatus_RenderNotReadyVerdict(t *testing.T) {
 		if strings.Contains(lastLine, "run 'makeslop build'") {
 			t.Errorf("verdict line must only mention first failing check remedy; got: %q", lastLine)
 		}
-	}
-}
-
-// TestStatus_ProxyLine_DirectDefault verifies that when no proxy address is
-// configured, the proxy check shows "direct (bridge networking)".
-func TestStatus_ProxyLine_DirectDefault(t *testing.T) {
-	setHomeToTestParent(t)
-	baseDir := t.TempDir()
-	pwd := t.TempDir()
-	t.Chdir(pwd)
-
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
-	installFakeStatusClient(t, false, false)
-
-	_, stderr, err := runStatusCmd(t, baseDir, "status")
-	if err != nil {
-		t.Fatalf("status must succeed when all blocking checks pass; err=%v; stderr=%q", err, stderr)
-	}
-
-	if !strings.Contains(stderr, "direct (bridge networking)") {
-		t.Errorf("proxy line must show 'direct (bridge networking)' when no address configured; stderr=%q", stderr)
-	}
-}
-
-// TestStatus_ProxyLine_UpstreamAddress verifies that when a proxy address is
-// configured, the proxy check shows the address.
-func TestStatus_ProxyLine_UpstreamAddress(t *testing.T) {
-	setHomeToTestParent(t)
-	baseDir := t.TempDir()
-	pwd := t.TempDir()
-	t.Chdir(pwd)
-
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
-
-	// Write a .makeslop.yaml with a proxy address set.
-	yamlContent := `exclude:
-  scan:
-    patterns: []
-    skip-dirs: []
-  files: []
-  dirs: []
-network:
-  proxy:
-    address: "proxy.example.com:8080"
-`
-	if err := os.WriteFile(filepath.Join(pwd, ".makeslop.yaml"), []byte(yamlContent), 0o644); err != nil {
-		t.Fatalf("write .makeslop.yaml: %v", err)
-	}
-
-	installFakeStatusClient(t, false, false)
-
-	_, stderr, err := runStatusCmd(t, baseDir, "status")
-	if err != nil {
-		t.Fatalf("status must succeed when all blocking checks pass; err=%v; stderr=%q", err, stderr)
-	}
-
-	if !strings.Contains(stderr, "proxy.example.com:8080") {
-		t.Errorf("proxy line must show address when configured; stderr=%q", stderr)
-	}
-	if strings.Contains(stderr, "direct (bridge networking)") {
-		t.Errorf("proxy line must not show 'direct (bridge networking)' when address is set; stderr=%q", stderr)
-	}
-}
-
-// TestStatus_ProxyLine_NoLoggingSuffix verifies that the proxy detail never
-// contains a "logging →" suffix (network.log / LogPath has been removed).
-func TestStatus_ProxyLine_NoLoggingSuffix(t *testing.T) {
-	setHomeToTestParent(t)
-	baseDir := t.TempDir()
-	pwd := t.TempDir()
-	t.Chdir(pwd)
-
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
-
-	// Write a .makeslop.yaml with a proxy address set — no log field.
-	yamlContent := `exclude:
-  scan:
-    patterns: []
-    skip-dirs: []
-  files: []
-  dirs: []
-network:
-  proxy:
-    address: "proxy.example.com:8080"
-`
-	if err := os.WriteFile(filepath.Join(pwd, ".makeslop.yaml"), []byte(yamlContent), 0o644); err != nil {
-		t.Fatalf("write .makeslop.yaml: %v", err)
-	}
-
-	installFakeStatusClient(t, false, false)
-
-	_, stderr, err := runStatusCmd(t, baseDir, "status")
-	if err != nil {
-		t.Fatalf("status must succeed when all blocking checks pass; err=%v; stderr=%q", err, stderr)
-	}
-
-	if strings.Contains(stderr, "logging →") {
-		t.Errorf("proxy line must not contain 'logging →' suffix (feature removed); stderr=%q", stderr)
-	}
-}
-
-// TestStatus_ProxyLine_UpstreamNoLogging verifies that when a proxy address is
-// set, the proxy detail is the address only — no logging suffix.
-func TestStatus_ProxyLine_UpstreamNoLogging(t *testing.T) {
-	setHomeToTestParent(t)
-	baseDir := t.TempDir()
-	pwd := t.TempDir()
-	t.Chdir(pwd)
-
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
-
-	yamlContent := `exclude:
-  scan:
-    patterns: []
-    skip-dirs: []
-  files: []
-  dirs: []
-network:
-  proxy:
-    address: "corp.proxy:3128"
-`
-	if err := os.WriteFile(filepath.Join(pwd, ".makeslop.yaml"), []byte(yamlContent), 0o644); err != nil {
-		t.Fatalf("write .makeslop.yaml: %v", err)
-	}
-
-	installFakeStatusClient(t, false, false)
-
-	_, stderr, err := runStatusCmd(t, baseDir, "status")
-	if err != nil {
-		t.Fatalf("status must succeed when all blocking checks pass; err=%v; stderr=%q", err, stderr)
-	}
-
-	if !strings.Contains(stderr, "corp.proxy:3128") {
-		t.Errorf("proxy line must show upstream address; stderr=%q", stderr)
-	}
-	if strings.Contains(stderr, "logging →") {
-		t.Errorf("proxy line must not show logging suffix (feature removed); stderr=%q", stderr)
-	}
-}
-
-// TestStatus_JSON_ProxyDetail_DirectDefault verifies that --json proxy detail
-// shows "direct (bridge networking)" when no proxy address is configured.
-func TestStatus_JSON_ProxyDetail_DirectDefault(t *testing.T) {
-	setHomeToTestParent(t)
-	baseDir := t.TempDir()
-	pwd := t.TempDir()
-	t.Chdir(pwd)
-
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
-	installFakeStatusClient(t, false, false)
-
-	stdout, _, err := runStatusCmd(t, baseDir, "status", "--json")
-	if err != nil {
-		t.Fatalf("status must succeed; err=%v", err)
-	}
-
-	var result statusResult
-	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
-		t.Fatalf("--json output is not valid JSON: %v\noutput: %s", err, stdout)
-	}
-
-	var proxyCheck *statusCheck
-	for i := range result.Checks {
-		if result.Checks[i].Name == "proxy" {
-			proxyCheck = &result.Checks[i]
-			break
-		}
-	}
-	if proxyCheck == nil {
-		t.Fatalf("--json missing 'proxy' check; checks: %+v", result.Checks)
-	}
-	if proxyCheck.Detail != "direct (bridge networking)" {
-		t.Errorf("proxy detail = %q, want %q", proxyCheck.Detail, "direct (bridge networking)")
-	}
-}
-
-// TestStatus_JSON_ProxyDetail_UpstreamAddress verifies that when a proxy address
-// is configured, the JSON proxy detail shows the address (no logging suffix).
-func TestStatus_JSON_ProxyDetail_UpstreamAddress(t *testing.T) {
-	setHomeToTestParent(t)
-	baseDir := t.TempDir()
-	pwd := t.TempDir()
-	t.Chdir(pwd)
-
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
-
-	yamlContent := `exclude:
-  scan:
-    patterns: []
-    skip-dirs: []
-  files: []
-  dirs: []
-network:
-  proxy:
-    address: "proxy.example.com:8080"
-`
-	if err := os.WriteFile(filepath.Join(pwd, ".makeslop.yaml"), []byte(yamlContent), 0o644); err != nil {
-		t.Fatalf("write .makeslop.yaml: %v", err)
-	}
-
-	installFakeStatusClient(t, false, false)
-
-	stdout, _, err := runStatusCmd(t, baseDir, "status", "--json")
-	if err != nil {
-		t.Fatalf("status must succeed; err=%v", err)
-	}
-
-	var result statusResult
-	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
-		t.Fatalf("--json output is not valid JSON: %v\noutput: %s", err, stdout)
-	}
-
-	var proxyCheck *statusCheck
-	for i := range result.Checks {
-		if result.Checks[i].Name == "proxy" {
-			proxyCheck = &result.Checks[i]
-			break
-		}
-	}
-	if proxyCheck == nil {
-		t.Fatalf("--json missing 'proxy' check; checks: %+v", result.Checks)
-	}
-
-	// The detail must be the proxy address exactly (two-state model: address vs "direct (bridge networking)").
-	if proxyCheck.Detail != "proxy.example.com:8080" {
-		t.Errorf("proxy detail = %q, want %q", proxyCheck.Detail, "proxy.example.com:8080")
-	}
-	if strings.Contains(proxyCheck.Detail, "logging →") {
-		t.Errorf("proxy detail must not contain 'logging →' suffix (feature removed); got %q", proxyCheck.Detail)
-	}
-}
-
-// ── Socat image check tests ───────────────────────────────────────────────────
-
-// TestStatus_SocatImagePresent verifies that when alpine/socat is locally
-// present, the socat-image check is ok with "alpine/socat present" detail.
-func TestStatus_SocatImagePresent(t *testing.T) {
-	setHomeToTestParent(t)
-	baseDir := t.TempDir()
-	pwd := t.TempDir()
-	t.Chdir(pwd)
-
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
-
-	// Daemon up, app image present, socat image present.
-	installFakeStatusClientFull(t, false, false, false /* socatMissing=false */)
-
-	stdout, _, err := runStatusCmd(t, baseDir, "status", "--json")
-	if err != nil {
-		t.Fatalf("status should exit 0 when all checks pass; err=%v", err)
-	}
-
-	var result statusResult
-	if jsonErr := json.Unmarshal([]byte(stdout), &result); jsonErr != nil {
-		t.Fatalf("--json output is not valid JSON: %v\noutput: %s", jsonErr, stdout)
-	}
-
-	var socatCheck *statusCheck
-	for i := range result.Checks {
-		if result.Checks[i].Name == "socat-image" {
-			socatCheck = &result.Checks[i]
-			break
-		}
-	}
-	if socatCheck == nil {
-		t.Fatalf("--json missing 'socat-image' check; checks: %+v", result.Checks)
-	}
-	if socatCheck.State != checkOK {
-		t.Errorf("socat-image state = %q, want %q", socatCheck.State, checkOK)
-	}
-	if socatCheck.Detail != "alpine/socat present" {
-		t.Errorf("socat-image detail = %q, want %q", socatCheck.Detail, "alpine/socat present")
-	}
-}
-
-// TestStatus_SocatImageAbsent verifies that when alpine/socat is not locally
-// present, the socat-image check is non-blocking warn with a pull hint.
-func TestStatus_SocatImageAbsent(t *testing.T) {
-	setHomeToTestParent(t)
-	baseDir := t.TempDir()
-	pwd := t.TempDir()
-	t.Chdir(pwd)
-
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
-
-	// Daemon up, app image present, socat image absent.
-	installFakeStatusClientFull(t, false, false, true /* socatMissing=true */)
-
-	stdout, stderr, err := runStatusCmd(t, baseDir, "status", "--json")
-
-	// The socat-image check is non-blocking — status must still exit 0 when all
-	// other blocking checks pass.
-	if err != nil {
-		t.Errorf("socat-image absent must be non-blocking (exit 0); err=%v stderr=%q", err, stderr)
-	}
-
-	var result statusResult
-	if jsonErr := json.Unmarshal([]byte(stdout), &result); jsonErr != nil {
-		t.Fatalf("--json output is not valid JSON: %v\noutput: %s", jsonErr, stdout)
-	}
-
-	var socatCheck *statusCheck
-	for i := range result.Checks {
-		if result.Checks[i].Name == "socat-image" {
-			socatCheck = &result.Checks[i]
-			break
-		}
-	}
-	if socatCheck == nil {
-		t.Fatalf("--json missing 'socat-image' check; checks: %+v", result.Checks)
-	}
-	// Must be warn (non-blocking), not fail.
-	if socatCheck.State != checkWarn {
-		t.Errorf("socat-image absent state = %q, want %q (non-blocking)", socatCheck.State, checkWarn)
-	}
-	if !strings.Contains(socatCheck.Detail, "will pull on first --proxy run") {
-		t.Errorf("socat-image detail must hint at pull; got %q", socatCheck.Detail)
-	}
-}
-
-// TestStatus_SocatImageAbsent_PlainOutput verifies that the "alpine/socat absent"
-// hint appears in plain (non-JSON) status output.
-func TestStatus_SocatImageAbsent_PlainOutput(t *testing.T) {
-	setHomeToTestParent(t)
-	baseDir := t.TempDir()
-	pwd := t.TempDir()
-	t.Chdir(pwd)
-
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
-
-	installFakeStatusClientFull(t, false, false, true /* socatMissing=true */)
-
-	_, stderr, err := runStatusCmd(t, baseDir, "status")
-	// Still exits 0 (non-blocking).
-	if err != nil {
-		t.Errorf("socat-image absent must not fail status; err=%v stderr=%q", err, stderr)
-	}
-	if !strings.Contains(stderr, "socat-image") {
-		t.Errorf("plain output must mention 'socat-image'; stderr=%q", stderr)
-	}
-	if !strings.Contains(stderr, "will pull on first --proxy run") {
-		t.Errorf("plain output must hint at pull; stderr=%q", stderr)
-	}
-	// Non-blocking: ready verdict must still appear.
-	if !strings.Contains(stderr, "ready") {
-		t.Errorf("plain output must show 'ready' verdict; stderr=%q", stderr)
-	}
-	if strings.Contains(stderr, "not ready") {
-		t.Errorf("socat-image absent must not cause 'not ready'; stderr=%q", stderr)
-	}
-}
-
-// TestStatus_SocatImageCheck_InspectError verifies that when ImageExists returns
-// a non-not-found error for the socat image, the socat-image check is non-blocking
-// (warn, exits 0) with an error detail string.
-func TestStatus_SocatImageCheck_InspectError(t *testing.T) {
-	setHomeToTestParent(t)
-	baseDir := t.TempDir()
-	pwd := t.TempDir()
-	t.Chdir(pwd)
-
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
-
-	fc := installFakeStatusClient(t, false, false)
-	fc.SocatImageErr = errors.New("daemon io error") // non-not-found error specifically for socat image
-
-	stdout, stderr, err := runStatusCmd(t, baseDir, "status", "--json")
-	// socat-image error is non-blocking — status must exit 0.
-	if err != nil {
-		t.Errorf("socat-image inspect error must be non-blocking (exit 0); err=%v stderr=%q", err, stderr)
-	}
-
-	var result statusResult
-	if jsonErr := json.Unmarshal([]byte(stdout), &result); jsonErr != nil {
-		t.Fatalf("--json output is not valid JSON: %v\noutput: %s", jsonErr, stdout)
-	}
-
-	var socatCheck *statusCheck
-	for i := range result.Checks {
-		if result.Checks[i].Name == "socat-image" {
-			socatCheck = &result.Checks[i]
-		}
-	}
-	if socatCheck == nil {
-		t.Fatalf("--json missing 'socat-image' check; checks: %+v", result.Checks)
-	}
-	if socatCheck.State != checkWarn {
-		t.Errorf("socat-image inspect-error state = %q, want %q (non-blocking)", socatCheck.State, checkWarn)
-	}
-	if !strings.Contains(socatCheck.Detail, "error checking socat image") {
-		t.Errorf("socat-image detail must mention error; got %q", socatCheck.Detail)
-	}
-}
-
-// TestStatus_SocatImageCheck_AppearAfterProxy verifies that the socat-image check
-// appears after the proxy check in --json output.
-func TestStatus_SocatImageCheck_AppearAfterProxy(t *testing.T) {
-	setHomeToTestParent(t)
-	baseDir := t.TempDir()
-	pwd := t.TempDir()
-	t.Chdir(pwd)
-
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
-
-	installFakeStatusClient(t, false, false)
-
-	stdout, _, err := runStatusCmd(t, baseDir, "status", "--json")
-	if err != nil {
-		t.Fatalf("status --json failed: %v", err)
-	}
-
-	var result statusResult
-	if jsonErr := json.Unmarshal([]byte(stdout), &result); jsonErr != nil {
-		t.Fatalf("--json output is not valid JSON: %v\noutput: %s", jsonErr, stdout)
-	}
-
-	proxyIdx := -1
-	socatIdx := -1
-	for i, c := range result.Checks {
-		switch c.Name {
-		case "proxy":
-			proxyIdx = i
-		case "socat-image":
-			socatIdx = i
-		}
-	}
-	if proxyIdx < 0 {
-		t.Fatal("proxy check not found in --json output")
-	}
-	if socatIdx < 0 {
-		t.Fatal("socat-image check not found in --json output")
-	}
-	if socatIdx <= proxyIdx {
-		t.Errorf("socat-image (idx %d) must appear after proxy (idx %d) in checks array", socatIdx, proxyIdx)
 	}
 }

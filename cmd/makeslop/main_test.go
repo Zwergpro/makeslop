@@ -3,11 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -28,46 +25,6 @@ import (
 // package-level SetForTest helpers. Do not add t.Parallel() to tests that
 // touch those swaps — the underlying state is process-global.
 
-// capturedSidecar records the arguments passed to newSidecarFn so tests can
-// inspect what upstream and volumeName were used without running a real sidecar.
-type capturedSidecar struct {
-	called     bool   // set to true on first invocation
-	upstream   string // upstream passed to Start
-	volumeName string // volumeName passed to Start
-	startErr   error  // if non-nil, Start returns this error
-}
-
-// fakeSidecar is a no-op sidecar that records Start/Close calls.
-type fakeSidecar struct {
-	cap *capturedSidecar
-}
-
-func (f *fakeSidecar) Start(_ context.Context, upstream string, volumeName string) error {
-	f.cap.called = true
-	f.cap.upstream = upstream
-	f.cap.volumeName = volumeName
-	return f.cap.startErr
-}
-
-func (f *fakeSidecar) Close() error { return nil }
-
-// setSidecarFnForTest installs a replacement newSidecarFn that returns a fake
-// sidecar recording the upstream and volumeName passed to Start. The original
-// function is restored via t.Cleanup. The returned capturedSidecar is updated
-// when Start is called.
-//
-// To simulate a Start failure, set cap.startErr before calling runCmd.
-func setSidecarFnForTest(t *testing.T) *capturedSidecar {
-	t.Helper()
-	cap := &capturedSidecar{}
-	orig := newSidecarFn
-	newSidecarFn = func(quiet bool, stderr io.Writer) sidecarRunner {
-		return &fakeSidecar{cap: cap}
-	}
-	t.Cleanup(func() { newSidecarFn = orig })
-	return cap
-}
-
 func runCmd(t *testing.T, baseDir string, args ...string) (stdout, stderr string, err error) {
 	t.Helper()
 	cmd := newRootCmd(baseDir)
@@ -77,16 +34,6 @@ func runCmd(t *testing.T, baseDir string, args ...string) (stdout, stderr string
 	cmd.SetArgs(args)
 	err = cmd.Execute()
 	return out.String(), errBuf.String(), err
-}
-
-// expectedProxyVolumeName returns the Docker volume name that runRun would
-// derive for the given workspaceDir, using the same formula as main.go.
-// workspaceDir must be the resolved absolute path returned by ws.Lookup.
-// This helper assumes the test and the code under test run in the same process,
-// so os.Getpid() matches the PID embedded in the volume name.
-func expectedProxyVolumeName(workspaceDir string) string {
-	h := sha256.Sum256([]byte(workspaceDir))
-	return fmt.Sprintf("makeslop-sock-%x-%d", h[:6], os.Getpid())
 }
 
 func snapshotTree(t *testing.T, root string) map[string][]byte {
@@ -264,8 +211,7 @@ func TestInit_FromScratch(t *testing.T) {
 
 // installFakeRunClient installs a fake docker client that returns the given exit
 // code from ContainerWait and stubs out the TTY raw-mode call so tests work
-// without a real PTY. Also installs a no-op fake sidecar as a safety net for
-// tests that enable proxy mode. Returns the fake so tests can inspect fc.Started.
+// without a real PTY. Returns the fake so tests can inspect fc.Started.
 func installFakeRunClient(t *testing.T, exitCode int) *docker.FakeRunClient {
 	t.Helper()
 	fc := docker.NewFakeRunClient(exitCode)
@@ -274,9 +220,6 @@ func installFakeRunClient(t *testing.T, exitCode int) *docker.FakeRunClient {
 	t.Cleanup(docker.SetTermMakeRawForTest(func(_ int) (*term.State, error) {
 		return nil, nil
 	}))
-	// Install no-op sidecar in case the test runs in proxy mode (safety net).
-	// In direct/bridge mode (default), the sidecar is never called.
-	setSidecarFnForTest(t)
 	return fc
 }
 
@@ -1210,7 +1153,7 @@ func TestRun_DryRun_StdoutEqualsBuildSpecShellCommand(t *testing.T) {
 	if loadErr != nil {
 		t.Fatalf("load settings: %v", loadErr)
 	}
-	// Direct is the default: spec must NOT include proxy socket plumbing.
+	// Bridge networking is the default.
 	// Cache mounts default to true (absent cache: block ⇒ both groups enabled).
 	want := docker.BuildSpec(docker.Options{
 		ProjectRoot:       resolvedPwd,
@@ -1738,8 +1681,7 @@ func TestRun_LoadsYamlMaskedDirs_TmpfsMountInArgv(t *testing.T) {
 }
 
 // TestRun_YamlAbsentIsBitIdenticalArgv verifies that when .makeslop.yaml is absent
-// (no network.proxy.address), the output equals plain BuildSpec with bridge networking
-// (no proxy plumbing). Direct/bridge is the default.
+// the output equals plain BuildSpec with bridge networking. Bridge is the default.
 func TestRun_YamlAbsentIsBitIdenticalArgv(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -1768,7 +1710,7 @@ func TestRun_YamlAbsentIsBitIdenticalArgv(t *testing.T) {
 	if loadErr != nil {
 		t.Fatalf("load settings: %v", loadErr)
 	}
-	// Direct is default: spec must NOT include proxy socket plumbing.
+	// Bridge networking is the default.
 	// Cache mounts default to true (absent yaml ⇒ both groups enabled).
 	want := docker.BuildSpec(docker.Options{
 		ProjectRoot:       resolvedPwd,
@@ -1929,6 +1871,43 @@ func TestRun_YamlDirAndFileDupAborts(t *testing.T) {
 	}
 }
 
+// TestRun_StaleNetworkBlockAbortsBeforeDocker verifies that a .makeslop.yaml
+// file containing a stale "network:" block (from a prior makeslop version that
+// supported proxy egress) causes `run` to abort before contacting the Docker
+// daemon. This is the intended loud break: users with old YAML files must
+// remove the network: block to upgrade.
+func TestRun_StaleNetworkBlockAbortsBeforeDocker(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	resolvedPwd := evalSymlinks(t, pwd)
+
+	staleYAML := "exclude:\n  dirs: []\n  files: []\nnetwork:\n  proxy:\n    address: 10.0.0.5:3128\n"
+	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(staleYAML), 0o644); err != nil {
+		t.Fatalf("write stale yaml: %v", err)
+	}
+
+	fc := installFakeRunClient(t, 0)
+	stubTTY(t, true)
+
+	var stdout, stderr bytes.Buffer
+	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"run"})
+	if code == 0 {
+		t.Fatalf("expected non-zero exit from stale network: block, got 0; stderr=%q", stderr.String())
+	}
+	if !strings.HasPrefix(stderr.String(), "makeslop: ") {
+		t.Errorf("stderr missing 'makeslop: ' prefix: %q", stderr.String())
+	}
+	if fc.Started {
+		t.Errorf("docker client must not be started when yaml has stale network: block")
+	}
+}
+
 func TestRun_YamlMissingPathSkippedSilently(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -1961,82 +1940,8 @@ func TestRun_YamlMissingPathSkippedSilently(t *testing.T) {
 	}
 }
 
-// ── proxy lifecycle wiring tests ──────────────────────────────────────────────
-
-// Guards the dry-run contract: --dry-run prints proxy plumbing (--network none,
-// env vars, volume socket mount) but does NOT start the sidecar or create a
-// Docker volume. There is no host socket file.
-func TestRun_DryRun_WithProxy_PrintsProxyArgvNoSocket(t *testing.T) {
-	setHomeToTestParent(t)
-	baseDir := t.TempDir()
-	pwd := t.TempDir()
-	t.Chdir(pwd)
-
-	initOut, _, err := runCmd(t, baseDir, "init")
-	if err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
-	workspaceDir := strings.TrimSpace(initOut)
-	resolvedPwd := evalSymlinks(t, pwd)
-
-	yamlContent := "exclude:\n  dirs: []\n  files: []\nnetwork:\n  proxy:\n    address: 10.0.0.5:8888\n"
-	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(yamlContent), 0o644); err != nil {
-		t.Fatalf("write yaml: %v", err)
-	}
-
-	stubTTY(t, false)
-	// Install sidecar seam so we can assert the sidecar was NOT started on --dry-run.
-	scCap := setSidecarFnForTest(t)
-
-	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
-	if err != nil {
-		t.Fatalf("--dry-run with proxy failed: %v; stderr=%q", err, stderr)
-	}
-	if scCap.called {
-		t.Error("--dry-run must not start the sidecar; sidecar.Start was called")
-	}
-
-	if !strings.Contains(stdout, "--network none") {
-		t.Errorf("stdout missing '--network none'\nstdout:\n%s", stdout)
-	}
-	if !strings.Contains(stdout, "HTTP_PROXY=unix:///sockets/proxy.sock") {
-		t.Errorf("stdout missing HTTP_PROXY env var\nstdout:\n%s", stdout)
-	}
-	if !strings.Contains(stdout, "HTTPS_PROXY=unix:///sockets/proxy.sock") {
-		t.Errorf("stdout missing HTTPS_PROXY env var\nstdout:\n%s", stdout)
-	}
-	if !strings.Contains(stdout, "target=/sockets") {
-		t.Errorf("stdout missing proxy volume container target\nstdout:\n%s", stdout)
-	}
-	if !strings.Contains(stdout, "readonly") {
-		t.Errorf("stdout missing 'readonly' in proxy volume mount\nstdout:\n%s", stdout)
-	}
-	if !strings.Contains(stdout, "type=volume") {
-		t.Errorf("stdout missing 'type=volume' in proxy mount\nstdout:\n%s", stdout)
-	}
-
-	// Workspace name must appear in the output.
-	name := filepath.Base(workspaceDir)
-	if !strings.Contains(stdout, name) {
-		t.Errorf("stdout missing workspace name %q\nstdout:\n%s", name, stdout)
-	}
-
-	// Volume source must be the expected per-run name (makeslop-sock-<hash>-<pid>).
-	expectedVol := expectedProxyVolumeName(workspaceDir)
-	if !strings.Contains(stdout, "source="+expectedVol) {
-		t.Errorf("stdout missing expected volume source %q\nstdout:\n%s", "source="+expectedVol, stdout)
-	}
-
-	// CRITICAL: no host socket file must have been created on disk.
-	// With socat-volume transport, the proxy is a Docker volume — there is no
-	// host-side unix socket to stat. This assertion is trivially satisfied since
-	// we no longer create a host socket file under /tmp.
-	_ = resolvedPwd // no host socket path to verify on disk
-}
-
-// TestRun_DryRun_DefaultIsBridge verifies the new default: when no --proxy flag
-// and no network.proxy.address config entry, the spec uses plain bridge networking
-// (no --network none, no HTTP_PROXY, no proxy volume mount).
+// TestRun_DryRun_DefaultIsBridge verifies that the default is plain bridge
+// networking: no --network, no HTTP_PROXY, no proxy volume mount.
 func TestRun_DryRun_DefaultIsBridge(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -2052,18 +1957,11 @@ func TestRun_DryRun_DefaultIsBridge(t *testing.T) {
 
 	_ = os.Remove(filepath.Join(resolvedPwd, projectconfig.Filename))
 
-	// Install sidecar seam so we can assert it is NOT called.
-	scCap := setSidecarFnForTest(t)
 	stubTTY(t, false)
 
 	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
 	if err != nil {
-		t.Fatalf("--dry-run without proxy.address failed: %v; stderr=%q", err, stderr)
-	}
-
-	// Direct/bridge is default: sidecar must NOT be instantiated.
-	if scCap.called {
-		t.Error("newSidecarFn must not be called in direct/bridge default mode")
+		t.Fatalf("--dry-run failed: %v; stderr=%q", err, stderr)
 	}
 
 	// Bridge networking: no --network, no proxy env vars, no proxy volume.
@@ -2076,10 +1974,6 @@ func TestRun_DryRun_DefaultIsBridge(t *testing.T) {
 	if strings.Contains(stdout, "HTTPS_PROXY") {
 		t.Errorf("default: stdout must not contain HTTPS_PROXY\nstdout:\n%s", stdout)
 	}
-	if strings.Contains(stdout, "makeslop-sock-") {
-		t.Errorf("default: stdout must not contain proxy volume name\nstdout:\n%s", stdout)
-	}
-
 	// Verify the output matches plain BuildSpec (no proxy options).
 	// Cache mounts default to true (absent yaml ⇒ both groups enabled).
 	s, loadErr := config.Load(baseDir)
@@ -2099,158 +1993,6 @@ func TestRun_DryRun_DefaultIsBridge(t *testing.T) {
 	got := strings.TrimSuffix(stdout, "\n")
 	if got != want {
 		t.Errorf("default (bridge) stdout mismatch\ngot:\n%s\n\nwant:\n%s", got, want)
-	}
-}
-
-// TestRun_DryRun_ProxyFlag_EnablesProxy verifies that --proxy ip:port enables proxy
-// mode: the spec includes --network none, HTTP_PROXY, HTTPS_PROXY, and the volume
-// socket mount, and the sidecar Start receives the correct upstream.
-func TestRun_DryRun_ProxyFlag_EnablesProxy(t *testing.T) {
-	setHomeToTestParent(t)
-	baseDir := t.TempDir()
-	pwd := t.TempDir()
-	t.Chdir(pwd)
-
-	initOut, _, err := runCmd(t, baseDir, "init")
-	if err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
-	workspaceDir := strings.TrimSpace(initOut)
-	resolvedPwd := evalSymlinks(t, pwd)
-
-	_ = os.Remove(filepath.Join(resolvedPwd, projectconfig.Filename))
-
-	// Capture sidecar Start arguments.
-	scCap := setSidecarFnForTest(t)
-	stubTTY(t, false)
-
-	const proxyAddr = "10.0.0.5:3128"
-	stdout, stderr, err := runCmd(t, baseDir, "run", "--proxy", proxyAddr, "--dry-run")
-	if err != nil {
-		t.Fatalf("--proxy --dry-run failed: %v; stderr=%q", err, stderr)
-	}
-
-	// Proxy mode: sidecar is NOT started during dry-run (dry-run skips side effects).
-	// The spec must still include proxy plumbing in stdout.
-	if scCap.called {
-		t.Error("dry-run must not start the sidecar")
-	}
-
-	if !strings.Contains(stdout, "--network none") {
-		t.Errorf("stdout missing '--network none'\nstdout:\n%s", stdout)
-	}
-	if !strings.Contains(stdout, "HTTP_PROXY=unix:///sockets/proxy.sock") {
-		t.Errorf("stdout missing HTTP_PROXY env var\nstdout:\n%s", stdout)
-	}
-	if !strings.Contains(stdout, "HTTPS_PROXY=unix:///sockets/proxy.sock") {
-		t.Errorf("stdout missing HTTPS_PROXY env var\nstdout:\n%s", stdout)
-	}
-	if !strings.Contains(stdout, "target=/sockets") {
-		t.Errorf("stdout missing proxy volume container target\nstdout:\n%s", stdout)
-	}
-	if !strings.Contains(stdout, "readonly") {
-		t.Errorf("stdout missing 'readonly' in proxy volume mount\nstdout:\n%s", stdout)
-	}
-	if !strings.Contains(stdout, "type=volume") {
-		t.Errorf("stdout missing 'type=volume' in proxy mount\nstdout:\n%s", stdout)
-	}
-
-	// Volume source must be the expected per-run name (makeslop-sock-<hash>-<pid>).
-	expectedVol := expectedProxyVolumeName(workspaceDir)
-	if !strings.Contains(stdout, "source="+expectedVol) {
-		t.Errorf("stdout missing expected volume source %q\nstdout:\n%s", "source="+expectedVol, stdout)
-	}
-
-	// Verify full argv matches BuildSpec with the expected volume name.
-	// Cache mounts default to true (absent yaml ⇒ both groups enabled).
-	s, loadErr := config.Load(baseDir)
-	if loadErr != nil {
-		t.Fatalf("load settings: %v", loadErr)
-	}
-	want := docker.BuildSpec(docker.Options{
-		ProjectRoot:       resolvedPwd,
-		WorkspaceName:     filepath.Base(workspaceDir),
-		BaseDir:           baseDir,
-		Image:             s.Image,
-		Command:           s.Shell,
-		TmpDirSize:        s.TmpDirSize,
-		ProxySocketVolume: expectedProxyVolumeName(workspaceDir),
-		MountContentCache: true,
-		MountAgentCache:   true,
-	}).ShellCommand()
-	got := strings.TrimSuffix(stdout, "\n")
-	if got != want {
-		t.Errorf("--proxy spec mismatch\ngot:\n%s\n\nwant:\n%s", got, want)
-	}
-}
-
-// TestRun_ProxyFlag_WinsOverInvalidConfigAddress verifies that --proxy flag
-// takes precedence over network.proxy.address in .makeslop.yaml, even when
-// the config value is syntactically invalid. projectconfig.Load does not
-// validate the address; validation is deferred to runRun after flag resolution.
-func TestRun_ProxyFlag_WinsOverInvalidConfigAddress(t *testing.T) {
-	setHomeToTestParent(t)
-	baseDir := t.TempDir()
-	pwd := t.TempDir()
-	t.Chdir(pwd)
-
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
-	resolvedPwd := evalSymlinks(t, pwd)
-
-	// Write a .makeslop.yaml with a syntactically invalid proxy address.
-	invalidCfg := []byte("exclude:\n  dirs: []\n  files: []\nnetwork:\n  proxy:\n    address: \"not-valid\"\n")
-	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), invalidCfg, 0o644); err != nil {
-		t.Fatalf("write .makeslop.yaml: %v", err)
-	}
-
-	scCap := setSidecarFnForTest(t)
-	stubTTY(t, false)
-
-	// The --proxy flag supplies a valid address and must override the bad config value.
-	const proxyAddr = "10.0.0.5:3128"
-	stdout, stderr, err := runCmd(t, baseDir, "run", "--proxy", proxyAddr, "--dry-run")
-	if err != nil {
-		t.Fatalf("--proxy overrides invalid config: expected success, got error: %v; stderr=%q", err, stderr)
-	}
-
-	// Dry-run must not start the sidecar, but proxy plumbing must be in the spec.
-	if scCap.called {
-		t.Error("dry-run must not start the sidecar")
-	}
-	if !strings.Contains(stdout, "--network none") {
-		t.Errorf("stdout missing '--network none'\nstdout:\n%s", stdout)
-	}
-	if !strings.Contains(stdout, "HTTP_PROXY=unix:///sockets/proxy.sock") {
-		t.Errorf("stdout missing HTTP_PROXY env var\nstdout:\n%s", stdout)
-	}
-}
-
-// TestRun_Direct_SidecarNotInstantiated verifies that in direct/bridge mode
-// (no --proxy, no network.proxy.address), the sidecar factory is never called.
-func TestRun_Direct_SidecarNotInstantiated(t *testing.T) {
-	setHomeToTestParent(t)
-	baseDir := t.TempDir()
-	pwd := t.TempDir()
-	t.Chdir(pwd)
-
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
-
-	_ = os.Remove(filepath.Join(evalSymlinks(t, pwd), projectconfig.Filename))
-
-	// Install sidecar seam BEFORE running the command.
-	scCap := setSidecarFnForTest(t)
-	stubTTY(t, false)
-
-	if _, _, err := runCmd(t, baseDir, "run", "--dry-run"); err != nil {
-		t.Fatalf("direct --dry-run failed: %v", err)
-	}
-
-	if scCap.called {
-		t.Error("direct mode: newSidecarFn must not be called when no proxy is configured")
 	}
 }
 
@@ -3368,8 +3110,8 @@ func TestRun_ImageMissing_AbortsWithRemedy(t *testing.T) {
 
 // TestRun_ImageOtherError_PropagatesError verifies that when ImageExists returns
 // a non-not-found error (e.g. permission denied reading image store), `makeslop run`
-// propagates that error instead of silently treating it as "image absent". This
-// distinguishes a transient daemon/store error from a missing image.
+// prints a user-friendly message to stderr and exits non-zero without starting the
+// container. This distinguishes a transient daemon/store error from a missing image.
 func TestRun_ImageOtherError_PropagatesError(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -3390,11 +3132,14 @@ func TestRun_ImageOtherError_PropagatesError(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error when ImageExists returns other-error, got nil; stderr=%q", stderr)
 	}
-	// Must NOT be errSilent — this is a real propagated error, not a tailored message.
-	if errors.Is(err, errSilent) {
-		t.Errorf("image other-error must propagate as real error, not errSilent; got errSilent")
+	// errSilent is returned — the message was already printed to stderr.
+	if !errors.Is(err, errSilent) {
+		t.Errorf("image other-error should return errSilent (message printed to stderr); got %v", err)
 	}
-	// Must NOT silently report "not built" hint (that's for a missing image only).
+	// Must print a user-friendly message with "is docker running?" hint — not "not built".
+	if !strings.Contains(stderr, "is docker running?") {
+		t.Errorf("image other-error must emit 'is docker running?' hint; stderr=%q", stderr)
+	}
 	if strings.Contains(stderr, "not built") {
 		t.Errorf("image other-error must not emit 'not built' hint; stderr=%q", stderr)
 	}
@@ -3782,538 +3527,6 @@ func TestErrorVoice_ImageMissing_ContainsRemedy(t *testing.T) {
 	}
 }
 
-// ── proxy wiring tests (new two-state model) ─────────────────────────────────
-
-// TestProxy_RejectedOnNonRunCommands guards that --proxy is registered only
-// on the `run` subcommand and is rejected as unknown by version, migrate, build,
-// config, init, and status — matching the run-only scope of --out-of-home.
-func TestProxy_RejectedOnNonRunCommands(t *testing.T) {
-	baseDir := t.TempDir()
-
-	for _, cmd := range [][]string{
-		{"init", "--proxy", "10.0.0.5:3128"},
-		{"version", "--proxy", "10.0.0.5:3128"},
-		{"migrate", "--proxy", "10.0.0.5:3128"},
-		{"build", "--proxy", "10.0.0.5:3128"},
-		{"config", "--proxy", "10.0.0.5:3128"},
-		{"status", "--proxy", "10.0.0.5:3128"},
-	} {
-		t.Run(cmd[0], func(t *testing.T) {
-			_, _, err := runCmd(t, baseDir, cmd...)
-			if err == nil {
-				t.Fatalf("%v --proxy should fail with unknown flag, got nil", cmd[0])
-			}
-			if !strings.Contains(err.Error(), "unknown flag") && !strings.Contains(err.Error(), "proxy") {
-				t.Errorf("%v --proxy error should mention unknown flag or proxy; got: %v", cmd[0], err)
-			}
-		})
-	}
-}
-
-// TestRun_NoProxy_IsUnknownFlag verifies that --no-proxy is now an unknown flag
-// (it has been removed; the default is already direct/bridge networking).
-func TestRun_NoProxy_IsUnknownFlag(t *testing.T) {
-	setHomeToTestParent(t)
-	baseDir := t.TempDir()
-	pwd := t.TempDir()
-	t.Chdir(pwd)
-
-	_, _, err := runCmd(t, baseDir, "run", "--no-proxy")
-	if err == nil {
-		t.Fatalf("run --no-proxy should fail with unknown flag, got nil")
-	}
-	if !strings.Contains(err.Error(), "unknown flag") && !strings.Contains(err.Error(), "no-proxy") {
-		t.Errorf("run --no-proxy error should mention unknown flag or no-proxy; got: %v", err)
-	}
-}
-
-// TestRun_ProxyFlag_SidecarReceivesUpstream verifies that --proxy ip:port passes
-// the address to Sidecar.Start as the upstream argument.
-func TestRun_ProxyFlag_SidecarReceivesUpstream(t *testing.T) {
-	setHomeToTestParent(t)
-	baseDir := t.TempDir()
-	pwd := t.TempDir()
-	t.Chdir(pwd)
-
-	initOut, _, err := runCmd(t, baseDir, "init")
-	if err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
-	workspaceDir := strings.TrimSpace(initOut)
-
-	// Install a fake run client (daemon+image ok, exit 0).
-	fc := docker.NewFakeRunClient(0)
-	t.Cleanup(docker.SetClientForTest(fc))
-	t.Cleanup(docker.SetTermMakeRawForTest(func(_ int) (*term.State, error) { return nil, nil }))
-	stubTTY(t, true)
-
-	scCap := setSidecarFnForTest(t)
-
-	const proxyAddr = "10.0.0.5:3128"
-	_, stderr, err := runCmd(t, baseDir, "run", "--proxy", proxyAddr)
-	if err != nil {
-		t.Fatalf("run --proxy failed: %v; stderr=%q", err, stderr)
-	}
-
-	// Sidecar must have been called with the proxy address as upstream.
-	if !scCap.called {
-		t.Fatal("Sidecar.Start was not called when --proxy is set")
-	}
-	if scCap.upstream != proxyAddr {
-		t.Errorf("Sidecar.Start upstream = %q, want %q", scCap.upstream, proxyAddr)
-	}
-
-	// Volume name must match expectedProxyVolumeName.
-	expectedVol := expectedProxyVolumeName(workspaceDir)
-	if scCap.volumeName != expectedVol {
-		t.Errorf("Sidecar.Start volumeName = %q, want %q", scCap.volumeName, expectedVol)
-	}
-	if !fc.Started {
-		t.Error("docker app container must be started on proxy happy path")
-	}
-}
-
-// TestRun_ConfigProxy_SidecarReceivesUpstream verifies that network.proxy.address
-// in .makeslop.yaml (with no --proxy flag) also triggers proxy mode and the sidecar
-// Start receives the config address.
-func TestRun_ConfigProxy_SidecarReceivesUpstream(t *testing.T) {
-	setHomeToTestParent(t)
-	baseDir := t.TempDir()
-	pwd := t.TempDir()
-	t.Chdir(pwd)
-
-	initOut, _, err := runCmd(t, baseDir, "init")
-	if err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
-	workspaceDir := strings.TrimSpace(initOut)
-	resolvedPwd := evalSymlinks(t, pwd)
-
-	// Write .makeslop.yaml with a proxy address.
-	const configAddr = "192.168.1.1:8080"
-	yamlContent := "exclude:\n  dirs: []\n  files: []\nnetwork:\n  proxy:\n    address: " + configAddr + "\n"
-	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(yamlContent), 0o644); err != nil {
-		t.Fatalf("write yaml: %v", err)
-	}
-
-	// Install a fake run client (daemon+image ok, exit 0).
-	fc := docker.NewFakeRunClient(0)
-	t.Cleanup(docker.SetClientForTest(fc))
-	t.Cleanup(docker.SetTermMakeRawForTest(func(_ int) (*term.State, error) { return nil, nil }))
-	stubTTY(t, true)
-
-	scCap := setSidecarFnForTest(t)
-
-	_, stderr, err := runCmd(t, baseDir, "run")
-	if err != nil {
-		t.Fatalf("run with config proxy failed: %v; stderr=%q", err, stderr)
-	}
-
-	// Sidecar must have been called with the config address.
-	if !scCap.called {
-		t.Fatal("Sidecar.Start was not called when network.proxy.address is set")
-	}
-	if scCap.upstream != configAddr {
-		t.Errorf("Sidecar.Start upstream = %q, want config address %q", scCap.upstream, configAddr)
-	}
-
-	// Volume name must match expectedProxyVolumeName.
-	expectedVol := expectedProxyVolumeName(workspaceDir)
-	if scCap.volumeName != expectedVol {
-		t.Errorf("Sidecar.Start volumeName = %q, want %q", scCap.volumeName, expectedVol)
-	}
-	if !fc.Started {
-		t.Error("docker app container must be started on config proxy happy path")
-	}
-}
-
-// TestRun_ProxyFlagOverridesConfig verifies that --proxy flag wins over
-// network.proxy.address: the sidecar Start receives the flag value, not the config.
-func TestRun_ProxyFlagOverridesConfig(t *testing.T) {
-	setHomeToTestParent(t)
-	baseDir := t.TempDir()
-	pwd := t.TempDir()
-	t.Chdir(pwd)
-
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
-	resolvedPwd := evalSymlinks(t, pwd)
-
-	// Write .makeslop.yaml with one proxy address.
-	const configAddr = "192.168.1.1:8080"
-	const flagAddr = "10.10.10.10:3128"
-	yamlContent := "exclude:\n  dirs: []\n  files: []\nnetwork:\n  proxy:\n    address: " + configAddr + "\n"
-	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(yamlContent), 0o644); err != nil {
-		t.Fatalf("write yaml: %v", err)
-	}
-
-	// Install a fake run client (daemon+image ok, exit 0).
-	fc := docker.NewFakeRunClient(0)
-	t.Cleanup(docker.SetClientForTest(fc))
-	t.Cleanup(docker.SetTermMakeRawForTest(func(_ int) (*term.State, error) { return nil, nil }))
-	stubTTY(t, true)
-
-	scCap := setSidecarFnForTest(t)
-
-	// Pass --proxy flag, which should override the config address.
-	_, stderr, err := runCmd(t, baseDir, "run", "--proxy", flagAddr)
-	if err != nil {
-		t.Fatalf("run --proxy (override config) failed: %v; stderr=%q", err, stderr)
-	}
-
-	// Sidecar upstream must be the flag value, not the config value.
-	if !scCap.called {
-		t.Fatal("Sidecar.Start was not called")
-	}
-	if scCap.upstream != flagAddr {
-		t.Errorf("Sidecar.Start upstream = %q, want flag address %q (flag must win over config)", scCap.upstream, flagAddr)
-	}
-	if !fc.Started {
-		t.Error("docker app container must be started")
-	}
-}
-
-// TestRun_InvalidProxyFlag_FailsLoud verifies that an invalid --proxy value
-// (not host:port) causes a fail-loud error before container launch.
-func TestRun_InvalidProxyFlag_FailsLoud(t *testing.T) {
-	setHomeToTestParent(t)
-	baseDir := t.TempDir()
-	pwd := t.TempDir()
-	t.Chdir(pwd)
-
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
-
-	fc := docker.NewFakeRunClient(0)
-	t.Cleanup(docker.SetClientForTest(fc))
-	scCap := setSidecarFnForTest(t) // guard: must not reach sidecar if proxy addr is invalid
-	stubTTY(t, false)               // dry-run or real, should fail before any Docker contact
-
-	_, stderr, err := runCmd(t, baseDir, "run", "--proxy", "notavalidaddr", "--dry-run")
-	if err == nil {
-		t.Fatalf("run --proxy notavalidaddr should fail, got nil error; stderr=%q", stderr)
-	}
-	if !errors.Is(err, errSilent) {
-		t.Errorf("invalid proxy error should be errSilent (message already on stderr); got %v", err)
-	}
-	if !strings.Contains(stderr, "invalid proxy address") {
-		t.Errorf("stderr missing 'invalid proxy address'; got: %q", stderr)
-	}
-	if fc.Started {
-		t.Error("docker container must not be started when proxy address is invalid")
-	}
-	if scCap.called {
-		t.Error("sidecar must not be started when proxy address is invalid")
-	}
-}
-
-// TestRun_InvalidProxyFlag_EmptyHost verifies that --proxy :3128 (empty host)
-// is rejected with a clear error message. net.SplitHostPort accepts ":3128"
-// without error (host=""), so the validation must also check for empty host.
-func TestRun_InvalidProxyFlag_EmptyHost(t *testing.T) {
-	setHomeToTestParent(t)
-	baseDir := t.TempDir()
-	pwd := t.TempDir()
-	t.Chdir(pwd)
-
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
-
-	fc := docker.NewFakeRunClient(0)
-	t.Cleanup(docker.SetClientForTest(fc))
-	scCap := setSidecarFnForTest(t)
-	stubTTY(t, false)
-
-	_, stderr, err := runCmd(t, baseDir, "run", "--proxy", ":3128", "--dry-run")
-	if err == nil {
-		t.Fatalf("run --proxy :3128 should fail; stderr=%q", stderr)
-	}
-	if !errors.Is(err, errSilent) {
-		t.Errorf("error should be errSilent; got %v", err)
-	}
-	if !strings.Contains(stderr, "invalid proxy address") {
-		t.Errorf("stderr missing 'invalid proxy address'; got: %q", stderr)
-	}
-	if fc.Started {
-		t.Error("docker container must not be started for empty-host proxy address")
-	}
-	if scCap.called {
-		t.Error("sidecar must not be started for empty-host proxy address")
-	}
-}
-
-// TestRun_InvalidProxyFlag_WithSocatDelimiter verifies that a port value
-// containing socat option delimiters (e.g. "3128,forever") is rejected before
-// any Docker contact. net.SplitHostPort splits successfully but does not
-// validate that the port is a clean integer.
-func TestRun_InvalidProxyFlag_WithSocatDelimiter(t *testing.T) {
-	setHomeToTestParent(t)
-	baseDir := t.TempDir()
-	pwd := t.TempDir()
-	t.Chdir(pwd)
-
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
-
-	fc := docker.NewFakeRunClient(0)
-	t.Cleanup(docker.SetClientForTest(fc))
-	scCap := setSidecarFnForTest(t) // guard: must not reach sidecar
-	stubTTY(t, false)
-
-	_, stderr, err := runCmd(t, baseDir, "run", "--proxy", "proxy.example.com:3128,forever", "--dry-run")
-	if err == nil {
-		t.Fatalf("run --proxy with socat delimiter should fail, got nil error; stderr=%q", stderr)
-	}
-	if !errors.Is(err, errSilent) {
-		t.Errorf("invalid proxy error should be errSilent; got %v", err)
-	}
-	if !strings.Contains(stderr, "invalid proxy address") {
-		t.Errorf("stderr missing 'invalid proxy address'; got: %q", stderr)
-	}
-	if fc.Started {
-		t.Error("docker container must not be started when proxy port is malformed")
-	}
-	if scCap.called {
-		t.Error("sidecar must not be started when proxy port is malformed")
-	}
-}
-
-// TestRun_InvalidProxyFlag_PortRangeAndHostChars is a table-driven test
-// for the strict port-range and host-character validation added to the
-// --proxy flag. Each case must be rejected with an "invalid proxy address"
-// message; neither the Docker client nor the sidecar must be started.
-func TestRun_InvalidProxyFlag_PortRangeAndHostChars(t *testing.T) {
-	setHomeToTestParent(t)
-	baseDir := t.TempDir()
-	pwd := t.TempDir()
-	t.Chdir(pwd)
-
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
-
-	cases := []struct {
-		name  string
-		proxy string
-	}{
-		{"comma in host", "proxy,forever:3128"},
-		{"negative port", "host:-1"},
-		{"port above 65535", "host:99999"},
-		{"port zero", "host:0"},
-		{"tab in host", "host\t.evil:3128"},
-		{"newline in host", "host\n.evil:3128"},
-		{"pipe in host", "host|evil:3128"},
-		{"exclamation in host", "host!evil:3128"},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			fc := docker.NewFakeRunClient(0)
-			t.Cleanup(docker.SetClientForTest(fc))
-			scCap := setSidecarFnForTest(t)
-			stubTTY(t, false)
-
-			_, stderr, err := runCmd(t, baseDir, "run", "--proxy", tc.proxy, "--dry-run")
-			if err == nil {
-				t.Fatalf("run --proxy %q should fail, got nil error; stderr=%q", tc.proxy, stderr)
-			}
-			if !errors.Is(err, errSilent) {
-				t.Errorf("error should be errSilent; got %v", err)
-			}
-			if !strings.Contains(stderr, "invalid proxy address") {
-				t.Errorf("stderr missing 'invalid proxy address'; got: %q", stderr)
-			}
-			if fc.Started {
-				t.Error("docker container must not be started for invalid proxy")
-			}
-			if scCap.called {
-				t.Error("sidecar must not be started for invalid proxy")
-			}
-		})
-	}
-}
-
-// TestRun_SidecarStartFailure_AbortsBeforeDocker verifies that when
-// Sidecar.Start returns an error, runRun returns that error and the
-// app container is never started (fc.Started must be false). This guards
-// the "fail-loud" invariant at the sidecar layer.
-// Note: sidecar is only started in proxy mode, so we provide a proxy address.
-func TestRun_SidecarStartFailure_AbortsBeforeDocker(t *testing.T) {
-	setHomeToTestParent(t)
-	baseDir := t.TempDir()
-	pwd := t.TempDir()
-	t.Chdir(pwd)
-
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
-
-	// Install the fake docker client (for daemon/image pre-flight checks).
-	// Note: setSidecarFnForTest is called here separately so we can set startErr.
-	fc := docker.NewFakeRunClient(0)
-	t.Cleanup(docker.SetClientForTest(fc))
-	t.Cleanup(docker.SetTermMakeRawForTest(func(_ int) (*term.State, error) { return nil, nil }))
-	stubTTY(t, true)
-
-	// Install a failing fake sidecar: Start returns an error.
-	scCap := setSidecarFnForTest(t)
-	scCap.startErr = errors.New("socat image pull failed: network timeout")
-
-	// Use --proxy to trigger proxy mode (otherwise sidecar is never started).
-	_, stderr, err := runCmd(t, baseDir, "run", "--proxy", "10.0.0.5:3128")
-	if err == nil {
-		t.Fatalf("expected error from Sidecar.Start() failure, got nil; stderr=%q", stderr)
-	}
-	// Error must not be errSilent — it is an unhandled error that main() prints.
-	if errors.Is(err, errSilent) {
-		t.Errorf("sidecar Start error must not be errSilent; got errSilent")
-	}
-	if fc.Started {
-		t.Error("docker app container must not be started when Sidecar.Start() fails")
-	}
-	// The sidecar must have been attempted.
-	if !scCap.called {
-		t.Error("newSidecarFn / Sidecar.Start was not called")
-	}
-}
-
-// TestRun_DryRun_ConfigProxy_WiresSocket verifies that when network.proxy.address
-// is set in .makeslop.yaml, --dry-run output includes proxy plumbing (--network none,
-// HTTP_PROXY, HTTPS_PROXY, volume socket mount) matching BuildSpec with the volume name.
-func TestRun_DryRun_ConfigProxy_WiresSocket(t *testing.T) {
-	setHomeToTestParent(t)
-	baseDir := t.TempDir()
-	pwd := t.TempDir()
-	t.Chdir(pwd)
-
-	initOut, _, err := runCmd(t, baseDir, "init")
-	if err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
-	workspaceDir := strings.TrimSpace(initOut)
-	resolvedPwd := evalSymlinks(t, pwd)
-
-	// Write .makeslop.yaml with a proxy address.
-	const upstreamAddr = "10.0.0.5:8888"
-	yamlContent := "exclude:\n  dirs: []\n  files: []\nnetwork:\n  proxy:\n    address: " + upstreamAddr + "\n"
-	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(yamlContent), 0o644); err != nil {
-		t.Fatalf("write yaml: %v", err)
-	}
-
-	stubTTY(t, false)
-
-	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
-	if err != nil {
-		t.Fatalf("--dry-run with proxy.address failed: %v; stderr=%q", err, stderr)
-	}
-
-	// Proxy mode: spec must include proxy plumbing.
-	if !strings.Contains(stdout, "--network none") {
-		t.Errorf("stdout missing --network none in proxy mode\nstdout:\n%s", stdout)
-	}
-	if !strings.Contains(stdout, "HTTP_PROXY=unix:///sockets/proxy.sock") {
-		t.Errorf("stdout missing HTTP_PROXY in proxy mode\nstdout:\n%s", stdout)
-	}
-	if !strings.Contains(stdout, "HTTPS_PROXY=unix:///sockets/proxy.sock") {
-		t.Errorf("stdout missing HTTPS_PROXY in proxy mode\nstdout:\n%s", stdout)
-	}
-	if !strings.Contains(stdout, "target=/sockets") {
-		t.Errorf("stdout missing proxy volume container target\nstdout:\n%s", stdout)
-	}
-
-	// Verify full argv matches BuildSpec with the expected volume name.
-	// Cache mounts default to true (absent cache: block ⇒ both groups enabled).
-	s, loadErr := config.Load(baseDir)
-	if loadErr != nil {
-		t.Fatalf("load settings: %v", loadErr)
-	}
-	want := docker.BuildSpec(docker.Options{
-		ProjectRoot:       resolvedPwd,
-		WorkspaceName:     filepath.Base(workspaceDir),
-		BaseDir:           baseDir,
-		Image:             s.Image,
-		Command:           s.Shell,
-		TmpDirSize:        s.TmpDirSize,
-		ProxySocketVolume: expectedProxyVolumeName(workspaceDir),
-		MountContentCache: true,
-		MountAgentCache:   true,
-	}).ShellCommand()
-	got := strings.TrimSuffix(stdout, "\n")
-	if got != want {
-		t.Errorf("config-proxy spec mismatch\ngot:\n%s\n\nwant:\n%s", got, want)
-	}
-}
-
-// TestRun_Proxy_DaemonDown verifies that when --proxy is set and the daemon is
-// unreachable, the pre-flight check fails before the sidecar is started.
-func TestRun_Proxy_DaemonDown(t *testing.T) {
-	setHomeToTestParent(t)
-	baseDir := t.TempDir()
-	pwd := t.TempDir()
-	t.Chdir(pwd)
-
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
-
-	fc := docker.NewFakeRunClient(0)
-	fc.PingErr = errors.New("dial unix /var/run/docker.sock: no such file")
-	t.Cleanup(docker.SetClientForTest(fc))
-	scCap := setSidecarFnForTest(t)
-	stubTTY(t, true)
-
-	_, stderr, err := runCmd(t, baseDir, "run", "--proxy", "10.0.0.5:3128")
-	if err == nil {
-		t.Fatalf("expected error when daemon is down; stderr=%q", stderr)
-	}
-	if !strings.Contains(stderr, "docker running") {
-		t.Errorf("stderr must mention docker running; got: %q", stderr)
-	}
-	if scCap.called {
-		t.Error("sidecar must not be started when daemon is unreachable")
-	}
-	if fc.Started {
-		t.Error("docker container must not be started when daemon is unreachable")
-	}
-}
-
-// TestRun_Proxy_ImageMissing verifies that when --proxy is set and the base
-// image is absent, the pre-flight check fails before the sidecar is started.
-func TestRun_Proxy_ImageMissing(t *testing.T) {
-	setHomeToTestParent(t)
-	baseDir := t.TempDir()
-	pwd := t.TempDir()
-	t.Chdir(pwd)
-
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
-
-	fc := docker.NewFakeRunClient(0)
-	fc.ImageMissing = true
-	t.Cleanup(docker.SetClientForTest(fc))
-	scCap := setSidecarFnForTest(t)
-	stubTTY(t, true)
-
-	_, stderr, err := runCmd(t, baseDir, "run", "--proxy", "10.0.0.5:3128")
-	if err == nil {
-		t.Fatalf("expected error when image is missing; stderr=%q", stderr)
-	}
-	if !strings.Contains(stderr, "makeslop build") {
-		t.Errorf("stderr must mention 'makeslop build'; got: %q", stderr)
-	}
-	if scCap.called {
-		t.Error("sidecar must not be started when base image is missing")
-	}
-	if fc.Started {
-		t.Error("docker container must not be started when base image is missing")
-	}
-}
-
 // ── cache mount config tests ──────────────────────────────────────────────────
 
 // TestRun_DryRun_CacheDisabled verifies that a .makeslop.yaml with
@@ -4497,7 +3710,7 @@ func TestInit_GlobalOnly_ScaffoldsCacheDisabled(t *testing.T) {
 	}
 
 	resolvedPwd := evalSymlinks(t, pwd)
-	_, _, cache, err := projectconfig.Load(resolvedPwd)
+	_, cache, err := projectconfig.Load(resolvedPwd)
 	if err != nil {
 		t.Fatalf("projectconfig.Load after init --global-only: %v", err)
 	}
@@ -4523,7 +3736,7 @@ func TestInit_NoGlobalOnly_ScaffoldsCacheEnabled(t *testing.T) {
 	}
 
 	resolvedPwd := evalSymlinks(t, pwd)
-	_, _, cache, err := projectconfig.Load(resolvedPwd)
+	_, cache, err := projectconfig.Load(resolvedPwd)
 	if err != nil {
 		t.Fatalf("projectconfig.Load after init: %v", err)
 	}
@@ -4590,5 +3803,51 @@ func TestGlobalOnly_RejectedOnNonInitCommands(t *testing.T) {
 				t.Errorf("%v --global-only error should mention unknown flag or global-only; got: %v", cmd[0], err)
 			}
 		})
+	}
+}
+
+// TestRunWithExitCode_ContextIsCancellable verifies that runWithExitCode wires a
+// signal.NotifyContext-based context (not context.Background()) into ExecuteContext.
+// The test installs onContextForTest to observe the context created inside
+// runWithExitCode. The check is structural (non-Background, has Done channel) —
+// full signal delivery is not exercised in a unit test environment.
+func TestRunWithExitCode_ContextIsCancellable(t *testing.T) {
+	baseDir := t.TempDir()
+
+	var captured context.Context
+	orig := onContextForTest
+	onContextForTest = func(ctx context.Context) { captured = ctx }
+	t.Cleanup(func() { onContextForTest = orig })
+
+	var stdout, stderr bytes.Buffer
+	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"version"})
+	if code != 0 {
+		t.Fatalf("runWithExitCode(version) = %d, want 0; stderr=%q", code, stderr.String())
+	}
+	if captured == nil {
+		t.Fatal("onContextForTest was not called — runWithExitCode did not invoke the hook")
+	}
+	if captured == context.Background() {
+		t.Error("context passed to ExecuteContext must not be context.Background() — signal.NotifyContext wiring is missing")
+	}
+	// A cancellable context always has a non-nil Done channel.
+	if captured.Done() == nil {
+		t.Error("context.Done() must be non-nil — context must be cancellable")
+	}
+}
+
+// TestRunWithExitCode_VersionSucceeds verifies that switching from cmd.Execute()
+// to cmd.ExecuteContext() does not regress the normal success path.
+func TestRunWithExitCode_VersionSucceeds(t *testing.T) {
+	baseDir := t.TempDir()
+
+	var stdout, stderr bytes.Buffer
+	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"version"})
+	if code != 0 {
+		t.Errorf("runWithExitCode(version) = %d, want 0; stderr=%q", code, stderr.String())
+	}
+	out := strings.TrimSpace(stdout.String())
+	if out == "" {
+		t.Error("version command produced empty stdout")
 	}
 }

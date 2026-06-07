@@ -9,7 +9,7 @@ control, and the home-directory guard. For in-container hardening flags (`--cap-
 
 - [Secret masking](#secret-masking)
 - [Project-local exclusions](#project-local-exclusions)
-- [Network egress — two-state model](#network-egress--two-state-model)
+- [Network egress](#network-egress)
 - [Home-directory guard](#home-directory-guard)
 
 ---
@@ -95,9 +95,6 @@ exclude:
 cache:
   content: true
   agent: true
-network:
-  proxy:
-    address: ""
 ```
 
 Edit this file to control scanning and hide additional directories and files from the container on
@@ -129,53 +126,28 @@ The scan results and the `exclude.files` entries are merged; if the same path is
 and listed in `exclude.files`, only one overlay mount is emitted. A YAML parse error aborts the
 launch before docker is invoked.
 
+**YAML parse errors are hard failures.** Any unknown field in `.makeslop.yaml` — including the now-removed
+`network:` block from earlier makeslop versions — causes a strict-decode error that aborts `makeslop run`
+before Docker is contacted. If you upgrade from a version that had proxy support and your `.makeslop.yaml`
+contains a `network:` block, remove it:
+
+```yaml
+# Remove this block entirely if present:
+# network:
+#   proxy:
+#     address: 10.0.0.5:3128
+```
+
 **Reserved paths.** The paths `.claude`, `.codex`, `docs`, and `CLAUDE.md` are already mounted by
 `makeslop run` for agent state. Listing them in `.makeslop.yaml` is rejected with an error
 (`projectconfig: path %q collides with a reserved agent path`).
 
 ---
 
-## Network egress — two-state model
+## Network egress
 
-`makeslop run` has two network modes:
-
-| Mode | Trigger | Container egress |
-|---|---|---|
-| **Direct (default)** | no `--proxy` flag, no `network.proxy.address` | docker bridge networking; container has normal internet access |
-| **Proxy** | `--proxy host:port` flag OR `network.proxy.address` in `.makeslop.yaml` (flag wins) | `--network none` + unix socket through socat sidecar to the remote HTTP proxy |
-
-**Direct mode (default):** The container uses Docker's default bridge networking and has ordinary
-internet access. No socat sidecar, no `--network none`, no proxy socket.
-
-**Proxy mode:** Pass `--proxy host:port` or set `network.proxy.address` in `.makeslop.yaml` to
-route all container traffic through a remote HTTP forward proxy:
-
-```yaml
-network:
-  proxy:
-    address: 10.0.0.5:8888   # host:port of your remote HTTP forward proxy
-```
-
-In proxy mode `makeslop run` starts an `alpine/socat` sidecar container that listens on a unix
-socket inside a Docker volume and forwards connections to the remote proxy via TCP over bridge
-networking. The app container is run with `--network none` and mounts the volume read-only; the
-only egress path is through the socket. This works on Docker Desktop and native Linux.
-
-The `--proxy` flag wins over `network.proxy.address` for per-run overrides. An invalid `host:port`
-value causes `makeslop` to abort with an error before starting docker.
-
-**Data path (proxy mode):**
-
-```
-app container (--network none,
-               HTTP_PROXY=unix:///sockets/proxy.sock,
-               HTTPS_PROXY=unix:///sockets/proxy.sock)
-  └─ read-only volume mount (/sockets)
-       └─ alpine/socat sidecar (bridge networking)
-            UNIX-LISTEN:/sockets/proxy.sock,fork,mode=0666
-            TCP-CONNECT:<remote-host>:<remote-port>,reuseaddr
-              └─ remote HTTP forward proxy
-```
+The app container uses standard Docker bridge networking with full internet access. There is no
+built-in egress proxy, no `--network none` isolation, and no socat sidecar.
 
 Use `--dry-run` to preview the resulting container launch command (printed as an equivalent
 `docker run` invocation), including all exclusion mounts, before launching:

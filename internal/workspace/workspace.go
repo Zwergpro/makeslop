@@ -53,26 +53,34 @@ func (w *Workspaces) Lookup(pwd string) (matchedRoot, cacheDir string, err error
 
 // Init is idempotent: registering an already-known pwd (or ancestor) is a no-op.
 // pwd must be absolute and EvalSymlinks-evaluated.
+//
+// The Load→mutate→Save sequence is protected by config.WithLock so concurrent
+// Init calls for distinct paths all persist without lost updates.
 func (w *Workspaces) Init(pwd string) (string, error) {
-	s, err := config.Load(w.baseDir)
+	var workspaceDir string
+	err := config.WithLock(w.baseDir, func() error {
+		s, err := config.Load(w.baseDir)
+		if err != nil {
+			return err
+		}
+		if _, ws, ok := w.findAncestor(s, pwd); ok {
+			workspaceDir = filepath.Join(w.baseDir, config.WorkspacesDir, ws.Name)
+			return nil
+		}
+		ws := config.Workspace{Name: workspaceName(pwd), CreatedAt: time.Now().UTC()}
+		// config.Load guarantees a non-nil Workspaces map.
+		s.Workspaces[pwd] = ws
+		workspaceDir = filepath.Join(w.baseDir, config.WorkspacesDir, ws.Name)
+		if err := os.MkdirAll(workspaceDir, 0o755); err != nil {
+			return fmt.Errorf("create workspace dir %s: %w", workspaceDir, err)
+		}
+		if err := scaffoldTemplate(workspaceDir); err != nil {
+			return err
+		}
+		// Save failure leaves the cache dir orphaned; the next Init for this pwd reclaims it.
+		return config.Save(w.baseDir, s)
+	})
 	if err != nil {
-		return "", err
-	}
-	if _, ws, ok := w.findAncestor(s, pwd); ok {
-		return filepath.Join(w.baseDir, config.WorkspacesDir, ws.Name), nil
-	}
-	ws := config.Workspace{Name: workspaceName(pwd), CreatedAt: time.Now().UTC()}
-	// config.Load guarantees a non-nil Workspaces map.
-	s.Workspaces[pwd] = ws
-	workspaceDir := filepath.Join(w.baseDir, config.WorkspacesDir, ws.Name)
-	if err := os.MkdirAll(workspaceDir, 0o755); err != nil {
-		return "", fmt.Errorf("create workspace dir %s: %w", workspaceDir, err)
-	}
-	if err := scaffoldTemplate(workspaceDir); err != nil {
-		return "", err
-	}
-	// Save failure leaves the cache dir orphaned; the next Init for this pwd reclaims it.
-	if err := config.Save(w.baseDir, s); err != nil {
 		return "", err
 	}
 	return workspaceDir, nil

@@ -110,8 +110,6 @@ groups can be disabled via `cache.content` and `cache.agent` in `.makeslop.yaml`
 **Flags:**
 - `--dry-run` / `-n` — print the equivalent shell command and exit without launching the container
 - `--out-of-home` — bypass the home-directory guard
-- `--proxy host:port` — route container traffic through a remote HTTP forward proxy
-  (see [security.md](security.md#network-egress--two-state-model))
 
 ---
 
@@ -125,8 +123,6 @@ Checks (in order):
 3. Image existence — **blocking**
 4. Workspace registration — **blocking**
 5. Secret scan summary — non-blocking
-6. Proxy configuration — non-blocking; shows `"direct (bridge networking)"` or the upstream address
-7. Socat image presence — non-blocking; `!` with hint when `alpine/socat` is absent
 
 Each check emits one aligned line with a glyph (`✓ ✗ ! –`). A final verdict line names the next
 action. Exit code is 0 when all blocking checks pass.
@@ -192,6 +188,28 @@ directory is always stamped at the current `MigrationVersion` — never reported
 `migrate` is the explicit upgrade path for existing installs. `build` self-heals `~/.makeslop/`
 (seeds if absent), but does not register a workspace.
 
+### Breaking change: `network:` block removed from `.makeslop.yaml`
+
+Earlier versions of makeslop supported an optional egress-proxy feature configured via a `network:`
+block in `.makeslop.yaml`:
+
+```yaml
+network:
+  proxy:
+    address: 10.0.0.5:3128
+```
+
+This feature has been removed. The `network:` block is now an **unknown field** and causes a hard
+parse error that aborts `makeslop run` before Docker is contacted. If your `.makeslop.yaml` contains
+a `network:` block, remove it to upgrade:
+
+```
+# Remove the network: block entirely from .makeslop.yaml
+```
+
+The app container now always uses standard Docker bridge networking with full internet access. No
+socat sidecar, no `--network none`, and no `--proxy` flag.
+
 ---
 
 ## Cache layout
@@ -253,8 +271,7 @@ Security flags applied inside the container:
 Mounts are emitted as `--mount type=bind,source=...,target=...` so paths containing `:` do not
 break parsing.
 
-For secret masking, network egress controls, and the home-directory guard, see
-[security.md](security.md).
+For secret masking and the home-directory guard, see [security.md](security.md).
 
 ---
 
@@ -311,7 +328,7 @@ makeslop run -n > cmd.sh   # capture only the command; masked-file count goes to
   child docker process to propagate an exit code from).
 - `1` — `makeslop status` exits 1 when any blocking check (daemon, base config, image, or workspace) fails.
 - `1` — any other failure: no workspace registered for pwd, no TTY available, corrupt
-  `settings.json`, invalid `--proxy` address, I/O error, etc. The reason is written to stderr.
+  `settings.json`, I/O error, etc. The reason is written to stderr.
 
 ---
 
