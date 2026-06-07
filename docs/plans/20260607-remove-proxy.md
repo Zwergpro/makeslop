@@ -101,10 +101,10 @@ projectconfig/status tests together.
 - Delete: `internal/docker/sidecar_test.go`
 - Delete: `internal/docker/proxy_integration_test.go`
 
-- [ ] delete `internal/docker/sidecar.go` (Sidecar type, `SocatImage`, `proxySocketName`, lifecycle, readiness poll)
-- [ ] delete `internal/docker/sidecar_test.go`
-- [ ] delete `internal/docker/proxy_integration_test.go` (build-tagged daemon-gated unix:// test)
-- [ ] confirm package still references `SocatImage`/`Sidecar` only from not-yet-edited files (expected build break until Task 2/5/6 — note compile errors, do not fix yet)
+- [x] delete `internal/docker/sidecar.go` (Sidecar type, `SocatImage`, `proxySocketName`, lifecycle, readiness poll)
+- [x] delete `internal/docker/sidecar_test.go`
+- [x] delete `internal/docker/proxy_integration_test.go` (build-tagged daemon-gated unix:// test)
+- [x] confirm package still references `SocatImage`/`Sidecar` only from not-yet-edited files (expected build break until Task 2/5/6 — note compile errors, do not fix yet)
 
 ### Task 2: Remove the proxy branch from `spec.go`
 
