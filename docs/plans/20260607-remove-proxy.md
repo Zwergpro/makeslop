@@ -124,14 +124,14 @@ projectconfig/status tests together.
 **Files:**
 - Modify: `cmd/makeslop/main.go`
 
-- [ ] remove `validHostRe` and the host/port validation block in `runRun`
-- [ ] remove the `sidecarRunner` interface and the `newSidecarFn` seam
-- [ ] remove upstream resolution, volume-name derivation, `sc.Start(...)`, and `defer sc.Close()`
-- [ ] remove the `--proxy` flag registration on `runCmd`
-- [ ] remove the `proxyFlag` parameter from `runRun`'s signature and update its call site (bottom of `newRunCmd`, ~line 433)
-- [ ] remove now-unused imports from `main.go`: `crypto/sha256` (volume-name hash), `net` (`SplitHostPort`), `strconv` (`Atoi`), `regexp` (`validHostRe`) — verified each has no other use; `io`/`os` survive
-- [ ] leave the `projectconfig.Load` call temporarily adjusted to drop the unused `Network` return (final form set in Task 4)
-- [ ] run `go build ./cmd/makeslop/` — note any remaining errors from the pending `Load` signature change (fixed in Task 4)
+- [x] remove `validHostRe` and the host/port validation block in `runRun`
+- [x] remove the `sidecarRunner` interface and the `newSidecarFn` seam
+- [x] remove upstream resolution, volume-name derivation, `sc.Start(...)`, and `defer sc.Close()`
+- [x] remove the `--proxy` flag registration on `runCmd`
+- [x] remove the `proxyFlag` parameter from `runRun`'s signature and update its call site (bottom of `newRunCmd`, ~line 433)
+- [x] remove now-unused imports from `main.go`: `crypto/sha256` (volume-name hash), `net` (`SplitHostPort`), `strconv` (`Atoi`), `regexp` (`validHostRe`) — verified each has no other use; `io`/`os` survive
+- [x] leave the `projectconfig.Load` call temporarily adjusted to drop the unused `Network` return (final form set in Task 4)
+- [x] run `go build ./cmd/makeslop/` — note any remaining errors from the pending `Load` signature change (fixed in Task 4)
 
 ### Task 4: Change `projectconfig.Load` signature and fix all callers
 
