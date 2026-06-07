@@ -694,11 +694,11 @@ func TestContainerConfig_ImageCmdEnvTTYStdin(t *testing.T) {
 				Image:   "claudebox",
 				Command: "/bin/bash",
 				Workdir: "/workspace/bar",
-				Env:     []string{"HTTP_PROXY=unix:///tmp/proxy.sock", "HTTPS_PROXY=unix:///tmp/proxy.sock"},
+				Env:     []string{"FOO=bar", "BAZ=qux"},
 			},
 			wantImg: "claudebox",
 			wantCmd: []string{"/bin/bash"},
-			wantEnv: []string{"HTTP_PROXY=unix:///tmp/proxy.sock", "HTTPS_PROXY=unix:///tmp/proxy.sock"},
+			wantEnv: []string{"FOO=bar", "BAZ=qux"},
 			wantWd:  "/workspace/bar",
 		},
 		{

@@ -218,13 +218,14 @@ projectconfig/status tests together.
 - [x] do NOT touch the two preserved completed-plan files under `docs/plans/completed/`
 
 ### Task 10: Verify acceptance criteria
-- [ ] `go build ./...` clean
-- [ ] `go vet ./...` clean
-- [ ] `go test ./...` all green (no Docker daemon needed — integration proxy test removed)
-- [ ] grep sweep returns empty (except the two preserved completed-plan files):
+- [x] `go build ./...` clean
+- [x] `go vet ./...` clean
+- [x] `go test ./...` all green (no Docker daemon needed — integration proxy test removed)
+- [x] grep sweep returns empty (except the two preserved completed-plan files):
       `grep -rn -E 'socat|Socat|Sidecar|ProxySocket|proxySocket|proxySocketName|newSidecarFn|validHostRe|ProxyAddress|--proxy|HTTP_PROXY' --include='*.go' --include='*.md' .`
-- [ ] confirm no orphaned proxy-method bodies remain in `run_test.go` (the grep above won't catch `ExecCreate`/`VolumeCreate` method names — rely on this check + `go vet`)
-- [ ] verify the Overview end-state holds: app container always bridge, no proxy flag/config/SDK plumbing remains
+      Remaining benign hits: CLAUDE.md (documents removal), security.md ("no socat sidecar"), main_test.go (checks HTTP_PROXY absent; uses HTTP_PROXY as --build-arg example); spec_test.go cleaned to use FOO=bar/BAZ=qux; completed plan files excluded.
+- [x] confirm no orphaned proxy-method bodies remain in `run_test.go` (the grep above won't catch `ExecCreate`/`VolumeCreate` method names — rely on this check + `go vet`)
+- [x] verify the Overview end-state holds: app container always bridge, no proxy flag/config/SDK plumbing remains
 
 ### Task 11: [Final] Finalize plan
 - [ ] confirm `CLAUDE.md` reflects the removed sections (done in Task 9)
