@@ -9,15 +9,12 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"iter"
 	"net"
 	"runtime"
 	"testing"
 
 	"github.com/containerd/errdefs"
 	"github.com/moby/moby/api/types/container"
-	"github.com/moby/moby/api/types/jsonstream"
-	"github.com/moby/moby/api/types/volume"
 	moby "github.com/moby/moby/client"
 	"golang.org/x/term"
 )
@@ -61,18 +58,6 @@ func SkipNonPOSIX(t *testing.T, why string) {
 	if runtime.GOOS == "windows" {
 		t.Skip(why)
 	}
-}
-
-// noopImagePullResponse is a minimal ImagePullResponse that completes
-// immediately with no data. Used by noopClient.ImagePull and by
-// FakeRunClient.ImagePull when ImagePullErr is nil.
-type noopImagePullResponse struct{}
-
-func (noopImagePullResponse) Read(_ []byte) (int, error)          { return 0, io.EOF }
-func (noopImagePullResponse) Close() error                        { return nil }
-func (noopImagePullResponse) Wait(_ context.Context) error        { return nil }
-func (noopImagePullResponse) JSONMessages(_ context.Context) iter.Seq2[jsonstream.Message, error] {
-	return func(yield func(jsonstream.Message, error) bool) {}
 }
 
 // noopClient provides no-op stub implementations of all apiClient methods.
@@ -126,34 +111,6 @@ func (noopClient) ImageInspect(_ context.Context, _ string, _ ...moby.ImageInspe
 	return moby.ImageInspectResult{}, nil
 }
 
-func (noopClient) ContainerInspect(_ context.Context, _ string, _ moby.ContainerInspectOptions) (moby.ContainerInspectResult, error) {
-	return moby.ContainerInspectResult{}, nil
-}
-
-func (noopClient) ExecCreate(_ context.Context, _ string, _ moby.ExecCreateOptions) (moby.ExecCreateResult, error) {
-	return moby.ExecCreateResult{}, nil
-}
-
-func (noopClient) ExecStart(_ context.Context, _ string, _ moby.ExecStartOptions) (moby.ExecStartResult, error) {
-	return moby.ExecStartResult{}, nil
-}
-
-func (noopClient) ExecInspect(_ context.Context, _ string, _ moby.ExecInspectOptions) (moby.ExecInspectResult, error) {
-	return moby.ExecInspectResult{}, nil
-}
-
-func (noopClient) VolumeCreate(_ context.Context, _ moby.VolumeCreateOptions) (moby.VolumeCreateResult, error) {
-	return moby.VolumeCreateResult{}, nil
-}
-
-func (noopClient) VolumeRemove(_ context.Context, _ string, _ moby.VolumeRemoveOptions) (moby.VolumeRemoveResult, error) {
-	return moby.VolumeRemoveResult{}, nil
-}
-
-func (noopClient) ImagePull(_ context.Context, _ string, _ moby.ImagePullOptions) (moby.ImagePullResponse, error) {
-	return noopImagePullResponse{}, nil
-}
-
 func (noopClient) Close() error { return nil }
 
 // FakeRunClient is an exported fake apiClient for use in cmd/makeslop tests.
@@ -167,25 +124,6 @@ func (noopClient) Close() error { return nil }
 //
 // To simulate daemon-down, set PingErr. To simulate a missing image, set
 // ImageMissing = true. To simulate another image error, set ImageErr.
-//
-// Volume tracking:
-//   - CreatedVolumes records the names of all VolumeCreate calls.
-//   - RemovedVolumes records the names of all VolumeRemove calls.
-//
-// Exec handshake:
-//   - ExecExitCode is the exit code returned by ExecInspect.
-//   - ExecRunning, when true, causes ExecInspect to report Running=true
-//     (still in progress).
-//
-// Sidecar early-exit simulation:
-//   - SidecarExited, when true, causes ContainerInspect to report a non-running
-//     exited state (State.Running=false, State.ExitCode=1).
-//
-// Image pull simulation:
-//   - ImagePullCalled records whether ImagePull was invoked.
-//   - ImagePullErr, if non-nil, is returned by ImagePull.
-//   - SocatImageMissing, when true, causes every ImageInspect call for the socat
-//     image to return not-found; used to test pull-on-demand.
 type FakeRunClient struct {
 	noopClient
 	ExitCode     int
@@ -194,41 +132,11 @@ type FakeRunClient struct {
 	ImageMissing bool  // if true, ImageInspect returns a not-found error
 	ImageErr     error // if non-nil (and ImageMissing false), ImageInspect returns this error
 
-	// Volume tracking
-	CreatedVolumes       []string
-	CreatedVolumeLabels  []map[string]string // labels from each VolumeCreate call, parallel to CreatedVolumes
-	RemovedVolumes       []string
-	VolumeCreateErr      error // if non-nil, VolumeCreate returns this error
-
 	// Container tracking
-	RemovedContainers      []string
+	RemovedContainers       []string
 	LastContainerCreateOpts moby.ContainerCreateOptions // options from most recent ContainerCreate call
-	ContainerCreateErr     error                        // if non-nil, ContainerCreate returns this error
-	ContainerStartErr      error                        // if non-nil, ContainerStart returns this error
-
-	// Exec handshake
-	ExecExitCode        int   // exit code returned by ExecInspect (default 0 = success)
-	ExecRunning         bool  // if true, ExecInspect reports Running=true
-	ExecCreateErr       error // if non-nil, ExecCreate returns this error
-	ExecStartErr        error // if non-nil, ExecStart returns this error
-	ExecInspectErr      error // if non-nil, ExecInspect returns this error
-	ContainerInspectErr error // if non-nil, ContainerInspect returns this error
-
-	// Sidecar early-exit simulation
-	SidecarExited bool // if true, ContainerInspect reports exited state
-
-	// Image pull simulation
-	ImagePullCalled bool  // set to true when ImagePull is called
-	ImagePullErr    error // if non-nil, ImagePull returns this error
-
-	// SocatImageMissing simulates the socat image being absent; ImageInspect
-	// returns not-found for the socat image (identified by matching SocatImage).
-	SocatImageMissing bool
-
-	// SocatImageErr, if non-nil, is returned by ImageInspect for the socat image
-	// as a non-not-found error (simulating a daemon I/O error specifically for
-	// the socat image, while letting the app image inspect succeed).
-	SocatImageErr error
+	ContainerCreateErr      error                       // if non-nil, ContainerCreate returns this error
+	ContainerStartErr       error                       // if non-nil, ContainerStart returns this error
 
 	// BlockPing, when true, causes Ping to block until ctx is cancelled, then
 	// return ctx.Err(). This lets tests verify that a timeout deadline is
@@ -266,12 +174,6 @@ func (f *FakeRunClient) Ping(ctx context.Context, _ moby.PingOptions) (moby.Ping
 // If BlockImageInspect is true, ImageInspect blocks until ctx is cancelled and
 // returns ctx.Err(). This allows tests to verify that a timeout deadline is
 // propagated to ImageInspect.
-// If SocatImageMissing is true, calls for the socat image (identified by
-// matching imageID against SocatImage) return not-found. Other images are
-// unaffected by SocatImageMissing, allowing tests to model the case where the
-// app image is present but alpine/socat has not been pulled yet.
-// If SocatImageErr is non-nil, calls for the socat image return that error
-// (non-not-found, simulating daemon I/O errors specifically for the socat image).
 func (f *FakeRunClient) ImageInspect(ctx context.Context, imageID string, _ ...moby.ImageInspectOption) (moby.ImageInspectResult, error) {
 	if f.BlockImageInspect {
 		<-ctx.Done()
@@ -284,89 +186,6 @@ func (f *FakeRunClient) ImageInspect(ctx context.Context, imageID string, _ ...m
 		return moby.ImageInspectResult{}, f.ImageErr
 	}
 	return moby.ImageInspectResult{}, nil
-}
-
-// ContainerInspect returns an exited (non-running) state when SidecarExited is
-// true, an error when ContainerInspectErr is set, otherwise returns a running state.
-func (f *FakeRunClient) ContainerInspect(_ context.Context, _ string, _ moby.ContainerInspectOptions) (moby.ContainerInspectResult, error) {
-	if f.ContainerInspectErr != nil {
-		return moby.ContainerInspectResult{}, f.ContainerInspectErr
-	}
-	if f.SidecarExited {
-		return moby.ContainerInspectResult{
-			Container: container.InspectResponse{
-				State: &container.State{
-					Running:  false,
-					ExitCode: 1,
-					Status:   container.StateExited,
-				},
-			},
-		}, nil
-	}
-	return moby.ContainerInspectResult{
-		Container: container.InspectResponse{
-			State: &container.State{
-				Running: true,
-				Status:  container.StateRunning,
-			},
-		},
-	}, nil
-}
-
-// ExecCreate records the exec creation and returns a fake exec ID.
-// If ExecCreateErr is set, it is returned instead.
-func (f *FakeRunClient) ExecCreate(_ context.Context, _ string, _ moby.ExecCreateOptions) (moby.ExecCreateResult, error) {
-	if f.ExecCreateErr != nil {
-		return moby.ExecCreateResult{}, f.ExecCreateErr
-	}
-	return moby.ExecCreateResult{ID: "fake-exec-id"}, nil
-}
-
-// ExecStart is a no-op (blocks in production until exec completes; Detach: false).
-// If ExecStartErr is set, it is returned instead.
-func (f *FakeRunClient) ExecStart(_ context.Context, _ string, _ moby.ExecStartOptions) (moby.ExecStartResult, error) {
-	if f.ExecStartErr != nil {
-		return moby.ExecStartResult{}, f.ExecStartErr
-	}
-	return moby.ExecStartResult{}, nil
-}
-
-// ExecInspect returns scripted Running/ExitCode values.
-// If ExecInspectErr is set, it is returned instead.
-func (f *FakeRunClient) ExecInspect(_ context.Context, _ string, _ moby.ExecInspectOptions) (moby.ExecInspectResult, error) {
-	if f.ExecInspectErr != nil {
-		return moby.ExecInspectResult{}, f.ExecInspectErr
-	}
-	return moby.ExecInspectResult{
-		Running:  f.ExecRunning,
-		ExitCode: f.ExecExitCode,
-	}, nil
-}
-
-// VolumeCreate records the created volume name and labels, then returns it.
-// If VolumeCreateErr is set, it is returned without recording the volume.
-func (f *FakeRunClient) VolumeCreate(_ context.Context, opts moby.VolumeCreateOptions) (moby.VolumeCreateResult, error) {
-	if f.VolumeCreateErr != nil {
-		return moby.VolumeCreateResult{}, f.VolumeCreateErr
-	}
-	f.CreatedVolumes = append(f.CreatedVolumes, opts.Name)
-	f.CreatedVolumeLabels = append(f.CreatedVolumeLabels, opts.Labels)
-	return moby.VolumeCreateResult{Volume: volume.Volume{Name: opts.Name}}, nil
-}
-
-// VolumeRemove records the removed volume name.
-func (f *FakeRunClient) VolumeRemove(_ context.Context, volumeID string, _ moby.VolumeRemoveOptions) (moby.VolumeRemoveResult, error) {
-	f.RemovedVolumes = append(f.RemovedVolumes, volumeID)
-	return moby.VolumeRemoveResult{}, nil
-}
-
-// ImagePull records the call and returns ImagePullErr if set.
-func (f *FakeRunClient) ImagePull(_ context.Context, _ string, _ moby.ImagePullOptions) (moby.ImagePullResponse, error) {
-	f.ImagePullCalled = true
-	if f.ImagePullErr != nil {
-		return nil, f.ImagePullErr
-	}
-	return noopImagePullResponse{}, nil
 }
 
 // ContainerRemove records the removed container ID.

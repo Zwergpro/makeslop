@@ -171,12 +171,12 @@ projectconfig/status tests together.
 - Modify: `internal/docker/testing.go`
 - Modify: `internal/docker/client_test.go`
 
-- [ ] remove sidecar-only `FakeRunClient` fields (`SocatImageMissing`, `SocatImageErr`, `SidecarExited`, `ImagePullCalled`, `ImagePullErr`, `CreatedVolumes`, `RemovedVolumes`, `CreatedVolumeLabels`, `VolumeCreateErr`, `ExecExitCode`, `ExecRunning`, `ExecCreateErr`, `ExecStartErr`, `ExecInspectErr`, `ContainerInspectErr`)
-- [ ] remove the corresponding fake methods (`ImagePull`, `VolumeCreate`, `VolumeRemove`, `ExecCreate`, `ExecStart`, `ExecInspect`, `ContainerInspect`)
-- [ ] revert the socat branch in the fake's `ImageInspect` to a plain image lookup
-- [ ] keep `FakeBuildClient` and the general `ImageMissing`/`PingErr` fields (serve `Run`/preflight)
-- [ ] delete the sidecar/proxy `FakeRunClient` tests in `client_test.go` (`TestFakeRunClient_VolumeCreate`, `_VolumeRemove`, `_VolumeCreateRemove_RecordBoth`, `_ExecHandshake_*`, `_ContainerInspect_Running`, `_ContainerInspect_SidecarExited`, `_ImagePull_Success`, `_ImagePull_Error`, `_SocatImageMissing`); keep the `*moby.Client` satisfies-`apiClient` assertion test and non-proxy fake tests
-- [ ] run `go test ./internal/docker/` — package must build **and** pass before next task
+- [x] remove sidecar-only `FakeRunClient` fields (`SocatImageMissing`, `SocatImageErr`, `SidecarExited`, `ImagePullCalled`, `ImagePullErr`, `CreatedVolumes`, `RemovedVolumes`, `CreatedVolumeLabels`, `VolumeCreateErr`, `ExecExitCode`, `ExecRunning`, `ExecCreateErr`, `ExecStartErr`, `ExecInspectErr`, `ContainerInspectErr`)
+- [x] remove the corresponding fake methods (`ImagePull`, `VolumeCreate`, `VolumeRemove`, `ExecCreate`, `ExecStart`, `ExecInspect`, `ContainerInspect`)
+- [x] revert the socat branch in the fake's `ImageInspect` to a plain image lookup
+- [x] keep `FakeBuildClient` and the general `ImageMissing`/`PingErr` fields (serve `Run`/preflight)
+- [x] delete the sidecar/proxy `FakeRunClient` tests in `client_test.go` (`TestFakeRunClient_VolumeCreate`, `_VolumeRemove`, `_VolumeCreateRemove_RecordBoth`, `_ExecHandshake_*`, `_ContainerInspect_Running`, `_ContainerInspect_SidecarExited`, `_ImagePull_Success`, `_ImagePull_Error`, `_SocatImageMissing`); keep the `*moby.Client` satisfies-`apiClient` assertion test and non-proxy fake tests
+- [x] run `go test ./internal/docker/` — package must build **and** pass before next task
 
 ### Task 7: Collapse `status` to five checks
 
