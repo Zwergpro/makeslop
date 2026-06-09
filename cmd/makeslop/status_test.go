@@ -13,19 +13,15 @@ import (
 	"github.com/Zwergpro/makeslop/internal/projectconfig"
 )
 
-// runStatusCmd calls the status command and returns stdout, stderr, and the
-// cobra-layer error. The isTTY predicate in the production newStatusCmd is
-// wired to defaultIsTTY, which returns false for non-file writers — so tests
-// naturally get plain (no-glyph) output via the bytes.Buffer stderr sink.
+// runStatusCmd runs status via the production root. defaultIsTTY returns false
+// for the bytes.Buffer stderr sink, so tests get plain (no-glyph) output.
 func runStatusCmd(t *testing.T, baseDir string, deps dockerDeps, args ...string) (stdout, stderr string, err error) {
 	t.Helper()
 	return runCmdWithDeps(t, baseDir, deps, args...)
 }
 
-// newFakeStatusDeps constructs a fakeDocker with scripted daemon/image state
-// for status tests and returns a dockerDeps from it.
 func newFakeStatusDeps(daemonDown bool, imageMissing bool) (dockerDeps, *fakeDocker) {
-	fc := newFakeDocker(0, false) // TTY not relevant for status
+	fc := newFakeDocker(0, false) // TTY irrelevant for status
 	if daemonDown {
 		fc.PingErr = errors.New("connection refused")
 	}
@@ -33,20 +29,17 @@ func newFakeStatusDeps(daemonDown bool, imageMissing bool) (dockerDeps, *fakeDoc
 	return depsFrom(fc), fc
 }
 
-// TestStatus_AllGreen_ExitsZero verifies that when daemon is up, image exists,
-// and workspace is registered, `status` exits 0 and reports ready.
+// All checks pass → exit 0, ready.
 func TestStatus_AllGreen_ExitsZero(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	// Init registers the workspace.
 	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
 		t.Fatalf("init failed: %v", err)
 	}
 
-	// Daemon up, image present.
 	deps, _ := newFakeStatusDeps(false, false)
 
 	_, stderr, err := runStatusCmd(t, baseDir, deps, "status")
@@ -61,8 +54,7 @@ func TestStatus_AllGreen_ExitsZero(t *testing.T) {
 	}
 }
 
-// TestStatus_DaemonDown_ExitsNonZero verifies that a daemon-down state causes
-// status to exit non-zero and report the daemon failure.
+// Daemon down → exit non-zero, daemon failure reported.
 func TestStatus_DaemonDown_ExitsNonZero(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -73,7 +65,6 @@ func TestStatus_DaemonDown_ExitsNonZero(t *testing.T) {
 		t.Fatalf("init failed: %v", err)
 	}
 
-	// Daemon down.
 	deps, _ := newFakeStatusDeps(true, false)
 
 	_, stderr, err := runStatusCmd(t, baseDir, deps, "status")
@@ -86,14 +77,12 @@ func TestStatus_DaemonDown_ExitsNonZero(t *testing.T) {
 	if !strings.Contains(stderr, "not ready") {
 		t.Errorf("stderr missing 'not ready': %q", stderr)
 	}
-	// The daemon failure line must be present.
 	if !strings.Contains(stderr, "daemon") {
 		t.Errorf("stderr missing 'daemon' check: %q", stderr)
 	}
 }
 
-// TestStatus_ImageMissing_ExitsNonZero verifies that a missing image causes
-// status to exit non-zero and report the image failure with a build hint.
+// Missing image → exit non-zero, build hint.
 func TestStatus_ImageMissing_ExitsNonZero(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -104,7 +93,6 @@ func TestStatus_ImageMissing_ExitsNonZero(t *testing.T) {
 		t.Fatalf("init failed: %v", err)
 	}
 
-	// Daemon up, image missing.
 	deps, _ := newFakeStatusDeps(false, true)
 
 	_, stderr, err := runStatusCmd(t, baseDir, deps, "status")
@@ -122,14 +110,12 @@ func TestStatus_ImageMissing_ExitsNonZero(t *testing.T) {
 	}
 }
 
-// TestStatus_WorkspaceNotRegistered_ExitsNonZero verifies that an unregistered
-// workspace causes status to exit non-zero with an init hint.
+// Unregistered workspace → exit non-zero, init hint.
 func TestStatus_WorkspaceNotRegistered_ExitsNonZero(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
-	t.Chdir(pwd)
-	// No init — workspace not registered.
+	t.Chdir(pwd) // no init
 
 	deps, _ := newFakeStatusDeps(false, false)
 
@@ -148,9 +134,7 @@ func TestStatus_WorkspaceNotRegistered_ExitsNonZero(t *testing.T) {
 	}
 }
 
-// TestStatus_StaleConfig_ReportsWarnButStaysReady verifies that a stale base
-// config emits a warn line but still produces a ready verdict when all
-// blocking checks pass.
+// A stale base config is non-blocking: warn line, but verdict stays ready.
 func TestStatus_StaleConfig_ReportsWarnButStaysReady(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -161,7 +145,6 @@ func TestStatus_StaleConfig_ReportsWarnButStaysReady(t *testing.T) {
 		t.Skip("MigrationVersion is 0; cannot test stale config")
 	}
 
-	// First init seeds at MigrationVersion, then reset MigratedVersion to 0.
 	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
 		t.Fatalf("init failed: %v", err)
 	}
@@ -187,7 +170,6 @@ func TestStatus_StaleConfig_ReportsWarnButStaysReady(t *testing.T) {
 	if strings.Contains(stderr, "not ready") {
 		t.Errorf("stale-config status must not contain 'not ready' (stale is non-blocking): %q", stderr)
 	}
-	// The base-config line must show the stale state.
 	if !strings.Contains(stderr, "base config") {
 		t.Errorf("stderr missing 'base config' check: %q", stderr)
 	}
@@ -196,8 +178,7 @@ func TestStatus_StaleConfig_ReportsWarnButStaysReady(t *testing.T) {
 	}
 }
 
-// TestStatus_JSON_Shape verifies that --json emits valid JSON with the expected
-// top-level shape: {checks:[{name,state,detail}], ready:bool}.
+// --json emits {checks:[{name,state,detail}], ready:bool}.
 func TestStatus_JSON_Shape(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -225,7 +206,6 @@ func TestStatus_JSON_Shape(t *testing.T) {
 		t.Errorf("--json result.checks len = %d, want %d (daemon, base config, image, workspace, secret scan)",
 			len(result.Checks), wantChecks)
 	}
-	// Verify each check has a non-empty name and a valid state.
 	validStates := map[checkState]bool{
 		checkOK:   true,
 		checkFail: true,
@@ -242,8 +222,7 @@ func TestStatus_JSON_Shape(t *testing.T) {
 	}
 }
 
-// TestStatus_JSON_ReadyField verifies that the ready field in --json output
-// is false when a blocking check fails (daemon down).
+// --json ready is false when a blocking check (daemon) fails.
 func TestStatus_JSON_ReadyField(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -254,7 +233,6 @@ func TestStatus_JSON_ReadyField(t *testing.T) {
 		t.Fatalf("init failed: %v", err)
 	}
 
-	// Daemon down — ready must be false.
 	deps, _ := newFakeStatusDeps(true, false)
 
 	stdout, _, _ := runStatusCmd(t, baseDir, deps, "status", "--json")
@@ -267,7 +245,6 @@ func TestStatus_JSON_ReadyField(t *testing.T) {
 		t.Errorf("--json ready must be false when daemon is down; got true")
 	}
 
-	// Verify daemon check is present with fail state.
 	var daemonCheck *statusCheck
 	for i := range result.Checks {
 		if result.Checks[i].Name == "daemon" {
@@ -283,9 +260,8 @@ func TestStatus_JSON_ReadyField(t *testing.T) {
 	}
 }
 
-// TestStatus_PlainOutput_NoGlyphs verifies that plain (non-TTY) output uses
-// ASCII bracket glyphs ([ok], [fail], etc.) rather than Unicode symbols.
-// This exercises renderChecks directly so no cobra/PTY coupling is needed.
+// Plain (non-TTY) output uses ASCII bracket glyphs, not Unicode. Exercises
+// renderChecks directly to avoid PTY coupling.
 func TestStatus_PlainOutput_NoGlyphs(t *testing.T) {
 	var buf bytes.Buffer
 	checks := []statusCheck{
@@ -298,7 +274,6 @@ func TestStatus_PlainOutput_NoGlyphs(t *testing.T) {
 
 	out := buf.String()
 
-	// Plain mode must use bracket glyphs.
 	if !strings.Contains(out, "[ok]") {
 		t.Errorf("plain output missing '[ok]': %q", out)
 	}
@@ -312,7 +287,6 @@ func TestStatus_PlainOutput_NoGlyphs(t *testing.T) {
 		t.Errorf("plain output missing '[–]': %q", out)
 	}
 
-	// Must not contain Unicode checkmark glyphs.
 	if strings.Contains(out, "✓") {
 		t.Errorf("plain output must not contain '✓': %q", out)
 	}
@@ -320,13 +294,12 @@ func TestStatus_PlainOutput_NoGlyphs(t *testing.T) {
 		t.Errorf("plain output must not contain '✗': %q", out)
 	}
 
-	// Verdict line must say "not ready" (image check failed).
 	if !strings.Contains(out, "not ready") {
 		t.Errorf("plain output missing 'not ready' verdict: %q", out)
 	}
 }
 
-// TestStatus_TTYOutput_UsesGlyphs verifies that TTY mode uses Unicode glyphs.
+// TTY mode uses Unicode glyphs.
 func TestStatus_TTYOutput_UsesGlyphs(t *testing.T) {
 	var buf bytes.Buffer
 	checks := []statusCheck{
@@ -348,8 +321,7 @@ func TestStatus_TTYOutput_UsesGlyphs(t *testing.T) {
 	}
 }
 
-// TestStatus_ExemptFromHomeGuard verifies that `status` does not trigger the
-// home-dir guard when cwd is outside HOME.
+// status is exempt from the home-dir guard.
 func TestStatus_ExemptFromHomeGuard(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", evalSymlinks(t, tmpHome))
@@ -362,14 +334,13 @@ func TestStatus_ExemptFromHomeGuard(t *testing.T) {
 	deps, _ := newFakeStatusDeps(false, false)
 
 	_, stderr, err := runStatusCmd(t, baseDir, deps, "status")
-	// Status may fail for daemon/image/workspace reasons but NOT for home-dir.
+	// May fail for daemon/image/workspace reasons, but never home-dir.
 	if err != nil && strings.Contains(stderr, "refusing to run from") {
 		t.Errorf("status must not apply the home-dir guard; stderr=%q", stderr)
 	}
 }
 
-// TestStatus_ExemptFromTTYRequirement verifies that `status` runs even when
-// stdin/stdout are not TTYs (CI/pipe-safe).
+// status is CI/pipe-safe: no TTY required.
 func TestStatus_ExemptFromTTYRequirement(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -380,19 +351,16 @@ func TestStatus_ExemptFromTTYRequirement(t *testing.T) {
 		t.Fatalf("init failed: %v", err)
 	}
 	deps, _ := newFakeStatusDeps(false, false)
-	// TTY not required for status — fakeDocker TTY=false is fine.
 
 	_, stderr, err := runStatusCmd(t, baseDir, deps, "status")
 	if err != nil {
-		// Any failure is acceptable here *except* a TTY-related one.
+		// Any failure is fine except a TTY-related one.
 		if strings.Contains(stderr, "TTY") || strings.Contains(stderr, "tty") {
 			t.Errorf("status must not require a TTY; err=%v stderr=%q", err, stderr)
 		}
 	}
 }
 
-// TestStatus_ListedInHelp verifies that `status` appears in the Available
-// Commands section of the bare `makeslop` help output.
 func TestStatus_ListedInHelp(t *testing.T) {
 	baseDir := t.TempDir()
 
@@ -405,9 +373,7 @@ func TestStatus_ListedInHelp(t *testing.T) {
 	}
 }
 
-// TestStatus_Check5_PCErrShowsWarn verifies that when projectconfig.Load fails
-// (e.g. stale network: block in .makeslop.yaml), check 5 shows checkWarn and
-// the status command remains ready (non-blocking check).
+// A projectconfig.Load failure (check 5) is non-blocking: warn, status stays ready.
 func TestStatus_Check5_PCErrShowsWarn(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -419,7 +385,7 @@ func TestStatus_Check5_PCErrShowsWarn(t *testing.T) {
 	}
 	resolvedPwd := evalSymlinks(t, pwd)
 
-	// Write a stale network: block that projectconfig.Load rejects.
+	// Stale network: block that projectconfig.Load rejects.
 	staleYAML := "exclude:\n  dirs: []\n  files: []\nnetwork:\n  proxy:\n    address: 10.0.0.5:3128\n"
 	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(staleYAML), 0o644); err != nil {
 		t.Fatalf("write stale yaml: %v", err)
@@ -439,9 +405,8 @@ func TestStatus_Check5_PCErrShowsWarn(t *testing.T) {
 	}
 }
 
-// TestStatus_Check5_ScanErrShowsWarn verifies that when security.Scan returns
-// an error, check 5 shows checkWarn and status remains ready (non-blocking).
-// We induce a scan error by making the project root unreadable.
+// A security.Scan error (check 5) is non-blocking: warn, status stays ready.
+// Induced by an unreadable subdir that fails WalkDir.
 func TestStatus_Check5_ScanErrShowsWarn(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -453,17 +418,15 @@ func TestStatus_Check5_ScanErrShowsWarn(t *testing.T) {
 	}
 	resolvedPwd := evalSymlinks(t, pwd)
 
-	// Create a subdirectory that is unreadable so WalkDir returns an error.
 	unreadable := filepath.Join(resolvedPwd, "secrets")
 	if err := os.Mkdir(unreadable, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	// Write a .makeslop.yaml with a scan pattern so Scan actually walks.
+	// A scan pattern so Scan actually walks.
 	yamlContent := "exclude:\n  scan:\n    patterns:\n      - \"*.env\"\n    skip-dirs: []\n  dirs: []\n  files: []\n"
 	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(yamlContent), 0o644); err != nil {
 		t.Fatalf("write yaml: %v", err)
 	}
-	// Make the subdirectory unreadable to trigger a WalkDir error.
 	if err := os.Chmod(unreadable, 0o000); err != nil {
 		t.Fatalf("chmod: %v", err)
 	}
@@ -472,8 +435,6 @@ func TestStatus_Check5_ScanErrShowsWarn(t *testing.T) {
 	deps, _ := newFakeStatusDeps(false, false)
 
 	_, stderr, err := runStatusCmd(t, baseDir, deps, "status")
-	// Scan errors are non-blocking (checkWarn), so status must remain ready
-	// (exit 0, err == nil) even when security.Scan returns an error.
 	if err != nil {
 		t.Errorf("scan error must be non-blocking (warn), not blocking; err=%v stderr=%q", err, stderr)
 	}
@@ -485,9 +446,7 @@ func TestStatus_Check5_ScanErrShowsWarn(t *testing.T) {
 	}
 }
 
-// TestStatus_Check5_MaskedFilesShowsOKWithCount verifies that when the secret
-// scan finds masked files, check 5 shows checkOK with a "will mask N file(s)"
-// detail.
+// When the scan finds masked files, check 5 shows OK with "will mask N file(s)".
 func TestStatus_Check5_MaskedFilesShowsOKWithCount(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -499,7 +458,6 @@ func TestStatus_Check5_MaskedFilesShowsOKWithCount(t *testing.T) {
 	}
 	resolvedPwd := evalSymlinks(t, pwd)
 
-	// Create a file that matches the default scan pattern.
 	secretFile := filepath.Join(resolvedPwd, ".env")
 	if err := os.WriteFile(secretFile, []byte("SECRET=val"), 0o644); err != nil {
 		t.Fatalf("write secret file: %v", err)
@@ -519,7 +477,6 @@ func TestStatus_Check5_MaskedFilesShowsOKWithCount(t *testing.T) {
 	}
 }
 
-// TestStatus_RenderReadyVerdict verifies the ready-path verdict line.
 func TestStatus_RenderReadyVerdict(t *testing.T) {
 	var buf bytes.Buffer
 	checks := []statusCheck{
@@ -537,8 +494,7 @@ func TestStatus_RenderReadyVerdict(t *testing.T) {
 	}
 }
 
-// TestStatus_RenderNotReadyVerdict verifies that the first failing check's
-// remedy appears in the "not ready" verdict line.
+// The "not ready" verdict names the first failing check's remedy only.
 func TestStatus_RenderNotReadyVerdict(t *testing.T) {
 	var buf bytes.Buffer
 	checks := []statusCheck{
@@ -551,14 +507,11 @@ func TestStatus_RenderNotReadyVerdict(t *testing.T) {
 	if !strings.Contains(out, "not ready") {
 		t.Errorf("verdict missing 'not ready': %q", out)
 	}
-	// Must contain the remedy from the FIRST failing check.
 	if !strings.Contains(out, "run 'docker info'") {
 		t.Errorf("verdict must name first failing check remedy: %q", out)
 	}
-	// Second check's remedy must not appear in the verdict line.
+	// The second check's remedy may appear in its detail line but not the verdict line.
 	if strings.Contains(out, "run 'makeslop build'") {
-		// It's OK if the check detail line mentions it, but the verdict should only have the first.
-		// Check that the remedy isn't duplicated in the verdict area.
 		lines := strings.Split(strings.TrimSpace(out), "\n")
 		lastLine := lines[len(lines)-1]
 		if strings.Contains(lastLine, "run 'makeslop build'") {

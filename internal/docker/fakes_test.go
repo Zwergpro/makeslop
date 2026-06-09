@@ -1,15 +1,6 @@
 package docker
 
-// fakes_test.go — test-only helpers and fake types for the docker package.
-//
-// This file provides:
-//   - noopClient: a no-op stub implementing all apiClient methods.
-//   - fakeRunClient/newFakeRunClient: fake client for Run tests (scripted exit code,
-//     TTY lifecycle, BlockPing/BlockImageInspect, etc.).
-//   - fakeBuildClient/newFakeBuildClient: fake client for Build tests.
-//   - newDockerWithClient: constructor helper that builds a *Docker with an
-//     injected fake via WithClient.
-//   - noopMakeRaw, alwaysTTY, neverTTY: stub functions for option injection.
+// Test-only helpers and fake apiClient types for the docker package.
 
 import (
 	"bytes"
@@ -25,9 +16,8 @@ import (
 	"golang.org/x/term"
 )
 
-// noopClient provides no-op stub implementations of all apiClient methods.
-// fakeRunClient and fakeBuildClient embed it and override only the methods
-// that carry meaningful test logic.
+// noopClient is a no-op apiClient. fakeRunClient and fakeBuildClient embed it
+// and override only the methods that carry test logic.
 type noopClient struct{}
 
 func (noopClient) ContainerCreate(_ context.Context, _ moby.ContainerCreateOptions) (moby.ContainerCreateResult, error) {
@@ -65,57 +55,43 @@ func (noopClient) DialHijack(_ context.Context, _, _ string, _ map[string][]stri
 	return nil, nil
 }
 
-// Ping returns a successful ping result by default.
 func (noopClient) Ping(_ context.Context, _ moby.PingOptions) (moby.PingResult, error) {
 	return moby.PingResult{}, nil
 }
 
-// ImageInspect returns a non-empty result (image "found") by default.
-// The variadic opts are accepted and ignored.
+// ImageInspect defaults to a found result.
 func (noopClient) ImageInspect(_ context.Context, _ string, _ ...moby.ImageInspectOption) (moby.ImageInspectResult, error) {
 	return moby.ImageInspectResult{}, nil
 }
 
 func (noopClient) Close() error { return nil }
 
-// fakeRunClient is a test fake apiClient that instruments Run calls with a
-// scripted exit code and records whether the container was started.
-//
-// To simulate daemon-down, set PingErr. To simulate a missing image, set
-// ImageMissing = true. To simulate another image error, set ImageErr.
+// fakeRunClient scripts the Run container lifecycle with a given exit code and
+// records calls. Set PingErr for daemon-down, ImageMissing/ImageErr for image errors.
 type fakeRunClient struct {
 	noopClient
 	ExitCode     int
 	wasStarted   bool
-	PingErr      error // if non-nil, Ping returns this error
-	ImageMissing bool  // if true, ImageInspect returns a not-found error
-	ImageErr     error // if non-nil (and ImageMissing false), ImageInspect returns this error
+	PingErr      error // if non-nil, Ping returns this
+	ImageMissing bool  // if true, ImageInspect returns not-found
+	ImageErr     error // if non-nil (and ImageMissing false), ImageInspect returns this
 
-	// Container tracking
 	RemovedContainers       []string
-	LastContainerCreateOpts moby.ContainerCreateOptions // options from most recent ContainerCreate call
-	ContainerCreateErr      error                       // if non-nil, ContainerCreate returns this error
-	ContainerStartErr       error                       // if non-nil, ContainerStart returns this error
+	LastContainerCreateOpts moby.ContainerCreateOptions
+	ContainerCreateErr      error // if non-nil, ContainerCreate returns this
+	ContainerStartErr       error // if non-nil, ContainerStart returns this
 
-	// BlockPing, when true, causes Ping to block until ctx is cancelled, then
-	// return ctx.Err(). This lets tests verify that a timeout deadline is
-	// propagated through to the Ping call site.
-	BlockPing bool
-
-	// BlockImageInspect, when true, causes ImageInspect to block until ctx is
-	// cancelled, then return ctx.Err(). This lets tests verify that a timeout
-	// deadline is propagated through to the ImageInspect call site.
+	// Block* make the call block until ctx is cancelled, then return ctx.Err() —
+	// lets tests verify a timeout deadline reaches the call site.
+	BlockPing         bool
 	BlockImageInspect bool
 }
 
-// newFakeRunClient creates a fakeRunClient that will return the given exit code
-// from ContainerWait.
+// newFakeRunClient returns a fakeRunClient whose ContainerWait reports exitCode.
 func newFakeRunClient(exitCode int) *fakeRunClient {
 	return &fakeRunClient{ExitCode: exitCode}
 }
 
-// Ping returns PingErr if set, otherwise delegates to noopClient (success).
-// If BlockPing is true, Ping blocks until ctx is cancelled and returns ctx.Err().
 func (f *fakeRunClient) Ping(ctx context.Context, _ moby.PingOptions) (moby.PingResult, error) {
 	if f.BlockPing {
 		<-ctx.Done()
@@ -127,9 +103,6 @@ func (f *fakeRunClient) Ping(ctx context.Context, _ moby.PingOptions) (moby.Ping
 	return moby.PingResult{}, nil
 }
 
-// ImageInspect returns a not-found error when ImageMissing is true, ImageErr
-// when ImageErr is set, or a found result otherwise.
-// If BlockImageInspect is true, ImageInspect blocks until ctx is cancelled.
 func (f *fakeRunClient) ImageInspect(ctx context.Context, imageID string, _ ...moby.ImageInspectOption) (moby.ImageInspectResult, error) {
 	if f.BlockImageInspect {
 		<-ctx.Done()
@@ -144,7 +117,6 @@ func (f *fakeRunClient) ImageInspect(ctx context.Context, imageID string, _ ...m
 	return moby.ImageInspectResult{}, nil
 }
 
-// ContainerRemove records the removed container ID.
 func (f *fakeRunClient) ContainerRemove(_ context.Context, id string, _ moby.ContainerRemoveOptions) (moby.ContainerRemoveResult, error) {
 	f.RemovedContainers = append(f.RemovedContainers, id)
 	return moby.ContainerRemoveResult{}, nil
@@ -180,30 +152,24 @@ func (f *fakeRunClient) ContainerWait(_ context.Context, _ string, _ moby.Contai
 	return moby.ContainerWaitResult{Result: resultC, Error: errC}
 }
 
-// fakeBuildClient is a test fake apiClient for Build tests. It records the
-// ImageBuildOptions passed to ImageBuild and returns a scripted result.
-//
-// To simulate daemon-down, set PingErr. To simulate a missing image, set
-// ImageMissing = true. To simulate another image error, set ImageErr.
+// fakeBuildClient scripts Build, recording the ImageBuildOptions. Set PingErr
+// for daemon-down, ImageMissing/ImageErr for image errors.
 type fakeBuildClient struct {
 	noopClient
-	// ExitCode is returned as an error from ImageBuild when non-zero.
-	ExitCode int
-	// Err overrides ExitCode if non-nil: ImageBuild returns this error directly.
-	Err error
-	// lastBuildOptions records the ImageBuildOptions from the most recent ImageBuild call.
+	ExitCode int   // non-zero → ImageBuild returns an error
+	Err      error // if non-nil, overrides ExitCode: ImageBuild returns this directly
+	// lastBuildOptions records the options from the most recent ImageBuild call.
 	lastBuildOptions moby.ImageBuildOptions
-	PingErr          error // if non-nil, Ping returns this error
-	ImageMissing     bool  // if true, ImageInspect returns a not-found error
-	ImageErr         error // if non-nil (and ImageMissing false), ImageInspect returns this error
+	PingErr          error // if non-nil, Ping returns this
+	ImageMissing     bool  // if true, ImageInspect returns not-found
+	ImageErr         error // if non-nil (and ImageMissing false), ImageInspect returns this
 }
 
-// newFakeBuildClient creates a fakeBuildClient. exitCode 0 means success.
+// newFakeBuildClient returns a fakeBuildClient; exitCode 0 means success.
 func newFakeBuildClient(exitCode int) *fakeBuildClient {
 	return &fakeBuildClient{ExitCode: exitCode}
 }
 
-// Ping returns PingErr if set, otherwise delegates to noopClient (success).
 func (f *fakeBuildClient) Ping(_ context.Context, _ moby.PingOptions) (moby.PingResult, error) {
 	if f.PingErr != nil {
 		return moby.PingResult{}, f.PingErr
@@ -211,8 +177,6 @@ func (f *fakeBuildClient) Ping(_ context.Context, _ moby.PingOptions) (moby.Ping
 	return moby.PingResult{}, nil
 }
 
-// ImageInspect returns a not-found error when ImageMissing is true, ImageErr
-// when ImageErr is set, or a found result otherwise.
 func (f *fakeBuildClient) ImageInspect(_ context.Context, imageID string, _ ...moby.ImageInspectOption) (moby.ImageInspectResult, error) {
 	if f.ImageMissing {
 		return moby.ImageInspectResult{}, fmt.Errorf("image %q: %w", imageID, errdefs.ErrNotFound)
@@ -236,16 +200,13 @@ func (f *fakeBuildClient) ImageBuild(_ context.Context, _ io.Reader, opts moby.I
 }
 
 func (f *fakeBuildClient) DialHijack(_ context.Context, _, _ string, _ map[string][]string) (net.Conn, error) {
-	// Return an error so the session dialer fails deterministically.
-	// A pre-closed pipe would introduce a race: ImageBuild might not be reached
-	// before the session notices the broken pipe.
+	// Fail the session dialer deterministically. A pre-closed pipe would race:
+	// ImageBuild might not be reached before the session notices the broken pipe.
 	return nil, fmt.Errorf("DialHijack: not implemented in fakeBuildClient")
 }
 
-// ─── Constructor helpers ──────────────────────────────────────────────────────
-
-// newDockerWithClient constructs a *Docker with the given fake apiClient
-// injected via WithClient. Registers d.Close via t.Cleanup.
+// newDockerWithClient builds a *Docker with the fake injected via WithClient and
+// registers d.Close via t.Cleanup.
 func newDockerWithClient(t *testing.T, c apiClient, opts ...Option) *Docker {
 	t.Helper()
 	allOpts := append([]Option{WithClient(c)}, opts...)
@@ -257,12 +218,9 @@ func newDockerWithClient(t *testing.T, c apiClient, opts ...Option) *Docker {
 	return d
 }
 
-// noopMakeRaw is a WithRawMode stub that returns (nil, nil) — safe to use in
-// tests without a real PTY (term.Restore with nil state is a no-op).
+// noopMakeRaw is a WithRawMode stub safe without a real PTY (term.Restore(nil) is a no-op).
 func noopMakeRaw(_ int) (*term.State, error) { return nil, nil }
 
-// alwaysTTY is a WithTTYCheck stub that always returns true.
 func alwaysTTY() bool { return true }
 
-// neverTTY is a WithTTYCheck stub that always returns false.
 func neverTTY() bool { return false }

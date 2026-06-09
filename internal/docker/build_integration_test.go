@@ -1,13 +1,10 @@
 //go:build integration
 
-// Package docker — integration tests that require a live Docker daemon.
-//
-// Run with:
+// Integration tests requiring a live Docker daemon. Run with:
 //
 //	MAKESLOP_DOCKER_IT=1 go test -tags integration ./internal/docker/
 //
-// Skip-on-missing-daemon: if MAKESLOP_DOCKER_IT is not set, tests skip
-// rather than fail (suitable for CI that has no daemon reachable).
+// Tests skip (not fail) when MAKESLOP_DOCKER_IT is unset, so CI without a daemon passes.
 package docker
 
 import (
@@ -18,15 +15,12 @@ import (
 	"testing"
 )
 
-// TestBuild_Integration_BuildKit runs a real `makeslop build` against a live
-// daemon. It creates a minimal Dockerfile (no COPY, just FROM scratch) and
-// verifies that Build completes without error.
+// Runs a real Build against a live daemon with a minimal context-free Dockerfile.
 func TestBuild_Integration_BuildKit(t *testing.T) {
 	if os.Getenv("MAKESLOP_DOCKER_IT") == "" {
 		t.Skip("set MAKESLOP_DOCKER_IT=1 to run integration tests against a live daemon")
 	}
 
-	// Write a minimal Dockerfile that doesn't require any context files.
 	dir := t.TempDir()
 	dockerfilePath := filepath.Join(dir, "Dockerfile")
 	content := "FROM scratch\nLABEL test=makeslop-integration\n"

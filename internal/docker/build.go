@@ -1,16 +1,9 @@
-// Build orchestration via BuildKit session.
-//
-// This file implements makeslop build via the moby/moby/client SDK instead of
-// shelling out to the docker CLI. The flow is:
-//
-//  1. Create a BuildKit session and register filesync (context + dockerfile dir)
-//     and a docker-config authprovider.
-//  2. Run the session in a goroutine, wiring it to the daemon via DialHijack.
-//  3. Call ImageBuild with Version=BuilderBuildKit, SessionID, and
-//     RemoteContext="client-session".
-//  4. Render the daemon's build-trace stream via progressui (BuildKit) or plain
-//     text fallback for non-BuildKit streams.
-//  5. Close session (client is owned by the *Docker struct, not closed here).
+// Build orchestration via the moby/moby SDK + a BuildKit session:
+//  1. Create a session, register filesync (context + dockerfile dir) and an authprovider.
+//  2. Run the session in a goroutine, wired to the daemon via DialHijack.
+//  3. Call ImageBuild with Version=BuilderBuildKit and the session ID.
+//  4. Render the daemon's build-trace stream via progressui, plain-text fallback otherwise.
+//  5. Close the session (the client is owned by the *Docker struct).
 package docker
 
 import (
@@ -38,9 +31,8 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// parseBuildArgs converts the CLI "KEY=VALUE" or "KEY" slice into the
-// map[string]*string form that ImageBuildOptions.BuildArgs expects.
-// Pure: same input → same output.
+// parseBuildArgs converts the "KEY=VALUE"/"KEY" slice into the
+// map[string]*string that ImageBuildOptions.BuildArgs expects.
 func parseBuildArgs(args []string) map[string]*string {
 	if len(args) == 0 {
 		return nil
@@ -52,17 +44,15 @@ func parseBuildArgs(args []string) map[string]*string {
 			val := a[idx+1:]
 			out[key] = &val
 		} else {
-			// KEY with no value: pass a nil pointer so the daemon uses the
-			// build-arg from its own environment (standard docker behaviour).
+			// Bare KEY: nil pointer ⇒ daemon uses the build-arg from its own env.
 			out[a] = nil
 		}
 	}
 	return out
 }
 
-// buildImageOptions constructs an ImageBuildOptions from o and the sessionID.
-// Pure: never touches the filesystem. Dockerfile is the basename of
-// opts.DockerfilePath (the daemon resolves it inside the session sync dir).
+// buildImageOptions constructs an ImageBuildOptions from o and sessionID.
+// Dockerfile is the basename — the daemon resolves it inside the session sync dir.
 func buildImageOptions(o BuildOptions, sessionID string) moby.ImageBuildOptions {
 	return moby.ImageBuildOptions{
 		Tags:          []string{o.Image},
@@ -75,27 +65,18 @@ func buildImageOptions(o BuildOptions, sessionID string) moby.ImageBuildOptions 
 	}
 }
 
-// dialerFor wraps cli.DialHijack so it matches the session.Dialer signature.
-// session.Dialer is func(ctx, proto, meta) (net.Conn, error) while DialHijack
-// takes a leading url argument.
+// dialerFor adapts cli.DialHijack (which takes a leading url) to the
+// session.Dialer signature func(ctx, proto, meta).
 func dialerFor(cli apiClient) session.Dialer {
 	return func(ctx context.Context, proto string, meta map[string][]string) (net.Conn, error) {
 		return cli.DialHijack(ctx, "/session", proto, meta)
 	}
 }
 
-// stageDockerfile copies the Dockerfile at path into a fresh temporary
-// directory, returning the directory path and a cleanup function that removes
-// it. The staged directory contains ONLY the Dockerfile, so the BuildKit
-// filesync sync for the dockerfile key never exposes sibling files (e.g.
-// credentials or workspace cache) to the build daemon.
-//
-// The caller must invoke cleanup() exactly once, typically via defer.
-// If stageDockerfile returns an error, cleanup is a no-op (the temp dir, if
-// any, has already been removed before returning).
-//
-// Note: .dockerignore siblings are intentionally not staged — none are
-// expected in ~/.makeslop and the build context sent to the daemon is empty.
+// stageDockerfile copies the Dockerfile into a fresh temp dir containing ONLY
+// the Dockerfile, so the BuildKit dockerfile filesync never exposes sibling
+// files (credentials, workspace cache) to the daemon. The caller must call
+// cleanup() once (a no-op on error).
 func stageDockerfile(path string) (dir string, cleanup func(), err error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -113,9 +94,8 @@ func stageDockerfile(path string) (dir string, cleanup func(), err error) {
 	return tmp, func() { _ = os.RemoveAll(tmp) }, nil
 }
 
-// buildImage is the internal implementation of (*Docker).Build with an injected
-// apiClient. The caller owns the client lifetime; buildImage does NOT call
-// cli.Close().
+// buildImage implements (*Docker).Build with an injected apiClient. The caller
+// owns the client lifetime; buildImage does NOT close it.
 func buildImage(ctx context.Context, cli apiClient, o BuildOptions, stdout, stderr io.Writer) error {
 	if o.ContextDir == "" {
 		dir, err := os.MkdirTemp("", "makeslop-build-*")
@@ -126,17 +106,12 @@ func buildImage(ctx context.Context, cli apiClient, o BuildOptions, stdout, stde
 		o.ContextDir = dir
 	}
 
-	// Stage the Dockerfile in an isolated temp dir so that only the Dockerfile
-	// is synced to the daemon — not the entire ~/.makeslop/ directory (which
-	// contains credentials and workspace cache trees).
 	stagedDir, cleanupStaged, err := stageDockerfile(o.DockerfilePath)
 	if err != nil {
 		return fmt.Errorf("stage Dockerfile: %w", err)
 	}
 	defer cleanupStaged()
 
-	// Build the filesync DirSource: both the (empty) build-context dir and the
-	// staged dockerfile dir must be synced so the daemon can read them.
 	ctxFS, err := fsutil.NewFS(o.ContextDir)
 	if err != nil {
 		return fmt.Errorf("create context dir FS: %w", err)
@@ -146,8 +121,7 @@ func buildImage(ctx context.Context, cli apiClient, o BuildOptions, stdout, stde
 		return fmt.Errorf("create dockerfile dir FS: %w", err)
 	}
 	// Keys must be the logical names the BuildKit dockerfile frontend requests
-	// over the filesync protocol ("context" / "dockerfile"), NOT the on-disk
-	// paths — the daemon looks dirs up by name, not by path.
+	// ("context"/"dockerfile"), NOT on-disk paths — the daemon looks up by name.
 	dirSource := filesync.StaticDirSource{
 		dockerui.DefaultLocalNameContext:    ctxFS,
 		dockerui.DefaultLocalNameDockerfile: dfFS,
@@ -166,10 +140,9 @@ func buildImage(ctx context.Context, cli apiClient, o BuildOptions, stdout, stde
 		sessionErrCh <- sess.Run(ctx, dialer)
 	}()
 
-	// drainSession closes the session and waits for the session goroutine to
-	// exit. It returns a non-nil error only when the goroutine reports an
-	// unexpected failure (context cancellation and deadline are filtered out
-	// because sess.Close cancels the session's internal context).
+	// drainSession closes the session and waits for its goroutine. Context
+	// cancellation/deadline are filtered out because sess.Close cancels the
+	// session's internal context.
 	drainSession := func() error {
 		_ = sess.Close()       //nolint:errcheck // best-effort; goroutine exit is what matters
 		serr := <-sessionErrCh // always wait — prevents goroutine leak
@@ -187,48 +160,32 @@ func buildImage(ctx context.Context, cli apiClient, o BuildOptions, stdout, stde
 	}
 	defer resp.Body.Close() //nolint:errcheck
 
-	// Render build progress. We attempt the progressui / build-trace decoder
-	// first; if the decode channel receives nothing within the first message,
-	// we fall back to the plain jsonmessage stream renderer.
 	if err := renderBuildOutput(ctx, resp.Body, stdout, o.Quiet); err != nil {
 		_ = drainSession() //nolint:errcheck // render error takes precedence
 		return fmt.Errorf("render build output: %w", err)
 	}
-
-	// Drain the session after the body is fully consumed.
 	return drainSession()
 }
 
-// renderBuildOutput renders the daemon's build output stream. It decodes the
-// JSON message stream and:
-//   - If the stream contains BuildKit trace aux payloads (moby.buildkit.trace),
-//     routes them to progressui for the "[+] Building" UI (display created lazily
-//     on the first trace frame so concurrent streaming starts immediately).
-//   - Otherwise falls back to plain text rendering of stream/status messages.
-//
-// The display is created lazily: it is not allocated until the first BuildKit
-// trace frame arrives, so pure-plain and empty/error streams never spin up a
-// progressui display. This preserves existing test semantics while enabling
-// live streaming for BuildKit builds.
+// renderBuildOutput decodes the daemon's JSON build stream. BuildKit trace aux
+// payloads (moby.buildkit.trace) drive progressui; other frames fall back to
+// plain stream/status text. The display is created lazily on the first trace
+// frame so plain and empty/error streams never spin one up.
 func renderBuildOutput(ctx context.Context, body io.ReadCloser, stdout io.Writer, quiet bool) error {
 	dec := json.NewDecoder(body)
 
-	// statusCh and dispErrCh are nil until the first BuildKit trace frame.
+	// nil until the first BuildKit trace frame.
 	var statusCh chan *bkclient.SolveStatus
 	var dispErrCh chan error
 	var decodeErr error
 
-	// ensureDisplay lazily creates the progressui display and starts the
-	// goroutine that drains statusCh. It is idempotent after first call.
-	// AutoMode falls back internally to PlainMode when stdout is not a TTY
-	// (e.g. under go test or when piped), so a separate PlainMode fallback
-	// is unnecessary — NewDisplay(_, AutoMode) never errors in practice.
+	// ensureDisplay lazily creates the display and the goroutine draining
+	// statusCh; idempotent. AutoMode falls back to PlainMode off-TTY internally,
+	// so NewDisplay(_, AutoMode) never errors in practice.
 	ensureDisplay := func() error {
 		if statusCh != nil {
 			return nil
 		}
-		// QuietMode discards all output; AutoMode renders the live UI (falling
-		// back to PlainMode when stdout is not a TTY).
 		mode := progressui.AutoMode
 		if quiet {
 			mode = progressui.QuietMode
@@ -256,7 +213,6 @@ func renderBuildOutput(ctx context.Context, body io.ReadCloser, stdout io.Writer
 			break
 		}
 		if ss := decodeBuildKitAux(msg); ss != nil {
-			// First BuildKit trace frame: spin up the display.
 			if err := ensureDisplay(); err != nil {
 				decodeErr = err
 				break
@@ -270,11 +226,8 @@ func renderBuildOutput(ctx context.Context, body io.ReadCloser, stdout io.Writer
 				break
 			}
 		} else if statusCh == nil {
-			// Plain fallback: write stream/status lines to stdout immediately.
-			// Once the display goroutine is active (statusCh != nil) we discard
-			// plain messages to avoid a concurrent write to stdout from both the
-			// decode loop and the progressui goroutine. Suppressed entirely
-			// under --quiet.
+			// Plain fallback. Once the display goroutine is active we discard
+			// plain messages to avoid concurrent writes to stdout.
 			if !quiet {
 				if msg.Stream != "" {
 					_, _ = fmt.Fprint(stdout, msg.Stream)
@@ -285,7 +238,6 @@ func renderBuildOutput(ctx context.Context, body io.ReadCloser, stdout io.Writer
 		}
 	}
 
-	// Always close the display channel and drain the goroutine before returning.
 	var dispErr error
 	if statusCh != nil {
 		close(statusCh)
@@ -301,21 +253,13 @@ func renderBuildOutput(ctx context.Context, body io.ReadCloser, stdout io.Writer
 }
 
 // decodeBuildKitAux extracts a *bkclient.SolveStatus from a BuildKit trace
-// jsonstream.Message, or returns nil if the message is not a trace frame or
-// decoding fails.
-//
-// The real daemon wire format is an id-keyed message:
-//
-//	{ "id": "moby.buildkit.trace", "aux": "<base64-of-proto-StatusResponse>" }
-//
-// i.e. msg.ID == "moby.buildkit.trace" and msg.Aux is a JSON string whose
-// base64 contents are the proto-marshalled controlapi.StatusResponse. Other aux
-// frames (e.g. "moby.image.id") and plain stream frames must be ignored.
+// frame, or nil for non-trace frames / decode failures. Daemon wire format:
+// msg.ID == "moby.buildkit.trace", msg.Aux a JSON string whose base64 contents
+// are a proto-marshalled controlapi.StatusResponse.
 func decodeBuildKitAux(msg jsonstream.Message) *bkclient.SolveStatus {
 	if msg.ID != "moby.buildkit.trace" || msg.Aux == nil {
 		return nil
 	}
-	// msg.Aux is a JSON string containing base64-encoded proto bytes.
 	var dt []byte
 	if err := json.Unmarshal(*msg.Aux, &dt); err != nil {
 		return nil

@@ -19,8 +19,6 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// ─── parseBuildArgs unit tests ───────────────────────────────────────────────
-
 func TestParseBuildArgs_Empty(t *testing.T) {
 	if got := parseBuildArgs(nil); got != nil {
 		t.Errorf("parseBuildArgs(nil) = %v, want nil", got)
@@ -44,7 +42,7 @@ func TestParseBuildArgs_KeyValue(t *testing.T) {
 }
 
 func TestParseBuildArgs_KeyOnly_NilValue(t *testing.T) {
-	// KEY with no "=" should produce a nil pointer value (daemon inherits from env).
+	// KEY with no "=" → nil pointer value (daemon inherits from env).
 	out := parseBuildArgs([]string{"KEYONLY"})
 	if out == nil {
 		t.Fatal("parseBuildArgs returned nil")
@@ -84,8 +82,6 @@ func TestParseBuildArgs_EmptyValue(t *testing.T) {
 	}
 }
 
-// ─── buildImageOptions unit tests ────────────────────────────────────────────
-
 func TestBuildImageOptions_Mapping(t *testing.T) {
 	o := BuildOptions{
 		Image:          "claudebox",
@@ -97,37 +93,24 @@ func TestBuildImageOptions_Mapping(t *testing.T) {
 	sessionID := "sess-abc123"
 	opts := buildImageOptions(o, sessionID)
 
-	// Tags must contain the image name.
 	if len(opts.Tags) != 1 || opts.Tags[0] != "claudebox" {
 		t.Errorf("Tags = %v, want [claudebox]", opts.Tags)
 	}
-
-	// Dockerfile is the basename of DockerfilePath.
 	if opts.Dockerfile != filepath.Base(o.DockerfilePath) {
 		t.Errorf("Dockerfile = %q, want %q", opts.Dockerfile, filepath.Base(o.DockerfilePath))
 	}
-
-	// NoCache propagated.
 	if !opts.NoCache {
 		t.Error("NoCache = false, want true")
 	}
-
-	// Version must be BuilderBuildKit.
 	if opts.Version != buildtypes.BuilderBuildKit {
 		t.Errorf("Version = %q, want %q", opts.Version, buildtypes.BuilderBuildKit)
 	}
-
-	// SessionID propagated.
 	if opts.SessionID != sessionID {
 		t.Errorf("SessionID = %q, want %q", opts.SessionID, sessionID)
 	}
-
-	// RemoteContext must be "client-session".
 	if opts.RemoteContext != "client-session" {
 		t.Errorf("RemoteContext = %q, want %q", opts.RemoteContext, "client-session")
 	}
-
-	// BuildArgs mapped.
 	val, ok := opts.BuildArgs["GO_VERSION"]
 	if !ok || val == nil || *val != "1.26.3" {
 		t.Errorf("BuildArgs[GO_VERSION] = %v, want 1.26.3", val)
@@ -157,8 +140,6 @@ func TestBuildImageOptions_EmptyBuildArgs(t *testing.T) {
 	}
 }
 
-// ─── build() options assertions ──────────────────────────────────────────────
-
 // recordingBuildClient wraps fakeClient and records ImageBuildOptions.
 type recordingBuildClient struct {
 	fakeClient
@@ -172,13 +153,11 @@ func (r *recordingBuildClient) ImageBuild(_ context.Context, _ io.Reader, opts m
 	return moby.ImageBuildResult{Body: io.NopCloser(bytes.NewReader(nil))}, nil
 }
 
-// TestBuild_FakeSelf_ImageBuildOptions verifies that Build passes the correct
-// image tag, Dockerfile basename, BuildKit version, and RemoteContext to
-// ImageBuild. The session may fail to dial (fakeClient.DialHijack returns an
-// error), but we verify ImageBuild was called with the expected options.
+// Verifies Build passes the correct ImageBuild options. fakeClient.DialHijack
+// fails the session, but ImageBuild is reached first; this test only checks
+// option propagation (the integration test covers the full flow).
 func TestBuild_FakeSelf_ImageBuildOptions(t *testing.T) {
-	// Create a temporary Dockerfile so fsutil.NewFS(dockerfileDir) succeeds on
-	// any system, not just machines that have /home/user/.makeslop/.
+	// Temp Dockerfile so fsutil.NewFS(dockerfileDir) succeeds on any system.
 	dockerfileDir := t.TempDir()
 	dockerfilePath := filepath.Join(dockerfileDir, "Dockerfile")
 	if err := os.WriteFile(dockerfilePath, []byte("FROM scratch\n"), 0o644); err != nil {
@@ -192,14 +171,8 @@ func TestBuild_FakeSelf_ImageBuildOptions(t *testing.T) {
 		DockerfilePath: dockerfilePath,
 		ContextDir:     t.TempDir(),
 	}
-	// Build may return an error because fakeClient.DialHijack returns an error,
-	// causing the session to fail. ImageBuild is still called first (the session
-	// goroutine races with the ImageBuild call). The integration test covers the
-	// full end-to-end flow; this unit test only verifies option propagation.
-	err := d.Build(context.Background(), o, io.Discard, io.Discard)
-	// An error is expected here: DialHijack fails, so the session fails.
-	// We only care that ImageBuild was reached with the correct options.
-	_ = err
+	// Error expected (DialHijack fails the session); only the recorded options matter.
+	_ = d.Build(context.Background(), o, io.Discard, io.Discard)
 
 	if !rc.buildCalled {
 		t.Fatal("ImageBuild was not called; ensure DialHijack error does not race past ImageBuild")
@@ -219,10 +192,7 @@ func TestBuild_FakeSelf_ImageBuildOptions(t *testing.T) {
 	}
 }
 
-// ─── renderBuildOutput unit tests ────────────────────────────────────────────
-
-// encodeMessages encodes a slice of jsonstream.Message into a JSON stream
-// (one JSON object per line) as the daemon would produce it.
+// encodeMessages encodes messages as the daemon's newline-delimited JSON stream.
 func encodeMessages(t *testing.T, msgs []jsonstream.Message) io.ReadCloser {
 	t.Helper()
 	var buf bytes.Buffer
@@ -235,7 +205,6 @@ func encodeMessages(t *testing.T, msgs []jsonstream.Message) io.ReadCloser {
 	return io.NopCloser(&buf)
 }
 
-// TestRenderBuildOutput_PlainFallback: stream and status lines written to stdout.
 func TestRenderBuildOutput_PlainFallback(t *testing.T) {
 	msgs := []jsonstream.Message{
 		{Stream: "Step 1/3 : FROM scratch\n"},
@@ -260,8 +229,6 @@ func TestRenderBuildOutput_PlainFallback(t *testing.T) {
 	}
 }
 
-// TestRenderBuildOutput_QuietPlainSuppressed: under --quiet, plain stream/status
-// lines are not written to stdout.
 func TestRenderBuildOutput_QuietPlainSuppressed(t *testing.T) {
 	msgs := []jsonstream.Message{
 		{Stream: "Step 1/3 : FROM scratch\n"},
@@ -279,7 +246,6 @@ func TestRenderBuildOutput_QuietPlainSuppressed(t *testing.T) {
 	}
 }
 
-// TestRenderBuildOutput_ErrorMessage: a message with an Error field returns an error.
 func TestRenderBuildOutput_ErrorMessage(t *testing.T) {
 	msgs := []jsonstream.Message{
 		{Error: &jsonstream.Error{Message: "build failed: context expired"}},
@@ -293,7 +259,6 @@ func TestRenderBuildOutput_ErrorMessage(t *testing.T) {
 	}
 }
 
-// TestRenderBuildOutput_EmptyBody: empty body returns nil (no messages = no error).
 func TestRenderBuildOutput_EmptyBody(t *testing.T) {
 	body := io.NopCloser(bytes.NewReader(nil))
 	if err := renderBuildOutput(context.Background(), body, io.Discard, false); err != nil {
@@ -301,8 +266,7 @@ func TestRenderBuildOutput_EmptyBody(t *testing.T) {
 	}
 }
 
-// TestRenderBuildOutput_MalformedJSON: a body that is not valid JSON returns a
-// "decode build stream" error — the decoder must not panic or hang.
+// Malformed JSON must yield a "decode build stream" error, not a panic or hang.
 func TestRenderBuildOutput_MalformedJSON(t *testing.T) {
 	body := io.NopCloser(strings.NewReader("this is not json\n"))
 	err := renderBuildOutput(context.Background(), body, io.Discard, false)
@@ -314,10 +278,7 @@ func TestRenderBuildOutput_MalformedJSON(t *testing.T) {
 	}
 }
 
-// ─── decodeBuildKitAux unit tests ─────────────────────────────────────────────
-
-// TestDecodeBuildKitAux_NilAux: nil Aux returns nil, even when the ID is correct.
-// This isolates the nil-Aux guard specifically (not the ID-gate).
+// Isolates the nil-Aux guard (correct ID, nil Aux → nil), separate from the ID-gate.
 func TestDecodeBuildKitAux_NilAux(t *testing.T) {
 	msg := jsonstream.Message{ID: "moby.buildkit.trace", Aux: nil}
 	if got := decodeBuildKitAux(msg); got != nil {
@@ -325,42 +286,30 @@ func TestDecodeBuildKitAux_NilAux(t *testing.T) {
 	}
 }
 
-// TestDecodeBuildKitAux_InvalidProto: a real id-keyed frame with
-// ID="moby.buildkit.trace" but junk proto bytes in Aux must return nil (no
-// panic). The junk bytes are chosen to reliably fail proto.Unmarshal — 0xff 0xff
-// is an invalid protobuf tag/wire-type combination.
+// A trace-ID frame with junk proto bytes in Aux must return nil, not panic.
 func TestDecodeBuildKitAux_InvalidProto(t *testing.T) {
-	// Use real id-keyed shape: ID="moby.buildkit.trace", Aux = base64 JSON
-	// string of invalid proto bytes. 0xff,0xff reliably fails proto.Unmarshal.
+	// 0xff,0xff is an invalid protobuf tag/wire-type and reliably fails Unmarshal.
 	junk := []byte{0xff, 0xff}
-	auxBytes, err := json.Marshal(junk) // []byte → base64 JSON string
+	auxBytes, err := json.Marshal(junk)
 	if err != nil {
 		t.Fatalf("json.Marshal junk: %v", err)
 	}
 	raw := json.RawMessage(auxBytes)
 	msg := jsonstream.Message{ID: "moby.buildkit.trace", Aux: &raw}
-	// Should return nil (graceful degradation), not panic.
 	if got := decodeBuildKitAux(msg); got != nil {
 		t.Errorf("invalid proto: expected nil, got %v", got)
 	}
 }
 
-// ─── realDaemonFrame helper ───────────────────────────────────────────────────
-
-// realDaemonFrame builds a jsonstream.Message that matches the real daemon wire
-// format for a BuildKit trace frame:
-//
-//	{ "id": "moby.buildkit.trace", "aux": "<base64-of-proto-StatusResponse>" }
-//
-// msg.ID is "moby.buildkit.trace" and msg.Aux is a JSON string whose base64
-// contents are the proto-marshalled sr.
+// realDaemonFrame builds a jsonstream.Message matching the daemon wire format
+// for a BuildKit trace frame: {"id":"moby.buildkit.trace","aux":"<base64 proto>"}.
 func realDaemonFrame(t *testing.T, sr *controlapi.StatusResponse) jsonstream.Message {
 	t.Helper()
 	dt, err := proto.Marshal(sr)
 	if err != nil {
 		t.Fatalf("proto.Marshal: %v", err)
 	}
-	auxBytes, err := json.Marshal(dt) // []byte → base64 JSON string
+	auxBytes, err := json.Marshal(dt)
 	if err != nil {
 		t.Fatalf("json.Marshal: %v", err)
 	}
@@ -368,13 +317,8 @@ func realDaemonFrame(t *testing.T, sr *controlapi.StatusResponse) jsonstream.Mes
 	return jsonstream.Message{ID: "moby.buildkit.trace", Aux: &raw}
 }
 
-// ─── decodeBuildKitAux ID-gate and decode tests ──────────────────────────────
-
-// TestDecodeBuildKitAux_RealFrame: a real daemon-shaped trace frame (id-keyed,
-// Aux = base64 JSON string of proto StatusResponse) must decode to a non-nil
-// SolveStatus with the expected vertex. This is the regression test that would
-// have caught the original bug where decodeBuildKitAux assumed a nested-map Aux
-// shape and silently dropped every frame.
+// Regression: a real daemon-shaped trace frame must decode to a non-nil
+// SolveStatus. The original bug assumed a nested-map Aux shape and dropped every frame.
 func TestDecodeBuildKitAux_RealFrame(t *testing.T) {
 	digest := "sha256:abc"
 	name := "[1/2] FROM alpine"
@@ -401,15 +345,12 @@ func TestDecodeBuildKitAux_RealFrame(t *testing.T) {
 	}
 }
 
-// TestDecodeBuildKitAux_WrongID: frames with a wrong or absent ID must be
-// ignored, even when Aux is a parseable base64 proto payload. The daemon also
-// emits non-trace aux frames (e.g. "moby.image.id") and bare-Aux frames with
-// no ID — all must return nil. Uses realDaemonFrame's payload shape with
-// different IDs to isolate the ID-gate from decode failures.
+// Frames with a wrong or absent ID must be ignored even with a parseable Aux
+// payload (daemon also emits non-trace frames like "moby.image.id" and bare-Aux
+// frames). Reuses realDaemonFrame's payload to isolate the ID-gate from decode failures.
 func TestDecodeBuildKitAux_WrongID(t *testing.T) {
-	// Build a valid Aux payload the same way realDaemonFrame does.
 	frame := realDaemonFrame(t, &controlapi.StatusResponse{})
-	raw := *frame.Aux // valid base64 proto string
+	raw := *frame.Aux
 
 	cases := []struct {
 		name string
@@ -429,14 +370,9 @@ func TestDecodeBuildKitAux_WrongID(t *testing.T) {
 	}
 }
 
-// ─── streaming renderBuildOutput tests ───────────────────────────────────────
-
-// TestRenderBuildOutput_StreamingTrace: a valid aux frame feeds the display and
-// renderBuildOutput returns nil without hanging (no goroutine leak). Running
-// under go test (no TTY) exercises the AutoMode→PlainMode fallback path.
-// stdout is captured (not discarded) so we can assert the vertex name actually
-// reached the display — a future format regression would produce empty output
-// and fail this test rather than silently passing.
+// A valid aux frame feeds the display and renderBuildOutput returns without
+// hanging (no goroutine leak). stdout is captured so a wire-format regression
+// (empty output) fails the test instead of passing silently.
 func TestRenderBuildOutput_StreamingTrace(t *testing.T) {
 	sr := &controlapi.StatusResponse{
 		Vertexes: []*controlapi.Vertex{
@@ -450,17 +386,13 @@ func TestRenderBuildOutput_StreamingTrace(t *testing.T) {
 	if err := renderBuildOutput(context.Background(), body, &out, false); err != nil {
 		t.Fatalf("renderBuildOutput with trace frame returned error: %v", err)
 	}
-	// The vertex name must appear in stdout: if decodeBuildKitAux drops the frame
-	// (e.g. wire-format regression), the display goroutine never starts and output
-	// is empty, catching the bug at test time instead of silently at build time.
 	if !strings.Contains(out.String(), "[1/2] FROM alpine") {
 		t.Errorf("vertex '[1/2] FROM alpine' not found in display output: %q", out.String())
 	}
 }
 
-// TestRenderBuildOutput_QuietSuppressesOutput: under --quiet, a valid trace frame
-// produces no stdout (progressui.QuietMode) yet renderBuildOutput still returns
-// nil and joins the display goroutine cleanly (no hang/leak).
+// Under --quiet, a valid trace frame produces no stdout yet renderBuildOutput
+// still returns and joins the display goroutine cleanly (no hang/leak).
 func TestRenderBuildOutput_QuietSuppressesOutput(t *testing.T) {
 	sr := &controlapi.StatusResponse{
 		Vertexes: []*controlapi.Vertex{
@@ -479,10 +411,9 @@ func TestRenderBuildOutput_QuietSuppressesOutput(t *testing.T) {
 	}
 }
 
-// TestRenderBuildOutput_TraceFollowedByError: a trace frame followed by a build
-// error message must return an error and not hang (channel is closed, goroutine joined).
-// stdout is captured so we can verify the trace frame was processed (display goroutine
-// started) before the error message stopped decoding.
+// A trace frame followed by a build error must return the error and not hang
+// (channel closed, goroutine joined). stdout is captured to confirm the trace
+// frame was processed before decoding stopped.
 func TestRenderBuildOutput_TraceFollowedByError(t *testing.T) {
 	sr := &controlapi.StatusResponse{
 		Vertexes: []*controlapi.Vertex{
@@ -503,17 +434,13 @@ func TestRenderBuildOutput_TraceFollowedByError(t *testing.T) {
 	if !strings.Contains(err.Error(), "layer pull failed") {
 		t.Errorf("error should contain 'layer pull failed', got %v", err)
 	}
-	// The trace frame must have been processed: if decodeBuildKitAux dropped it,
-	// the display goroutine would never have started and the vertex would be absent.
 	if !strings.Contains(out.String(), "[1/2] FROM scratch") {
 		t.Errorf("vertex '[1/2] FROM scratch' not found in display output: %q — trace frame was not processed", out.String())
 	}
 }
 
-// TestRenderBuildOutput_TraceAndPlainMixed: a stream with a plain message before
-// a trace frame delivers the pre-trace plain message to stdout; plain messages
-// arriving after the first trace frame are silently discarded (not written to
-// stdout) to avoid a concurrent-write race with the progressui goroutine.
+// Plain messages before the first trace frame reach stdout; those after are
+// discarded to avoid a concurrent-write race with the progressui goroutine.
 func TestRenderBuildOutput_TraceAndPlainMixed(t *testing.T) {
 	msgs := []jsonstream.Message{
 		{Stream: "pre-trace line\n"},
@@ -527,29 +454,19 @@ func TestRenderBuildOutput_TraceAndPlainMixed(t *testing.T) {
 		t.Fatalf("renderBuildOutput returned error: %v", err)
 	}
 	got := out.String()
-	// Pre-trace plain lines must reach stdout (the display is not yet active).
 	if !strings.Contains(got, "pre-trace line") {
 		t.Errorf("output missing 'pre-trace line': %q", got)
 	}
-	// Post-trace plain lines must NOT appear on stdout: once the progressui
-	// display is active, plain messages are discarded to prevent a concurrent
-	// write from the decode loop and the display goroutine.
+	// Post-trace plain lines are dropped once the display is active (race guard).
 	if strings.Contains(got, "post-trace line") {
 		t.Errorf("post-trace plain line must not appear on stdout (would race with progressui): %q", got)
 	}
 }
 
-// TestRenderBuildOutput_ContextCanceled: with a pre-cancelled context the
-// function must return promptly (no hang). The error value is intentionally
-// not asserted here because the outcome is non-deterministic: Go's select
-// chooses randomly when both `case statusCh <- ss:` (the decode loop) and
-// `case <-ctx.Done():` are simultaneously ready. If the channel send wins,
-// the decode loop advances, decodeErr stays nil, the display goroutine drains
-// with context.Canceled (which renderBuildOutput filters), and the function
-// legitimately returns nil. If ctx.Done() wins first, decodeErr = Canceled
-// and the function returns non-nil. Both are correct — context cancellation is
-// surfaced opportunistically. The only invariant guaranteed by the
-// implementation is that it returns without blocking.
+// With a pre-cancelled context the function must return promptly. The error is
+// intentionally not asserted: when both the decode-loop send and ctx.Done() are
+// ready, Go's select picks at random, so the result is nil or non-nil depending
+// on the winner. The only guaranteed invariant is that it returns without blocking.
 func TestRenderBuildOutput_ContextCanceled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // pre-cancel so the select in the decode loop fires immediately
@@ -557,7 +474,6 @@ func TestRenderBuildOutput_ContextCanceled(t *testing.T) {
 	msgs := []jsonstream.Message{realDaemonFrame(t, &controlapi.StatusResponse{})}
 	body := encodeMessages(t, msgs)
 
-	// The sole contract: must return (no hang). Error may be nil or non-nil.
 	done := make(chan struct{})
 	go func() {
 		renderBuildOutput(ctx, body, io.Discard, false) //nolint:errcheck
@@ -565,26 +481,21 @@ func TestRenderBuildOutput_ContextCanceled(t *testing.T) {
 	}()
 	select {
 	case <-done:
-		// returned promptly — pass
 	case <-time.After(5 * time.Second):
 		t.Fatal("renderBuildOutput blocked for >5s with pre-cancelled context")
 	}
 }
 
-// ─── stageDockerfile unit tests ───────────────────────────────────────────────
-
-// TestStageDockerfile_OnlyDockerfile: the staged directory contains exactly one
-// file named "Dockerfile" with byte-identical content to the source. No sibling
-// files from the source's directory are present.
+// The staged dir must contain only "Dockerfile" — the sibling credential file
+// must not leak into the build context synced to the daemon.
 func TestStageDockerfile_OnlyDockerfile(t *testing.T) {
-	// Create a source directory with a Dockerfile AND a sibling credential file.
 	srcDir := t.TempDir()
 	dockerfileContent := []byte("FROM scratch\nRUN echo hello\n")
 	srcPath := filepath.Join(srcDir, "Dockerfile")
 	if err := os.WriteFile(srcPath, dockerfileContent, 0o644); err != nil {
 		t.Fatalf("write source Dockerfile: %v", err)
 	}
-	// Write a sibling that must NOT appear in the staged dir.
+	// Sibling that must NOT appear in the staged dir.
 	if err := os.WriteFile(filepath.Join(srcDir, ".claude.json"), []byte(`{"secret":"s3kr3t"}`), 0o600); err != nil {
 		t.Fatalf("write sibling credential file: %v", err)
 	}
@@ -595,12 +506,10 @@ func TestStageDockerfile_OnlyDockerfile(t *testing.T) {
 	}
 	defer cleanup()
 
-	// Staged dir must exist.
 	if _, statErr := os.Stat(stagedDir); statErr != nil {
 		t.Fatalf("staged dir does not exist: %v", statErr)
 	}
 
-	// Enumerate entries: exactly one entry named "Dockerfile".
 	entries, err := os.ReadDir(stagedDir)
 	if err != nil {
 		t.Fatalf("ReadDir staged dir: %v", err)
@@ -616,7 +525,6 @@ func TestStageDockerfile_OnlyDockerfile(t *testing.T) {
 		t.Errorf("staged entry name = %q, want \"Dockerfile\"", entries[0].Name())
 	}
 
-	// Contents must be byte-identical.
 	got, err := os.ReadFile(filepath.Join(stagedDir, "Dockerfile"))
 	if err != nil {
 		t.Fatalf("read staged Dockerfile: %v", err)
@@ -626,8 +534,6 @@ func TestStageDockerfile_OnlyDockerfile(t *testing.T) {
 	}
 }
 
-// TestStageDockerfile_CleanupRemovesDir: calling cleanup() after stageDockerfile
-// removes the temp directory so it is not leaked.
 func TestStageDockerfile_CleanupRemovesDir(t *testing.T) {
 	srcDir := t.TempDir()
 	srcPath := filepath.Join(srcDir, "Dockerfile")
@@ -640,51 +546,35 @@ func TestStageDockerfile_CleanupRemovesDir(t *testing.T) {
 		t.Fatalf("stageDockerfile error: %v", err)
 	}
 
-	// Dir must exist before cleanup.
 	if _, statErr := os.Stat(stagedDir); statErr != nil {
 		t.Fatalf("staged dir missing before cleanup: %v", statErr)
 	}
 
 	cleanup()
 
-	// Dir must be gone after cleanup.
 	if _, statErr := os.Stat(stagedDir); !os.IsNotExist(statErr) {
 		t.Errorf("staged dir still exists after cleanup (stat error: %v)", statErr)
 	}
 }
 
-// TestStageDockerfile_UnreadableSource: when the source Dockerfile cannot be
-// read, stageDockerfile returns an error and does NOT leak a temp directory.
+// An unreadable source returns an error and must not leak a temp directory.
 func TestStageDockerfile_UnreadableSource(t *testing.T) {
 	_, cleanup, err := stageDockerfile("/nonexistent/path/to/Dockerfile")
 	if err == nil {
-		// cleanup the dir if unexpectedly created (defensive)
 		cleanup()
 		t.Fatal("expected error for unreadable source, got nil")
 	}
-	// The error should mention "read Dockerfile" (from our fmt.Errorf wrapper).
 	if !strings.Contains(err.Error(), "read Dockerfile") {
 		t.Errorf("error message %q should contain 'read Dockerfile'", err.Error())
 	}
-	// No temp dir leakage: cleanup is a no-op (no dir was created).
-	// We cannot assert the path directly since stageDockerfile returns "" on
-	// error, but we can call cleanup safely and confirm no panic.
-	cleanup() // must be safe to call even on error path
+	cleanup() // must be safe to call even on the error path (no dir created)
 }
 
-// TestBuild_StagedDockerfileIsolation: d.Build() is called with a DockerfilePath
-// whose parent directory contains a sibling file. The sibling must not appear in
-// the staged dir that is synced to the daemon. We confirm this indirectly by
-// verifying that d.Build() reaches ImageBuild (the session may fail to dial in
-// the fake, but ImageBuild must still be called — same pattern as
-// TestBuild_FakeSelf_ImageBuildOptions).
-//
-// The key invariant tested here: stageDockerfile is wired into build() so that
-// the dockerfile filesync source is the isolated staged dir, not the source's
-// parent dir. We verify this by confirming the recorded Dockerfile basename is
-// still "Dockerfile" (unchanged) and d.Build() reaches ImageBuild successfully.
+// Invariant: stageDockerfile is wired into build() so the filesync source is the
+// isolated staged dir, not the source's parent (which holds a sibling file).
+// Verified indirectly: Build still reaches ImageBuild with basename "Dockerfile"
+// (same fake-session pattern as TestBuild_FakeSelf_ImageBuildOptions).
 func TestBuild_StagedDockerfileIsolation(t *testing.T) {
-	// Set up a source dir that contains both a Dockerfile and a sibling file.
 	srcDir := t.TempDir()
 	dockerfilePath := filepath.Join(srcDir, "Dockerfile")
 	if err := os.WriteFile(dockerfilePath, []byte("FROM scratch\n"), 0o644); err != nil {
@@ -706,8 +596,6 @@ func TestBuild_StagedDockerfileIsolation(t *testing.T) {
 	if !rc.buildCalled {
 		t.Fatal("ImageBuild was not called; stageDockerfile may have failed or the session did not reach ImageBuild")
 	}
-	// Dockerfile basename must still be "Dockerfile" — buildImageOptions uses
-	// filepath.Base(o.DockerfilePath) which is unchanged.
 	if rc.lastOpts.Dockerfile != "Dockerfile" {
 		t.Errorf("ImageBuild Dockerfile = %q, want \"Dockerfile\"", rc.lastOpts.Dockerfile)
 	}

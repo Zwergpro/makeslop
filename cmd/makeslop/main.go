@@ -1,5 +1,4 @@
-// Command makeslop is the CLI entry point: bare `makeslop` prints help;
-// `run` launches docker; `init` registers the cwd. Container `exit N` propagates as host `exit N`.
+// Command makeslop is the CLI entry point. Container `exit N` propagates as host `exit N`.
 package main
 
 import (
@@ -23,40 +22,27 @@ import (
 	"github.com/Zwergpro/makeslop/internal/workspace"
 )
 
-// version is set at build time via ldflags:
-//
-//	go build -ldflags "-X main.version=$(git describe --tags --always --dirty)"
-//
-// The default "dev" value is used when the binary is built without ldflags.
+// version is set at build time via -ldflags "-X main.version=…"; "dev" otherwise.
 var version = "dev"
 
-// containerRunner is the consumer-side interface for launching an interactive
-// container. *docker.Docker satisfies it in production.
+// The four consumer-side docker interfaces. *docker.Docker satisfies all four in
+// production; tests inject a fake via newRootCmdWithDeps.
 type containerRunner interface {
 	Run(ctx context.Context, s docker.Spec) error
 }
 
-// imageBuilder is the consumer-side interface for building the base image.
-// *docker.Docker satisfies it in production.
 type imageBuilder interface {
 	Build(ctx context.Context, o docker.BuildOptions, out, errw io.Writer) error
 }
 
-// daemonChecker is the consumer-side interface for pre-flight daemon reachability.
-// *docker.Docker satisfies it in production.
 type daemonChecker interface {
 	CheckDaemon(ctx context.Context) error
 }
 
-// imageChecker is the consumer-side interface for pre-flight image existence.
-// *docker.Docker satisfies it in production.
 type imageChecker interface {
 	ImageExists(ctx context.Context, image string) (bool, error)
 }
 
-// dockerDeps bundles the four consumer-side docker interfaces. A single
-// *docker.Docker satisfies all four in production; tests inject a fake via
-// newRootCmdWithDeps.
 type dockerDeps struct {
 	runner  containerRunner
 	builder imageBuilder
@@ -64,12 +50,10 @@ type dockerDeps struct {
 	image   imageChecker
 }
 
-// errSilent signals that a RunE has already written a tailored message to
-// stderr; main() should exit non-zero without reprinting.
+// errSilent signals that a RunE already wrote a tailored message to stderr;
+// main() should exit non-zero without reprinting.
 var errSilent = errors.New("makeslop: silent error already reported")
 
-// resolvePwd returns the absolute, EvalSymlinks-resolved cwd.
-// os.Getwd() is already absolute on POSIX, so no filepath.Abs is needed.
 func resolvePwd() (string, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -82,9 +66,9 @@ func resolvePwd() (string, error) {
 	return resolved, nil
 }
 
-// ensureWithinHome returns errSilent when pwd is outside the user's home
-// directory and outOfHome is false. pwd must be EvalSymlinks-resolved; $HOME
-// is resolved here for a symlink-symmetric comparison.
+// ensureWithinHome returns errSilent when pwd is outside the user's home and
+// outOfHome is false. pwd must be EvalSymlinks-resolved; $HOME is resolved here
+// for a symlink-symmetric comparison.
 func ensureWithinHome(stderr io.Writer, pwd string, outOfHome bool) error {
 	if outOfHome {
 		return nil
@@ -98,7 +82,6 @@ func ensureWithinHome(stderr io.Writer, pwd string, outOfHome bool) error {
 		return fmt.Errorf("evaluate symlinks for %s: %w", home, err)
 	}
 	rel, err := filepath.Rel(resolvedHome, pwd)
-	// filepath.Rel never errors on POSIX; surface it anyway.
 	if err != nil {
 		return fmt.Errorf("compute relative path from %s to %s: %w", resolvedHome, pwd, err)
 	}
@@ -111,8 +94,7 @@ func ensureWithinHome(stderr io.Writer, pwd string, outOfHome bool) error {
 	return nil
 }
 
-// mergeUniqueSorted returns the sorted union of two string slices. Duplicates
-// (across or within the slices) are removed. The inputs are not modified.
+// mergeUniqueSorted returns the sorted, deduplicated union of two slices.
 func mergeUniqueSorted(a, b []string) []string {
 	seen := make(map[string]struct{}, len(a)+len(b))
 	for _, s := range a {
@@ -132,8 +114,6 @@ func mergeUniqueSorted(a, b []string) []string {
 	return out
 }
 
-// runRun implements the docker-launch logic for the "run" subcommand.
-// The app container always uses standard Docker bridge networking.
 func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfHome, dryRun, quiet bool, deps dockerDeps) error {
 	pwd, err := resolvePwd()
 	if err != nil {
@@ -152,8 +132,7 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfH
 	if err != nil {
 		return err
 	}
-	// YAML parse error aborts launch before docker.Run — symmetric with security.Scan
-	// failure to preserve the no-.env-leak invariant.
+	// YAML parse error aborts before docker.Run — preserves the no-.env-leak invariant.
 	yamlExcludes, cacheCfg, envVars, err := projectconfig.Load(workspaceRoot)
 	if err != nil {
 		return err
@@ -163,7 +142,6 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfH
 		return err
 	}
 	if len(masked) > 0 {
-		// "masked N" is stderr chrome — gated by --quiet.
 		chrome := &quietWriter{w: cmd.ErrOrStderr(), quiet: quiet}
 		fmt.Fprintf(chrome, "makeslop: masked %d secret file(s)\n", len(masked))
 	}
@@ -188,20 +166,17 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfH
 		Env:               envVars,
 	}
 
-	// ProjectRoot must be the registered ancestor (workspaceRoot), not pwd:
-	// running 'makeslop run' from a subdir must still mount the whole project.
+	// ProjectRoot is the registered ancestor, not pwd, so running from a subdir
+	// still mounts the whole project.
 	spec := docker.BuildSpec(opts)
 
-	// Dry-run: print the argv and return WITHOUT running pre-flight.
-	// The printed argv matches what would execute, satisfying the "printed == executed" invariant.
+	// Dry-run prints the argv and returns before pre-flight (printed == executed).
 	if dryRun {
 		fmt.Fprintln(cmd.OutOrStdout(), spec.ShellCommand())
 		return nil
 	}
 
-	// Pre-flight: daemon reachability. Must happen after workspace/config resolution
-	// (so we have the image name).
-	// Bound by preflightTimeout so a black-hole DOCKER_HOST does not hang forever.
+	// Pre-flight bounded by preflightTimeout so a black-hole DOCKER_HOST cannot hang.
 	{
 		pfCtx, pfCancel := docker.WithPreflightTimeout(cmd.Context())
 		daemonErr := deps.daemon.CheckDaemon(pfCtx)
@@ -213,8 +188,7 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfH
 		}
 	}
 
-	// Pre-flight: image existence. No auto-build; a clear remedy is provided.
-	// Bound by preflightTimeout.
+	// Image existence: no auto-build, just a remedy.
 	var imageFound bool
 	var imageErr error
 	{
@@ -244,10 +218,8 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfH
 	return nil
 }
 
-// quietWriter wraps an io.Writer and discards writes when quiet is true.
-// It is used to gate stderr chrome (notices, nudges, progress) while letting
-// callers that write to the underlying writer (e.g. cobra's SetErr) use the
-// real writer for actual errors.
+// quietWriter discards writes when quiet is true; used to gate stderr chrome
+// (notices, nudges, progress) while real errors go to the underlying writer.
 type quietWriter struct {
 	w     io.Writer
 	quiet bool
@@ -260,18 +232,13 @@ func (q *quietWriter) Write(p []byte) (int, error) {
 	return q.w.Write(p)
 }
 
-// newRootCmd constructs the production cobra tree. It creates a *docker.Docker
-// via docker.New(). moby.New(moby.FromEnv) only parses env vars — it never
-// dials and essentially never fails. If it does fail, the error is wrapped and
-// returned by the first docker-touching command (run, build, status);
-// init/migrate/config/version work regardless.
-//
-// The second return value is a cleanup function that closes the Docker client.
-// Callers must call it when the command has finished executing (typically via defer).
+// newRootCmd constructs the production cobra tree and a cleanup func that closes
+// the Docker client (call via defer). docker.New() only parses env vars and
+// essentially never fails; if it does, the error is deferred to the first
+// docker-touching command via dockerNewErrStub so other commands still work.
 func newRootCmd(baseDir string) (*cobra.Command, func()) {
 	d, newErr := docker.New()
 	if newErr != nil {
-		// Construction failed: wrap the error in stubs that surface it on first use.
 		deps := dockerDeps{
 			runner:  dockerNewErrStub{newErr},
 			builder: dockerNewErrStub{newErr},
@@ -284,9 +251,8 @@ func newRootCmd(baseDir string) (*cobra.Command, func()) {
 	return newRootCmdWithDeps(baseDir, deps), func() { _ = d.Close() }
 }
 
-// dockerNewErrStub is a stub that returns a client-construction error from all
-// docker operations. Used when docker.New() fails so non-docker commands still
-// work while docker-touching commands get a clear error instead of a panic.
+// dockerNewErrStub returns the docker.New() construction error from every
+// operation, so docker-touching commands fail clearly instead of panicking.
 type dockerNewErrStub struct{ err error }
 
 func (s dockerNewErrStub) Run(_ context.Context, _ docker.Spec) error { return s.err }
@@ -298,9 +264,8 @@ func (s dockerNewErrStub) ImageExists(_ context.Context, _ string) (bool, error)
 	return false, s.err
 }
 
-// newRootCmdWithDeps constructs the cobra tree with the provided docker deps.
-// It is the canonical constructor used by both production (newRootCmd) and tests
-// (Task 4: inject fake dockerDeps without touching package-level globals).
+// newRootCmdWithDeps constructs the cobra tree with the given docker deps; used
+// by both newRootCmd and tests (which inject fakes).
 func newRootCmdWithDeps(baseDir string, deps dockerDeps) *cobra.Command {
 	ws := workspace.New(baseDir)
 
@@ -319,7 +284,6 @@ func newRootCmdWithDeps(baseDir string, deps dockerDeps) *cobra.Command {
 		SilenceErrors: true,
 	}
 
-	// --quiet is persistent so all subcommands inherit it.
 	rootCmd.PersistentFlags().BoolVar(&quiet, "quiet", false,
 		"suppress stderr chrome (notices, nudges, progress); errors still print")
 
@@ -337,13 +301,13 @@ func newRootCmdWithDeps(baseDir string, deps dockerDeps) *cobra.Command {
 				return err
 			}
 
-			// Record fresh vs existing BEFORE Bootstrap so we can decide whether
-			// to stamp MigratedVersion and whether to emit a stale-config nudge.
+			// Detect fresh vs existing BEFORE Bootstrap to decide whether to stamp
+			// MigratedVersion and whether to emit a stale-config nudge.
 			freshSeed, err := config.BaseConfigExists(baseDir)
 			if err != nil {
 				return err
 			}
-			freshSeed = !freshSeed // BaseConfigExists returns true when present; we want "absent = fresh"
+			freshSeed = !freshSeed
 
 			if err := config.Bootstrap(baseDir); err != nil {
 				return err
@@ -352,8 +316,7 @@ func newRootCmdWithDeps(baseDir string, deps dockerDeps) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			// Init returns the cache dir, not the registered root. Lookup retrieves
-			// the root for Scaffold. ErrNotRegistered is impossible — Init just registered pwd.
+			// Init returns the cache dir; Lookup gives the registered root for Scaffold.
 			workspaceRoot, _, err := ws.Lookup(pwd)
 			if err != nil {
 				return err
@@ -363,8 +326,8 @@ func newRootCmdWithDeps(baseDir string, deps dockerDeps) *cobra.Command {
 			}
 
 			// Fresh seed: stamp MigratedVersion so a newly-init'd dir is never
-			// reported stale. ws.Init's lock has already been released; this is
-			// a separate sequential acquisition — no nesting, no deadlock.
+			// reported stale. ws.Init's lock is already released, so this separate
+			// acquisition cannot deadlock.
 			if freshSeed {
 				if lockErr := config.WithLock(baseDir, func() error {
 					s, loadErr := config.Load(baseDir)
@@ -377,14 +340,14 @@ func newRootCmdWithDeps(baseDir string, deps dockerDeps) *cobra.Command {
 					return lockErr
 				}
 			} else {
-				// Existing base config: check for staleness and nudge if behind.
+				// Existing base config: nudge (non-blocking) if behind. Never stamp
+				// MigratedVersion here — that would skip the actual migration.
 				s, loadErr := config.Load(baseDir)
 				if loadErr != nil {
 					return loadErr
 				}
 				current, latest, stale := config.MigrationStatus(s)
 				if stale {
-					// Nudge is chrome (non-blocking), gated by --quiet.
 					chrome := &quietWriter{w: cmd.ErrOrStderr(), quiet: quiet}
 					fmt.Fprintf(chrome,
 						"note: your base config is v%d, latest is v%d — run 'makeslop migrate'\n",
@@ -392,8 +355,7 @@ func newRootCmdWithDeps(baseDir string, deps dockerDeps) *cobra.Command {
 				}
 			}
 
-			// Success: stderr chrome is gated by --quiet; stdout keeps the bare path.
-			// The "registered" line is human notice (chrome), so route through quietWriter.
+			// "registered" line is chrome (stderr, gated by --quiet); stdout keeps the bare path.
 			chrome := &quietWriter{w: cmd.ErrOrStderr(), quiet: quiet}
 			fmt.Fprintf(chrome,
 				"registered %s — run 'makeslop build' then 'makeslop run'\n",
@@ -402,13 +364,9 @@ func newRootCmdWithDeps(baseDir string, deps dockerDeps) *cobra.Command {
 			return nil
 		},
 	}
-	// --out-of-home is scoped to init only (not a persistent flag on root).
+	// --out-of-home and --global-only are scoped to init only (not root-persistent).
 	initCmd.Flags().BoolVar(&outOfHomeInit, "out-of-home", false,
 		"allow running outside the user's home directory")
-	// --global-only is scoped to init only (not a persistent flag on root).
-	// Scaffolds .makeslop.yaml with both cache groups disabled so only the global
-	// ~/.makeslop mounts are active. No-op when .makeslop.yaml already exists
-	// (Scaffold is idempotent).
 	initCmd.Flags().BoolVar(&globalOnly, "global-only", false,
 		"scaffold .makeslop.yaml with project cache overlays disabled (only global ~/.makeslop mounts)")
 
@@ -424,7 +382,6 @@ func newRootCmdWithDeps(baseDir string, deps dockerDeps) *cobra.Command {
 
 	runCmd.Flags().BoolVarP(&dryRun, "dry-run", "n", false,
 		"print the docker run command instead of executing it")
-	// --out-of-home is scoped to run only (not a persistent flag on root).
 	runCmd.Flags().BoolVar(&outOfHomeRun, "out-of-home", false,
 		"allow running outside the user's home directory")
 
@@ -492,8 +449,7 @@ func newRootCmdWithDeps(baseDir string, deps dockerDeps) *cobra.Command {
 	buildCmd.Flags().BoolVar(&buildRefresh, "refresh", false,
 		"overwrite ~/.makeslop/Dockerfile from embedded assets before building")
 
-	// runConfigList is the shared implementation for `config` (bare) and
-	// `config list` — both print key = value lines from ConfigList.
+	// Shared by bare `config` and `config list`.
 	runConfigList := func(cmd *cobra.Command, _ []string) error {
 		s, err := config.Load(baseDir)
 		if err != nil {
@@ -527,11 +483,9 @@ func newRootCmdWithDeps(baseDir string, deps dockerDeps) *cobra.Command {
 		Args:         cobra.ExactArgs(2),
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Pre-validate the key/value before acquiring the lock so that the
-			// lock file is not created as a side effect of a bad input. Use a
-			// scratch Settings for validation; the actual mutation runs under
-			// the lock below. If pre-load fails (e.g. corrupt JSON), skip
-			// pre-validation and let the locked path surface the error.
+			// Pre-validate before locking so a bad input doesn't create the lock
+			// file as a side effect. On pre-load failure (corrupt JSON), skip and
+			// let the locked path surface the error.
 			if scratch, err := config.Load(baseDir); err == nil {
 				if err := config.ConfigSet(scratch, args[0], args[1]); err != nil {
 					return err
@@ -550,10 +504,7 @@ func newRootCmdWithDeps(baseDir string, deps dockerDeps) *cobra.Command {
 				if err := config.Save(baseDir, s); err != nil {
 					return err
 				}
-				// Echo the stored value (not the raw CLI argument) so the output
-				// reflects what ConfigList would show (e.g. whitespace is trimmed).
-				// ConfigSet only succeeds for registered keys, so ConfigGet is
-				// guaranteed to find the entry.
+				// Echo the stored (normalized) value, not the raw argument.
 				storedVal, _ = config.ConfigGet(s, args[0])
 				return nil
 			}); err != nil {
@@ -584,19 +535,12 @@ func newRootCmdWithDeps(baseDir string, deps dockerDeps) *cobra.Command {
 }
 
 // runWithExitCode maps an ExecuteContext() error to a host exit code:
-//   - *docker.ExitError passes through its Code (the daemon-reported exit status,
-//     e.g. 137 for SIGKILL); this is the primary path for `makeslop run`.
-//   - errSilent -> 1 with no reprint.
-//   - other errors -> 1 prefixed "makeslop: ".
+// *docker.ExitError passes through its Code (daemon-reported, e.g. 137 for
+// SIGKILL); errSilent -> 1 with no reprint; other errors -> 1 prefixed "makeslop: ".
 //
-// A signal-cancellable context (SIGINT / SIGTERM) is created here and passed
-// to ExecuteContext so every subcommand's cmd.Context() is cancellable. The
-// context is always a non-Background context, which lets subcommands observe
-// cancellation via select { case <-cmd.Context().Done(): }.
-//
-// contextObserver, if non-nil, is called with the context immediately after it
-// is created. Tests pass a non-nil observer to verify that ExecuteContext
-// receives a cancellable context. Pass nil in production.
+// A SIGINT/SIGTERM-cancellable context is wired into ExecuteContext so every
+// subcommand's cmd.Context() is cancellable. contextObserver, when non-nil, is
+// called with that context so tests can assert it is not context.Background().
 func runWithExitCode(baseDir string, stdout, stderr io.Writer, args []string, contextObserver func(context.Context)) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -629,8 +573,8 @@ func main() {
 		fmt.Fprintf(os.Stderr, "makeslop: %v\n", err)
 		os.Exit(1)
 	}
-	// Resolve symlinks so docker.Options invariants hold. Missing-dir is fine
-	// on first run; other errors (loop, permission) must surface.
+	// Resolve symlinks so docker.Options invariants hold. Missing-dir is fine on
+	// first run; other errors (loop, permission) must surface.
 	if resolved, err := filepath.EvalSymlinks(baseDir); err == nil {
 		baseDir = resolved
 	} else if !errors.Is(err, fs.ErrNotExist) {

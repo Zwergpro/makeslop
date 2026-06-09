@@ -8,30 +8,25 @@ import (
 	"github.com/Zwergpro/makeslop/internal/assets"
 )
 
-// migration describes a single idempotent migration step. All steps in the
-// migrations slice are run (unconditionally) whenever the persisted
-// migrated_version differs from MigrationVersion.
+// migration is a single idempotent migration step.
 type migration struct {
 	name string
 	run  func(baseDir string) error
 }
 
-// migrations is the ordered list of migration steps. Append new steps here and
-// bump MigrationVersion in config.go when adding or changing a step.
+// migrations is the ordered list of steps. Append here and bump MigrationVersion
+// in config.go when adding or changing a step.
 //
 // INVARIANT: every step must be idempotent. When MigratedVersion differs from
-// MigrationVersion (including a binary downgrade that later re-upgrades), all
-// steps are re-run in full — there is no per-step skip logic.
+// MigrationVersion all steps re-run in full — there is no per-step skip logic.
 var migrations = []migration{
 	{name: DockerfileFile, run: WriteDockerfile},
 }
 
 // WriteDockerfile atomically writes the embedded assets.Dockerfile to
-// <baseDir>/Dockerfile, always overwriting any existing file. The write uses
-// a temp-file + rename pattern so a crash mid-write cannot leave a partial
-// file behind. It is also called by `build --refresh` to reset a hand-edited
-// base Dockerfile to the shipped version WITHOUT running a migration or
-// touching MigratedVersion.
+// <baseDir>/Dockerfile, always overwriting any existing file (temp-file+rename).
+// Also called by `build --refresh` to reset a hand-edited Dockerfile without
+// running a migration or touching MigratedVersion.
 func WriteDockerfile(baseDir string) error {
 	if err := os.MkdirAll(baseDir, 0o755); err != nil {
 		return fmt.Errorf("create base dir %s: %w", baseDir, err)
@@ -62,20 +57,18 @@ func WriteDockerfile(baseDir string) error {
 	if err := os.Rename(tmpName, final); err != nil {
 		return fmt.Errorf("rename Dockerfile into place: %w", err)
 	}
-	// Rename succeeded; the temp path no longer exists, so the deferred
-	// remove must not fire even if Chmod fails.
+	// Rename consumed the temp path; the deferred remove must not fire even if
+	// Chmod fails below.
 	cleanup = false
-	// Ensure final file has the expected permission (temp file inherits umask).
+	// Normalise to 0o644 (temp file inherits umask).
 	if err := os.Chmod(final, 0o644); err != nil {
 		return fmt.Errorf("chmod Dockerfile: %w", err)
 	}
 	return nil
 }
 
-// MigrationStatus returns the current migrated version stored in s, the latest
-// known MigrationVersion constant, and whether the config is stale (current <
-// latest). A freshly-loaded Settings with MigratedVersion == 0 is always stale
-// when MigrationVersion > 0.
+// MigrationStatus returns s.MigratedVersion, the latest MigrationVersion, and
+// whether the config is stale (current < latest).
 func MigrationStatus(s *Settings) (current, latest int, stale bool) {
 	current = s.MigratedVersion
 	latest = MigrationVersion
@@ -83,19 +76,15 @@ func MigrationStatus(s *Settings) (current, latest int, stale bool) {
 	return current, latest, stale
 }
 
-// Migrate runs all migration steps when the persisted migrated_version in
-// <baseDir>/settings.json differs from MigrationVersion. It returns
-// (true, nil) when migrations were applied and (false, nil) when already
-// up to date. An error is returned only if a migration step or the subsequent
-// Save fails.
+// Migrate runs all migration steps when migrated_version differs from
+// MigrationVersion, returning (true, nil) when applied and (false, nil) when
+// already up to date.
 //
-// The Load→stamp→Save sequence is protected by WithLock so a concurrent
-// makeslop init or config set cannot lose the MigratedVersion stamp.
-// The migration steps themselves (e.g. WriteDockerfile) run outside the lock
-// because they are idempotent and do not touch settings.json.
+// The Load→stamp→Save sequence is protected by WithLock so a concurrent init
+// or config set cannot lose the MigratedVersion stamp. The steps themselves
+// run outside the lock because they are idempotent and don't touch settings.json.
 func Migrate(baseDir string) (applied bool, err error) {
-	// Quick check outside the lock: if already up to date, skip immediately.
-	// This is a best-effort optimisation; the definitive check is under the lock.
+	// Best-effort early skip; the definitive check is under the lock below.
 	s, err := Load(baseDir)
 	if err != nil {
 		return false, fmt.Errorf("migrate load settings: %w", err)
@@ -104,15 +93,12 @@ func Migrate(baseDir string) (applied bool, err error) {
 		return false, nil
 	}
 
-	// Run the migration steps (idempotent; do not touch settings.json).
 	for _, m := range migrations {
 		if runErr := m.run(baseDir); runErr != nil {
 			return false, fmt.Errorf("migrate %q: %w", m.name, runErr)
 		}
 	}
 
-	// Stamp the new version under the lock to avoid a lost-update race with a
-	// concurrent init re-stamp or config set.
 	var stamped bool
 	lockErr := WithLock(baseDir, func() error {
 		// Re-load under the lock so we don't clobber concurrent workspace edits.
@@ -120,7 +106,6 @@ func Migrate(baseDir string) (applied bool, err error) {
 		if loadErr != nil {
 			return fmt.Errorf("migrate load settings: %w", loadErr)
 		}
-		// If a concurrent migration already stamped the version, nothing to do.
 		if fresh.MigratedVersion >= MigrationVersion {
 			return nil
 		}

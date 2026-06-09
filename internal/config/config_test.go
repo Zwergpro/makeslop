@@ -65,7 +65,7 @@ func TestLoad_PreservesExplicitImageAndShell(t *testing.T) {
 	}
 }
 
-// Guards that settings.json files written before Image/Shell existed keep working.
+// Regression: settings.json written before Image/Shell existed must keep working.
 func TestLoad_LegacyConfigGetsDefaultsForMissingFields(t *testing.T) {
 	base := t.TempDir()
 	body := `{"version":1,"workspaces":{}}`
@@ -155,9 +155,7 @@ func TestSaveLoad_TmpDirSizeRoundTrip(t *testing.T) {
 	}
 }
 
-// TestLoad_TmpDirSizeByteStableWithoutWrite verifies that a settings.json written
-// without tmp_dir_size is read-only byte-stable: the field is absent on disk
-// (omitempty) and Load merely returns the default in memory without touching the file.
+// Load must default tmp_dir_size in memory without rewriting the on-disk file.
 func TestLoad_TmpDirSizeByteStableWithoutWrite(t *testing.T) {
 	base := t.TempDir()
 	original := `{"version":1,"image":"claudebox","shell":"/bin/zsh","workspaces":{}}`
@@ -169,7 +167,6 @@ func TestLoad_TmpDirSizeByteStableWithoutWrite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	// TmpDirSize must be defaulted in memory.
 	if s.TmpDirSize != DefaultTmpDirSize {
 		t.Errorf("TmpDirSize = %q, want %q", s.TmpDirSize, DefaultTmpDirSize)
 	}
@@ -391,8 +388,8 @@ func TestDefaultBaseDir_HonorsHOME(t *testing.T) {
 	}
 }
 
-// TestLoad_MissingFile_MigratedVersionIsZero guards that Load of a missing
-// settings.json yields MigratedVersion == 0 (not defaulted to MigrationVersion).
+// Regression: a missing settings.json must yield MigratedVersion == 0, not
+// default to MigrationVersion (else stale installs skip migration).
 func TestLoad_MissingFile_MigratedVersionIsZero(t *testing.T) {
 	base := t.TempDir()
 
@@ -405,8 +402,7 @@ func TestLoad_MissingFile_MigratedVersionIsZero(t *testing.T) {
 	}
 }
 
-// TestLoad_LegacyConfig_MigratedVersionIsZero guards backward compat: a
-// settings.json written without migrated_version round-trips with MigratedVersion == 0.
+// Regression: a settings.json without migrated_version loads as 0 (backward compat).
 func TestLoad_LegacyConfig_MigratedVersionIsZero(t *testing.T) {
 	base := t.TempDir()
 	body := `{"version":1,"image":"claudebox","shell":"/bin/zsh","workspaces":{}}`
@@ -423,8 +419,6 @@ func TestLoad_LegacyConfig_MigratedVersionIsZero(t *testing.T) {
 	}
 }
 
-// TestSaveLoad_MigratedVersionRoundTrips guards that a set MigratedVersion
-// survives a Save → Load cycle intact.
 func TestSaveLoad_MigratedVersionRoundTrips(t *testing.T) {
 	base := t.TempDir()
 	want := &Settings{
@@ -556,8 +550,6 @@ func TestBootstrap_PartialStateRecovers(t *testing.T) {
 	}
 }
 
-// TestBootstrap_CreatesDockerfile verifies that Bootstrap seeds Dockerfile with
-// content equal to the embedded assets.Dockerfile on a fresh directory.
 func TestBootstrap_CreatesDockerfile(t *testing.T) {
 	base := filepath.Join(t.TempDir(), ".makeslop")
 
@@ -575,8 +567,6 @@ func TestBootstrap_CreatesDockerfile(t *testing.T) {
 	}
 }
 
-// TestBootstrap_DoesNotOverwriteExistingDockerfile verifies that Bootstrap does
-// not clobber a pre-existing Dockerfile (idempotent no-overwrite behavior).
 func TestBootstrap_DoesNotOverwriteExistingDockerfile(t *testing.T) {
 	base := filepath.Join(t.TempDir(), ".makeslop")
 	if err := os.MkdirAll(base, 0o755); err != nil {
@@ -600,8 +590,7 @@ func TestBootstrap_DoesNotOverwriteExistingDockerfile(t *testing.T) {
 	}
 }
 
-// TestBootstrap_DoesNotWriteSettingsJSON verifies that Bootstrap does not create
-// or touch settings.json, ensuring migrated_version is never stamped on init.
+// Bootstrap must not touch settings.json, so migrated_version is never stamped on init.
 func TestBootstrap_DoesNotWriteSettingsJSON(t *testing.T) {
 	base := filepath.Join(t.TempDir(), ".makeslop")
 
@@ -614,8 +603,6 @@ func TestBootstrap_DoesNotWriteSettingsJSON(t *testing.T) {
 	}
 }
 
-// TestBaseConfigExists_Present verifies that BaseConfigExists returns (true, nil)
-// when settings.json exists in the given directory.
 func TestBaseConfigExists_Present(t *testing.T) {
 	base := t.TempDir()
 	if err := os.WriteFile(filepath.Join(base, SettingsFile), []byte(`{"version":1,"workspaces":{}}`), 0o644); err != nil {
@@ -631,8 +618,6 @@ func TestBaseConfigExists_Present(t *testing.T) {
 	}
 }
 
-// TestBaseConfigExists_Absent verifies that BaseConfigExists returns (false, nil)
-// when settings.json does not exist (no error for missing file).
 func TestBaseConfigExists_Absent(t *testing.T) {
 	base := t.TempDir()
 
@@ -645,19 +630,9 @@ func TestBaseConfigExists_Absent(t *testing.T) {
 	}
 }
 
-// TestBaseConfigExists_Error verifies that BaseConfigExists returns (false, err)
-// when the directory itself does not exist (a stat error other than ErrNotExist
-// on the file path is simulated by making settings.json a directory so Stat
-// itself succeeds but as a directory — use a non-existent parent directory path
-// to trigger a real stat error).
-//
-// We test the "real error" path by pointing BaseConfigExists at a path whose
-// parent directory does not exist, which causes os.Stat to return an error that
-// is not fs.ErrNotExist for the base dir but rather for the parent.
-// Instead we simulate by creating a nested path whose parent dir is absent.
+// A non-existent parent yields ErrNotExist for the file path, so the result is
+// (false, nil) — not a hard error.
 func TestBaseConfigExists_NonExistentParent(t *testing.T) {
-	// Use a directory that was never created so os.Stat returns ErrNotExist.
-	// That path is for the *file*, so it IS ErrNotExist — returns (false, nil).
 	parent := t.TempDir()
 	base := filepath.Join(parent, "nonexistent-subdir")
 

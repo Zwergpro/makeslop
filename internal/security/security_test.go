@@ -11,7 +11,6 @@ import (
 	"github.com/Zwergpro/makeslop/internal/projectconfig"
 )
 
-// skipNonPOSIX skips on non-POSIX hosts per the CLAUDE.md invariant.
 func skipNonPOSIX(t *testing.T, why string) {
 	t.Helper()
 	if runtime.GOOS == "windows" {
@@ -19,7 +18,7 @@ func skipNonPOSIX(t *testing.T, why string) {
 	}
 }
 
-// evalSymlinks resolves a temp dir path — on macOS /tmp is a symlink, so raw
+// evalSymlinks resolves a temp dir — on macOS /tmp is a symlink, so raw
 // t.TempDir() paths violate the EvalSymlinks precondition.
 func evalSymlinks(t *testing.T, dir string) string {
 	t.Helper()
@@ -30,7 +29,6 @@ func evalSymlinks(t *testing.T, dir string) string {
 	return resolved
 }
 
-// mustWriteFile creates parent directories and writes a file with the given content.
 func mustWriteFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -41,10 +39,8 @@ func mustWriteFile(t *testing.T, path, content string) {
 	}
 }
 
-// loadStubConfig writes projectconfig.Stub into a temp directory and loads the
-// result, returning the canonical Patterns and SkipDirs defined by the stub.
-// This makes tests authoritative consumers of the actual defaults rather than
-// maintaining a duplicate hardcoded list.
+// loadStubConfig loads the stub's canonical Patterns/SkipDirs, so tests consume
+// the actual defaults instead of a duplicated hardcoded list.
 func loadStubConfig(t *testing.T) (patterns, skipDirs []string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -58,8 +54,7 @@ func loadStubConfig(t *testing.T) (patterns, skipDirs []string) {
 	return excl.Patterns, excl.SkipDirs
 }
 
-// TestScan_EmptyPatterns_ReturnsNil verifies the opt-in invariant: when no patterns
-// are provided, Scan returns nil without walking the tree.
+// Opt-in invariant: no patterns means no walk.
 func TestScan_EmptyPatterns_ReturnsNil(t *testing.T) {
 	root := evalSymlinks(t, t.TempDir())
 	mustWriteFile(t, filepath.Join(root, ".env"), "SECRET=1\n")
@@ -73,37 +68,27 @@ func TestScan_EmptyPatterns_ReturnsNil(t *testing.T) {
 	}
 }
 
-// TestScan_DefaultPatterns_PositiveCases verifies each default glob hits its file.
 func TestScan_DefaultPatterns_PositiveCases(t *testing.T) {
 	root := evalSymlinks(t, t.TempDir())
 	patterns, _ := loadStubConfig(t)
 
 	positives := []string{
-		// *.env
 		".env",
 		"local.env",
 		"app.env",
-		// .env.*
 		".env.local",
 		".env.production",
 		".env.staging",
-		// *.pem
 		"app.pem",
 		"cert.pem",
-		// *.key
 		"server.key",
 		"private.key",
-		// id_rsa*
 		"id_rsa",
 		"id_rsa.pub",
-		// id_ed25519*
 		"id_ed25519",
 		"id_ed25519.pub",
-		// .npmrc
 		".npmrc",
-		// .netrc
 		".netrc",
-		// .git-credentials
 		".git-credentials",
 	}
 
@@ -128,15 +113,14 @@ func TestScan_DefaultPatterns_PositiveCases(t *testing.T) {
 	}
 }
 
-// TestScan_DefaultPatterns_NegativeCases verifies well-known non-secret names are NOT matched.
 func TestScan_DefaultPatterns_NegativeCases(t *testing.T) {
 	root := evalSymlinks(t, t.TempDir())
 	patterns, _ := loadStubConfig(t)
 
 	negatives := []string{
-		".envrc",       // .env without extension separator
-		"environment",  // plain word
-		"keyfile",      // no extension
+		".envrc",
+		"environment",
+		"keyfile",
 		"keyboard.txt", // contains "key" but extension is .txt
 	}
 
@@ -161,18 +145,17 @@ func TestScan_DefaultPatterns_NegativeCases(t *testing.T) {
 	}
 }
 
-// TestScan_SkipDirs_PrunesMatchingDirs verifies secrets in skip-dirs are not returned.
 func TestScan_SkipDirs_PrunesMatchingDirs(t *testing.T) {
 	root := evalSymlinks(t, t.TempDir())
 	patterns, skipDirs := loadStubConfig(t)
 
-	// Plant secrets in skip-dirs — must NOT be returned.
+	// Secrets in skip-dirs must NOT be returned.
 	mustWriteFile(t, filepath.Join(root, ".git", ".env"), "SECRET=2\n")
 	mustWriteFile(t, filepath.Join(root, "node_modules", "x.env"), "SECRET=3\n")
 	mustWriteFile(t, filepath.Join(root, "vendor", "lib.key"), "SECRET=4\n")
 	mustWriteFile(t, filepath.Join(root, ".venv", "secret.pem"), "SECRET=5\n")
 
-	// Plant a secret outside skip-dirs — MUST be returned.
+	// Secret outside skip-dirs MUST be returned.
 	mustWriteFile(t, filepath.Join(root, "app", ".env"), "SECRET=1\n")
 
 	got, err := Scan(context.Background(), root, patterns, skipDirs)
@@ -180,7 +163,6 @@ func TestScan_SkipDirs_PrunesMatchingDirs(t *testing.T) {
 		t.Fatalf("Scan returned error: %v", err)
 	}
 
-	// Only app/.env should be returned.
 	if len(got) != 1 {
 		t.Fatalf("expected 1 result, got %d: %v", len(got), got)
 	}
@@ -189,12 +171,11 @@ func TestScan_SkipDirs_PrunesMatchingDirs(t *testing.T) {
 	}
 }
 
-// TestScan_ResultsSorted verifies returned paths are sorted.
 func TestScan_ResultsSorted(t *testing.T) {
 	root := evalSymlinks(t, t.TempDir())
 	patterns, _ := loadStubConfig(t)
 
-	// Write files that would come back in reverse order if unsorted.
+	// Names ordered so an unsorted walk would return them reversed.
 	mustWriteFile(t, filepath.Join(root, "z.env"), "data\n")
 	mustWriteFile(t, filepath.Join(root, "a.env"), "data\n")
 	mustWriteFile(t, filepath.Join(root, "m.env"), "data\n")
@@ -207,7 +188,6 @@ func TestScan_ResultsSorted(t *testing.T) {
 		t.Fatalf("expected 3 results, got %d: %v", len(got), got)
 	}
 
-	// Verify sorted order.
 	for i := 1; i < len(got); i++ {
 		if got[i] < got[i-1] {
 			t.Errorf("results not sorted: got[%d]=%q < got[%d]=%q", i, got[i], i-1, got[i-1])
@@ -215,7 +195,6 @@ func TestScan_ResultsSorted(t *testing.T) {
 	}
 }
 
-// TestScan_NestedAndHiddenFiles verifies that dotfiles nested in subdirs are found.
 func TestScan_NestedAndHiddenFiles(t *testing.T) {
 	root := evalSymlinks(t, t.TempDir())
 	patterns, _ := loadStubConfig(t)
@@ -232,8 +211,7 @@ func TestScan_NestedAndHiddenFiles(t *testing.T) {
 	}
 }
 
-// TestScan_GitignoreFileStillFound verifies that .gitignore-d files are still found
-// (the walker does not consult .gitignore — replaces fd's --no-ignore flag).
+// The walker does not consult .gitignore (replaces fd's --no-ignore flag).
 func TestScan_GitignoreFileStillFound(t *testing.T) {
 	root := evalSymlinks(t, t.TempDir())
 	patterns, _ := loadStubConfig(t)
@@ -255,24 +233,20 @@ func TestScan_GitignoreFileStillFound(t *testing.T) {
 	}
 }
 
-// TestScan_Symlink_Dropped verifies that a symlink to a secret file is not returned,
-// and that symlinked directories are not walked.
+// Symlinks to a secret file/dir must be dropped, not followed (no-leak invariant).
 func TestScan_Symlink_Dropped(t *testing.T) {
 	skipNonPOSIX(t, "symlink tests require POSIX; makeslop is POSIX-only")
 	root := evalSymlinks(t, t.TempDir())
 	patterns, _ := loadStubConfig(t)
 
-	// Real secret file outside root.
 	other := evalSymlinks(t, t.TempDir())
 	secretFile := filepath.Join(other, ".env")
 	mustWriteFile(t, secretFile, "SECRET=1\n")
 
-	// Symlink to the secret file inside root — should be dropped.
 	if err := os.Symlink(secretFile, filepath.Join(root, "link.env")); err != nil {
 		t.Fatalf("symlink file: %v", err)
 	}
 
-	// Symlink to a directory that contains a secret — target contents must NOT be walked.
 	secretDir := filepath.Join(other, "dir")
 	mustWriteFile(t, filepath.Join(secretDir, "secret.env"), "SECRET=2\n")
 	if err := os.Symlink(secretDir, filepath.Join(root, "linked-dir")); err != nil {
@@ -288,8 +262,7 @@ func TestScan_Symlink_Dropped(t *testing.T) {
 	}
 }
 
-// TestScan_WalkError_Propagated verifies that an unreadable subdirectory causes
-// Scan to return an error (fail-loud invariant).
+// Fail-loud: an unreadable subdir must surface as an error, not be skipped.
 func TestScan_WalkError_Propagated(t *testing.T) {
 	skipNonPOSIX(t, "chmod 0000 requires POSIX; makeslop is POSIX-only")
 	if os.Getuid() == 0 {
@@ -311,19 +284,16 @@ func TestScan_WalkError_Propagated(t *testing.T) {
 	}
 }
 
-// TestScan_ContextCancelled verifies that Scan respects context cancellation
-// and returns the context error rather than continuing the walk.
 func TestScan_ContextCancelled(t *testing.T) {
 	root := evalSymlinks(t, t.TempDir())
 	patterns, _ := loadStubConfig(t)
 
-	// Plant enough files to make a walk likely to hit the cancellation check.
 	for i := 0; i < 10; i++ {
 		mustWriteFile(t, filepath.Join(root, "sub", fmt.Sprintf("%d.env", i)), "data\n")
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // cancel immediately
+	cancel()
 
 	_, err := Scan(ctx, root, patterns, nil)
 	if err == nil {
@@ -331,8 +301,8 @@ func TestScan_ContextCancelled(t *testing.T) {
 	}
 }
 
-// TestScan_UnderRootInvariant verifies every returned path is local (under) root,
-// pinning the internal/docker/spec.go:95 "host is under ProjectRoot" contract.
+// Every returned path must be local to root, pinning the docker/spec.go
+// "host is under ProjectRoot" contract.
 func TestScan_UnderRootInvariant(t *testing.T) {
 	root := evalSymlinks(t, t.TempDir())
 	patterns, _ := loadStubConfig(t)

@@ -5,7 +5,6 @@ import (
 	"testing"
 )
 
-// TestConfigSet_ValidImage verifies setting image to a non-empty value.
 func TestConfigSet_ValidImage(t *testing.T) {
 	s := defaultSettings()
 	if err := ConfigSet(s, "image", "myimage:latest"); err != nil {
@@ -16,7 +15,6 @@ func TestConfigSet_ValidImage(t *testing.T) {
 	}
 }
 
-// TestConfigSet_ValidShell verifies setting shell to a non-empty value.
 func TestConfigSet_ValidShell(t *testing.T) {
 	s := defaultSettings()
 	if err := ConfigSet(s, "shell", "/bin/bash"); err != nil {
@@ -27,7 +25,6 @@ func TestConfigSet_ValidShell(t *testing.T) {
 	}
 }
 
-// TestConfigSet_TmpDirSize_AcceptedValues verifies the accepted patterns for tmp_dir_size.
 func TestConfigSet_TmpDirSize_AcceptedValues(t *testing.T) {
 	accepted := []string{"1000m", "2g", "512k", "1048576", "100M", "1G", "1K"}
 	for _, v := range accepted {
@@ -43,7 +40,6 @@ func TestConfigSet_TmpDirSize_AcceptedValues(t *testing.T) {
 	}
 }
 
-// TestConfigSet_TmpDirSize_RejectedValues verifies that invalid patterns are rejected.
 func TestConfigSet_TmpDirSize_RejectedValues(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -76,7 +72,6 @@ func TestConfigSet_TmpDirSize_RejectedValues(t *testing.T) {
 	}
 }
 
-// TestConfigSet_EmptyImage_Rejected verifies that blank image is rejected.
 func TestConfigSet_EmptyImage_Rejected(t *testing.T) {
 	for _, v := range []string{"", "   ", "\t"} {
 		t.Run("value:"+v, func(t *testing.T) {
@@ -93,7 +88,6 @@ func TestConfigSet_EmptyImage_Rejected(t *testing.T) {
 	}
 }
 
-// TestConfigSet_EmptyShell_Rejected verifies that blank shell is rejected.
 func TestConfigSet_EmptyShell_Rejected(t *testing.T) {
 	for _, v := range []string{"", "  "} {
 		t.Run("value:"+v, func(t *testing.T) {
@@ -110,8 +104,7 @@ func TestConfigSet_EmptyShell_Rejected(t *testing.T) {
 	}
 }
 
-// TestConfigSet_UnknownKey_ErrorMentionsValidKeys verifies that an unknown key
-// error lists all valid keys.
+// An unknown-key error must list all valid keys.
 func TestConfigSet_UnknownKey_ErrorMentionsValidKeys(t *testing.T) {
 	s := defaultSettings()
 	origImage := s.Image
@@ -132,7 +125,6 @@ func TestConfigSet_UnknownKey_ErrorMentionsValidKeys(t *testing.T) {
 		t.Errorf("error message %q should mention unknown key %q", msg, "bogus")
 	}
 
-	// Settings must not be mutated on unknown key.
 	if s.Image != origImage {
 		t.Errorf("Image mutated: %q", s.Image)
 	}
@@ -144,8 +136,7 @@ func TestConfigSet_UnknownKey_ErrorMentionsValidKeys(t *testing.T) {
 	}
 }
 
-// TestConfigList_DefaultSettings verifies that ConfigList returns all three keys
-// in registry order with the default values.
+// ConfigList must return all keys in registry order with default values.
 func TestConfigList_DefaultSettings(t *testing.T) {
 	s := defaultSettings()
 	entries := ConfigList(s)
@@ -170,7 +161,6 @@ func TestConfigList_DefaultSettings(t *testing.T) {
 	}
 }
 
-// TestConfigList_ReflectsSetValues verifies that ConfigList reflects mutated values.
 func TestConfigList_ReflectsSetValues(t *testing.T) {
 	s := defaultSettings()
 	if err := ConfigSet(s, "image", "custom-img"); err != nil {
@@ -194,29 +184,25 @@ func TestConfigList_ReflectsSetValues(t *testing.T) {
 	}
 }
 
-// TestConfigSet_NoMutationOnValidationError verifies that a failed set leaves
-// Settings completely unchanged.
+// A failed set must leave Settings completely unchanged.
 func TestConfigSet_NoMutationOnValidationError(t *testing.T) {
 	s := defaultSettings()
 	s.Image = "before"
 	s.Shell = "/bin/sh"
 	s.TmpDirSize = "200m"
 
-	// Try invalid tmp_dir_size.
 	_ = ConfigSet(s, "tmp_dir_size", "notvalid")
 	if s.TmpDirSize != "200m" {
 		t.Errorf("TmpDirSize mutated on error: got %q, want %q", s.TmpDirSize, "200m")
 	}
 
-	// Try empty image.
 	_ = ConfigSet(s, "image", "")
 	if s.Image != "before" {
 		t.Errorf("Image mutated on error: got %q, want %q", s.Image, "before")
 	}
 }
 
-// defaultSettings returns a Settings populated with the standard defaults,
-// mirroring what Load returns for a missing file.
+// defaultSettings mirrors what Load returns for a missing file.
 func defaultSettings() *Settings {
 	return &Settings{
 		Version:    CurrentVersion,

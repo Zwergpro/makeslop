@@ -107,10 +107,8 @@ func TestSpecArgs_EmptyMultiValueSlicesProduceNoFlags(t *testing.T) {
 	}
 }
 
-// A host path containing ',' (a CSV separator) must be wrapped as a whole
-// `"source=..."` field per RFC 4180. The target stays unquoted because it has
-// no CSV-special characters. Pinned because docker's --mount parser rejects
-// "bare \" in non-quoted-field" if the value (not the whole field) is quoted.
+// A host path with a comma must wrap the whole `"source=..."` field per RFC 4180;
+// quoting only the value (not the field) makes docker's --mount parser reject it.
 func TestSpecArgs_MountValuesQuoteCommaInPath(t *testing.T) {
 	spec := Spec{
 		Image:   "img",
@@ -131,20 +129,15 @@ func TestSpecArgs_MountValuesQuoteCommaInPath(t *testing.T) {
 	}
 }
 
-// Pin the actual contract — feed each emitted --mount argument through
-// encoding/csv (what docker's parser uses) and assert it yields exactly the
-// three logical fields type=bind, source=<host>, target=<container>. A prior
-// iteration emitted source="/path",target="/path" which RFC 4180 rejects as
-// "bare \" in non-quoted-field"; this test would have caught that regression.
-//
-// Only bind mounts are CSV-checked here; tmpfs mounts emit 2 fields
-// (type=tmpfs,target=...) and are covered by TestSpecArgs_TmpfsMountFlagShape.
+// Each emitted --mount arg must parse via encoding/csv (docker's parser) into
+// exactly three fields type=bind, source=<host>, target=<container>. A prior
+// iteration emitted source="/path",target="/path" which RFC 4180 rejects.
+// tmpfs mounts (2 fields) are covered by TestSpecArgs_TmpfsMountFlagShape.
 func TestSpecArgs_MountArgsParseAsRFC4180CSV(t *testing.T) {
 	spec := BuildSpec(sampleOptions())
 	args := spec.Args()
 
 	type pair struct{ host, container string }
-	// Collect bind mounts only (skip tmpfs entries).
 	want := make([]pair, 0, len(spec.Mounts))
 	for _, m := range spec.Mounts {
 		if m.Type != "tmpfs" {
@@ -319,11 +312,8 @@ func TestSpecArgs_TmpfsMountFlagShape(t *testing.T) {
 	}
 }
 
-// ── ShellCommand tests ────────────────────────────────────────────────────────
-
-// TestShellCommand_MinimalSpec_GoldenString tests ShellCommand against a
-// minimal hand-built Spec (not via BuildSpec) so the golden stays stable if
-// BuildSpec later adds new flags.
+// Uses a minimal hand-built Spec (not BuildSpec) so the golden stays stable if
+// BuildSpec later adds flags.
 func TestShellCommand_MinimalSpec_GoldenString(t *testing.T) {
 	spec := Spec{
 		Image:   "claudebox",
@@ -344,13 +334,11 @@ func TestShellCommand_MinimalSpec_GoldenString(t *testing.T) {
 	if got != want {
 		t.Errorf("ShellCommand mismatch\ngot:\n%s\n\nwant:\n%s", got, want)
 	}
-	// Final line must NOT have trailing backslash.
 	lines := strings.Split(got, "\n")
 	last := lines[len(lines)-1]
 	if strings.HasSuffix(last, `\`) {
 		t.Errorf("final line must not have trailing backslash: %q", last)
 	}
-	// All lines except the last must have trailing backslash.
 	for i, line := range lines[:len(lines)-1] {
 		if !strings.HasSuffix(line, ` \`) {
 			t.Errorf("line %d missing trailing backslash: %q", i, line)
@@ -414,7 +402,6 @@ func TestShellCommand_NilSlices_DegenerateCase(t *testing.T) {
 		// Mounts, Tmpfs, CapDrop, SecOpt all nil.
 	}
 	got := spec.ShellCommand()
-	// Must start with docker run and end without trailing backslash.
 	if !strings.HasPrefix(got, "docker run") {
 		t.Errorf("must start with 'docker run', got: %q", got)
 	}
@@ -422,7 +409,7 @@ func TestShellCommand_NilSlices_DegenerateCase(t *testing.T) {
 	if last := lines[len(lines)-1]; strings.HasSuffix(last, `\`) {
 		t.Errorf("final line must not end with backslash: %q", last)
 	}
-	// round-trip: parsed tokens must equal ["docker"] + Args()
+	// Round-trip: parsed tokens must equal ["docker"] + Args().
 	var parsed []string
 	for _, raw := range lines {
 		line := strings.TrimSuffix(raw, ` \`)
@@ -475,10 +462,6 @@ func shellUnquote(s string) string {
 	return s
 }
 
-// ── TmpDirSize tests ──────────────────────────────────────────────────────────
-
-// TestBuildSpec_TmpDirSize_Custom verifies that a custom TmpDirSize value is
-// reflected verbatim in Spec.Tmpfs and propagated through Args().
 func TestBuildSpec_TmpDirSize_Custom(t *testing.T) {
 	o := sampleOptions()
 	o.TmpDirSize = "1000m"
@@ -489,7 +472,6 @@ func TestBuildSpec_TmpDirSize_Custom(t *testing.T) {
 		t.Errorf("Tmpfs = %v, want %v", spec.Tmpfs, want)
 	}
 
-	// Verify Args() contains --tmpfs /tmp:size=1000m.
 	args := spec.Args()
 	found := false
 	for i := 0; i < len(args)-1; i++ {
@@ -503,8 +485,7 @@ func TestBuildSpec_TmpDirSize_Custom(t *testing.T) {
 	}
 }
 
-// TestShellCommand_TmpDirSize_Custom verifies that ShellCommand renders a
-// custom tmp_dir_size — the user-facing --dry-run verification path.
+// Renders custom tmp_dir_size via ShellCommand — the user-facing --dry-run path.
 func TestShellCommand_TmpDirSize_Custom(t *testing.T) {
 	o := sampleOptions()
 	o.TmpDirSize = "1000m"
@@ -516,11 +497,9 @@ func TestShellCommand_TmpDirSize_Custom(t *testing.T) {
 	}
 }
 
-// TestBuildSpec_TmpDirSize_DefaultPath verifies that the default (100m)
-// supplied by config.Load passes through unchanged when TmpDirSize = "100m".
+// The config.Load default (100m) must pass through unchanged.
 func TestBuildSpec_TmpDirSize_DefaultPath(t *testing.T) {
-	// sampleOptions() already sets TmpDirSize: "100m" — simulate Load-supplied default.
-	spec := BuildSpec(sampleOptions())
+	spec := BuildSpec(sampleOptions()) // sampleOptions sets TmpDirSize "100m"
 
 	want := []string{"/tmp:size=100m"}
 	if !reflect.DeepEqual(spec.Tmpfs, want) {
@@ -538,10 +517,7 @@ func collectMountArgs(argv []string) []string {
 	return out
 }
 
-// ── ReadOnly tests ────────────────────────────────────────────────────────────
-
-// TestBuildSpec_DefaultMountCount verifies that the default spec produces
-// exactly 8 mounts (no extra proxy or network mounts).
+// Default spec must produce exactly 8 mounts (no extra proxy/network mounts).
 func TestBuildSpec_DefaultMountCount(t *testing.T) {
 	spec := BuildSpec(sampleOptions())
 	if len(spec.Mounts) != 8 {
@@ -549,8 +525,7 @@ func TestBuildSpec_DefaultMountCount(t *testing.T) {
 	}
 }
 
-// TestSpecArgs_DefaultArgvHasNoNetworkOrEnv verifies that the default argv
-// contains no --network or -e flags (bridge networking, no env injections).
+// Default argv must contain no --network or -e flags (bridge, no env injection).
 func TestSpecArgs_DefaultArgvHasNoNetworkOrEnv(t *testing.T) {
 	spec := BuildSpec(sampleOptions())
 	args := spec.Args()
@@ -565,8 +540,6 @@ func TestSpecArgs_DefaultArgvHasNoNetworkOrEnv(t *testing.T) {
 	}
 }
 
-// TestSpecArgs_VolumeNameWithComma tests that a volume name containing a
-// comma is properly CSV-quoted in the --mount argument.
 func TestSpecArgs_VolumeNameWithComma(t *testing.T) {
 	spec := Spec{
 		Image:   "img",
@@ -667,8 +640,6 @@ func TestSpecArgs_MultiValueSlicesRepeatFlag(t *testing.T) {
 	}
 }
 
-// ── ContainerConfig tests ─────────────────────────────────────────────────────
-
 func TestContainerConfig_ImageCmdTTYStdin(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -707,7 +678,6 @@ func TestContainerConfig_ImageCmdTTYStdin(t *testing.T) {
 			if cfg.WorkingDir != tc.wantWd {
 				t.Errorf("WorkingDir = %q, want %q", cfg.WorkingDir, tc.wantWd)
 			}
-			// TTY and stdin flags must all be true.
 			if !cfg.Tty {
 				t.Error("Tty must be true")
 			}
@@ -727,8 +697,6 @@ func TestContainerConfig_ImageCmdTTYStdin(t *testing.T) {
 	}
 }
 
-// ── HostConfig tests ──────────────────────────────────────────────────────────
-
 func TestHostConfig_AutoRemoveCapDropSecOpt(t *testing.T) {
 	spec := BuildSpec(sampleOptions())
 	hc := spec.HostConfig()
@@ -744,8 +712,7 @@ func TestHostConfig_AutoRemoveCapDropSecOpt(t *testing.T) {
 	}
 }
 
-// TestHostConfig_NetworkModeIsAlwaysBridge verifies that HostConfig always uses
-// the default (empty) NetworkMode, which resolves to bridge networking.
+// Empty NetworkMode resolves to bridge networking.
 func TestHostConfig_NetworkModeIsAlwaysBridge(t *testing.T) {
 	spec := Spec{Image: "img", Command: "sh", Workdir: "/wd"}
 	hc := spec.HostConfig()
@@ -902,7 +869,6 @@ func TestHostConfig_ReadOnlyPropagated(t *testing.T) {
 }
 
 func TestHostConfig_VolumeMountTranslation(t *testing.T) {
-	// Verify that a volume type mount renders correctly in HostConfig.
 	spec := Spec{
 		Image:   "img",
 		Command: "sh",
@@ -940,7 +906,6 @@ func TestHostConfig_VolumeMountTranslation(t *testing.T) {
 }
 
 func TestHostConfig_MixedMountTypesOrder(t *testing.T) {
-	// Bind, tmpfs, and /dev/null masked-file mounts in one Spec.
 	spec := Spec{
 		Image:   "img",
 		Command: "sh",
@@ -966,14 +931,9 @@ func TestHostConfig_MixedMountTypesOrder(t *testing.T) {
 	}
 }
 
-// ── Drift-guard test ──────────────────────────────────────────────────────────
-
-// TestDriftGuard_ArgsAndSDKProjectionsAgree asserts that the argv projection
-// (Args/ShellCommand) and the SDK-struct projection (ContainerConfig/HostConfig)
-// agree on all semantically load-bearing fields for a representative Spec that
-// exercises masked files, masked dirs, env injection, and the default
-// security/network settings.
-// This catches silent drift where one projection is updated but not the other.
+// Catches silent drift: the argv projection (Args) and the SDK-struct projection
+// (ContainerConfig/HostConfig) must agree on every load-bearing field for a Spec
+// exercising masked files/dirs, env injection, and default security/network.
 func TestDriftGuard_ArgsAndSDKProjectionsAgree(t *testing.T) {
 	o := sampleOptions()
 	o.MaskedFiles = []string{
@@ -988,8 +948,7 @@ func TestDriftGuard_ArgsAndSDKProjectionsAgree(t *testing.T) {
 	cfg := spec.ContainerConfig()
 	hc := spec.HostConfig()
 
-	// --- image ---
-	// Args(): second-to-last element is image name.
+	// image: Args() second-to-last element is the image name.
 	if len(args) < 2 {
 		t.Fatal("args too short")
 	}
@@ -998,13 +957,11 @@ func TestDriftGuard_ArgsAndSDKProjectionsAgree(t *testing.T) {
 		t.Errorf("image: Args=%q, ContainerConfig=%q", argsImage, cfg.Image)
 	}
 
-	// --- command ---
 	argsCmd := args[len(args)-1]
 	if len(cfg.Cmd) != 1 || cfg.Cmd[0] != argsCmd {
 		t.Errorf("cmd: Args=%q, ContainerConfig.Cmd=%v", argsCmd, cfg.Cmd)
 	}
 
-	// --- workdir ---
 	argsWorkdir := ""
 	for i := 0; i < len(args)-1; i++ {
 		if args[i] == "--workdir" {
@@ -1015,7 +972,7 @@ func TestDriftGuard_ArgsAndSDKProjectionsAgree(t *testing.T) {
 		t.Errorf("workdir: Args=%q, ContainerConfig=%q", argsWorkdir, cfg.WorkingDir)
 	}
 
-	// --- env: collect -e values from Args and compare to ContainerConfig.Env ---
+	// env: -e values from Args must equal ContainerConfig.Env.
 	var argsEnv []string
 	for i := 0; i < len(args)-1; i++ {
 		if args[i] == "-e" {
@@ -1026,7 +983,6 @@ func TestDriftGuard_ArgsAndSDKProjectionsAgree(t *testing.T) {
 		t.Errorf("env: Args(-e values)=%v, ContainerConfig.Env=%v", argsEnv, cfg.Env)
 	}
 
-	// --- caps ---
 	var argsCaps []string
 	for i := 0; i < len(args)-1; i++ {
 		if args[i] == "--cap-drop" {
@@ -1037,7 +993,6 @@ func TestDriftGuard_ArgsAndSDKProjectionsAgree(t *testing.T) {
 		t.Errorf("cap-drop: Args=%v, HostConfig=%v", argsCaps, hc.CapDrop)
 	}
 
-	// --- secopt ---
 	var argsSecOpt []string
 	for i := 0; i < len(args)-1; i++ {
 		if args[i] == "--security-opt" {
@@ -1048,7 +1003,7 @@ func TestDriftGuard_ArgsAndSDKProjectionsAgree(t *testing.T) {
 		t.Errorf("security-opt: Args=%v, HostConfig=%v", argsSecOpt, hc.SecurityOpt)
 	}
 
-	// --- network: no --network flag should appear (default bridge) ---
+	// network: no --network flag (default bridge).
 	for i := 0; i < len(args)-1; i++ {
 		if args[i] == "--network" {
 			t.Errorf("unexpected --network at index %d (default bridge networking expected)", i)
@@ -1058,7 +1013,7 @@ func TestDriftGuard_ArgsAndSDKProjectionsAgree(t *testing.T) {
 		t.Errorf("HostConfig.NetworkMode = %q, want empty string (default bridge)", hc.NetworkMode)
 	}
 
-	// --- mounts: count bind/volume/tmpfs mounts in Args, compare to HostConfig ---
+	// mounts: bind/volume/tmpfs counts in Args must equal HostConfig.
 	argsMounts := collectMountArgs(args)
 	var argsBindCount, argsTmpfsCount, argsVolumeCount int
 	for _, raw := range argsMounts {
@@ -1092,7 +1047,7 @@ func TestDriftGuard_ArgsAndSDKProjectionsAgree(t *testing.T) {
 		t.Errorf("volume mount count: Args=%d, HostConfig=%d", argsVolumeCount, hcVolumeCount)
 	}
 
-	// --- AutoRemove: --rm in args <=> AutoRemove=true in HostConfig ---
+	// AutoRemove: --rm in args <=> HostConfig.AutoRemove.
 	argsHasRM := false
 	for _, a := range args {
 		if a == "--rm" {
@@ -1105,12 +1060,8 @@ func TestDriftGuard_ArgsAndSDKProjectionsAgree(t *testing.T) {
 	}
 }
 
-// ── Cache mount group tests ───────────────────────────────────────────────────
-
-// TestBuildSpec_CacheMountCombos exercises all 4 combos of MountAgentCache /
-// MountContentCache and asserts which per-workspace mounts are present or absent.
-// Global mounts (BaseDir/.claude/, .claude.json, .codex/) must always be present
-// regardless of the combination.
+// All 4 MountAgentCache/MountContentCache combos: per-workspace mounts toggle,
+// but global mounts (BaseDir/.claude/, .claude.json, .codex/) are always present.
 func TestBuildSpec_CacheMountCombos(t *testing.T) {
 	base := "/home/me/.makeslop"
 	ws := "/home/me/.makeslop/workspaces/myproj-abc123"
@@ -1186,8 +1137,7 @@ func TestBuildSpec_CacheMountCombos(t *testing.T) {
 	}
 }
 
-// TestBuildSpec_CacheMountCombos_Args ensures that when cache groups are
-// disabled, the corresponding paths are absent from Args() output.
+// Disabled cache groups must drop the corresponding paths from Args() output.
 func TestBuildSpec_CacheMountCombos_Args(t *testing.T) {
 	base := "/home/me/.makeslop"
 
@@ -1264,10 +1214,7 @@ func TestBuildSpec_CacheMountCombos_Args(t *testing.T) {
 	}
 }
 
-// ── Env injection tests ───────────────────────────────────────────────────────
-
-// TestArgs_EnvFlagsEmittedAfterSecOptBeforeMounts verifies that -e flags appear
-// in Args() after all --security-opt flags and before the first --mount flag.
+// -e flags must appear after all --security-opt and before the first --mount.
 func TestArgs_EnvFlagsEmittedAfterSecOptBeforeMounts(t *testing.T) {
 	o := sampleOptions()
 	o.Env = []string{"NODE_ENV=production", "PORT=3000"}
@@ -1295,16 +1242,14 @@ func TestArgs_EnvFlagsEmittedAfterSecOptBeforeMounts(t *testing.T) {
 	if firstEnv == -1 {
 		t.Fatal("-e flag not found in Args()")
 	}
-	// sampleOptions() always produces SecOpt via BuildSpec; assert it is present
-	// so that the boundary check is not silently skipped.
+	// Assert SecOpt present so the boundary check below is not vacuous.
 	if lastSecOpt == -1 {
 		t.Fatal("--security-opt not found in Args(); boundary check would be vacuous")
 	}
 	if firstEnv <= lastSecOpt {
 		t.Errorf("-e at %d appears before or at last --security-opt at %d; want after", firstEnv, lastSecOpt)
 	}
-	// sampleOptions() always produces mounts (MountAgentCache + MountContentCache = true);
-	// assert mount is present so the boundary check is not silently skipped.
+	// Assert a mount present so the boundary check below is not vacuous.
 	if firstMount == -1 {
 		t.Fatal("--mount not found in Args(); boundary check would be vacuous")
 	}
@@ -1312,7 +1257,6 @@ func TestArgs_EnvFlagsEmittedAfterSecOptBeforeMounts(t *testing.T) {
 		t.Errorf("-e at %d appears at or after first --mount at %d; want before", firstEnv, firstMount)
 	}
 
-	// Collect the -e values and confirm order + values.
 	var got []string
 	for i := 0; i < len(args)-1; i++ {
 		if args[i] == "-e" {
@@ -1324,7 +1268,6 @@ func TestArgs_EnvFlagsEmittedAfterSecOptBeforeMounts(t *testing.T) {
 	}
 }
 
-// TestShellCommand_EnvLinesRendered verifies that ShellCommand() renders -e lines.
 func TestShellCommand_EnvLinesRendered(t *testing.T) {
 	spec := Spec{
 		Image:   "img",
@@ -1344,7 +1287,6 @@ func TestShellCommand_EnvLinesRendered(t *testing.T) {
 	}
 }
 
-// TestContainerConfig_EnvPropagated verifies ContainerConfig().Env equals Spec.Env.
 func TestContainerConfig_EnvPropagated(t *testing.T) {
 	spec := Spec{
 		Image:   "img",
@@ -1358,36 +1300,31 @@ func TestContainerConfig_EnvPropagated(t *testing.T) {
 	}
 }
 
-// TestArgs_EmptyEnv_NoEFlag verifies that an empty Env produces no -e flags and
-// output byte-identical to a spec with nil Env (backward compatibility).
+// Empty Env must emit no -e flags and produce output byte-identical to nil Env
+// (backward compatibility).
 func TestArgs_EmptyEnv_NoEFlag(t *testing.T) {
-	oNil := sampleOptions() // Env is nil by default
+	oNil := sampleOptions() // Env nil by default
 	oEmpty := sampleOptions()
 	oEmpty.Env = []string{}
 
 	argsNil := BuildSpec(oNil).Args()
 	argsEmpty := BuildSpec(oEmpty).Args()
 
-	// No -e flag in nil-env case.
 	for i, a := range argsNil {
 		if a == "-e" {
 			t.Errorf("nil Env: unexpected -e at index %d", i)
 		}
 	}
-	// No -e flag in empty-env case.
 	for i, a := range argsEmpty {
 		if a == "-e" {
 			t.Errorf("empty Env: unexpected -e at index %d", i)
 		}
 	}
-	// Both should produce identical output.
 	if !reflect.DeepEqual(argsNil, argsEmpty) {
 		t.Errorf("nil Env vs empty Env produce different Args():\nnil:   %v\nempty: %v", argsNil, argsEmpty)
 	}
 }
 
-// TestBuildSpec_EnvDeterminism verifies that the same Env input produces the
-// same Spec output on repeated calls.
 func TestBuildSpec_EnvDeterminism(t *testing.T) {
 	o := sampleOptions()
 	o.Env = []string{"LOG_LEVEL=debug", "NODE_ENV=test", "PORT=8080"}
@@ -1403,9 +1340,7 @@ func TestBuildSpec_EnvDeterminism(t *testing.T) {
 	}
 }
 
-// TestDriftGuard_CacheMountCombos extends the drift-guard to cover all 4 combos
-// of MountAgentCache/MountContentCache — ensuring Args() and HostConfig() agree
-// on mount counts for each combination.
+// Drift-guard across all 4 cache combos: Args() and HostConfig() mount counts must agree.
 func TestDriftGuard_CacheMountCombos(t *testing.T) {
 	combos := []struct {
 		name              string
@@ -1446,7 +1381,6 @@ func TestDriftGuard_CacheMountCombos(t *testing.T) {
 					argsBindCount, hcBindCount, c.name)
 			}
 
-			// Also cross-check total mount counts (bind + tmpfs + volume) agree.
 			if len(argsMounts) != len(hc.Mounts) {
 				t.Errorf("total mount count: Args=%d, HostConfig=%d (combo: %s)",
 					len(argsMounts), len(hc.Mounts), c.name)

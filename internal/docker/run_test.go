@@ -24,13 +24,9 @@ func sampleSpec() Spec {
 	})
 }
 
-// ─── fakeClient: scripted apiClient for Run tests ────────────────────────────
-
-// fakeClient is a minimal fake apiClient that scripts the ContainerWait result
-// and can optionally fail on ContainerCreate, ContainerAttach, or ContainerStart.
-// It records which calls were made so tests can assert on them.
+// fakeClient scripts the ContainerWait result and can fail ContainerCreate,
+// ContainerAttach, or ContainerStart, recording which calls were made.
 type fakeClient struct {
-	// scripted behaviour
 	createErr     error // if non-nil, ContainerCreate returns this
 	attachErr     error // if non-nil, ContainerAttach returns this
 	startErr      error // if non-nil, ContainerStart returns this
@@ -38,7 +34,6 @@ type fakeClient struct {
 	waitErr       error  // if non-nil, sent on the error channel
 	attachPayload string // data that appears on the container's stdout
 
-	// observation
 	created    bool
 	attached   bool
 	wasStarted bool
@@ -60,7 +55,6 @@ func (f *fakeClient) ContainerAttach(_ context.Context, _ string, _ moby.Contain
 		return moby.ContainerAttachResult{}, f.attachErr
 	}
 
-	// Set up a pipe so we can write attachPayload and have it appear on the read side.
 	pr, pw := net.Pipe()
 
 	// Write the scripted payload then close the write side so the pump goroutine ends.
@@ -124,8 +118,6 @@ func (f *fakeClient) Close() error {
 	return nil
 }
 
-// ─── run() unit tests ─────────────────────────────────────────────────────────
-
 func TestRun_NoTTY_ReturnsSentinel_NoClientCall(t *testing.T) {
 	fc := &fakeClient{}
 	d := newDockerWithClient(t, fc,
@@ -141,8 +133,6 @@ func TestRun_NoTTY_ReturnsSentinel_NoClientCall(t *testing.T) {
 	}
 }
 
-// TestRun_ExitMapping_ZeroCode: status 0 → nil error.
-// Exercises the real exit-mapping logic in runContainer via d.Run().
 func TestRun_ExitMapping_ZeroCode(t *testing.T) {
 	fc := &fakeClient{waitResult: container.WaitResponse{StatusCode: 0}}
 	d := newDockerWithClient(t, fc, WithTTYCheck(alwaysTTY), WithRawMode(noopMakeRaw))
@@ -151,7 +141,6 @@ func TestRun_ExitMapping_ZeroCode(t *testing.T) {
 	}
 }
 
-// TestRun_ExitMapping_NonZero: non-zero StatusCode → *ExitError.
 func TestRun_ExitMapping_NonZero(t *testing.T) {
 	fc := &fakeClient{waitResult: container.WaitResponse{StatusCode: 42}}
 	d := newDockerWithClient(t, fc, WithTTYCheck(alwaysTTY), WithRawMode(noopMakeRaw))
@@ -165,7 +154,7 @@ func TestRun_ExitMapping_NonZero(t *testing.T) {
 	}
 }
 
-// TestRun_ExitMapping_Signal: daemon reports 137 (128+SIGKILL) → ExitError{137}.
+// 137 (128+SIGKILL) reported by the daemon passes through as ExitError{137}.
 func TestRun_ExitMapping_Signal(t *testing.T) {
 	fc := &fakeClient{waitResult: container.WaitResponse{StatusCode: 137}}
 	d := newDockerWithClient(t, fc, WithTTYCheck(alwaysTTY), WithRawMode(noopMakeRaw))
@@ -179,7 +168,7 @@ func TestRun_ExitMapping_Signal(t *testing.T) {
 	}
 }
 
-// TestRun_ExitMapping_WaitExitError: WaitExitError → plain error (not *ExitError).
+// A WaitExitError must surface as a plain error, never *ExitError.
 func TestRun_ExitMapping_WaitExitError(t *testing.T) {
 	fc := &fakeClient{waitResult: container.WaitResponse{
 		StatusCode: 1,
@@ -199,8 +188,7 @@ func TestRun_ExitMapping_WaitExitError(t *testing.T) {
 	}
 }
 
-// TestRun_StartFailure_ForcesRemove: when ContainerStart fails, the deferred
-// best-effort force-remove must fire.
+// ContainerStart failure must fire the deferred best-effort force-remove.
 func TestRun_StartFailure_ForcesRemove(t *testing.T) {
 	startErr := errors.New("image not found")
 	fc := &fakeClient{startErr: startErr}
@@ -221,8 +209,7 @@ func TestRun_StartFailure_ForcesRemove(t *testing.T) {
 	}
 }
 
-// TestRun_CtxCancel_ForcesRemove: on context cancellation the deferred
-// force-remove must fire.
+// Context cancellation must fire the deferred force-remove.
 func TestRun_CtxCancel_ForcesRemove(t *testing.T) {
 	bwc := newBlockingWaitClient()
 	d := newDockerWithClient(t, bwc,
@@ -236,8 +223,7 @@ func TestRun_CtxCancel_ForcesRemove(t *testing.T) {
 		done <- d.Run(ctx, sampleSpec())
 	}()
 
-	// Cancel after the container "started".
-	<-bwc.startedCh
+	<-bwc.startedCh // cancel only after the container "started"
 	cancel()
 
 	select {
@@ -256,7 +242,6 @@ func TestRun_CtxCancel_ForcesRemove(t *testing.T) {
 	}
 }
 
-// ExitError string test.
 func TestExitError_ErrorString(t *testing.T) {
 	e := &ExitError{Code: 137}
 	want := "container exited with code 137"
@@ -265,7 +250,6 @@ func TestExitError_ErrorString(t *testing.T) {
 	}
 }
 
-// TestRun_ContainerCreate_Failure: ContainerCreate error surfaces immediately.
 func TestRun_ContainerCreate_Failure(t *testing.T) {
 	createErr := errors.New("no such image")
 	fc := &fakeClient{createErr: createErr}
@@ -287,7 +271,6 @@ func TestRun_ContainerCreate_Failure(t *testing.T) {
 	}
 }
 
-// TestRun_ContainerAttach_Failure: ContainerAttach error fires deferred remove.
 func TestRun_ContainerAttach_Failure(t *testing.T) {
 	attachErr := errors.New("stream attach refused")
 	fc := &fakeClient{attachErr: attachErr}
@@ -309,7 +292,7 @@ func TestRun_ContainerAttach_Failure(t *testing.T) {
 	}
 }
 
-// TestRun_WaitErrorChannel: wr.Error channel path in run() surfaces correctly.
+// Exercises the wr.Error channel path in run().
 func TestRun_WaitErrorChannel(t *testing.T) {
 	waitErr := errors.New("daemon connection lost")
 	fc := &fakeClient{waitErr: waitErr}
@@ -327,8 +310,7 @@ func TestRun_WaitErrorChannel(t *testing.T) {
 	}
 }
 
-// blockingWaitClient is a fake apiClient whose ContainerWait blocks until the
-// test's context is cancelled.
+// blockingWaitClient's ContainerWait blocks until the test context is cancelled.
 type blockingWaitClient struct {
 	fakeClient
 	startedCh chan struct{}
@@ -351,16 +333,14 @@ func (b *blockingWaitClient) ContainerWait(ctx context.Context, _ string, _ moby
 func (b *blockingWaitClient) ContainerStart(_ context.Context, _ string, _ moby.ContainerStartOptions) (moby.ContainerStartResult, error) {
 	b.wasStarted = true
 	select {
-	case <-b.startedCh:
-		// already closed — no-op
+	case <-b.startedCh: // already closed — no-op
 	default:
 		close(b.startedCh)
 	}
 	return moby.ContainerStartResult{}, nil
 }
 
-// TestDocker_Close_PropagatedToClient verifies that d.Close() calls Close on the
-// underlying apiClient, ensuring the transport is released.
+// d.Close() must propagate to the underlying apiClient to release the transport.
 func TestDocker_Close_PropagatedToClient(t *testing.T) {
 	fc := &fakeClient{}
 	d, err := New(WithClient(fc))

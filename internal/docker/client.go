@@ -8,9 +8,8 @@ import (
 	moby "github.com/moby/moby/client"
 )
 
-// apiClient is the narrow subset of the moby/moby/client.APIClient interface
-// that this package actually uses. *client.Client satisfies it (see the
-// compile-time assertion below). Tests inject a fake via WithClient.
+// apiClient is the narrow subset of moby's client.APIClient this package uses.
+// *moby.Client satisfies it (see assertion below); tests inject a fake via WithClient.
 type apiClient interface {
 	ContainerCreate(ctx context.Context, options moby.ContainerCreateOptions) (moby.ContainerCreateResult, error)
 	ContainerAttach(ctx context.Context, container string, options moby.ContainerAttachOptions) (moby.ContainerAttachResult, error)
@@ -25,12 +24,11 @@ type apiClient interface {
 	Close() error
 }
 
-// compile-time assertion: *moby.Client must satisfy apiClient.
+// Guards against moby SDK signature drift.
 var _ apiClient = (*moby.Client)(nil)
 
-// newClient constructs a Docker client from the environment
-// (DOCKER_HOST, DOCKER_TLS_VERIFY, DOCKER_CERT_PATH, DOCKER_API_VERSION).
-// It does not dial — the connection is lazy.
+// newClient builds a Docker client from the environment (DOCKER_HOST etc.).
+// The connection is lazy — it does not dial.
 func newClient() (apiClient, error) {
 	return moby.New(moby.FromEnv)
 }

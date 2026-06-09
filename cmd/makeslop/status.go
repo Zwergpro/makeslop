@@ -18,7 +18,6 @@ import (
 	"github.com/Zwergpro/makeslop/internal/workspace"
 )
 
-// checkState represents the outcome of a single status check.
 type checkState string
 
 const (
@@ -28,7 +27,7 @@ const (
 	checkInfo checkState = "info"
 )
 
-// statusGlyphs maps each check state to its TTY glyph and plain-text fallback.
+// statusGlyphs maps each state to its TTY glyph and plain-text fallback.
 var statusGlyphs = map[checkState]struct{ tty, plain string }{
 	checkOK:   {"✓", "[ok]"},
 	checkFail: {"✗", "[fail]"},
@@ -36,26 +35,22 @@ var statusGlyphs = map[checkState]struct{ tty, plain string }{
 	checkInfo: {"–", "[–]"},
 }
 
-// statusCheck is the result of one ordered status check.
 type statusCheck struct {
 	Name   string     `json:"name"`
 	State  checkState `json:"state"`
 	Detail string     `json:"detail"`
 }
 
-// statusResult is the full status output for --json mode.
 type statusResult struct {
 	Checks []statusCheck `json:"checks"`
 	Ready  bool          `json:"ready"`
 }
 
-// isTTYFunc is the injectable predicate used by the status renderer to decide
-// whether to emit ANSI color / glyphs. Tests inject a func returning false to
-// get plain text output without needing a real PTY.
+// isTTYFunc decides whether to emit color/glyphs; tests inject one returning
+// false to get plain output without a real PTY.
 type isTTYFunc func(w io.Writer) bool
 
-// defaultIsTTY returns true when w is os.Stderr and it is a TTY, and NO_COLOR
-// is unset. It casts w to *os.File for the fd test; any non-file writer → false.
+// defaultIsTTY reports whether w is a TTY *os.File and NO_COLOR is unset.
 func defaultIsTTY(w io.Writer) bool {
 	if os.Getenv("NO_COLOR") != "" {
 		return false
@@ -64,12 +59,11 @@ func defaultIsTTY(w io.Writer) bool {
 	if !ok {
 		return false
 	}
-	// fd 2 is stderr; we only color stderr output.
 	return term.IsTerminal(int(f.Fd()))
 }
 
-// renderChecks writes the aligned check lines and the verdict line to w.
-// isTTY controls glyph/color output; when false plain ASCII is used.
+// renderChecks writes the aligned check lines and verdict to w; tty selects
+// Unicode glyphs over plain ASCII.
 func renderChecks(w io.Writer, checks []statusCheck, ready bool, tty bool) {
 	type row struct {
 		glyph  string
@@ -90,8 +84,7 @@ func renderChecks(w io.Writer, checks []statusCheck, ready bool, tty bool) {
 		rows[i] = row{glyph: g, name: c.Name, detail: c.Detail}
 	}
 
-	// Compute column widths in rune count so that Unicode glyphs (3 bytes each)
-	// and ASCII bracket glyphs (e.g. "[ok]") align correctly in the same output.
+	// Rune-count widths so multi-byte Unicode glyphs align with ASCII bracket glyphs.
 	maxGlyph := 0
 	maxName := 0
 	for _, r := range rows {
@@ -115,7 +108,7 @@ func renderChecks(w io.Writer, checks []statusCheck, ready bool, tty bool) {
 	if ready {
 		fmt.Fprintln(w, "  ready")
 	} else {
-		// Emit the first failing check's remedy as the next action.
+		// Next action is the first failing check's remedy.
 		for _, c := range checks {
 			if c.State == checkFail {
 				fmt.Fprintf(w, "  not ready — %s\n", c.Detail)
@@ -126,17 +119,14 @@ func renderChecks(w io.Writer, checks []statusCheck, ready bool, tty bool) {
 	}
 }
 
-// runStatus implements the status command. It is a separate function so tests
-// can inject the isTTY predicate for plain-output assertions.
 func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, jsonMode bool, ttyPred isTTYFunc, deps dockerDeps) error {
 	ctx := cmd.Context()
 	stderr := cmd.ErrOrStderr()
 
 	var checks []statusCheck
-	ready := true // guilty when any blocking check fails
+	ready := true // cleared when any blocking check fails
 
-	// 1. Daemon check
-	// Bound by preflightTimeout so a black-hole DOCKER_HOST does not hang forever.
+	// 1. Daemon — bounded by preflightTimeout so a black-hole DOCKER_HOST cannot hang.
 	var daemonErr error
 	{
 		pfCtx, pfCancel := docker.WithPreflightTimeout(ctx)
@@ -157,9 +147,7 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, jso
 		})
 	}
 
-	// 2. Base config check
-	// loadedSettings is set when config loads successfully; shared with the
-	// image check below to avoid a second Load call.
+	// 2. Base config. loadedSettings is reused by the image check to avoid a second Load.
 	var loadedSettings *config.Settings
 	exists, err := config.BaseConfigExists(baseDir)
 	if err != nil {
@@ -194,7 +182,7 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, jso
 					State:  checkWarn,
 					Detail: fmt.Sprintf("v%d (latest: v%d) — run 'makeslop migrate'", current, latest),
 				})
-				// Non-blocking: stale config does not prevent "ready"
+				// stale is non-blocking
 			} else {
 				checks = append(checks, statusCheck{
 					Name:  "base config",
@@ -204,8 +192,7 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, jso
 		}
 	}
 
-	// 3. Image check
-	// Bound by preflightTimeout.
+	// 3. Image — bounded by preflightTimeout.
 	imageName := config.DefaultImage
 	if loadedSettings != nil {
 		imageName = loadedSettings.Image
@@ -238,7 +225,7 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, jso
 		})
 	}
 
-	// 4. Workspace check
+	// 4. Workspace
 	var pwd string
 	var workspaceRoot string
 	pwd, err = resolvePwd()
@@ -274,8 +261,7 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, jso
 		}
 	}
 
-	// 5. Secret scan summary (non-blocking)
-	// Only run when workspace was successfully resolved.
+	// 5. Secret scan summary (non-blocking), only when workspace resolved.
 	if workspaceRoot != "" {
 		yamlExcludes, _, _, pcErr := projectconfig.Load(workspaceRoot)
 		if pcErr != nil {
@@ -306,14 +292,12 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, jso
 			}
 		}
 	} else {
-		// Workspace not resolved: report scan as info only
 		checks = append(checks, statusCheck{
 			Name:  "secret scan",
 			State: checkInfo,
 		})
 	}
 
-	// Output
 	if jsonMode {
 		result := statusResult{Checks: checks, Ready: ready}
 		enc := json.NewEncoder(cmd.OutOrStdout())
@@ -332,11 +316,6 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, jso
 	return nil
 }
 
-// newStatusCmd constructs and returns the `status` cobra command.
-// ws is the workspace registry; baseDir is the makeslop home.
-// ttyPred is the injectable TTY predicate (use defaultIsTTY for production).
-// deps is the docker dependency bundle (use production deps from newRootCmd, or
-// inject fakes in tests via newRootCmdWithDeps).
 func newStatusCmd(ws *workspace.Workspaces, baseDir string, ttyPred isTTYFunc, deps dockerDeps) *cobra.Command {
 	var jsonMode bool
 

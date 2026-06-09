@@ -571,16 +571,14 @@ func TestFindAncestor_StopsAtRoot(t *testing.T) {
 	w := New(base)
 	s := &config.Settings{Version: config.CurrentVersion, Workspaces: map[string]config.Workspace{}}
 
-	// Empty settings + deep path: must terminate at the filesystem root.
+	// Deep path with no matches must terminate at the filesystem root.
 	_, _, ok := w.findAncestor(s, "/a/b/c/d/e/f")
 	if ok {
 		t.Errorf("findAncestor returned ok=true on empty settings")
 	}
 }
 
-// TestInit_ConcurrentDistinctPwdsAllRegistered is the lost-update regression
-// test: N concurrent Init calls for N distinct pwds under one baseDir must all
-// end up registered in settings.json (none silently dropped).
+// Lost-update regression: N concurrent Inits for distinct pwds must all persist.
 func TestInit_ConcurrentDistinctPwdsAllRegistered(t *testing.T) {
 	base := t.TempDir()
 	w := New(base)

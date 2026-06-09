@@ -1,6 +1,5 @@
-// Package assets embeds static files that are compiled into the makeslop binary.
-// Consumers reference the exported variables directly; the binary becomes the
-// single source of truth for these files at build time.
+// Package assets embeds static files into the makeslop binary, making the
+// binary the single source of truth for them.
 package assets
 
 import _ "embed"

@@ -51,11 +51,10 @@ func (w *Workspaces) Lookup(pwd string) (matchedRoot, cacheDir string, err error
 	return matched, filepath.Join(w.baseDir, config.WorkspacesDir, ws.Name), nil
 }
 
-// Init is idempotent: registering an already-known pwd (or ancestor) is a no-op.
-// pwd must be absolute and EvalSymlinks-evaluated.
-//
-// The Load→mutate→Save sequence is protected by config.WithLock so concurrent
-// Init calls for distinct paths all persist without lost updates.
+// Init registers pwd (absolute, EvalSymlinks-evaluated); registering an
+// already-known pwd or ancestor is a no-op. The Load→mutate→Save sequence runs
+// under config.WithLock so concurrent Init calls for distinct paths don't lose
+// updates.
 func (w *Workspaces) Init(pwd string) (string, error) {
 	var workspaceDir string
 	err := config.WithLock(w.baseDir, func() error {
@@ -68,7 +67,6 @@ func (w *Workspaces) Init(pwd string) (string, error) {
 			return nil
 		}
 		ws := config.Workspace{Name: workspaceName(pwd), CreatedAt: time.Now().UTC()}
-		// config.Load guarantees a non-nil Workspaces map.
 		s.Workspaces[pwd] = ws
 		workspaceDir = filepath.Join(w.baseDir, config.WorkspacesDir, ws.Name)
 		if err := os.MkdirAll(workspaceDir, 0o755); err != nil {
