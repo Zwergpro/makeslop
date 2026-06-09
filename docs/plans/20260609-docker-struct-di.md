@@ -266,19 +266,19 @@ pattern (`status.go:338`). Without it, Task 4 cannot inject fakes.
 **Files:**
 - Modify: `cmd/makeslop/main_test.go`, `cmd/makeslop/status_test.go`, `cmd/makeslop/main.go`
 
-- [ ] add an in-package fake (e.g. `fakeDocker` implementing all four consumer
+- [x] add an in-package fake (e.g. `fakeDocker` implementing all four consumer
       interfaces with scripted exit code / ping err / image-missing / build opts
       capture, mirroring the old `FakeRunClient`/`FakeBuildClient` fields)
-- [ ] replace the 8 `docker.SetClientForTest(docker.NewFakeRunClient(n))` sites + 5
+- [x] replace the 8 `docker.SetClientForTest(docker.NewFakeRunClient(n))` sites + 5
       `SetTTYCheckForTest`/`SetTermMakeRawForTest` sites with `fakeDocker` injection via
       the Task-3 `newRootCmdWithDeps` seam. Do it **incrementally**, one test function
       at a time, running `go test ./cmd/makeslop/` frequently.
-- [ ] replace the `onContextForTest` global usage (main_test.go ~3811–3828) with an
+- [x] replace the `onContextForTest` global usage (main_test.go ~3811–3828) with an
       explicit observer field/param on the cmd wiring; delete the
       `var onContextForTest` global from `main.go`
-- [ ] update `status_test.go`'s 2 sites (`installFakeStatusClient`) to inject a
+- [x] update `status_test.go`'s 2 sites (`installFakeStatusClient`) to inject a
       `daemonChecker`/`imageChecker` fake
-- [ ] run `go test ./cmd/makeslop/` — must pass before next task
+- [x] run `go test ./cmd/makeslop/` — must pass before next task
 
 > Note: the genuinely heaviest test rewrite is Task 2's `run_test.go`/`build_test.go`
 > (direct `run()`/`build()` helper calls being deleted), not this task — the cmd

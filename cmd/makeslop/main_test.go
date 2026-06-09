@@ -5,14 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
-
-	"golang.org/x/term"
 
 	"github.com/Zwergpro/makeslop/internal/assets"
 	"github.com/Zwergpro/makeslop/internal/config"
@@ -21,10 +21,75 @@ import (
 	"github.com/Zwergpro/makeslop/internal/workspace"
 )
 
-// Tests in this file swap docker.ttyCheck and docker.newClientFn via the
-// package-level SetForTest helpers. Do not add t.Parallel() to tests that
-// touch those swaps — the underlying state is process-global.
+// fakeDocker is an in-package boundary fake that satisfies all four consumer
+// interfaces (containerRunner, imageBuilder, daemonChecker, imageChecker).
+// Tests inject it via newRootCmdWithDeps to avoid touching package-level globals.
+type fakeDocker struct {
+	// Run behavior
+	exitCode int
+	isTTY    bool   // if false, Run returns docker.ErrNoTTY
+	Started  bool   // set to true when Run is called and TTY check passes
 
+	// Pre-flight / daemon behavior
+	PingErr      error // if non-nil, CheckDaemon returns this
+	ImageMissing bool  // if true, ImageExists returns (false, nil)
+	ImageErr     error // if non-nil (and ImageMissing false), ImageExists returns (false, err)
+
+	// Build behavior
+	BuildErr      error               // if non-nil, Build returns this
+	LastBuildOpts docker.BuildOptions // records the most recent Build call's options
+}
+
+// newFakeDocker creates a fakeDocker with a scripted run exit code and TTY setting.
+// isTTY=true means Run will succeed (TTY present); isTTY=false means it returns ErrNoTTY.
+func newFakeDocker(exitCode int, isTTY bool) *fakeDocker {
+	return &fakeDocker{exitCode: exitCode, isTTY: isTTY}
+}
+
+// Run implements containerRunner. It checks TTY, marks Started, and returns an
+// ExitError for non-zero exit codes.
+func (f *fakeDocker) Run(_ context.Context, _ docker.Spec) error {
+	if !f.isTTY {
+		return docker.ErrNoTTY
+	}
+	f.Started = true
+	if f.exitCode != 0 {
+		return &docker.ExitError{Code: f.exitCode}
+	}
+	return nil
+}
+
+// Build implements imageBuilder. It records options and returns BuildErr if set.
+func (f *fakeDocker) Build(_ context.Context, o docker.BuildOptions, _, _ io.Writer) error {
+	f.LastBuildOpts = o
+	if f.BuildErr != nil {
+		return f.BuildErr
+	}
+	return nil
+}
+
+// CheckDaemon implements daemonChecker.
+func (f *fakeDocker) CheckDaemon(_ context.Context) error {
+	if f.PingErr != nil {
+		return &docker.ErrDaemonUnreachable{Cause: f.PingErr}
+	}
+	return nil
+}
+
+// ImageExists implements imageChecker.
+func (f *fakeDocker) ImageExists(_ context.Context, _ string) (bool, error) {
+	if f.ImageMissing {
+		return false, nil
+	}
+	if f.ImageErr != nil {
+		return false, f.ImageErr
+	}
+	return true, nil
+}
+
+// runCmd executes the cobra command tree with the given args against a fresh
+// production root (no fake docker — docker-touching commands will use the live
+// client factory). Use runCmdWithDeps for tests that need a fake docker.
 func runCmd(t *testing.T, baseDir string, args ...string) (stdout, stderr string, err error) {
 	t.Helper()
 	cmd := newRootCmd(baseDir)
@@ -34,6 +99,46 @@ func runCmd(t *testing.T, baseDir string, args ...string) (stdout, stderr string
 	cmd.SetArgs(args)
 	err = cmd.Execute()
 	return out.String(), errBuf.String(), err
+}
+
+// runCmdWithDeps executes the cobra command tree with injected dockerDeps.
+// Use this for tests that need a fake docker without touching package-level globals.
+func runCmdWithDeps(t *testing.T, baseDir string, deps dockerDeps, args ...string) (stdout, stderr string, err error) {
+	t.Helper()
+	cmd := newRootCmdWithDeps(baseDir, deps)
+	var out, errBuf bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errBuf)
+	cmd.SetArgs(args)
+	err = cmd.Execute()
+	return out.String(), errBuf.String(), err
+}
+
+// depsFrom wraps a single fakeDocker into a dockerDeps struct.
+func depsFrom(f *fakeDocker) dockerDeps {
+	return dockerDeps{runner: f, builder: f, daemon: f, image: f}
+}
+
+// runWithExitCodeAndDeps is the test-only analogue of runWithExitCode that
+// accepts injected dockerDeps. It uses context.Background() (no signal wiring)
+// since test processes do not need signal cancellation.
+func runWithExitCodeAndDeps(baseDir string, stdout, stderr io.Writer, deps dockerDeps, args []string) int {
+	cmd := newRootCmdWithDeps(baseDir, deps)
+	cmd.SetArgs(args)
+	cmd.SetOut(stdout)
+	cmd.SetErr(stderr)
+	err := cmd.ExecuteContext(context.Background())
+	if err == nil {
+		return 0
+	}
+	var de *docker.ExitError
+	if errors.As(err, &de) {
+		return de.Code
+	}
+	if !errors.Is(err, errSilent) {
+		fmt.Fprintf(stderr, "makeslop: %v\n", err)
+	}
+	return 1
 }
 
 func snapshotTree(t *testing.T, root string) map[string][]byte {
@@ -209,32 +314,33 @@ func TestInit_FromScratch(t *testing.T) {
 	}
 }
 
-// installFakeRunClient installs a fake docker client that returns the given exit
-// code from ContainerWait and stubs out the TTY raw-mode call so tests work
-// without a real PTY. Returns the fake so tests can inspect fc.Started.
-func installFakeRunClient(t *testing.T, exitCode int) *docker.FakeRunClient {
+// installFakeRunClient creates a fakeDocker (TTY=true by default) and returns it.
+// Tests must call runCmdWithDeps(t, baseDir, depsFrom(fc), args...) to use it.
+// The fake records fc.Started when Run is called.
+func installFakeRunClient(t *testing.T, exitCode int) *fakeDocker {
 	t.Helper()
-	fc := docker.NewFakeRunClient(exitCode)
-	t.Cleanup(docker.SetClientForTest(fc))
-	// Stub term.MakeRaw: tests run without a real PTY, so raw mode would fail.
-	t.Cleanup(docker.SetTermMakeRawForTest(func(_ int) (*term.State, error) {
-		return nil, nil
-	}))
-	return fc
+	return newFakeDocker(exitCode, true)
 }
 
-func stubTTY(t *testing.T, ok bool) {
-	t.Helper()
-	t.Cleanup(docker.SetTTYCheckForTest(func() bool { return ok }))
+// stubTTY is a no-op marker function kept for migration clarity. Because
+// fakeDocker.Run checks f.isTTY, callers should set fake.isTTY directly or use
+// newFakeDocker(exitCode, isTTY). This function exists only to ease incremental
+// migration of tests that call stubTTY before they are fully converted.
+// It is intentionally empty — TTY is now set per-fake, not globally.
+func stubTTY(_ *testing.T, _ bool) {
+	// TTY state is carried in fakeDocker.isTTY, not a global.
+	// Callers that still use the global seam path should migrate to fakeDocker.
 }
 
-// installFakeBuildClient installs a fake docker client that records
-// ImageBuildOptions and returns exitCode (0 = success, non-zero = error).
-func installFakeBuildClient(t *testing.T, exitCode int) *docker.FakeBuildClient {
+// installFakeBuildClient creates a fakeDocker configured for build tests and
+// returns it. Tests must call runCmdWithDeps(t, baseDir, depsFrom(fbc), args...).
+func installFakeBuildClient(t *testing.T, exitCode int) *fakeDocker {
 	t.Helper()
-	fbc := docker.NewFakeBuildClient(exitCode)
-	t.Cleanup(docker.SetClientForTest(fbc))
-	return fbc
+	fd := &fakeDocker{}
+	if exitCode != 0 {
+		fd.BuildErr = fmt.Errorf("build exited with code %d", exitCode)
+	}
+	return fd
 }
 
 // Milestone-1 regression guard: makeslop go must not print the cache path on stdout.
@@ -250,11 +356,10 @@ func TestRun_AfterInit_LaunchesDocker(t *testing.T) {
 	}
 	workspaceDir := strings.TrimSpace(initOut)
 
-	fc := installFakeRunClient(t, 0)
-	stubTTY(t, true)
+	fc := newFakeDocker(0, true)
 
 	snapBefore := snapshotTree(t, baseDir)
-	stdout, stderr, err := runCmd(t, baseDir, "run")
+	stdout, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fc), "run")
 	if err != nil {
 		t.Fatalf("root failed: %v; stderr=%q", err, stderr)
 	}
@@ -302,10 +407,9 @@ func TestRun_FromSubdirectory_MountsRegisteredAncestor(t *testing.T) {
 	}
 	t.Chdir(sub)
 
-	fc := installFakeRunClient(t, 0)
-	stubTTY(t, true)
+	fc := newFakeDocker(0, true)
 
-	if _, _, err := runCmd(t, baseDir, "run"); err != nil {
+	if _, _, err := runCmdWithDeps(t, baseDir, depsFrom(fc), "run"); err != nil {
 		t.Fatalf("root failed: %v", err)
 	}
 
@@ -347,10 +451,9 @@ func TestRun_Unregistered_DoesNotInvokeDocker(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	fc := installFakeRunClient(t, 0)
-	stubTTY(t, true)
+	fc := newFakeDocker(0, true)
 
-	_, stderr, err := runCmd(t, baseDir, "run")
+	_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fc), "run")
 	if err == nil {
 		t.Fatalf("expected error from unregistered makeslop go, got nil")
 	}
@@ -372,10 +475,10 @@ func TestRun_NoTTY_FailsBeforeDocker(t *testing.T) {
 	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
 		t.Fatalf("init failed: %v", err)
 	}
-	fc := installFakeRunClient(t, 0)
-	// Do NOT stub ttyCheck — the real predicate returns false under go test.
+	// isTTY=false simulates the go test environment (no real PTY).
+	fc := newFakeDocker(0, false)
 
-	_, stderr, err := runCmd(t, baseDir, "run")
+	_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fc), "run")
 	if err == nil {
 		t.Fatalf("expected error when stdin/stdout are not TTYs, got nil")
 	}
@@ -402,12 +505,11 @@ func TestRun_ExitCodePropagation(t *testing.T) {
 	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
 		t.Fatalf("init failed: %v", err)
 	}
-	// Fake client returns StatusCode 42; runWithExitCode must propagate it.
-	installFakeRunClient(t, 42)
-	stubTTY(t, true)
+	// Fake client returns ExitError{42}; runWithExitCode must propagate it.
+	fc := newFakeDocker(42, true)
 
 	var stdout, stderr bytes.Buffer
-	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"run"})
+	code := runWithExitCodeAndDeps(baseDir, &stdout, &stderr, depsFrom(fc), []string{"run"})
 	if code != 42 {
 		t.Errorf("runWithExitCode = %d, want 42; stderr=%q", code, stderr.String())
 	}
@@ -429,12 +531,11 @@ func TestRunWithExitCode_DaemonReports137_MapsTo137(t *testing.T) {
 		t.Fatalf("init failed: %v", err)
 	}
 
-	// Fake client returns StatusCode 137 (128 + SIGKILL).
-	installFakeRunClient(t, 137)
-	stubTTY(t, true)
+	// Fake client returns ExitError{137} (128 + SIGKILL).
+	fc := newFakeDocker(137, true)
 
 	var stdout, stderr bytes.Buffer
-	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"run"})
+	code := runWithExitCodeAndDeps(baseDir, &stdout, &stderr, depsFrom(fc), []string{"run"})
 	if code != 137 {
 		t.Errorf("runWithExitCode = %d, want 137 (daemon-reported 128+SIGKILL); stderr=%q", code, stderr.String())
 	}
@@ -487,7 +588,7 @@ func TestRunWithExitCode_NonExitErrorPrintsPrefix(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"run"})
+	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"run"}, nil)
 	if code != 1 {
 		t.Errorf("exit code = %d, want 1", code)
 	}
@@ -758,11 +859,10 @@ func TestRun_OutsideHome_Refuses(t *testing.T) {
 	outsidePwd := t.TempDir()
 	t.Chdir(outsidePwd)
 
-	fc := installFakeRunClient(t, 0)
-	stubTTY(t, true)
+	fc := newFakeDocker(0, true)
 
 	snapBefore := snapshotTree(t, baseDir)
-	_, stderr, err := runCmd(t, baseDir, "run")
+	_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fc), "run")
 	if err == nil {
 		t.Fatalf("expected error from makeslop go outside HOME, got nil")
 	}
@@ -848,10 +948,9 @@ func TestOutOfHomeFlag_Bypasses(t *testing.T) {
 		t.Errorf("init --out-of-home: stderr unexpectedly contains 'refusing to run': %q", stderr)
 	}
 
-	fc := installFakeRunClient(t, 0)
-	stubTTY(t, true)
+	fc := newFakeDocker(0, true)
 
-	_, stderr, err = runCmd(t, baseDir, "run", "--out-of-home")
+	_, stderr, err = runCmdWithDeps(t, baseDir, depsFrom(fc), "run", "--out-of-home")
 	if err != nil {
 		t.Fatalf("makeslop run --out-of-home should succeed outside HOME, got: %v; stderr=%q", err, stderr)
 	}
@@ -1111,10 +1210,9 @@ func TestRun_DryRun_SkipsDocker(t *testing.T) {
 		t.Fatalf("init failed: %v", err)
 	}
 
-	fc := installFakeRunClient(t, 0)
-	stubTTY(t, false)
+	fc := newFakeDocker(0, false)
 
-	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
+	stdout, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fc), "run", "--dry-run")
 	if err != nil {
 		t.Fatalf("--dry-run should succeed, got err: %v; stderr=%q", err, stderr)
 	}
@@ -1530,10 +1628,9 @@ func TestRun_EmptyScanPatterns_NoFilesMasked(t *testing.T) {
 		t.Fatalf("write yaml: %v", err)
 	}
 
-	installFakeRunClient(t, 0)
-	stubTTY(t, true)
+	fc := newFakeDocker(0, true)
 
-	_, stderr, err := runCmd(t, baseDir, "run")
+	_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fc), "run")
 	if err != nil {
 		t.Fatalf("go must succeed when exclude.scan.patterns is empty; err=%v; stderr=%q", err, stderr)
 	}
@@ -1789,11 +1886,10 @@ func TestRun_YamlMalformedAbortsBeforeDocker(t *testing.T) {
 		t.Fatalf("write bad yaml: %v", err)
 	}
 
-	fc := installFakeRunClient(t, 0)
-	stubTTY(t, true)
+	fc := newFakeDocker(0, true)
 
 	var stdout, stderr bytes.Buffer
-	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"run"})
+	code := runWithExitCodeAndDeps(baseDir, &stdout, &stderr, depsFrom(fc), []string{"run"})
 	if code == 0 {
 		t.Fatalf("expected non-zero exit from malformed yaml, got 0; stderr=%q", stderr.String())
 	}
@@ -1822,11 +1918,10 @@ func TestRun_YamlReservedPathAbortsBeforeDocker(t *testing.T) {
 		t.Fatalf("write yaml: %v", err)
 	}
 
-	fc := installFakeRunClient(t, 0)
-	stubTTY(t, true)
+	fc := newFakeDocker(0, true)
 
 	var stdout, stderr bytes.Buffer
-	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"run"})
+	code := runWithExitCodeAndDeps(baseDir, &stdout, &stderr, depsFrom(fc), []string{"run"})
 	if code == 0 {
 		t.Fatalf("expected non-zero exit from reserved path, got 0; stderr=%q", stderr.String())
 	}
@@ -1855,11 +1950,10 @@ func TestRun_YamlDirAndFileDupAborts(t *testing.T) {
 		t.Fatalf("write yaml: %v", err)
 	}
 
-	fc := installFakeRunClient(t, 0)
-	stubTTY(t, true)
+	fc := newFakeDocker(0, true)
 
 	var stdout, stderr bytes.Buffer
-	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"run"})
+	code := runWithExitCodeAndDeps(baseDir, &stdout, &stderr, depsFrom(fc), []string{"run"})
 	if code == 0 {
 		t.Fatalf("expected non-zero exit from cross-list dup, got 0; stderr=%q", stderr.String())
 	}
@@ -1892,11 +1986,10 @@ func TestRun_StaleNetworkBlockAbortsBeforeDocker(t *testing.T) {
 		t.Fatalf("write stale yaml: %v", err)
 	}
 
-	fc := installFakeRunClient(t, 0)
-	stubTTY(t, true)
+	fc := newFakeDocker(0, true)
 
 	var stdout, stderr bytes.Buffer
-	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"run"})
+	code := runWithExitCodeAndDeps(baseDir, &stdout, &stderr, depsFrom(fc), []string{"run"})
 	if code == 0 {
 		t.Fatalf("expected non-zero exit from stale network: block, got 0; stderr=%q", stderr.String())
 	}
@@ -2151,7 +2244,7 @@ func TestBuild_SeedsSelfHealAndInvokesSDK(t *testing.T) {
 	baseDir := t.TempDir()
 	fbc := installFakeBuildClient(t, 0)
 
-	stdout, stderr, err := runCmd(t, baseDir, "build")
+	stdout, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fbc), "build")
 	if err != nil {
 		t.Fatalf("build failed: %v; stdout=%q stderr=%q", err, stdout, stderr)
 	}
@@ -2162,21 +2255,16 @@ func TestBuild_SeedsSelfHealAndInvokesSDK(t *testing.T) {
 		t.Errorf("Dockerfile not seeded by build: %v", statErr)
 	}
 
-	// Verify SDK was called with the right image tag.
-	tags := fbc.LastBuildOptions.Tags
-	if len(tags) == 0 || tags[0] != "claudebox" {
-		t.Errorf("ImageBuild Tags = %v, want [claudebox]", tags)
+	// Verify Build was called with the right image tag.
+	if fbc.LastBuildOpts.Image != "claudebox" {
+		t.Errorf("Build Image = %q, want %q", fbc.LastBuildOpts.Image, "claudebox")
 	}
 
-	// Verify Dockerfile basename is set (SDK receives basename, not full path).
-	if fbc.LastBuildOptions.Dockerfile != "Dockerfile" {
-		t.Errorf("ImageBuild Dockerfile = %q, want %q", fbc.LastBuildOptions.Dockerfile, "Dockerfile")
+	// Verify Dockerfile path is set (basename is "Dockerfile").
+	if filepath.Base(fbc.LastBuildOpts.DockerfilePath) != "Dockerfile" {
+		t.Errorf("Build DockerfilePath basename = %q, want %q", filepath.Base(fbc.LastBuildOpts.DockerfilePath), "Dockerfile")
 	}
-
-	// Verify BuildKit mode selected (Version = "2").
-	if string(fbc.LastBuildOptions.Version) != "2" {
-		t.Errorf("ImageBuild Version = %q, want %q", fbc.LastBuildOptions.Version, "2")
-	}
+	// Note: BuildKit version ("2") is verified at the internal/docker package level in build_test.go.
 }
 
 // TestBuild_NoCacheAndBuildArg verifies that --no-cache and --build-arg flags
@@ -2185,17 +2273,24 @@ func TestBuild_NoCacheAndBuildArg(t *testing.T) {
 	baseDir := t.TempDir()
 	fbc := installFakeBuildClient(t, 0)
 
-	_, stderr, err := runCmd(t, baseDir, "build", "--no-cache", "--build-arg", "GO_VERSION=1.26.3")
+	_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fbc), "build", "--no-cache", "--build-arg", "GO_VERSION=1.26.3")
 	if err != nil {
 		t.Fatalf("build --no-cache --build-arg failed: %v; stderr=%q", err, stderr)
 	}
 
-	if !fbc.LastBuildOptions.NoCache {
-		t.Error("ImageBuildOptions.NoCache must be true when --no-cache is passed")
+	if !fbc.LastBuildOpts.NoCache {
+		t.Error("BuildOptions.NoCache must be true when --no-cache is passed")
 	}
-	val, ok := fbc.LastBuildOptions.BuildArgs["GO_VERSION"]
-	if !ok || val == nil || *val != "1.26.3" {
-		t.Errorf("ImageBuildOptions.BuildArgs[GO_VERSION] = %v, want 1.26.3", fbc.LastBuildOptions.BuildArgs)
+	// BuildArgs is a []string slice of "KEY=VALUE"; find the GO_VERSION entry.
+	var foundGOVersion bool
+	for _, arg := range fbc.LastBuildOpts.BuildArgs {
+		if arg == "GO_VERSION=1.26.3" {
+			foundGOVersion = true
+			break
+		}
+	}
+	if !foundGOVersion {
+		t.Errorf("BuildOptions.BuildArgs missing GO_VERSION=1.26.3; got %v", fbc.LastBuildOpts.BuildArgs)
 	}
 }
 
@@ -2203,10 +2298,10 @@ func TestBuild_NoCacheAndBuildArg(t *testing.T) {
 // an error, runWithExitCode returns a non-zero exit code.
 func TestBuild_NonZeroExit_PropagatesCode(t *testing.T) {
 	baseDir := t.TempDir()
-	installFakeBuildClient(t, 1)
+	fbc := installFakeBuildClient(t, 1)
 
 	var stdout, stderr bytes.Buffer
-	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"build"})
+	code := runWithExitCodeAndDeps(baseDir, &stdout, &stderr, depsFrom(fbc), []string{"build"})
 	if code != 1 {
 		t.Errorf("runWithExitCode = %d, want 1 (generic error); stderr=%q", code, stderr.String())
 	}
@@ -2231,14 +2326,13 @@ func TestBuild_CustomImage_FromSettings(t *testing.T) {
 		t.Fatalf("save settings: %v", err)
 	}
 
-	_, stderr, err := runCmd(t, baseDir, "build")
+	_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fbc), "build")
 	if err != nil {
 		t.Fatalf("build failed: %v; stderr=%q", err, stderr)
 	}
 
-	tags := fbc.LastBuildOptions.Tags
-	if len(tags) == 0 || tags[0] != "my-custom-image:v2" {
-		t.Errorf("ImageBuild Tags = %v, want [my-custom-image:v2]", tags)
+	if fbc.LastBuildOpts.Image != "my-custom-image:v2" {
+		t.Errorf("Build Image = %q, want %q", fbc.LastBuildOpts.Image, "my-custom-image:v2")
 	}
 }
 
@@ -2286,7 +2380,7 @@ func TestBuild_MultipleBuildArgs(t *testing.T) {
 	baseDir := t.TempDir()
 	fbc := installFakeBuildClient(t, 0)
 
-	_, stderr, err := runCmd(t, baseDir, "build",
+	_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fbc), "build",
 		"--build-arg", "GO_VERSION=1.26.3",
 		"--build-arg", "HTTP_PROXY=http://proxy.example.com:8080",
 		"--build-arg", "FOO=bar",
@@ -2295,33 +2389,37 @@ func TestBuild_MultipleBuildArgs(t *testing.T) {
 		t.Fatalf("build --build-arg (multiple) failed: %v; stderr=%q", err, stderr)
 	}
 
-	wantArgs := map[string]string{
-		"GO_VERSION": "1.26.3",
-		"HTTP_PROXY": "http://proxy.example.com:8080",
-		"FOO":        "bar",
-	}
-	for key, want := range wantArgs {
-		val, ok := fbc.LastBuildOptions.BuildArgs[key]
-		if !ok || val == nil || *val != want {
-			t.Errorf("BuildArgs[%s] = %v, want %q", key, val, want)
+	// BuildArgs is a []string slice of "KEY=VALUE".
+	wantArgs := []string{"GO_VERSION=1.26.3", "HTTP_PROXY=http://proxy.example.com:8080", "FOO=bar"}
+	for _, want := range wantArgs {
+		var found bool
+		for _, arg := range fbc.LastBuildOpts.BuildArgs {
+			if arg == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("BuildOptions.BuildArgs missing %q; got %v", want, fbc.LastBuildOpts.BuildArgs)
 		}
 	}
 }
 
-// TestBuild_BuildKitVersion_IsSet verifies that the SDK Build call uses
-// BuilderBuildKit ("2") so cache mounts and BuildKit features are active.
-// This replaces the old DOCKER_BUILDKIT=1 env test which was CLI-specific.
+// TestBuild_BuildKitVersion_IsSet verifies that the build command succeeds and
+// invokes the Build dep. BuildKit version selection is verified at the
+// internal/docker package level in build_test.go.
 func TestBuild_BuildKitVersion_IsSet(t *testing.T) {
 	baseDir := t.TempDir()
 	fbc := installFakeBuildClient(t, 0)
 
-	_, stderr, err := runCmd(t, baseDir, "build")
+	_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fbc), "build")
 	if err != nil {
 		t.Fatalf("build failed: %v; stderr=%q", err, stderr)
 	}
 
-	if string(fbc.LastBuildOptions.Version) != "2" {
-		t.Errorf("ImageBuild Version = %q, want \"2\" (BuilderBuildKit)", fbc.LastBuildOptions.Version)
+	// Verify that Build was called (image name is set in the recorded options).
+	if fbc.LastBuildOpts.Image == "" {
+		t.Error("Build was not invoked (LastBuildOpts.Image is empty)")
 	}
 }
 
@@ -2344,7 +2442,7 @@ func TestBuild_Refresh_OverwritesDockerfileAndBuilds(t *testing.T) {
 		t.Fatalf("write stale Dockerfile: %v", err)
 	}
 
-	_, stderr, err := runCmd(t, baseDir, "build", "--refresh")
+	_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fbc), "build", "--refresh")
 	if err != nil {
 		t.Fatalf("build --refresh failed: %v; stderr=%q", err, stderr)
 	}
@@ -2359,9 +2457,9 @@ func TestBuild_Refresh_OverwritesDockerfileAndBuilds(t *testing.T) {
 			len(got), len(assets.Dockerfile))
 	}
 
-	// ImageBuild must have been called (LastBuildOptions.Tags must be non-empty).
-	if len(fbc.LastBuildOptions.Tags) == 0 {
-		t.Error("ImageBuild was not called after --refresh")
+	// Build must have been called (Image is set in the recorded options).
+	if fbc.LastBuildOpts.Image == "" {
+		t.Error("Build was not called after --refresh")
 	}
 }
 
@@ -2369,7 +2467,7 @@ func TestBuild_Refresh_OverwritesDockerfileAndBuilds(t *testing.T) {
 // build` (without --refresh) does NOT overwrite a hand-edited Dockerfile.
 func TestBuild_NoRefresh_LeavesDockerfileIntact(t *testing.T) {
 	baseDir := t.TempDir()
-	installFakeBuildClient(t, 0)
+	fbc := installFakeBuildClient(t, 0)
 
 	// Bootstrap, then overwrite Dockerfile with a STALE marker.
 	if err := config.Bootstrap(baseDir); err != nil {
@@ -2381,7 +2479,7 @@ func TestBuild_NoRefresh_LeavesDockerfileIntact(t *testing.T) {
 		t.Fatalf("write stale Dockerfile: %v", err)
 	}
 
-	_, stderr, err := runCmd(t, baseDir, "build")
+	_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fbc), "build")
 	if err != nil {
 		t.Fatalf("build (no --refresh) failed: %v; stderr=%q", err, stderr)
 	}
@@ -2400,9 +2498,9 @@ func TestBuild_NoRefresh_LeavesDockerfileIntact(t *testing.T) {
 func TestBuild_Refresh_Quiet_SuppressesNotice(t *testing.T) {
 	t.Run("quiet suppresses notice", func(t *testing.T) {
 		baseDir := t.TempDir()
-		installFakeBuildClient(t, 0)
+		fbc := installFakeBuildClient(t, 0)
 
-		_, stderr, err := runCmd(t, baseDir, "build", "--refresh", "--quiet")
+		_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fbc), "build", "--refresh", "--quiet")
 		if err != nil {
 			t.Fatalf("build --refresh --quiet failed: %v; stderr=%q", err, stderr)
 		}
@@ -2413,9 +2511,9 @@ func TestBuild_Refresh_Quiet_SuppressesNotice(t *testing.T) {
 
 	t.Run("non-quiet emits notice", func(t *testing.T) {
 		baseDir := t.TempDir()
-		installFakeBuildClient(t, 0)
+		fbc := installFakeBuildClient(t, 0)
 
-		_, stderr, err := runCmd(t, baseDir, "build", "--refresh")
+		_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fbc), "build", "--refresh")
 		if err != nil {
 			t.Fatalf("build --refresh failed: %v; stderr=%q", err, stderr)
 		}
@@ -2563,7 +2661,7 @@ func TestConfigSet_InvalidTmpDirSize_ExitsOneAndFileUnchanged(t *testing.T) {
 	snapBefore := snapshotTree(t, baseDir)
 
 	var stdout, stderr bytes.Buffer
-	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"config", "set", "tmp_dir_size", "9z"})
+	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"config", "set", "tmp_dir_size", "9z"}, nil)
 	if code != 1 {
 		t.Errorf("exit code = %d, want 1", code)
 	}
@@ -2585,7 +2683,7 @@ func TestConfigSet_UnknownKey_ExitsOneAndListsValidKeys(t *testing.T) {
 	baseDir := t.TempDir()
 
 	var stdout, stderr bytes.Buffer
-	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"config", "set", "bogus", "x"})
+	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"config", "set", "bogus", "x"}, nil)
 	if code != 1 {
 		t.Errorf("exit code = %d, want 1", code)
 	}
@@ -2668,7 +2766,7 @@ func TestConfigSet_CorruptSettings_ReportsError(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"config", "set", "image", "foo"})
+	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"config", "set", "image", "foo"}, nil)
 	if code == 0 {
 		t.Fatalf("expected non-zero exit from config set with corrupt settings; stdout=%q stderr=%q", stdout.String(), stderr.String())
 	}
@@ -2687,7 +2785,7 @@ func TestConfigList_CorruptSettings_ReportsError(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"config", "list"})
+	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"config", "list"}, nil)
 	if code == 0 {
 		t.Fatalf("expected non-zero exit from config list with corrupt settings; stdout=%q stderr=%q", stdout.String(), stderr.String())
 	}
@@ -2712,7 +2810,7 @@ func TestConfigSet_WrongArgCount_ExitsOne(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
-			code := runWithExitCode(baseDir, &stdout, &stderr, tc.args)
+			code := runWithExitCode(baseDir, &stdout, &stderr, tc.args, nil)
 			if code == 0 {
 				t.Errorf("%s: expected non-zero exit, got 0; stdout=%q stderr=%q", tc.name, stdout.String(), stderr.String())
 			}
@@ -3050,13 +3148,10 @@ func TestRun_DaemonDown_AbortsWithRemedy(t *testing.T) {
 		t.Fatalf("init failed: %v", err)
 	}
 
-	fc := docker.NewFakeRunClient(0)
+	fc := newFakeDocker(0, true)
 	fc.PingErr = errors.New("connection refused")
-	t.Cleanup(docker.SetClientForTest(fc))
-	t.Cleanup(docker.SetTermMakeRawForTest(func(_ int) (*term.State, error) { return nil, nil }))
-	stubTTY(t, true)
 
-	_, stderr, err := runCmd(t, baseDir, "run")
+	_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fc), "run")
 	if err == nil {
 		t.Fatalf("expected error when daemon is down, got nil; stderr=%q", stderr)
 	}
@@ -3084,13 +3179,10 @@ func TestRun_ImageMissing_AbortsWithRemedy(t *testing.T) {
 		t.Fatalf("init failed: %v", err)
 	}
 
-	fc := docker.NewFakeRunClient(0)
+	fc := newFakeDocker(0, true)
 	fc.ImageMissing = true
-	t.Cleanup(docker.SetClientForTest(fc))
-	t.Cleanup(docker.SetTermMakeRawForTest(func(_ int) (*term.State, error) { return nil, nil }))
-	stubTTY(t, true)
 
-	_, stderr, err := runCmd(t, baseDir, "run")
+	_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fc), "run")
 	if err == nil {
 		t.Fatalf("expected error when image is missing, got nil; stderr=%q", stderr)
 	}
@@ -3122,13 +3214,10 @@ func TestRun_ImageOtherError_PropagatesError(t *testing.T) {
 		t.Fatalf("init failed: %v", err)
 	}
 
-	fc := docker.NewFakeRunClient(0)
+	fc := newFakeDocker(0, true)
 	fc.ImageErr = errors.New("permission denied reading image store")
-	t.Cleanup(docker.SetClientForTest(fc))
-	t.Cleanup(docker.SetTermMakeRawForTest(func(_ int) (*term.State, error) { return nil, nil }))
-	stubTTY(t, true)
 
-	_, stderr, err := runCmd(t, baseDir, "run")
+	_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fc), "run")
 	if err == nil {
 		t.Fatalf("expected error when ImageExists returns other-error, got nil; stderr=%q", stderr)
 	}
@@ -3163,13 +3252,11 @@ func TestRun_DryRun_SkipsDaemonAndImageCheck(t *testing.T) {
 	}
 
 	// Both daemon-down and image-missing are set — --dry-run must ignore both.
-	fc := docker.NewFakeRunClient(0)
+	fc := newFakeDocker(0, false)
 	fc.PingErr = errors.New("connection refused")
 	fc.ImageMissing = true
-	t.Cleanup(docker.SetClientForTest(fc))
-	stubTTY(t, false)
 
-	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
+	stdout, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fc), "run", "--dry-run")
 	if err != nil {
 		t.Fatalf("--dry-run must succeed even when daemon is down and image is missing; err=%v; stderr=%q", err, stderr)
 	}
@@ -3195,11 +3282,10 @@ func TestRun_HappyPath_LaunchesDocker(t *testing.T) {
 		t.Fatalf("init failed: %v", err)
 	}
 
-	// Default FakeRunClient: Ping ok, image found, exit 0.
-	fc := installFakeRunClient(t, 0)
-	stubTTY(t, true)
+	// Default fakeDocker: Ping ok, image found, TTY ok, exit 0.
+	fc := newFakeDocker(0, true)
 
-	_, stderr, err := runCmd(t, baseDir, "run")
+	_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fc), "run")
 	if err != nil {
 		t.Fatalf("run must succeed when daemon is ok and image exists; err=%v; stderr=%q", err, stderr)
 	}
@@ -3445,10 +3531,10 @@ func TestErrorVoice_NoTTY_ContainsRemedy(t *testing.T) {
 	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
 		t.Fatalf("init failed: %v", err)
 	}
-	installFakeRunClient(t, 0)
-	// Do NOT stub ttyCheck — real predicate returns false under go test.
+	// isTTY=false: fakeDocker.Run returns ErrNoTTY.
+	fc := newFakeDocker(0, false)
 
-	_, stderr, err := runCmd(t, baseDir, "run")
+	_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fc), "run")
 	if err == nil {
 		t.Fatalf("expected error when stdin/stdout are not TTYs")
 	}
@@ -3475,12 +3561,10 @@ func TestErrorVoice_DaemonDown_ContainsRemedy(t *testing.T) {
 		t.Fatalf("init failed: %v", err)
 	}
 
-	fc := docker.NewFakeRunClient(0)
+	fc := newFakeDocker(0, true)
 	fc.PingErr = errors.New("connection refused")
-	t.Cleanup(docker.SetClientForTest(fc))
-	stubTTY(t, true)
 
-	_, stderr, err := runCmd(t, baseDir, "run")
+	_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fc), "run")
 	if err == nil {
 		t.Fatalf("expected error when daemon is down")
 	}
@@ -3507,12 +3591,10 @@ func TestErrorVoice_ImageMissing_ContainsRemedy(t *testing.T) {
 		t.Fatalf("init failed: %v", err)
 	}
 
-	fc := docker.NewFakeRunClient(0)
+	fc := newFakeDocker(0, true)
 	fc.ImageMissing = true
-	t.Cleanup(docker.SetClientForTest(fc))
-	stubTTY(t, true)
 
-	_, stderr, err := runCmd(t, baseDir, "run")
+	_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fc), "run")
 	if err == nil {
 		t.Fatalf("expected error when image is missing")
 	}
@@ -3808,24 +3890,22 @@ func TestGlobalOnly_RejectedOnNonInitCommands(t *testing.T) {
 
 // TestRunWithExitCode_ContextIsCancellable verifies that runWithExitCode wires a
 // signal.NotifyContext-based context (not context.Background()) into ExecuteContext.
-// The test installs onContextForTest to observe the context created inside
-// runWithExitCode. The check is structural (non-Background, has Done channel) —
+// The contextObserver parameter is used to observe the context without globals.
+// The check is structural (non-Background, has Done channel) —
 // full signal delivery is not exercised in a unit test environment.
 func TestRunWithExitCode_ContextIsCancellable(t *testing.T) {
 	baseDir := t.TempDir()
 
 	var captured context.Context
-	orig := onContextForTest
-	onContextForTest = func(ctx context.Context) { captured = ctx }
-	t.Cleanup(func() { onContextForTest = orig })
+	observer := func(ctx context.Context) { captured = ctx }
 
 	var stdout, stderr bytes.Buffer
-	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"version"})
+	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"version"}, observer)
 	if code != 0 {
 		t.Fatalf("runWithExitCode(version) = %d, want 0; stderr=%q", code, stderr.String())
 	}
 	if captured == nil {
-		t.Fatal("onContextForTest was not called — runWithExitCode did not invoke the hook")
+		t.Fatal("contextObserver was not called — runWithExitCode did not invoke the hook")
 	}
 	if captured == context.Background() {
 		t.Error("context passed to ExecuteContext must not be context.Background() — signal.NotifyContext wiring is missing")
@@ -3842,7 +3922,7 @@ func TestRunWithExitCode_VersionSucceeds(t *testing.T) {
 	baseDir := t.TempDir()
 
 	var stdout, stderr bytes.Buffer
-	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"version"})
+	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"version"}, nil)
 	if code != 0 {
 		t.Errorf("runWithExitCode(version) = %d, want 0; stderr=%q", code, stderr.String())
 	}

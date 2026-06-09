@@ -10,7 +10,6 @@ import (
 	"testing"
 
 	"github.com/Zwergpro/makeslop/internal/config"
-	"github.com/Zwergpro/makeslop/internal/docker"
 	"github.com/Zwergpro/makeslop/internal/projectconfig"
 )
 
@@ -18,22 +17,20 @@ import (
 // cobra-layer error. The isTTY predicate in the production newStatusCmd is
 // wired to defaultIsTTY, which returns false for non-file writers — so tests
 // naturally get plain (no-glyph) output via the bytes.Buffer stderr sink.
-func runStatusCmd(t *testing.T, baseDir string, args ...string) (stdout, stderr string, err error) {
+func runStatusCmd(t *testing.T, baseDir string, deps dockerDeps, args ...string) (stdout, stderr string, err error) {
 	t.Helper()
-	return runCmd(t, baseDir, args...)
+	return runCmdWithDeps(t, baseDir, deps, args...)
 }
 
-// installFakeStatusClient installs a fake docker client with scripted
-// daemon/image state for status tests. The fake is torn down via t.Cleanup.
-func installFakeStatusClient(t *testing.T, daemonDown bool, imageMissing bool) *docker.FakeRunClient {
-	t.Helper()
-	fc := docker.NewFakeRunClient(0)
+// newFakeStatusDeps constructs a fakeDocker with scripted daemon/image state
+// for status tests and returns a dockerDeps from it.
+func newFakeStatusDeps(daemonDown bool, imageMissing bool) (dockerDeps, *fakeDocker) {
+	fc := newFakeDocker(0, false) // TTY not relevant for status
 	if daemonDown {
 		fc.PingErr = errors.New("connection refused")
 	}
 	fc.ImageMissing = imageMissing
-	t.Cleanup(docker.SetClientForTest(fc))
-	return fc
+	return depsFrom(fc), fc
 }
 
 // TestStatus_AllGreen_ExitsZero verifies that when daemon is up, image exists,
@@ -50,9 +47,9 @@ func TestStatus_AllGreen_ExitsZero(t *testing.T) {
 	}
 
 	// Daemon up, image present.
-	installFakeStatusClient(t, false, false)
+	deps, _ := newFakeStatusDeps(false, false)
 
-	_, stderr, err := runStatusCmd(t, baseDir, "status")
+	_, stderr, err := runStatusCmd(t, baseDir, deps, "status")
 	if err != nil {
 		t.Errorf("status should exit 0 when all checks pass; err=%v stderr=%q", err, stderr)
 	}
@@ -77,9 +74,9 @@ func TestStatus_DaemonDown_ExitsNonZero(t *testing.T) {
 	}
 
 	// Daemon down.
-	installFakeStatusClient(t, true, false)
+	deps, _ := newFakeStatusDeps(true, false)
 
-	_, stderr, err := runStatusCmd(t, baseDir, "status")
+	_, stderr, err := runStatusCmd(t, baseDir, deps, "status")
 	if err == nil {
 		t.Fatalf("status should exit non-zero when daemon is down; stderr=%q", stderr)
 	}
@@ -108,9 +105,9 @@ func TestStatus_ImageMissing_ExitsNonZero(t *testing.T) {
 	}
 
 	// Daemon up, image missing.
-	installFakeStatusClient(t, false, true)
+	deps, _ := newFakeStatusDeps(false, true)
 
-	_, stderr, err := runStatusCmd(t, baseDir, "status")
+	_, stderr, err := runStatusCmd(t, baseDir, deps, "status")
 	if err == nil {
 		t.Fatalf("status should exit non-zero when image is missing; stderr=%q", stderr)
 	}
@@ -134,9 +131,9 @@ func TestStatus_WorkspaceNotRegistered_ExitsNonZero(t *testing.T) {
 	t.Chdir(pwd)
 	// No init — workspace not registered.
 
-	installFakeStatusClient(t, false, false)
+	deps, _ := newFakeStatusDeps(false, false)
 
-	_, stderr, err := runStatusCmd(t, baseDir, "status")
+	_, stderr, err := runStatusCmd(t, baseDir, deps, "status")
 	if err == nil {
 		t.Fatalf("status should exit non-zero when workspace not registered; stderr=%q", stderr)
 	}
@@ -178,9 +175,9 @@ func TestStatus_StaleConfig_ReportsWarnButStaysReady(t *testing.T) {
 		t.Fatalf("save stale settings: %v", err)
 	}
 
-	installFakeStatusClient(t, false, false)
+	deps, _ := newFakeStatusDeps(false, false)
 
-	_, stderr, statusErr := runStatusCmd(t, baseDir, "status")
+	_, stderr, statusErr := runStatusCmd(t, baseDir, deps, "status")
 	if statusErr != nil {
 		t.Errorf("status must be ready despite stale config; err=%v stderr=%q", statusErr, stderr)
 	}
@@ -211,9 +208,9 @@ func TestStatus_JSON_Shape(t *testing.T) {
 		t.Fatalf("init failed: %v", err)
 	}
 
-	installFakeStatusClient(t, false, false)
+	deps, _ := newFakeStatusDeps(false, false)
 
-	stdout, _, _ := runStatusCmd(t, baseDir, "status", "--json")
+	stdout, _, _ := runStatusCmd(t, baseDir, deps, "status", "--json")
 
 	if stdout == "" {
 		t.Fatal("--json output is empty")
@@ -258,9 +255,9 @@ func TestStatus_JSON_ReadyField(t *testing.T) {
 	}
 
 	// Daemon down — ready must be false.
-	installFakeStatusClient(t, true, false)
+	deps, _ := newFakeStatusDeps(true, false)
 
-	stdout, _, _ := runStatusCmd(t, baseDir, "status", "--json")
+	stdout, _, _ := runStatusCmd(t, baseDir, deps, "status", "--json")
 
 	var result statusResult
 	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
@@ -362,9 +359,9 @@ func TestStatus_ExemptFromHomeGuard(t *testing.T) {
 
 	baseDir := t.TempDir()
 
-	installFakeStatusClient(t, false, false)
+	deps, _ := newFakeStatusDeps(false, false)
 
-	_, stderr, err := runStatusCmd(t, baseDir, "status")
+	_, stderr, err := runStatusCmd(t, baseDir, deps, "status")
 	// Status may fail for daemon/image/workspace reasons but NOT for home-dir.
 	if err != nil && strings.Contains(stderr, "refusing to run from") {
 		t.Errorf("status must not apply the home-dir guard; stderr=%q", stderr)
@@ -382,10 +379,10 @@ func TestStatus_ExemptFromTTYRequirement(t *testing.T) {
 	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
 		t.Fatalf("init failed: %v", err)
 	}
-	installFakeStatusClient(t, false, false)
-	// Do NOT stub ttyCheck — real predicate returns false in go test.
+	deps, _ := newFakeStatusDeps(false, false)
+	// TTY not required for status — fakeDocker TTY=false is fine.
 
-	_, stderr, err := runStatusCmd(t, baseDir, "status")
+	_, stderr, err := runStatusCmd(t, baseDir, deps, "status")
 	if err != nil {
 		// Any failure is acceptable here *except* a TTY-related one.
 		if strings.Contains(stderr, "TTY") || strings.Contains(stderr, "tty") {
@@ -428,9 +425,9 @@ func TestStatus_Check5_PCErrShowsWarn(t *testing.T) {
 		t.Fatalf("write stale yaml: %v", err)
 	}
 
-	installFakeStatusClient(t, false, false)
+	deps, _ := newFakeStatusDeps(false, false)
 
-	_, stderr, err := runStatusCmd(t, baseDir, "status")
+	_, stderr, err := runStatusCmd(t, baseDir, deps, "status")
 	if err != nil {
 		t.Errorf("status must remain ready despite pcErr (non-blocking); err=%v stderr=%q", err, stderr)
 	}
@@ -472,9 +469,9 @@ func TestStatus_Check5_ScanErrShowsWarn(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(unreadable, 0o755) })
 
-	installFakeStatusClient(t, false, false)
+	deps, _ := newFakeStatusDeps(false, false)
 
-	_, stderr, err := runStatusCmd(t, baseDir, "status")
+	_, stderr, err := runStatusCmd(t, baseDir, deps, "status")
 	// Scan errors are non-blocking (checkWarn), so status must remain ready
 	// (exit 0, err == nil) even when security.Scan returns an error.
 	if err != nil {
@@ -508,9 +505,9 @@ func TestStatus_Check5_MaskedFilesShowsOKWithCount(t *testing.T) {
 		t.Fatalf("write secret file: %v", err)
 	}
 
-	installFakeStatusClient(t, false, false)
+	deps, _ := newFakeStatusDeps(false, false)
 
-	_, stderr, err := runStatusCmd(t, baseDir, "status")
+	_, stderr, err := runStatusCmd(t, baseDir, deps, "status")
 	if err != nil {
 		t.Errorf("status must be ready when masked files found; err=%v stderr=%q", err, stderr)
 	}

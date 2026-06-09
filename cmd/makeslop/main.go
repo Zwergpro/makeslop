@@ -584,14 +584,6 @@ func newRootCmdWithDeps(baseDir string, deps dockerDeps) *cobra.Command {
 	return rootCmd
 }
 
-// onContextForTest is called by runWithExitCode with the signal-cancellable
-// context immediately after it is created. It is nil in production and swapped
-// by tests to observe the context passed to ExecuteContext. Guarded by the
-// test binary only; never set in normal operation.
-// Must NOT be used with t.Parallel() — it is a package-level variable with no
-// synchronisation, matching the pattern of other seams here.
-var onContextForTest func(ctx context.Context)
-
 // runWithExitCode maps an ExecuteContext() error to a host exit code:
 //   - *docker.ExitError passes through its Code (the daemon-reported exit status,
 //     e.g. 137 for SIGKILL); this is the primary path for `makeslop run`.
@@ -602,11 +594,15 @@ var onContextForTest func(ctx context.Context)
 // to ExecuteContext so every subcommand's cmd.Context() is cancellable. The
 // context is always a non-Background context, which lets subcommands observe
 // cancellation via select { case <-cmd.Context().Done(): }.
-func runWithExitCode(baseDir string, stdout, stderr io.Writer, args []string) int {
+//
+// contextObserver, if non-nil, is called with the context immediately after it
+// is created. Tests pass a non-nil observer to verify that ExecuteContext
+// receives a cancellable context. Pass nil in production.
+func runWithExitCode(baseDir string, stdout, stderr io.Writer, args []string, contextObserver func(context.Context)) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if onContextForTest != nil {
-		onContextForTest(ctx)
+	if contextObserver != nil {
+		contextObserver(ctx)
 	}
 
 	cmd := newRootCmd(baseDir)
@@ -641,5 +637,5 @@ func main() {
 		fmt.Fprintf(os.Stderr, "makeslop: evaluate symlinks for %s: %v\n", baseDir, err)
 		os.Exit(1)
 	}
-	os.Exit(runWithExitCode(baseDir, os.Stdout, os.Stderr, os.Args[1:]))
+	os.Exit(runWithExitCode(baseDir, os.Stdout, os.Stderr, os.Args[1:], nil))
 }
