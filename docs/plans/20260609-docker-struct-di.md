@@ -237,25 +237,29 @@ collaborators and `runRun`/`runStatus` take plain value params. This task **crea
 the seam, modelled on the existing `newStatusCmd(ws, baseDir, ttyPred isTTYFunc)`
 pattern (`status.go:338`). Without it, Task 4 cannot inject fakes.
 
-- [ ] define unexported consumer interfaces in `package main`: `containerRunner`,
+- [x] define unexported consumer interfaces in `package main`: `containerRunner`,
       `imageBuilder`, `daemonChecker`, `imageChecker` (a single `*docker.Docker`
       satisfies all four in production)
-- [ ] decide the seam shape: bundle the four into one small struct (e.g.
+- [x] decide the seam shape: bundle the four into one small struct (e.g.
       `type dockerDeps struct { runner containerRunner; builder imageBuilder;
       daemon daemonChecker; image imageChecker }`) to avoid threading four params
-- [ ] add a constructor seam: `newRootCmd(baseDir)` keeps its public signature and
+- [x] add a constructor seam: `newRootCmd(baseDir)` keeps its public signature and
       internally builds production deps via `docker.New()`; add a test-only variant
       (e.g. `newRootCmdWithDeps(baseDir, deps dockerDeps, ...)`) that injects fakes —
       mirroring how `newStatusCmd` already takes an injectable `ttyPred`
-- [ ] thread `dockerDeps` into `runRun` (`main.go:103`), `runStatus` (`status.go:131`),
+- [x] thread `dockerDeps` into `runRun` (`main.go:103`), `runStatus` (`status.go:131`),
       and the build command's `RunE` (`main.go:~403`) — replacing direct
       `docker.Run/Build/CheckDaemon/ImageExists` calls with method calls through the
       interfaces (keep `docker.BuildSpec`, `docker.WithPreflightTimeout`,
       `docker.Options`, `docker.BuildOptions` as package-level — unchanged)
-- [ ] construct the production `*docker.Docker` via `docker.New()` once at the wiring
+- [x] construct the production `*docker.Docker` via `docker.New()` once at the wiring
       point and `defer d.Close()` (single Close — see lifecycle note)
-- [ ] keep `onContextForTest` for now (removed in Task 4)
-- [ ] run `go build ./...` and `go vet ./...` — must pass before next task
+      Note: `docker.New()` now delegates through `newClientFn`/`ttyCheck`/`termMakeRaw`
+      globals so existing `SetClientForTest`/`SetTTYCheckForTest` seams still work
+      during the Task 3→4 transition. `dockerNewErrStub` handles the (rare) case where
+      `docker.New()` itself fails. `newStatusCmd` updated to accept `deps dockerDeps`.
+- [x] keep `onContextForTest` for now (removed in Task 4)
+- [x] run `go build ./...` and `go vet ./...` — must pass before next task
 
 ### Task 4: Migrate cmd tests to boundary fakes; remove `onContextForTest` global
 

@@ -128,7 +128,7 @@ func renderChecks(w io.Writer, checks []statusCheck, ready bool, tty bool) {
 
 // runStatus implements the status command. It is a separate function so tests
 // can inject the isTTY predicate for plain-output assertions.
-func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, jsonMode bool, ttyPred isTTYFunc) error {
+func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, jsonMode bool, ttyPred isTTYFunc, deps dockerDeps) error {
 	ctx := cmd.Context()
 	stderr := cmd.ErrOrStderr()
 
@@ -140,7 +140,7 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, jso
 	var daemonErr error
 	{
 		pfCtx, pfCancel := docker.WithPreflightTimeout(ctx)
-		daemonErr = docker.CheckDaemon(pfCtx)
+		daemonErr = deps.daemon.CheckDaemon(pfCtx)
 		pfCancel()
 	}
 	if daemonErr != nil {
@@ -214,7 +214,7 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, jso
 	var imageErr error
 	{
 		pfCtx, pfCancel := docker.WithPreflightTimeout(ctx)
-		imageFound, imageErr = docker.ImageExists(pfCtx, imageName)
+		imageFound, imageErr = deps.image.ImageExists(pfCtx, imageName)
 		pfCancel()
 	}
 	if imageErr != nil {
@@ -335,7 +335,9 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, jso
 // newStatusCmd constructs and returns the `status` cobra command.
 // ws is the workspace registry; baseDir is the makeslop home.
 // ttyPred is the injectable TTY predicate (use defaultIsTTY for production).
-func newStatusCmd(ws *workspace.Workspaces, baseDir string, ttyPred isTTYFunc) *cobra.Command {
+// deps is the docker dependency bundle (use production deps from newRootCmd, or
+// inject fakes in tests via newRootCmdWithDeps).
+func newStatusCmd(ws *workspace.Workspaces, baseDir string, ttyPred isTTYFunc, deps dockerDeps) *cobra.Command {
 	var jsonMode bool
 
 	cmd := &cobra.Command{
@@ -344,7 +346,7 @@ func newStatusCmd(ws *workspace.Workspaces, baseDir string, ttyPred isTTYFunc) *
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runStatus(cmd, ws, baseDir, jsonMode, ttyPred)
+			return runStatus(cmd, ws, baseDir, jsonMode, ttyPred, deps)
 		},
 	}
 	cmd.Flags().BoolVar(&jsonMode, "json", false,

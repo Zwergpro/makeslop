@@ -30,6 +30,40 @@ import (
 // The default "dev" value is used when the binary is built without ldflags.
 var version = "dev"
 
+// containerRunner is the consumer-side interface for launching an interactive
+// container. *docker.Docker satisfies it in production.
+type containerRunner interface {
+	Run(ctx context.Context, s docker.Spec) error
+}
+
+// imageBuilder is the consumer-side interface for building the base image.
+// *docker.Docker satisfies it in production.
+type imageBuilder interface {
+	Build(ctx context.Context, o docker.BuildOptions, out, errw io.Writer) error
+}
+
+// daemonChecker is the consumer-side interface for pre-flight daemon reachability.
+// *docker.Docker satisfies it in production.
+type daemonChecker interface {
+	CheckDaemon(ctx context.Context) error
+}
+
+// imageChecker is the consumer-side interface for pre-flight image existence.
+// *docker.Docker satisfies it in production.
+type imageChecker interface {
+	ImageExists(ctx context.Context, image string) (bool, error)
+}
+
+// dockerDeps bundles the four consumer-side docker interfaces. A single
+// *docker.Docker satisfies all four in production; tests inject a fake via
+// newRootCmdWithDeps.
+type dockerDeps struct {
+	runner  containerRunner
+	builder imageBuilder
+	daemon  daemonChecker
+	image   imageChecker
+}
+
 // errSilent signals that a RunE has already written a tailored message to
 // stderr; main() should exit non-zero without reprinting.
 var errSilent = errors.New("makeslop: silent error already reported")
@@ -100,7 +134,7 @@ func mergeUniqueSorted(a, b []string) []string {
 
 // runRun implements the docker-launch logic for the "run" subcommand.
 // The app container always uses standard Docker bridge networking.
-func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfHome, dryRun, quiet bool) error {
+func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfHome, dryRun, quiet bool, deps dockerDeps) error {
 	pwd, err := resolvePwd()
 	if err != nil {
 		return err
@@ -170,7 +204,7 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfH
 	// Bound by preflightTimeout so a black-hole DOCKER_HOST does not hang forever.
 	{
 		pfCtx, pfCancel := docker.WithPreflightTimeout(cmd.Context())
-		daemonErr := docker.CheckDaemon(pfCtx)
+		daemonErr := deps.daemon.CheckDaemon(pfCtx)
 		pfCancel()
 		if daemonErr != nil {
 			fmt.Fprintf(cmd.ErrOrStderr(),
@@ -185,7 +219,7 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfH
 	var imageErr error
 	{
 		pfCtx, pfCancel := docker.WithPreflightTimeout(cmd.Context())
-		imageFound, imageErr = docker.ImageExists(pfCtx, s.Image)
+		imageFound, imageErr = deps.image.ImageExists(pfCtx, s.Image)
 		pfCancel()
 	}
 	if imageErr != nil {
@@ -199,7 +233,7 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfH
 		return errSilent
 	}
 
-	if err := docker.Run(cmd.Context(), spec); err != nil {
+	if err := deps.runner.Run(cmd.Context(), spec); err != nil {
 		if errors.Is(err, docker.ErrNoTTY) {
 			fmt.Fprintln(cmd.ErrOrStderr(),
 				"makeslop: stdin/stdout must be a TTY — run in an interactive terminal")
@@ -226,7 +260,49 @@ func (q *quietWriter) Write(p []byte) (int, error) {
 	return q.w.Write(p)
 }
 
+// newRootCmd constructs the production cobra tree. It creates a *docker.Docker
+// via docker.New() (which respects newClientFn/ttyCheck/termMakeRaw globals so
+// existing SetClientForTest/SetTTYCheckForTest test seams still work during the
+// Task 3→4 transition).
+// moby.New(moby.FromEnv) only parses env vars — it never dials and essentially
+// never fails. If it does fail, the error is wrapped and returned by the first
+// docker-touching command (run, build, status); init/migrate/config/version work
+// regardless.
 func newRootCmd(baseDir string) *cobra.Command {
+	d, newErr := docker.New()
+	var deps dockerDeps
+	if d != nil {
+		deps = dockerDeps{runner: d, builder: d, daemon: d, image: d}
+	} else {
+		// Construction failed: wrap the error in stubs that surface it on first use.
+		deps = dockerDeps{
+			runner:  dockerNewErrStub{newErr},
+			builder: dockerNewErrStub{newErr},
+			daemon:  dockerNewErrStub{newErr},
+			image:   dockerNewErrStub{newErr},
+		}
+	}
+	return newRootCmdWithDeps(baseDir, deps)
+}
+
+// dockerNewErrStub is a stub that returns a client-construction error from all
+// docker operations. Used when docker.New() fails so non-docker commands still
+// work while docker-touching commands get a clear error instead of a panic.
+type dockerNewErrStub struct{ err error }
+
+func (s dockerNewErrStub) Run(_ context.Context, _ docker.Spec) error { return s.err }
+func (s dockerNewErrStub) Build(_ context.Context, _ docker.BuildOptions, _, _ io.Writer) error {
+	return s.err
+}
+func (s dockerNewErrStub) CheckDaemon(_ context.Context) error            { return s.err }
+func (s dockerNewErrStub) ImageExists(_ context.Context, _ string) (bool, error) {
+	return false, s.err
+}
+
+// newRootCmdWithDeps constructs the cobra tree with the provided docker deps.
+// It is the canonical constructor used by both production (newRootCmd) and tests
+// (Task 4: inject fake dockerDeps without touching package-level globals).
+func newRootCmdWithDeps(baseDir string, deps dockerDeps) *cobra.Command {
 	ws := workspace.New(baseDir)
 
 	var (
@@ -343,7 +419,7 @@ func newRootCmd(baseDir string) *cobra.Command {
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runRun(cmd, ws, baseDir, outOfHomeRun, dryRun, quiet)
+			return runRun(cmd, ws, baseDir, outOfHomeRun, dryRun, quiet, deps)
 		},
 	}
 
@@ -407,7 +483,7 @@ func newRootCmd(baseDir string) *cobra.Command {
 				BuildArgs:      buildArgs,
 				Quiet:          quiet,
 			}
-			return docker.Build(cmd.Context(), o, cmd.OutOrStdout(), cmd.ErrOrStderr())
+			return deps.builder.Build(cmd.Context(), o, cmd.OutOrStdout(), cmd.ErrOrStderr())
 		},
 	}
 	buildCmd.Flags().BoolVar(&buildNoCache, "no-cache", false,
@@ -502,7 +578,7 @@ func newRootCmd(baseDir string) *cobra.Command {
 		},
 	}
 
-	statusCmd := newStatusCmd(ws, baseDir, defaultIsTTY)
+	statusCmd := newStatusCmd(ws, baseDir, defaultIsTTY, deps)
 
 	rootCmd.AddCommand(initCmd, runCmd, migrateCmd, buildCmd, configCmd, versionCmd, statusCmd)
 	return rootCmd
