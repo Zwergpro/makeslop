@@ -971,7 +971,8 @@ func TestHostConfig_MixedMountTypesOrder(t *testing.T) {
 // TestDriftGuard_ArgsAndSDKProjectionsAgree asserts that the argv projection
 // (Args/ShellCommand) and the SDK-struct projection (ContainerConfig/HostConfig)
 // agree on all semantically load-bearing fields for a representative Spec that
-// exercises masked files, masked dirs, and the default security/network settings.
+// exercises masked files, masked dirs, env injection, and the default
+// security/network settings.
 // This catches silent drift where one projection is updated but not the other.
 func TestDriftGuard_ArgsAndSDKProjectionsAgree(t *testing.T) {
 	o := sampleOptions()
@@ -980,6 +981,7 @@ func TestDriftGuard_ArgsAndSDKProjectionsAgree(t *testing.T) {
 		"/home/me/code/myproj/configs/secret.yaml",
 	}
 	o.MaskedDirs = []string{"/home/me/code/myproj/node_modules"}
+	o.Env = []string{"DEBUG=true", "PORT=8080"}
 
 	spec := BuildSpec(o)
 	args := spec.Args()
@@ -1013,14 +1015,15 @@ func TestDriftGuard_ArgsAndSDKProjectionsAgree(t *testing.T) {
 		t.Errorf("workdir: Args=%q, ContainerConfig=%q", argsWorkdir, cfg.WorkingDir)
 	}
 
-	// --- env: no -e flags should appear (no env injection in bridge-only mode) ---
+	// --- env: collect -e values from Args and compare to ContainerConfig.Env ---
+	var argsEnv []string
 	for i := 0; i < len(args)-1; i++ {
 		if args[i] == "-e" {
-			t.Errorf("unexpected -e at index %d (no env injection expected)", i)
+			argsEnv = append(argsEnv, args[i+1])
 		}
 	}
-	if len(cfg.Env) != 0 {
-		t.Errorf("ContainerConfig.Env = %v, want nil/empty (no env injection)", cfg.Env)
+	if !reflect.DeepEqual(argsEnv, cfg.Env) {
+		t.Errorf("env: Args(-e values)=%v, ContainerConfig.Env=%v", argsEnv, cfg.Env)
 	}
 
 	// --- caps ---
@@ -1258,6 +1261,135 @@ func TestBuildSpec_CacheMountCombos_Args(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// ── Env injection tests ───────────────────────────────────────────────────────
+
+// TestArgs_EnvFlagsEmittedAfterSecOptBeforeMounts verifies that -e flags appear
+// in Args() after all --security-opt flags and before the first --mount flag.
+func TestArgs_EnvFlagsEmittedAfterSecOptBeforeMounts(t *testing.T) {
+	o := sampleOptions()
+	o.Env = []string{"NODE_ENV=production", "PORT=3000"}
+	spec := BuildSpec(o)
+	args := spec.Args()
+
+	lastSecOpt := -1
+	firstEnv := -1
+	firstMount := -1
+	for i, a := range args {
+		switch a {
+		case "--security-opt":
+			lastSecOpt = i
+		case "-e":
+			if firstEnv == -1 {
+				firstEnv = i
+			}
+		case "--mount":
+			if firstMount == -1 {
+				firstMount = i
+			}
+		}
+	}
+
+	if firstEnv == -1 {
+		t.Fatal("-e flag not found in Args()")
+	}
+	if lastSecOpt != -1 && firstEnv <= lastSecOpt {
+		t.Errorf("-e at %d appears before or at --security-opt at %d; want after", firstEnv, lastSecOpt)
+	}
+	if firstMount != -1 && firstEnv >= firstMount {
+		t.Errorf("-e at %d appears at or after first --mount at %d; want before", firstEnv, firstMount)
+	}
+
+	// Collect the -e values and confirm order + values.
+	var got []string
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == "-e" {
+			got = append(got, args[i+1])
+		}
+	}
+	if !reflect.DeepEqual(got, o.Env) {
+		t.Errorf("-e values: got %v, want %v", got, o.Env)
+	}
+}
+
+// TestShellCommand_EnvLinesRendered verifies that ShellCommand() renders -e lines.
+func TestShellCommand_EnvLinesRendered(t *testing.T) {
+	spec := Spec{
+		Image:   "img",
+		Command: "sh",
+		Workdir: "/wd",
+		Env:     []string{"FOO=bar", "BAZ=qux"},
+		CapDrop: []string{"ALL"},
+		SecOpt:  []string{"no-new-privileges"},
+		Tmpfs:   []string{"/tmp:size=100m"},
+	}
+	out := spec.ShellCommand()
+	if !strings.Contains(out, "-e FOO=bar") {
+		t.Errorf("ShellCommand() missing '-e FOO=bar'; got:\n%s", out)
+	}
+	if !strings.Contains(out, "-e BAZ=qux") {
+		t.Errorf("ShellCommand() missing '-e BAZ=qux'; got:\n%s", out)
+	}
+}
+
+// TestContainerConfig_EnvPropagated verifies ContainerConfig().Env equals Spec.Env.
+func TestContainerConfig_EnvPropagated(t *testing.T) {
+	spec := Spec{
+		Image:   "img",
+		Command: "sh",
+		Workdir: "/wd",
+		Env:     []string{"A=1", "B=2"},
+	}
+	cfg := spec.ContainerConfig()
+	if !reflect.DeepEqual(cfg.Env, spec.Env) {
+		t.Errorf("ContainerConfig().Env = %v, want %v", cfg.Env, spec.Env)
+	}
+}
+
+// TestArgs_EmptyEnv_NoEFlag verifies that an empty Env produces no -e flags and
+// output byte-identical to a spec with nil Env (backward compatibility).
+func TestArgs_EmptyEnv_NoEFlag(t *testing.T) {
+	oNil := sampleOptions() // Env is nil by default
+	oEmpty := sampleOptions()
+	oEmpty.Env = []string{}
+
+	argsNil := BuildSpec(oNil).Args()
+	argsEmpty := BuildSpec(oEmpty).Args()
+
+	// No -e flag in nil-env case.
+	for i, a := range argsNil {
+		if a == "-e" {
+			t.Errorf("nil Env: unexpected -e at index %d", i)
+		}
+	}
+	// No -e flag in empty-env case.
+	for i, a := range argsEmpty {
+		if a == "-e" {
+			t.Errorf("empty Env: unexpected -e at index %d", i)
+		}
+	}
+	// Both should produce identical output.
+	if !reflect.DeepEqual(argsNil, argsEmpty) {
+		t.Errorf("nil Env vs empty Env produce different Args():\nnil:   %v\nempty: %v", argsNil, argsEmpty)
+	}
+}
+
+// TestBuildSpec_EnvDeterminism verifies that the same Env input produces the
+// same Spec output on repeated calls.
+func TestBuildSpec_EnvDeterminism(t *testing.T) {
+	o := sampleOptions()
+	o.Env = []string{"LOG_LEVEL=debug", "NODE_ENV=test", "PORT=8080"}
+
+	spec1 := BuildSpec(o)
+	spec2 := BuildSpec(o)
+
+	if !reflect.DeepEqual(spec1.Env, spec2.Env) {
+		t.Errorf("non-deterministic Env: first=%v, second=%v", spec1.Env, spec2.Env)
+	}
+	if !reflect.DeepEqual(spec1.Args(), spec2.Args()) {
+		t.Errorf("non-deterministic Args(): first=%v, second=%v", spec1.Args(), spec2.Args())
 	}
 }
 

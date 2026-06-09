@@ -124,7 +124,6 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfH
 	if err != nil {
 		return err
 	}
-	_ = envVars // used in Task 3: wired into docker.Options.Env
 	masked, err := security.Scan(cmd.Context(), workspaceRoot, yamlExcludes.Patterns, yamlExcludes.SkipDirs)
 	if err != nil {
 		return err
@@ -152,6 +151,7 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfH
 		MaskedDirs:        yamlExcludes.Dirs,
 		MountContentCache: cacheCfg.Content,
 		MountAgentCache:   cacheCfg.Agent,
+		Env:               envVars,
 	}
 
 	// ProjectRoot must be the registered ancestor (workspaceRoot), not pwd:

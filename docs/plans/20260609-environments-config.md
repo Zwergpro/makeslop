@@ -121,18 +121,18 @@
 - Modify: `cmd/makeslop/main.go`
 - Modify: `internal/docker/spec_test.go`
 
-- [ ] Add `Env []string` to `Options` (doc: `"KEY=VALUE"` pairs; nil/empty no-op; caller sorts).
-- [ ] Add `Env []string` to `Spec`; `BuildSpec` copies `o.Env` verbatim (no reorder).
-- [ ] `Args()`: emit `-e KEY=VALUE` per entry, positioned after the `--security-opt` loop and before the mounts loop.
-- [ ] `ContainerConfig()`: set `Env: s.Env`. (Confirm `ShellCommand` needs no change — `-e` already in its switch.)
-- [ ] Wire `Env: envVars` into the `docker.Options{}` literal in `main.go` (~line 143).
-- [ ] **⚠️ Rewrite the env block in `TestDriftGuard_ArgsAndSDKProjectionsAgree` (`spec_test.go:1016–1024`)**: replace the "no `-e` expected / `cfg.Env` empty" assertions with a positive check that the ordered `-e` values collected from `Args` equal `ContainerConfig().Env`; set a non-empty `o.Env` in the test fixture.
-- [ ] Write test: `Args()` emits `-e K=V` in the correct position (after `--security-opt`, before mounts).
-- [ ] Write test: `ShellCommand()` renders the `-e` lines.
-- [ ] Write test: `ContainerConfig().Env` equals `Spec.Env`.
-- [ ] Write test: empty `Env` → no `-e` flag and output byte-identical to current (backward-compat).
-- [ ] Write test: determinism — same `environments` map → identical `Spec` (sorted ordering).
-- [ ] Run tests — must pass before next task.
+- [x] Add `Env []string` to `Options` (doc: `"KEY=VALUE"` pairs; nil/empty no-op; caller sorts).
+- [x] Add `Env []string` to `Spec`; `BuildSpec` copies `o.Env` verbatim (no reorder).
+- [x] `Args()`: emit `-e KEY=VALUE` per entry, positioned after the `--security-opt` loop and before the mounts loop.
+- [x] `ContainerConfig()`: set `Env: s.Env`. (Confirm `ShellCommand` needs no change — `-e` already in its switch.)
+- [x] Wire `Env: envVars` into the `docker.Options{}` literal in `main.go` (~line 143).
+- [x] **⚠️ Rewrite the env block in `TestDriftGuard_ArgsAndSDKProjectionsAgree` (`spec_test.go:1016–1024`)**: replace the "no `-e` expected / `cfg.Env` empty" assertions with a positive check that the ordered `-e` values collected from `Args` equal `ContainerConfig().Env`; set a non-empty `o.Env` in the test fixture.
+- [x] Write test: `Args()` emits `-e K=V` in the correct position (after `--security-opt`, before mounts).
+- [x] Write test: `ShellCommand()` renders the `-e` lines.
+- [x] Write test: `ContainerConfig().Env` equals `Spec.Env`.
+- [x] Write test: empty `Env` → no `-e` flag and output byte-identical to current (backward-compat).
+- [x] Write test: determinism — same `environments` map → identical `Spec` (sorted ordering).
+- [x] Run tests — must pass before next task.
 
 ### Task 4: Verify acceptance criteria
 - [ ] Verify a `.makeslop.yaml` with an `environments:` block produces correct `-e` flags in `makeslop run --dry-run` output (manual or via test).
