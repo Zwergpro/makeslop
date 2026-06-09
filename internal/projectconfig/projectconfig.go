@@ -24,6 +24,20 @@
 //     cache directory on top of the project. Set to false to use the project's own
 //     agent state directories inside the container.
 //
+// The environments block declares static environment variables to inject into the
+// app container at runtime:
+//
+//	environments:
+//	  NODE_ENV: production
+//	  PORT: 8080
+//	  DEBUG: "false"
+//
+// Values must be scalars (strings, numbers, booleans). Non-scalar values (lists,
+// maps) are rejected fail-loud. Null values (bare KEY: or KEY: null) are also
+// rejected — a valueless key is almost always a mistake. An explicit empty string
+// (KEY: "") is accepted and maps to "-e KEY=" (a valid docker env var). Load returns
+// a sorted []string of "KEY=VALUE" pairs (nil when the block is absent).
+//
 // The app container always uses standard Docker bridge networking. There is no
 // proxy or network isolation configuration.
 package projectconfig
@@ -124,10 +138,10 @@ type Cache struct {
 }
 
 // yamlSchema is the strict decode target. Using KnownFields(true) means any
-// top-level key other than "exclude" / "cache" (and their sub-keys) is
-// rejected immediately with a meaningful decoder error. In particular, a stale
-// "network:" block (from a prior makeslop version) will produce an
-// "unknown field" error, which is the intended loud break.
+// top-level key other than "exclude" / "cache" / "environments" (and their
+// sub-keys) is rejected immediately with a meaningful decoder error. In
+// particular, a stale "network:" block (from a prior makeslop version) will
+// produce an "unknown field" error, which is the intended loud break.
 type yamlSchema struct {
 	Exclude struct {
 		Scan struct {
@@ -141,6 +155,10 @@ type yamlSchema struct {
 		Content *bool `yaml:"content"`
 		Agent   *bool `yaml:"agent"`
 	} `yaml:"cache"`
+	// Environments holds static env vars to inject into the app container.
+	// Values are decoded as yaml.Node to enable lenient scalar coercion
+	// (numbers and booleans become their string representations).
+	Environments map[string]yaml.Node `yaml:"environments"`
 }
 
 // Scaffold creates <root>/.makeslop.yaml with the stub rendered for the given
@@ -171,22 +189,30 @@ func Scaffold(root string, c Cache) error {
 }
 
 // Load parses <root>/.makeslop.yaml and returns validated Excludes, Cache,
-// and any error. A missing file yields zero Excludes and Cache defaults to
-// {Content:true, Agent:true} (backward-compatible: no config file means all
-// overlay mounts are enabled). Malformed YAML, unknown fields (including a
-// stale "network:" block), cross-list duplicates, reserved-path collisions,
-// and invalid paths are errors wrapped with "projectconfig: ". Symlinks and
-// missing entries are silently dropped. An absent cache: block within an
-// existing config file also defaults both Cache fields to true.
+// env vars, and any error.
+//
+// The four-value return is (Excludes, Cache, []string, error):
+//   - Excludes: file/dir masks and scan patterns.
+//   - Cache: per-workspace cache overlay settings (defaults to {true,true}).
+//   - []string: sorted "KEY=VALUE" env pairs from the environments: block; nil
+//     when the block is absent (nil ≡ no env injection, backward-compatible).
+//   - error: non-nil for any parse, validation, or filesystem error.
+//
+// A missing file yields zero Excludes, Cache{true,true}, and nil env.
+// Malformed YAML, unknown fields (including a stale "network:" block),
+// cross-list duplicates, reserved-path collisions, and invalid paths are errors
+// wrapped with "projectconfig: ". Symlinks and missing entries are silently
+// dropped. An absent cache: block within an existing config file defaults both
+// Cache fields to true.
 // root must be absolute and EvalSymlinks-evaluated.
-func Load(root string) (Excludes, Cache, error) {
+func Load(root string) (Excludes, Cache, []string, error) {
 	path := filepath.Join(root, Filename)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return Excludes{}, Cache{Content: true, Agent: true}, nil
+			return Excludes{}, Cache{Content: true, Agent: true}, nil, nil
 		}
-		return Excludes{}, Cache{}, fmt.Errorf("projectconfig: read %s: %w", Filename, err)
+		return Excludes{}, Cache{}, nil, fmt.Errorf("projectconfig: read %s: %w", Filename, err)
 	}
 
 	// Decode with strict mode: unknown top-level fields cause an error, surfacing
@@ -199,27 +225,27 @@ func Load(root string) (Excludes, Cache, error) {
 	if err := dec.Decode(&schema); err != nil {
 		if errors.Is(err, io.EOF) {
 			// Empty file, whitespace-only, or comment-only YAML: treat as zero config.
-			return Excludes{}, Cache{Content: true, Agent: true}, nil
+			return Excludes{}, Cache{Content: true, Agent: true}, nil, nil
 		}
-		return Excludes{}, Cache{}, fmt.Errorf("projectconfig: parse %s: %w", Filename, err)
+		return Excludes{}, Cache{}, nil, fmt.Errorf("projectconfig: parse %s: %w", Filename, err)
 	}
 
 	patterns, err := validatePatterns(schema.Exclude.Scan.Patterns)
 	if err != nil {
-		return Excludes{}, Cache{}, err
+		return Excludes{}, Cache{}, nil, err
 	}
 	skipDirs, err := validateSkipDirs(schema.Exclude.Scan.SkipDirs)
 	if err != nil {
-		return Excludes{}, Cache{}, err
+		return Excludes{}, Cache{}, nil, err
 	}
 
 	cleanedFiles, err := validateEntries(schema.Exclude.Files, "exclude.files")
 	if err != nil {
-		return Excludes{}, Cache{}, err
+		return Excludes{}, Cache{}, nil, err
 	}
 	cleanedDirs, err := validateEntries(schema.Exclude.Dirs, "exclude.dirs")
 	if err != nil {
-		return Excludes{}, Cache{}, err
+		return Excludes{}, Cache{}, nil, err
 	}
 
 	// Cross-list duplicate check: a path in both lists is an error. Done before
@@ -230,17 +256,17 @@ func Load(root string) (Excludes, Cache, error) {
 	}
 	for _, rel := range cleanedDirs {
 		if _, ok := seen[rel]; ok {
-			return Excludes{}, Cache{}, fmt.Errorf("projectconfig: path %q listed in both exclude.files and exclude.dirs", rel)
+			return Excludes{}, Cache{}, nil, fmt.Errorf("projectconfig: path %q listed in both exclude.files and exclude.dirs", rel)
 		}
 	}
 
 	files, err := statFilter(root, cleanedFiles, func(info os.FileInfo) bool { return info.Mode().IsRegular() })
 	if err != nil {
-		return Excludes{}, Cache{}, err
+		return Excludes{}, Cache{}, nil, err
 	}
 	dirs, err := statFilter(root, cleanedDirs, func(info os.FileInfo) bool { return info.IsDir() })
 	if err != nil {
-		return Excludes{}, Cache{}, err
+		return Excludes{}, Cache{}, nil, err
 	}
 
 	files = dedupSorted(files)
@@ -253,7 +279,12 @@ func Load(root string) (Excludes, Cache, error) {
 		Agent:   schema.Cache.Agent == nil || *schema.Cache.Agent,
 	}
 
-	return Excludes{Files: files, Dirs: dirs, Patterns: patterns, SkipDirs: skipDirs}, cacheCfg, nil
+	envVars, err := validateEnvironments(schema.Environments)
+	if err != nil {
+		return Excludes{}, Cache{}, nil, err
+	}
+
+	return Excludes{Files: files, Dirs: dirs, Patterns: patterns, SkipDirs: skipDirs}, cacheCfg, envVars, nil
 }
 
 // validateEntries cleans and validates user-supplied relative paths for the
@@ -322,6 +353,52 @@ func validateSkipDirs(entries []string) ([]string, error) {
 		}
 	}
 	return dedupSorted(entries), nil
+}
+
+// validateEnvironments validates a user-supplied environments: map and returns
+// a sorted []string of "KEY=VALUE" pairs suitable for docker run -e and
+// container.Config.Env.
+//
+// Rules:
+//   - Empty keys are rejected (a "-e =value" is broken docker syntax).
+//   - Keys must not contain '=' (would break KEY=VALUE encoding).
+//   - Keys must not contain newline or tab characters.
+//   - Values must be scalar YAML nodes (strings, numbers, booleans). Non-scalar
+//     values (lists, maps) are rejected fail-loud.
+//   - Null scalars (bare KEY: or KEY: null) are rejected — almost always a mistake.
+//   - Explicit empty string (KEY: "") is accepted → "KEY=" (intentional empty value).
+//
+// yaml.v3 already rejects duplicate map keys at decode time, so no dup-key
+// handling is needed here.
+func validateEnvironments(env map[string]yaml.Node) ([]string, error) {
+	if len(env) == 0 {
+		return nil, nil
+	}
+	result := make([]string, 0, len(env))
+	for k, v := range env {
+		if k == "" {
+			return nil, fmt.Errorf("projectconfig: empty key in environments")
+		}
+		if strings.Contains(k, "=") {
+			return nil, fmt.Errorf("projectconfig: environment key %q must not contain '='", k)
+		}
+		if strings.ContainsAny(k, "\n\r\t") {
+			return nil, fmt.Errorf("projectconfig: environment key %q must not contain newline or tab characters", k)
+		}
+		if v.Kind != yaml.ScalarNode {
+			return nil, fmt.Errorf("projectconfig: environment key %q must be a scalar value", k)
+		}
+		if v.Tag == "!!null" {
+			return nil, fmt.Errorf("projectconfig: environment key %q has no value", k)
+		}
+		if strings.ContainsAny(v.Value, "\n\r\t") {
+			return nil, fmt.Errorf("projectconfig: environment key %q value must not contain newline or tab characters", k)
+		}
+		result = append(result, k+"="+v.Value)
+	}
+	// Map keys are inherently unique, so only sorting is needed here.
+	sort.Strings(result)
+	return result, nil
 }
 
 // statFilter Lstats each relative path under root; silently drops missing and

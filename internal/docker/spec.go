@@ -41,6 +41,11 @@ type Options struct {
 	// verbatim without re-defaulting, matching how Image/Command are handled.
 	TmpDirSize string
 
+	// Env is the list of environment variables to inject into the container,
+	// in "KEY=VALUE" form. Nil or empty is a no-op (no -e flags emitted).
+	// The caller is responsible for sorting; BuildSpec copies verbatim.
+	Env []string
+
 	// MountAgentCache controls whether the per-workspace agent-state cache
 	// directories are mounted into the container:
 	//
@@ -83,6 +88,7 @@ type Spec struct {
 	Image   string
 	Command string
 	Workdir string
+	Env     []string // "KEY=VALUE" pairs; nil/empty → no -e flags
 	Mounts  []Mount
 	Tmpfs   []string
 	CapDrop []string
@@ -153,6 +159,7 @@ func BuildSpec(o Options) Spec {
 		Image:   o.Image,
 		Command: o.Command,
 		Workdir: workspacePath,
+		Env:     o.Env,
 		Mounts:  mounts,
 		Tmpfs:   []string{"/tmp:size=" + o.TmpDirSize},
 		CapDrop: []string{"ALL"},
@@ -174,6 +181,9 @@ func (s Spec) Args() []string {
 	}
 	for _, so := range s.SecOpt {
 		args = append(args, "--security-opt", so)
+	}
+	for _, e := range s.Env {
+		args = append(args, "-e", e)
 	}
 	for _, m := range s.Mounts {
 		switch m.Type {
@@ -252,6 +262,7 @@ func (s Spec) ContainerConfig() *container.Config {
 		Image:        s.Image,
 		Cmd:          []string{s.Command},
 		WorkingDir:   s.Workdir,
+		Env:          s.Env,
 		Tty:          true,
 		OpenStdin:    true,
 		AttachStdin:  true,

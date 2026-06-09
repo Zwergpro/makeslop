@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/Zwergpro/makeslop/internal/docker"
+	"gopkg.in/yaml.v3"
 )
 
 // evalSymlinks resolves a temp dir path — on macOS /tmp is a symlink, so raw
@@ -63,7 +64,7 @@ func TestLoad_MissingFile(t *testing.T) {
 	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
-	excl, _, err := Load(root)
+	excl, _, _, err := Load(root)
 	if err != nil {
 		t.Fatalf("Load on missing file: %v", err)
 	}
@@ -86,7 +87,7 @@ func TestLoad_DefaultStub_RoundTrips(t *testing.T) {
 		t.Fatalf("write stub: %v", err)
 	}
 
-	excl, cacheCfg, err := Load(root)
+	excl, cacheCfg, _, err := Load(root)
 	if err != nil {
 		t.Fatalf("Load on default stub: %v", err)
 	}
@@ -141,7 +142,7 @@ func TestLoad_EmptyAndCommentOnlyFiles(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(root, Filename), tc.content, 0o644); err != nil {
 				t.Fatalf("write: %v", err)
 			}
-			excl, cacheCfg, err := Load(root)
+			excl, cacheCfg, _, err := Load(root)
 			if err != nil {
 				t.Fatalf("Load returned error for %q: %v", tc.name, err)
 			}
@@ -173,7 +174,7 @@ func TestLoad_MalformedYAML(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, _, err := Load(root)
+	_, _, _, err := Load(root)
 	if err == nil {
 		t.Fatal("expected error for malformed YAML, got nil")
 	}
@@ -190,7 +191,7 @@ func TestLoad_UnknownField(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, _, err := Load(root)
+	_, _, _, err := Load(root)
 	if err == nil {
 		t.Fatal("expected error for unknown field, got nil")
 	}
@@ -257,6 +258,21 @@ func TestLoad_ValidationRules(t *testing.T) {
 			yaml:        "exclude:\n  dirs:\n    - foo/..\n  files: []\n",
 			wantErrFrag: "refers to project root",
 		},
+		{
+			name:        "environments key with equals sign",
+			yaml:        "environments:\n  \"A=B\": value\n",
+			wantErrFrag: "must not contain '='",
+		},
+		{
+			name:        "environments non-scalar value",
+			yaml:        "environments:\n  FOO:\n    - a\n    - b\n",
+			wantErrFrag: "must be a scalar value",
+		},
+		{
+			name:        "environments null value",
+			yaml:        "environments:\n  KEY: null\n",
+			wantErrFrag: "has no value",
+		},
 	}
 
 	for _, tc := range cases {
@@ -265,7 +281,7 @@ func TestLoad_ValidationRules(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(root, Filename), []byte(tc.yaml), 0o644); err != nil {
 				t.Fatalf("write: %v", err)
 			}
-			_, _, err := Load(root)
+			_, _, _, err := Load(root)
 			if err == nil {
 				t.Fatalf("expected error containing %q, got nil", tc.wantErrFrag)
 			}
@@ -289,7 +305,7 @@ func TestLoad_ReservedPaths(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(root, Filename), []byte(content), 0o644); err != nil {
 				t.Fatalf("write: %v", err)
 			}
-			_, _, err := Load(root)
+			_, _, _, err := Load(root)
 			if err == nil {
 				t.Fatalf("expected collision error for %q in dirs, got nil", reserved)
 			}
@@ -303,7 +319,7 @@ func TestLoad_ReservedPaths(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(root, Filename), []byte(content), 0o644); err != nil {
 				t.Fatalf("write: %v", err)
 			}
-			_, _, err := Load(root)
+			_, _, _, err := Load(root)
 			if err == nil {
 				t.Fatalf("expected collision error for %q in files, got nil", reserved)
 			}
@@ -323,7 +339,7 @@ func TestLoad_CrossListDuplicate(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, _, err := Load(root)
+	_, _, _, err := Load(root)
 	if err == nil {
 		t.Fatal("expected error for cross-list duplicate, got nil")
 	}
@@ -344,7 +360,7 @@ func TestLoad_CrossListDuplicate_NoFileOnDisk(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, _, err := Load(root)
+	_, _, _, err := Load(root)
 	if err == nil {
 		t.Fatal("expected error for cross-list duplicate (path absent), got nil")
 	}
@@ -362,7 +378,7 @@ func TestLoad_SilentlyDropsMissingEntries(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	excl, _, err := Load(root)
+	excl, _, _, err := Load(root)
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -389,7 +405,7 @@ func TestLoad_DropsWrongType(t *testing.T) {
 		t.Fatalf("write config: %v", err)
 	}
 
-	excl, _, err := Load(root)
+	excl, _, _, err := Load(root)
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -425,7 +441,7 @@ func TestLoad_DropsSymlinks(t *testing.T) {
 		t.Fatalf("write config: %v", err)
 	}
 
-	excl, _, err := Load(root)
+	excl, _, _, err := Load(root)
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -457,7 +473,7 @@ func TestLoad_DeduplicatesWithinLists(t *testing.T) {
 		t.Fatalf("write config: %v", err)
 	}
 
-	excl, _, err := Load(root)
+	excl, _, _, err := Load(root)
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -494,7 +510,7 @@ func TestLoad_ReturnsAbsoluteSortedPaths(t *testing.T) {
 		t.Fatalf("write config: %v", err)
 	}
 
-	excl, _, err := Load(root)
+	excl, _, _, err := Load(root)
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -559,7 +575,7 @@ func TestLoad_Network_BlockRejected(t *testing.T) {
 				t.Fatalf("write: %v", err)
 			}
 
-			_, _, err := Load(root)
+			_, _, _, err := Load(root)
 			if err == nil {
 				t.Fatal("expected error for stale network: block, got nil")
 			}
@@ -619,7 +635,7 @@ func TestLoad_Scan_ValidPatternsAndSkipDirs(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(root, Filename), []byte(tc.yaml), 0o644); err != nil {
 				t.Fatalf("write: %v", err)
 			}
-			excl, _, err := Load(root)
+			excl, _, _, err := Load(root)
 			if err != nil {
 				t.Fatalf("Load returned error: %v", err)
 			}
@@ -659,7 +675,7 @@ func TestLoad_Scan_InvalidPatterns(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(root, Filename), []byte(tc.yaml), 0o644); err != nil {
 				t.Fatalf("write: %v", err)
 			}
-			_, _, err := Load(root)
+			_, _, _, err := Load(root)
 			if err == nil {
 				t.Fatalf("expected error containing %q, got nil", tc.wantErrFrag)
 			}
@@ -709,7 +725,7 @@ func TestLoad_Scan_InvalidSkipDirs(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(root, Filename), []byte(tc.yaml), 0o644); err != nil {
 				t.Fatalf("write: %v", err)
 			}
-			_, _, err := Load(root)
+			_, _, _, err := Load(root)
 			if err == nil {
 				t.Fatalf("expected error containing %q, got nil", tc.wantErrFrag)
 			}
@@ -733,7 +749,7 @@ func TestLoad_Scan_UnknownKeyRejected(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, _, err := Load(root)
+	_, _, _, err := Load(root)
 	if err == nil {
 		t.Fatal("expected error for unknown key under exclude.scan, got nil")
 	}
@@ -756,7 +772,7 @@ func TestLoad_Cache_AbsentBlock(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, cacheCfg, err := Load(root)
+	_, cacheCfg, _, err := Load(root)
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -773,7 +789,7 @@ func TestLoad_Cache_MissingFile(t *testing.T) {
 	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
-	_, cacheCfg, err := Load(root)
+	_, cacheCfg, _, err := Load(root)
 	if err != nil {
 		t.Fatalf("Load on missing file: %v", err)
 	}
@@ -796,7 +812,7 @@ func TestLoad_Cache_BothFalse(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, cacheCfg, err := Load(root)
+	_, cacheCfg, _, err := Load(root)
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -819,7 +835,7 @@ func TestLoad_Cache_BothTrue(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, cacheCfg, err := Load(root)
+	_, cacheCfg, _, err := Load(root)
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -842,7 +858,7 @@ func TestLoad_Cache_MixedContentFalseAgentAbsent(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, cacheCfg, err := Load(root)
+	_, cacheCfg, _, err := Load(root)
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -865,7 +881,7 @@ func TestLoad_Cache_MixedAgentFalseContentAbsent(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, cacheCfg, err := Load(root)
+	_, cacheCfg, _, err := Load(root)
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -888,7 +904,7 @@ func TestLoad_Cache_UnknownKeyRejected(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, _, err := Load(root)
+	_, _, _, err := Load(root)
 	if err == nil {
 		t.Fatal("expected error for unknown key under cache:, got nil")
 	}
@@ -910,7 +926,7 @@ func TestRenderStub_TrueTrue(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, cacheCfg, err := Load(root)
+	_, cacheCfg, _, err := Load(root)
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -933,7 +949,7 @@ func TestRenderStub_FalseFalse(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, cacheCfg, err := Load(root)
+	_, cacheCfg, _, err := Load(root)
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -964,7 +980,7 @@ func TestScaffold_CacheFalseFalse(t *testing.T) {
 		t.Errorf("file content mismatch:\ngot:  %q\nwant: %q", got, want)
 	}
 
-	_, cacheCfg, err := Load(root)
+	_, cacheCfg, _, err := Load(root)
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -1014,6 +1030,347 @@ func TestStub_MatchesDefaultRenderStub(t *testing.T) {
 	want := renderStub(Cache{Content: true, Agent: true})
 	if string(Stub) != string(want) {
 		t.Errorf("Stub does not match renderStub(Cache{true,true}):\nStub:  %q\nwant: %q", Stub, want)
+	}
+}
+
+// ---- environments: block tests ----
+
+// TestValidateEnvironments_ValidMap verifies that a valid environments map
+// produces a sorted []string of "KEY=VALUE" pairs.
+func TestValidateEnvironments_ValidMap(t *testing.T) {
+	nodes := map[string]yaml.Node{
+		"NODE_ENV":    {Kind: yaml.ScalarNode, Tag: "!!str", Value: "production"},
+		"LOG_LEVEL":   {Kind: yaml.ScalarNode, Tag: "!!str", Value: "info"},
+		"API_BASE_URL": {Kind: yaml.ScalarNode, Tag: "!!str", Value: "https://api.example.com"},
+	}
+	got, err := validateEnvironments(nodes)
+	if err != nil {
+		t.Fatalf("validateEnvironments error: %v", err)
+	}
+	// After sorting: API_BASE_URL < LOG_LEVEL < NODE_ENV
+	want := []string{
+		"API_BASE_URL=https://api.example.com",
+		"LOG_LEVEL=info",
+		"NODE_ENV=production",
+	}
+	if !stringSlicesEqual(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+// TestValidateEnvironments_ScalarCoercion verifies that numeric and boolean
+// values in environments: are coerced to their string representations.
+func TestValidateEnvironments_ScalarCoercion(t *testing.T) {
+	// yaml.v3 decodes numeric/boolean scalars with the appropriate tag, but
+	// validateEnvironments uses node.Value (the raw string form), so PORT: 8080
+	// yields Value="8080" and DEBUG: true yields Value="true".
+	nodes := map[string]yaml.Node{
+		"PORT":  {Kind: yaml.ScalarNode, Tag: "!!int", Value: "8080"},
+		"DEBUG": {Kind: yaml.ScalarNode, Tag: "!!bool", Value: "true"},
+	}
+	got, err := validateEnvironments(nodes)
+	if err != nil {
+		t.Fatalf("validateEnvironments error: %v", err)
+	}
+	// After sorting: DEBUG < PORT
+	want := []string{"DEBUG=true", "PORT=8080"}
+	if !stringSlicesEqual(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+// TestValidateEnvironments_EqualsInKeyRejected verifies that a key containing
+// '=' is rejected (would produce "A=B=value" which Docker misparses).
+func TestValidateEnvironments_EqualsInKeyRejected(t *testing.T) {
+	valNode := yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "val"}
+	_, err := validateEnvironments(map[string]yaml.Node{"A=B": valNode})
+	if err == nil {
+		t.Fatal("expected error for key with '=', got nil")
+	}
+	if !strings.Contains(err.Error(), "must not contain '='") {
+		t.Errorf("error %q does not contain \"must not contain '='\"", err.Error())
+	}
+	if !strings.HasPrefix(err.Error(), "projectconfig:") {
+		t.Errorf("error missing 'projectconfig:' prefix: %q", err.Error())
+	}
+}
+
+// TestValidateEnvironments_NewlineOrTabInValueRejected verifies that a value
+// containing a newline or tab is rejected (breaks ShellCommand dry-run output).
+func TestValidateEnvironments_NewlineOrTabInValueRejected(t *testing.T) {
+	cases := []struct {
+		name  string
+		value string
+	}{
+		{"LF", "line1\nline2"},
+		{"CR", "line1\rline2"},
+		{"TAB", "val1\tval2"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			valNode := yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: tc.value}
+			_, err := validateEnvironments(map[string]yaml.Node{"KEY": valNode})
+			if err == nil {
+				t.Fatalf("expected error for newline/tab in value (%s), got nil", tc.name)
+			}
+			if !strings.Contains(err.Error(), "must not contain newline or tab characters") {
+				t.Errorf("error %q does not contain 'must not contain newline or tab characters'", err.Error())
+			}
+			if !strings.HasPrefix(err.Error(), "projectconfig:") {
+				t.Errorf("error missing 'projectconfig:' prefix: %q", err.Error())
+			}
+		})
+	}
+}
+
+// TestValidateEnvironments_NewlineOrTabInKeyRejected verifies that a key
+// containing \n, \r, or \t is rejected (would produce a corrupted
+// "KEY\nNAME=value" entry in Spec.Env / ContainerConfig.Env).
+func TestValidateEnvironments_NewlineOrTabInKeyRejected(t *testing.T) {
+	cases := []struct {
+		name string
+		key  string
+	}{
+		{"LF", "KEY\nNAME"},
+		{"CR", "KEY\rNAME"},
+		{"TAB", "KEY\tNAME"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			valNode := yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "val"}
+			_, err := validateEnvironments(map[string]yaml.Node{tc.key: valNode})
+			if err == nil {
+				t.Fatalf("expected error for key with %s character, got nil", tc.name)
+			}
+			if !strings.Contains(err.Error(), "must not contain newline or tab characters") {
+				t.Errorf("error %q does not contain expected message", err.Error())
+			}
+			if !strings.HasPrefix(err.Error(), "projectconfig:") {
+				t.Errorf("error missing 'projectconfig:' prefix: %q", err.Error())
+			}
+		})
+	}
+}
+
+// TestValidateEnvironments_EmptyKeyRejected verifies that an empty key is
+// rejected with a "projectconfig: empty key" error.
+func TestValidateEnvironments_EmptyKeyRejected(t *testing.T) {
+	// yaml.v3 does not permit an empty string key in a YAML map literal —
+	// "" as a bare map key isn't representable without quoting. We test
+	// validateEnvironments directly.
+	valNode := yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "val"}
+	_, err := validateEnvironments(map[string]yaml.Node{"": valNode})
+	if err == nil {
+		t.Fatal("expected error for empty key, got nil")
+	}
+	if !strings.Contains(err.Error(), "empty key") {
+		t.Errorf("error %q does not contain 'empty key'", err.Error())
+	}
+	if !strings.HasPrefix(err.Error(), "projectconfig:") {
+		t.Errorf("error missing 'projectconfig:' prefix: %q", err.Error())
+	}
+}
+
+// TestValidateEnvironments_NonScalarRejected verifies that non-scalar values
+// (sequences and mappings) are rejected fail-loud.
+func TestValidateEnvironments_NonScalarRejected(t *testing.T) {
+	cases := []struct {
+		name string
+		node yaml.Node
+	}{
+		{
+			"sequence value",
+			yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"},
+		},
+		{
+			"mapping value",
+			yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := validateEnvironments(map[string]yaml.Node{"FOO": tc.node})
+			if err == nil {
+				t.Fatalf("expected error for non-scalar %s, got nil", tc.name)
+			}
+			if !strings.Contains(err.Error(), "must be a scalar value") {
+				t.Errorf("error %q does not contain 'must be a scalar value'", err.Error())
+			}
+			if !strings.HasPrefix(err.Error(), "projectconfig:") {
+				t.Errorf("error missing 'projectconfig:' prefix: %q", err.Error())
+			}
+		})
+	}
+}
+
+// TestValidateEnvironments_NullScalarRejected verifies that null-tagged scalars
+// (bare KEY: or KEY: null) are rejected fail-loud.
+func TestValidateEnvironments_NullScalarRejected(t *testing.T) {
+	// yaml.v3 decodes both `KEY:` and `KEY: null` as ScalarNode with Tag="!!null".
+	nullNode := yaml.Node{Kind: yaml.ScalarNode, Tag: "!!null", Value: "null"}
+	_, err := validateEnvironments(map[string]yaml.Node{"KEY": nullNode})
+	if err == nil {
+		t.Fatal("expected error for null scalar, got nil")
+	}
+	if !strings.Contains(err.Error(), "has no value") {
+		t.Errorf("error %q does not contain 'has no value'", err.Error())
+	}
+	if !strings.HasPrefix(err.Error(), "projectconfig:") {
+		t.Errorf("error missing 'projectconfig:' prefix: %q", err.Error())
+	}
+}
+
+// TestValidateEnvironments_ExplicitEmptyString verifies that an explicit empty
+// string value (KEY: "") is accepted and produces "KEY=".
+func TestValidateEnvironments_ExplicitEmptyString(t *testing.T) {
+	// yaml.v3 decodes KEY: "" as ScalarNode with Tag="!!str" and Value="".
+	emptyNode := yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: ""}
+	got, err := validateEnvironments(map[string]yaml.Node{"EMPTY_VAR": emptyNode})
+	if err != nil {
+		t.Fatalf("validateEnvironments error: %v", err)
+	}
+	if len(got) != 1 || got[0] != "EMPTY_VAR=" {
+		t.Errorf("got %v, want [\"EMPTY_VAR=\"]", got)
+	}
+}
+
+// TestValidateEnvironments_SortedOutput verifies that validateEnvironments
+// returns keys in sorted (deterministic) order.
+func TestValidateEnvironments_SortedOutput(t *testing.T) {
+	nodes := map[string]yaml.Node{
+		"Z_VAR": {Kind: yaml.ScalarNode, Tag: "!!str", Value: "z"},
+		"A_VAR": {Kind: yaml.ScalarNode, Tag: "!!str", Value: "a"},
+		"M_VAR": {Kind: yaml.ScalarNode, Tag: "!!str", Value: "m"},
+	}
+	got, err := validateEnvironments(nodes)
+	if err != nil {
+		t.Fatalf("validateEnvironments error: %v", err)
+	}
+	want := []string{"A_VAR=a", "M_VAR=m", "Z_VAR=z"}
+	if !stringSlicesEqual(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+// ---- Load environments: integration tests ----
+
+// TestLoad_AbsentEnvironments_NilEnv verifies that a config file without an
+// environments: block returns nil env (absent block → nil, backward-compatible).
+func TestLoad_AbsentEnvironments_NilEnv(t *testing.T) {
+	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	root := evalSymlinks(t, t.TempDir())
+
+	// Write a config that has exclude + cache but no environments block.
+	content := `exclude:
+  scan:
+    patterns: ["*.env"]
+    skip-dirs: [.git]
+  files: []
+  dirs: []
+cache:
+  content: true
+  agent: true
+`
+	if err := os.WriteFile(filepath.Join(root, Filename), []byte(content), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	_, _, envVars, err := Load(root)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if envVars != nil {
+		t.Errorf("expected nil env for absent environments: block, got %v", envVars)
+	}
+}
+
+// TestLoad_MissingFile_NilEnv verifies that a missing .makeslop.yaml returns nil env.
+func TestLoad_MissingFile_NilEnv(t *testing.T) {
+	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	root := evalSymlinks(t, t.TempDir())
+
+	_, _, envVars, err := Load(root)
+	if err != nil {
+		t.Fatalf("Load on missing file returned error: %v", err)
+	}
+	if envVars != nil {
+		t.Errorf("expected nil env for missing file, got %v", envVars)
+	}
+}
+
+// TestLoad_EmptyAndWhitespaceFile_NilEnv verifies that empty/whitespace-only
+// files return nil env (EOF branch).
+func TestLoad_EmptyAndWhitespaceFile_NilEnv(t *testing.T) {
+	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+
+	cases := []struct {
+		name    string
+		content []byte
+	}{
+		{"empty bytes", []byte{}},
+		{"whitespace only", []byte("   \n   \n")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := evalSymlinks(t, t.TempDir())
+			if err := os.WriteFile(filepath.Join(root, Filename), tc.content, 0o644); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			_, _, envVars, err := Load(root)
+			if err != nil {
+				t.Fatalf("Load returned error for %q: %v", tc.name, err)
+			}
+			if envVars != nil {
+				t.Errorf("expected nil env for %q, got %v", tc.name, envVars)
+			}
+		})
+	}
+}
+
+// TestLoad_EnvironmentsBlock_ReturnsSortedPairs verifies that a valid
+// environments: block is parsed and returned as sorted "KEY=VALUE" pairs.
+func TestLoad_EnvironmentsBlock_ReturnsSortedPairs(t *testing.T) {
+	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	root := evalSymlinks(t, t.TempDir())
+
+	content := `environments:
+  NODE_ENV: production
+  PORT: 8080
+  LOG_LEVEL: info
+`
+	if err := os.WriteFile(filepath.Join(root, Filename), []byte(content), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	_, _, envVars, err := Load(root)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	// Sorted order: LOG_LEVEL < NODE_ENV < PORT
+	want := []string{"LOG_LEVEL=info", "NODE_ENV=production", "PORT=8080"}
+	if !stringSlicesEqual(envVars, want) {
+		t.Errorf("got %v, want %v", envVars, want)
+	}
+}
+
+// TestLoad_TypoInEnvironments_StrictModeRejects verifies that a typo in the
+// top-level key (enviroments: instead of environments:) is rejected by strict mode.
+func TestLoad_TypoInEnvironments_StrictModeRejects(t *testing.T) {
+	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	root := evalSymlinks(t, t.TempDir())
+
+	// "enviroments" (missing 'n') is an unknown field — strict mode must reject it.
+	content := "enviroments:\n  NODE_ENV: production\n"
+	if err := os.WriteFile(filepath.Join(root, Filename), []byte(content), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	_, _, _, err := Load(root)
+	if err == nil {
+		t.Fatal("expected error for typo in top-level key, got nil")
+	}
+	if !strings.HasPrefix(err.Error(), "projectconfig:") {
+		t.Errorf("error missing 'projectconfig:' prefix: %q", err.Error())
 	}
 }
 

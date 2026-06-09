@@ -16,6 +16,7 @@ Complete reference for all `makeslop` commands, flags, runtime behavior, and con
 - [Setup flow and self-healing](#setup-flow-and-self-healing)
 - [Cache layout](#cache-layout)
 - [Container layout and mount table](#container-layout-and-mount-table)
+- [Environment variables](#environment-variables-environments-block-in-makeslopya-ml)
 - [In-container security flags](#in-container-security-flags)
 - [Host UID](#host-uid)
 - [TTY policy](#tty-policy)
@@ -97,7 +98,9 @@ Builds (or rebuilds) the base Docker image from `~/.makeslop/Dockerfile` via the
 From within a registered workspace, launches an interactive, project-scoped Docker container with
 the workspace source tree mounted in. By default, per-workspace + global agent config
 (`.claude/`, `.codex/`, `CLAUDE.md`, `docs/`) are also mounted as overlay groups; individual
-groups can be disabled via `cache.content` and `cache.agent` in `.makeslop.yaml`.
+groups can be disabled via `cache.content` and `cache.agent` in `.makeslop.yaml`. Static
+environment variables can be injected via the `environments:` block — see
+[Environment variables](#environment-variables-environments-block-in-makeslopya-ml).
 
 - Exits with the container's exit code.
 - Refuses to launch when stdin or stdout is not a TTY (see [TTY policy](#tty-policy)).
@@ -257,6 +260,50 @@ Setting a group to `false` omits those overlay mounts so the project's real file
 An absent `cache:` block is equivalent to `{content: true, agent: true}` — behavior is identical
 to before this feature was added. The `init --global-only` flag is a convenience shortcut that
 scaffolds `.makeslop.yaml` with both groups disabled.
+
+---
+
+## Environment variables (`environments:` block in `.makeslop.yaml`)
+
+Declare static environment variables to inject into the app container at runtime using an optional
+`environments:` block in the project-local `.makeslop.yaml`:
+
+```yaml
+environments:
+  NODE_ENV: production
+  PORT: 8080
+  LOG_LEVEL: debug
+  API_BASE_URL: "https://api.example.com"
+```
+
+Each key–value pair becomes a `-e KEY=VALUE` flag passed to Docker. Variables appear inside the
+container alongside anything set in the base `Dockerfile`.
+
+**Value types:** Values must be YAML scalars. Strings, numbers, and booleans are all accepted and
+coerced to their string representation:
+
+```yaml
+environments:
+  PORT: 8080        # → PORT=8080
+  DEBUG: true       # → DEBUG=true
+  RETRIES: 3        # → RETRIES=3
+```
+
+**Rules and error handling:**
+
+- Non-scalar values (lists, maps) are rejected with a hard error — `makeslop run` will not launch.
+- Null values (`KEY:` or `KEY: null`) are rejected. A bare key with no value is almost always a
+  mistake; provide an explicit value or remove the key.
+- Explicit empty string (`KEY: ""`) is accepted and injects `KEY=` into the container (a valid
+  empty environment variable).
+- Empty keys are rejected.
+- Variables are passed in sorted key order (deterministic output in `--dry-run`).
+
+**Absent block:** When `environments:` is absent from `.makeslop.yaml`, no `-e` flags are emitted —
+behavior is byte-identical to before this feature was added (backward-compatible).
+
+**Verification (`--dry-run`):** Use `makeslop run --dry-run` to see the exact `-e` flags before
+launching the container.
 
 ---
 

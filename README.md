@@ -90,6 +90,16 @@ exclude:
   files: []   # overlay these with /dev/null inside the container
 ```
 
+Inject static environment variables into the container with an `environments:` block:
+
+```yaml
+environments:
+  NODE_ENV: production
+  PORT: 8080
+```
+
+Values must be scalars; numbers and booleans are coerced to strings. Absent block = no `-e` flags (backward-compatible). See [docs/reference.md](docs/reference.md#environment-variables-environments-block-in-makeslopya-ml) for the full spec.
+
 Global settings (`~/.makeslop/settings.json`) control the image tag, shell, and `/tmp` size:
 ```
 makeslop config set image claudebox
