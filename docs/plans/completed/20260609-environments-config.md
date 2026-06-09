@@ -141,9 +141,9 @@
 - [x] Confirm `MigrationVersion` and `CurrentVersion` are NOT bumped (Settings struct & embedded Dockerfile unchanged; `environments` lives in per-project `.makeslop.yaml`).
 
 ### Task 5: Documentation
-- [ ] Update `docs/reference.md` to document the `environments:` block (static values, scalar coercion, null-rejection, examples).
-- [ ] Update `CLAUDE.md` (required): document the `Load` 4-value return and the `environments:` flow alongside the existing `cache:`/`exclude:` block sections.
-- [ ] Move this plan to `docs/plans/completed/`.
+- [x] Update `docs/reference.md` to document the `environments:` block (static values, scalar coercion, null-rejection, examples).
+- [x] Update `CLAUDE.md` (required): document the `Load` 4-value return and the `environments:` flow alongside the existing `cache:`/`exclude:` block sections.
+- [x] Move this plan to `docs/plans/completed/`.
 
 ## Post-Completion
 *Informational only — no checkboxes.*

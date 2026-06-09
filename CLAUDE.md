@@ -134,8 +134,9 @@ cache:
   agent: true     # mount .claude/ + .codex/ from per-workspace cache (default: true)
 ```
 
-`projectconfig.Load` returns a `Cache{Content bool, Agent bool}` (second return value, before the error). Absent
-block ⇒ `{true, true}` ⇒ identical to pre-feature behavior (backward compatible).
+`projectconfig.Load` returns `(Excludes, Cache, []string, error)` — a 4-value return. The `Cache`
+value is the second return value (before the env slice and error). Absent block ⇒ `{true, true}` ⇒
+identical to pre-feature behavior (backward compatible).
 
 The values flow into `docker.Options.MountContentCache` and `docker.Options.MountAgentCache` in
 `runRun`. `BuildSpec` gates the two per-workspace mount groups on these booleans; global mounts
@@ -144,6 +145,35 @@ The values flow into `docker.Options.MountContentCache` and `docker.Options.Moun
 `Scaffold(root, Cache)` writes the stub with the `cache:` block; `Stub` is the default rendering
 (`{true, true}`). The `init --global-only` flag calls `Scaffold(root, Cache{false, false})`,
 scaffolding a file that disables both overlay groups. `Scaffold` is idempotent (EEXIST = success).
+
+### Static environment variables (`environments:` block in `.makeslop.yaml`)
+`internal/projectconfig/projectconfig.go` also parses an optional `environments:` block:
+
+```yaml
+environments:
+  NODE_ENV: production
+  PORT: 8080
+```
+
+`projectconfig.Load` returns `(Excludes, Cache, []string, error)`. The `[]string` is the third
+return value: a sorted slice of `"KEY=VALUE"` pairs from the `environments:` block, or `nil` when
+the block is absent (backward-compatible — nil means no `-e` flags emitted).
+
+`validateEnvironments(map[string]yaml.Node) ([]string, error)` validates the block:
+- Empty keys rejected.
+- Values must be `yaml.ScalarNode` (strings, numbers, booleans coerced to string).
+- Null scalars (`KEY:` / `KEY: null`) rejected fail-loud.
+- Explicit empty string (`KEY: ""`) accepted → `"KEY="`.
+- Returns `dedupSorted(...)` for deterministic output.
+
+The env slice flows into `docker.Options.Env []string` in `runRun`, then into `Spec.Env` via
+`BuildSpec`, then:
+- `Args()` emits `-e KEY=VALUE` per entry, after the `--security-opt` loop and before the mounts loop.
+- `ContainerConfig()` sets `Env: s.Env`.
+- `ShellCommand()` already handles `-e` (value-taking flag already listed in its switch).
+
+`MigrationVersion` and `CurrentVersion` are NOT bumped — `environments:` lives in per-project
+`.makeslop.yaml`, not in `~/.makeslop/settings.json` or the embedded Dockerfile.
 
 ### POSIX-only invariant
 makeslop targets POSIX systems only. Tests that rely on TTY/signal behavior call `SkipNonPOSIX` at the top.
