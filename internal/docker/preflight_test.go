@@ -14,9 +14,9 @@ import (
 // succeeds.
 func TestCheckDaemonOK(t *testing.T) {
 	f := NewFakeRunClient(0) // PingErr unset → success
-	t.Cleanup(SetClientForTest(f))
+	d := newDockerWithClient(t, f)
 
-	if err := CheckDaemon(context.Background()); err != nil {
+	if err := d.CheckDaemon(context.Background()); err != nil {
 		t.Fatalf("CheckDaemon() returned unexpected error: %v", err)
 	}
 }
@@ -26,9 +26,9 @@ func TestCheckDaemonOK(t *testing.T) {
 func TestCheckDaemonDown(t *testing.T) {
 	f := NewFakeRunClient(0)
 	f.PingErr = errors.New("connection refused")
-	t.Cleanup(SetClientForTest(f))
+	d := newDockerWithClient(t, f)
 
-	err := CheckDaemon(context.Background())
+	err := d.CheckDaemon(context.Background())
 	if err == nil {
 		t.Fatal("CheckDaemon() expected error, got nil")
 	}
@@ -46,9 +46,9 @@ func TestCheckDaemonDown(t *testing.T) {
 // image is found.
 func TestImageExistsPresent(t *testing.T) {
 	f := NewFakeRunClient(0) // ImageMissing unset → found
-	t.Cleanup(SetClientForTest(f))
+	d := newDockerWithClient(t, f)
 
-	found, err := ImageExists(context.Background(), "myimage:latest")
+	found, err := d.ImageExists(context.Background(), "myimage:latest")
 	if err != nil {
 		t.Fatalf("ImageExists() unexpected error: %v", err)
 	}
@@ -62,9 +62,9 @@ func TestImageExistsPresent(t *testing.T) {
 func TestImageExistsNotFound(t *testing.T) {
 	f := NewFakeRunClient(0)
 	f.ImageMissing = true
-	t.Cleanup(SetClientForTest(f))
+	d := newDockerWithClient(t, f)
 
-	found, err := ImageExists(context.Background(), "myimage:latest")
+	found, err := d.ImageExists(context.Background(), "myimage:latest")
 	if err != nil {
 		t.Fatalf("ImageExists() expected nil error for missing image, got: %v", err)
 	}
@@ -79,9 +79,9 @@ func TestImageExistsNotFound(t *testing.T) {
 func TestImageExistsOtherError(t *testing.T) {
 	f := NewFakeRunClient(0)
 	f.ImageErr = errors.New("permission denied reading image store")
-	t.Cleanup(SetClientForTest(f))
+	d := newDockerWithClient(t, f)
 
-	found, err := ImageExists(context.Background(), "myimage:latest")
+	found, err := d.ImageExists(context.Background(), "myimage:latest")
 	if err == nil {
 		t.Fatal("ImageExists() expected error for other-error, got nil")
 	}
@@ -104,17 +104,17 @@ func TestImageExistsOtherError(t *testing.T) {
 func TestCheckDaemonBuildClient(t *testing.T) {
 	t.Run("ok", func(t *testing.T) {
 		f := NewFakeBuildClient(0)
-		t.Cleanup(SetClientForTest(f))
-		if err := CheckDaemon(context.Background()); err != nil {
+		d := newDockerWithClient(t, f)
+		if err := d.CheckDaemon(context.Background()); err != nil {
 			t.Fatalf("CheckDaemon() unexpected error: %v", err)
 		}
 	})
 	t.Run("down", func(t *testing.T) {
 		f := NewFakeBuildClient(0)
 		f.PingErr = errors.New("dial tcp: no such file or directory")
-		t.Cleanup(SetClientForTest(f))
+		d := newDockerWithClient(t, f)
 
-		err := CheckDaemon(context.Background())
+		err := d.CheckDaemon(context.Background())
 		if err == nil {
 			t.Fatal("CheckDaemon() expected error, got nil")
 		}
@@ -136,13 +136,13 @@ func TestCheckDaemonBuildClient(t *testing.T) {
 func TestCheckDaemonTimeoutBlockingPing(t *testing.T) {
 	f := NewFakeRunClient(0)
 	f.BlockPing = true // blocks until ctx is cancelled
-	t.Cleanup(SetClientForTest(f))
+	d := newDockerWithClient(t, f)
 
 	// Use a very short deadline so the test completes quickly.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
 
-	err := CheckDaemon(ctx)
+	err := d.CheckDaemon(ctx)
 	if err == nil {
 		t.Fatal("CheckDaemon() expected error when Ping blocks past deadline, got nil")
 	}
@@ -165,12 +165,12 @@ func TestCheckDaemonTimeoutBlockingPing(t *testing.T) {
 func TestImageExistsTimeoutBlockingInspect(t *testing.T) {
 	f := NewFakeRunClient(0)
 	f.BlockImageInspect = true // blocks until ctx is cancelled
-	t.Cleanup(SetClientForTest(f))
+	d := newDockerWithClient(t, f)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
 
-	found, err := ImageExists(ctx, "myimage:latest")
+	found, err := d.ImageExists(ctx, "myimage:latest")
 	if err == nil {
 		t.Fatal("ImageExists() expected error when ImageInspect blocks past deadline, got nil")
 	}
@@ -190,19 +190,19 @@ func TestImageExistsTimeoutBlockingInspect(t *testing.T) {
 // ImageInspect succeed within the normal preflightTimeout — no regression.
 func TestWithPreflightTimeoutHappyPath(t *testing.T) {
 	f := NewFakeRunClient(0) // instant success
-	t.Cleanup(SetClientForTest(f))
+	d := newDockerWithClient(t, f)
 
 	ctx, cancel := WithPreflightTimeout(context.Background())
 	defer cancel()
 
-	if err := CheckDaemon(ctx); err != nil {
+	if err := d.CheckDaemon(ctx); err != nil {
 		t.Fatalf("CheckDaemon() unexpected error: %v", err)
 	}
 
 	ctx2, cancel2 := WithPreflightTimeout(context.Background())
 	defer cancel2()
 
-	found, err := ImageExists(ctx2, "myimage:latest")
+	found, err := d.ImageExists(ctx2, "myimage:latest")
 	if err != nil {
 		t.Fatalf("ImageExists() unexpected error: %v", err)
 	}

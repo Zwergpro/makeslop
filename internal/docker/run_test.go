@@ -13,7 +13,6 @@ import (
 
 	"github.com/moby/moby/api/types/container"
 	moby "github.com/moby/moby/client"
-	"golang.org/x/term"
 )
 
 func sampleSpec() Spec {
@@ -129,10 +128,12 @@ func (f *fakeClient) Close() error {
 // ─── run() unit tests ─────────────────────────────────────────────────────────
 
 func TestRun_NoTTY_ReturnsSentinel_NoClientCall(t *testing.T) {
-	t.Cleanup(SetTTYCheckForTest(func() bool { return false }))
-
 	fc := &fakeClient{}
-	err := run(context.Background(), fc, func() bool { return false }, func(_ int) (*term.State, error) { return nil, nil }, sampleSpec())
+	d := newDockerWithClient(t, fc,
+		WithTTYCheck(neverTTY),
+		WithRawMode(noopMakeRaw),
+	)
+	err := d.Run(context.Background(), sampleSpec())
 	if !errors.Is(err, ErrNoTTY) {
 		t.Fatalf("expected ErrNoTTY, got %v", err)
 	}
@@ -194,12 +195,14 @@ func TestRun_ExitMapping_WaitExitError(t *testing.T) {
 // TestRun_StartFailure_ForcesRemove: when ContainerStart fails, the deferred
 // best-effort force-remove must fire.
 func TestRun_StartFailure_ForcesRemove(t *testing.T) {
-	t.Cleanup(SetTTYCheckForTest(func() bool { return true }))
-
 	startErr := errors.New("image not found")
 	fc := &fakeClient{startErr: startErr}
+	d := newDockerWithClient(t, fc,
+		WithTTYCheck(alwaysTTY),
+		WithRawMode(noopMakeRaw),
+	)
 
-	err := runWithForceTTY(context.Background(), fc, sampleSpec())
+	err := d.Run(context.Background(), sampleSpec())
 	if err == nil {
 		t.Fatal("expected error from ContainerStart failure, got nil")
 	}
@@ -214,14 +217,16 @@ func TestRun_StartFailure_ForcesRemove(t *testing.T) {
 // TestRun_CtxCancel_ForcesRemove: on context cancellation the deferred
 // force-remove must fire.
 func TestRun_CtxCancel_ForcesRemove(t *testing.T) {
-	t.Cleanup(SetTTYCheckForTest(func() bool { return true }))
-
 	bwc := newBlockingWaitClient()
+	d := newDockerWithClient(t, bwc,
+		WithTTYCheck(alwaysTTY),
+		WithRawMode(noopMakeRaw),
+	)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- runWithForceTTY(ctx, bwc, sampleSpec())
+		done <- d.Run(ctx, sampleSpec())
 	}()
 
 	// Cancel after the container "started".
@@ -234,7 +239,7 @@ func TestRun_CtxCancel_ForcesRemove(t *testing.T) {
 			t.Fatal("expected error on ctx cancel, got nil")
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("runWithForceTTY did not return within 5s after cancel")
+		t.Fatal("d.Run did not return within 5s after cancel")
 	}
 	if !bwc.removed {
 		t.Error("ContainerRemove must be called on ctx cancel")
@@ -252,13 +257,14 @@ func TestExitError_ErrorString(t *testing.T) {
 
 // TestRun_ContainerCreate_Failure: ContainerCreate error surfaces immediately.
 func TestRun_ContainerCreate_Failure(t *testing.T) {
-	t.Cleanup(SetTTYCheckForTest(func() bool { return true }))
-	t.Cleanup(SetTermMakeRawForTest(func(_ int) (*term.State, error) { return nil, nil }))
-
 	createErr := errors.New("no such image")
 	fc := &fakeClient{createErr: createErr}
+	d := newDockerWithClient(t, fc,
+		WithTTYCheck(alwaysTTY),
+		WithRawMode(noopMakeRaw),
+	)
 
-	err := run(context.Background(), fc, func() bool { return true }, func(_ int) (*term.State, error) { return nil, nil }, sampleSpec())
+	err := d.Run(context.Background(), sampleSpec())
 	if err == nil {
 		t.Fatal("expected error from ContainerCreate failure, got nil")
 	}
@@ -273,13 +279,14 @@ func TestRun_ContainerCreate_Failure(t *testing.T) {
 
 // TestRun_ContainerAttach_Failure: ContainerAttach error fires deferred remove.
 func TestRun_ContainerAttach_Failure(t *testing.T) {
-	t.Cleanup(SetTTYCheckForTest(func() bool { return true }))
-	t.Cleanup(SetTermMakeRawForTest(func(_ int) (*term.State, error) { return nil, nil }))
-
 	attachErr := errors.New("stream attach refused")
 	fc := &fakeClient{attachErr: attachErr}
+	d := newDockerWithClient(t, fc,
+		WithTTYCheck(alwaysTTY),
+		WithRawMode(noopMakeRaw),
+	)
 
-	err := run(context.Background(), fc, func() bool { return true }, func(_ int) (*term.State, error) { return nil, nil }, sampleSpec())
+	err := d.Run(context.Background(), sampleSpec())
 	if err == nil {
 		t.Fatal("expected error from ContainerAttach failure, got nil")
 	}
@@ -294,12 +301,14 @@ func TestRun_ContainerAttach_Failure(t *testing.T) {
 
 // TestRun_WaitErrorChannel: wr.Error channel path in run() surfaces correctly.
 func TestRun_WaitErrorChannel(t *testing.T) {
-	t.Cleanup(SetTTYCheckForTest(func() bool { return true }))
-
 	waitErr := errors.New("daemon connection lost")
 	fc := &fakeClient{waitErr: waitErr}
+	d := newDockerWithClient(t, fc,
+		WithTTYCheck(alwaysTTY),
+		WithRawMode(noopMakeRaw),
+	)
 
-	err := runWithForceTTY(context.Background(), fc, sampleSpec())
+	err := d.Run(context.Background(), sampleSpec())
 	if err == nil {
 		t.Fatal("expected error from wr.Error, got nil")
 	}
@@ -318,15 +327,6 @@ func mapWaitResponse(res container.WaitResponse) error {
 		return &ExitError{Code: int(res.StatusCode)}
 	}
 	return nil
-}
-
-// runWithForceTTY calls run() with a no-op termMakeRaw stub so tests can
-// exercise the full run() path without a real PTY. ttyCheck must be stubbed
-// true by the caller before calling this.
-func runWithForceTTY(ctx context.Context, cli apiClient, s Spec) error {
-	noopMakeRaw := func(_ int) (*term.State, error) { return nil, nil }
-	alwaysTTY := func() bool { return true }
-	return run(ctx, cli, alwaysTTY, noopMakeRaw, s)
 }
 
 // blockingWaitClient is a fake apiClient whose ContainerWait blocks until the

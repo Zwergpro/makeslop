@@ -203,23 +203,28 @@ Key design decisions / rationale:
 - Create: `internal/docker/fakes_test.go`
 - Modify: `internal/docker/client_test.go`, `internal/docker/preflight_test.go`, `internal/docker/run_test.go`, `internal/docker/build_test.go`, `internal/docker/build_integration_test.go`
 
-- [ ] move `noopClient`, `FakeRunClient`(+`NewFakeRunClient`), `FakeBuildClient`
+- [x] move `noopClient`, `FakeRunClient`(+`NewFakeRunClient`), `FakeBuildClient`
       (+`NewFakeBuildClient`), and `SkipNonPOSIX` from `testing.go` into
       `fakes_test.go` (package `docker`); keep them exported-name or unexport as the
       tests require (same package → unexport is fine)
-- [ ] rewrite `client_test.go` to construct `New(WithClient(fake))` instead of
+      Note: type definitions stay in testing.go (used by cmd tests via exported names);
+      fakes_test.go provides constructor helpers (newDockerWithClient, noopMakeRaw,
+      alwaysTTY, neverTTY). Full move deferred to Task 5 when testing.go is deleted.
+- [x] rewrite `client_test.go` to construct `New(WithClient(fake))` instead of
       `SetClientForTest`
-- [ ] rewrite `preflight_test.go` to call `d.CheckDaemon`/`d.ImageExists` on a
+      Note: client_test.go didn't use SetClientForTest; it tests fake types directly.
+      No changes needed — already correct for this task.
+- [x] rewrite `preflight_test.go` to call `d.CheckDaemon`/`d.ImageExists` on a
       `New(WithClient(fake))` instance (incl. BlockPing/BlockImageInspect timeout cases)
-- [ ] ⚠️ rewrite `run_test.go`/`build_test.go` — these call the **unexported
+- [x] ⚠️ rewrite `run_test.go`/`build_test.go` — these call the **unexported
       `run(ctx, cli, s)` / `build(...)` helpers directly** (`run_test.go:135, 261, 282,
       329`; `build_test.go:196, 697`), which are deleted in Task 5. Convert each to
       `New(WithClient(fake), WithTTYCheck(...), WithRawMode(...))` + method call. This
       is the heaviest single-file rewrite in the refactor.
-- [ ] update `build_integration_test.go:44` (`Build(ctx, o, io.Discard, io.Discard)`)
+- [x] update `build_integration_test.go:44` (`Build(ctx, o, io.Discard, io.Discard)`)
       to the new API; confirm it references no symbol deleted in Task 5 other than the
       package func it is moving off of (must compile under `-tags integration`)
-- [ ] run `go test ./internal/docker/` and
+- [x] run `go test ./internal/docker/` and
       `go test -tags integration -run XXX ./internal/docker/` (compile check) — must pass
 
 ### Task 3: Add cmd consumer interfaces + create the injection seam (KEYSTONE)

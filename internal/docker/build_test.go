@@ -172,7 +172,7 @@ func (r *recordingBuildClient) ImageBuild(_ context.Context, _ io.Reader, opts m
 	return moby.ImageBuildResult{Body: io.NopCloser(bytes.NewReader(nil))}, nil
 }
 
-// TestBuild_FakeSelf_ImageBuildOptions verifies that build passes the correct
+// TestBuild_FakeSelf_ImageBuildOptions verifies that Build passes the correct
 // image tag, Dockerfile basename, BuildKit version, and RemoteContext to
 // ImageBuild. The session may fail to dial (fakeClient.DialHijack returns an
 // error), but we verify ImageBuild was called with the expected options.
@@ -186,14 +186,15 @@ func TestBuild_FakeSelf_ImageBuildOptions(t *testing.T) {
 	}
 
 	rc := &recordingBuildClient{}
+	d := newDockerWithClient(t, rc)
 	o := BuildOptions{
 		Image:          "claudebox",
 		DockerfilePath: dockerfilePath,
 		ContextDir:     t.TempDir(),
 	}
-	// build may return an error (session dial fails for fakeClient), but
+	// Build may return an error (session dial fails for fakeClient), but
 	// ImageBuild should still be called before or during session teardown.
-	_ = build(context.Background(), rc, o, io.Discard, io.Discard)
+	_ = d.Build(context.Background(), o, io.Discard, io.Discard)
 
 	if !rc.buildCalled {
 		t.Fatal("ImageBuild was not called (session may have failed before reaching ImageBuild; integration-test covers full flow)")
@@ -666,17 +667,17 @@ func TestStageDockerfile_UnreadableSource(t *testing.T) {
 	cleanup() // must be safe to call even on error path
 }
 
-// TestBuild_StagedDockerfileIsolation: build() is called with a DockerfilePath
+// TestBuild_StagedDockerfileIsolation: d.Build() is called with a DockerfilePath
 // whose parent directory contains a sibling file. The sibling must not appear in
 // the staged dir that is synced to the daemon. We confirm this indirectly by
-// verifying that build() reaches ImageBuild (the session may fail to dial in the
-// fake, but ImageBuild must still be called — same pattern as
+// verifying that d.Build() reaches ImageBuild (the session may fail to dial in
+// the fake, but ImageBuild must still be called — same pattern as
 // TestBuild_FakeSelf_ImageBuildOptions).
 //
 // The key invariant tested here: stageDockerfile is wired into build() so that
 // the dockerfile filesync source is the isolated staged dir, not the source's
 // parent dir. We verify this by confirming the recorded Dockerfile basename is
-// still "Dockerfile" (unchanged) and build() reaches ImageBuild successfully.
+// still "Dockerfile" (unchanged) and d.Build() reaches ImageBuild successfully.
 func TestBuild_StagedDockerfileIsolation(t *testing.T) {
 	// Set up a source dir that contains both a Dockerfile and a sibling file.
 	srcDir := t.TempDir()
@@ -689,12 +690,13 @@ func TestBuild_StagedDockerfileIsolation(t *testing.T) {
 	}
 
 	rc := &recordingBuildClient{}
+	d := newDockerWithClient(t, rc)
 	o := BuildOptions{
 		Image:          "claudebox",
 		DockerfilePath: dockerfilePath,
 		ContextDir:     t.TempDir(),
 	}
-	_ = build(context.Background(), rc, o, io.Discard, io.Discard)
+	_ = d.Build(context.Background(), o, io.Discard, io.Discard)
 
 	if !rc.buildCalled {
 		t.Fatal("ImageBuild was not called; stageDockerfile may have failed or the session did not reach ImageBuild")

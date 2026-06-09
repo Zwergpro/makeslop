@@ -41,7 +41,12 @@ func TestBuild_Integration_BuildKit(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	if err := Build(ctx, o, io.Discard, io.Discard); err != nil {
+	d, err := New()
+	if err != nil {
+		t.Fatalf("New() returned error: %v", err)
+	}
+	defer d.Close() //nolint:errcheck
+	if err := d.Build(ctx, o, io.Discard, io.Discard); err != nil {
 		t.Fatalf("Build returned unexpected error: %v", err)
 	}
 }
