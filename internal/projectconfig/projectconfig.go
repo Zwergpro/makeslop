@@ -189,22 +189,30 @@ func Scaffold(root string, c Cache) error {
 }
 
 // Load parses <root>/.makeslop.yaml and returns validated Excludes, Cache,
-// and any error. A missing file yields zero Excludes and Cache defaults to
-// {Content:true, Agent:true} (backward-compatible: no config file means all
-// overlay mounts are enabled). Malformed YAML, unknown fields (including a
-// stale "network:" block), cross-list duplicates, reserved-path collisions,
-// and invalid paths are errors wrapped with "projectconfig: ". Symlinks and
-// missing entries are silently dropped. An absent cache: block within an
-// existing config file also defaults both Cache fields to true.
+// env vars, and any error.
+//
+// The four-value return is (Excludes, Cache, []string, error):
+//   - Excludes: file/dir masks and scan patterns.
+//   - Cache: per-workspace cache overlay settings (defaults to {true,true}).
+//   - []string: sorted "KEY=VALUE" env pairs from the environments: block; nil
+//     when the block is absent (nil ≡ no env injection, backward-compatible).
+//   - error: non-nil for any parse, validation, or filesystem error.
+//
+// A missing file yields zero Excludes, Cache{true,true}, and nil env.
+// Malformed YAML, unknown fields (including a stale "network:" block),
+// cross-list duplicates, reserved-path collisions, and invalid paths are errors
+// wrapped with "projectconfig: ". Symlinks and missing entries are silently
+// dropped. An absent cache: block within an existing config file defaults both
+// Cache fields to true.
 // root must be absolute and EvalSymlinks-evaluated.
-func Load(root string) (Excludes, Cache, error) {
+func Load(root string) (Excludes, Cache, []string, error) {
 	path := filepath.Join(root, Filename)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return Excludes{}, Cache{Content: true, Agent: true}, nil
+			return Excludes{}, Cache{Content: true, Agent: true}, nil, nil
 		}
-		return Excludes{}, Cache{}, fmt.Errorf("projectconfig: read %s: %w", Filename, err)
+		return Excludes{}, Cache{}, nil, fmt.Errorf("projectconfig: read %s: %w", Filename, err)
 	}
 
 	// Decode with strict mode: unknown top-level fields cause an error, surfacing
@@ -217,27 +225,27 @@ func Load(root string) (Excludes, Cache, error) {
 	if err := dec.Decode(&schema); err != nil {
 		if errors.Is(err, io.EOF) {
 			// Empty file, whitespace-only, or comment-only YAML: treat as zero config.
-			return Excludes{}, Cache{Content: true, Agent: true}, nil
+			return Excludes{}, Cache{Content: true, Agent: true}, nil, nil
 		}
-		return Excludes{}, Cache{}, fmt.Errorf("projectconfig: parse %s: %w", Filename, err)
+		return Excludes{}, Cache{}, nil, fmt.Errorf("projectconfig: parse %s: %w", Filename, err)
 	}
 
 	patterns, err := validatePatterns(schema.Exclude.Scan.Patterns)
 	if err != nil {
-		return Excludes{}, Cache{}, err
+		return Excludes{}, Cache{}, nil, err
 	}
 	skipDirs, err := validateSkipDirs(schema.Exclude.Scan.SkipDirs)
 	if err != nil {
-		return Excludes{}, Cache{}, err
+		return Excludes{}, Cache{}, nil, err
 	}
 
 	cleanedFiles, err := validateEntries(schema.Exclude.Files, "exclude.files")
 	if err != nil {
-		return Excludes{}, Cache{}, err
+		return Excludes{}, Cache{}, nil, err
 	}
 	cleanedDirs, err := validateEntries(schema.Exclude.Dirs, "exclude.dirs")
 	if err != nil {
-		return Excludes{}, Cache{}, err
+		return Excludes{}, Cache{}, nil, err
 	}
 
 	// Cross-list duplicate check: a path in both lists is an error. Done before
@@ -248,17 +256,17 @@ func Load(root string) (Excludes, Cache, error) {
 	}
 	for _, rel := range cleanedDirs {
 		if _, ok := seen[rel]; ok {
-			return Excludes{}, Cache{}, fmt.Errorf("projectconfig: path %q listed in both exclude.files and exclude.dirs", rel)
+			return Excludes{}, Cache{}, nil, fmt.Errorf("projectconfig: path %q listed in both exclude.files and exclude.dirs", rel)
 		}
 	}
 
 	files, err := statFilter(root, cleanedFiles, func(info os.FileInfo) bool { return info.Mode().IsRegular() })
 	if err != nil {
-		return Excludes{}, Cache{}, err
+		return Excludes{}, Cache{}, nil, err
 	}
 	dirs, err := statFilter(root, cleanedDirs, func(info os.FileInfo) bool { return info.IsDir() })
 	if err != nil {
-		return Excludes{}, Cache{}, err
+		return Excludes{}, Cache{}, nil, err
 	}
 
 	files = dedupSorted(files)
@@ -271,7 +279,12 @@ func Load(root string) (Excludes, Cache, error) {
 		Agent:   schema.Cache.Agent == nil || *schema.Cache.Agent,
 	}
 
-	return Excludes{Files: files, Dirs: dirs, Patterns: patterns, SkipDirs: skipDirs}, cacheCfg, nil
+	envVars, err := validateEnvironments(schema.Environments)
+	if err != nil {
+		return Excludes{}, Cache{}, nil, err
+	}
+
+	return Excludes{Files: files, Dirs: dirs, Patterns: patterns, SkipDirs: skipDirs}, cacheCfg, envVars, nil
 }
 
 // validateEntries cleans and validates user-supplied relative paths for the

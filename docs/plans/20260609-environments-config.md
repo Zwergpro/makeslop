@@ -102,17 +102,17 @@
 - Modify: `internal/security/security_test.go`
 - Modify: `internal/projectconfig/projectconfig_test.go`
 
-- [ ] Change `Load` signature to `(Excludes, Cache, []string, error)`; call `validateEnvironments` in the main path.
-- [ ] Update the `Load` doc comment (projectconfig.go:173-181) to document the new env return value (4-value return; absent block → `nil`).
-- [ ] Add the `nil` env slot to **every** early-return path in `Load` (ErrNotExist/missing file, read error, EOF/empty file, decode error, and each validation-error return) — there are ~10 returns.
-- [ ] Update `cmd/makeslop/main.go` (~line 123): `yamlExcludes, cacheCfg, envVars, err := projectconfig.Load(...)`.
-- [ ] Update `cmd/makeslop/status.go` (~line 280): `yamlExcludes, _, _, pcErr := projectconfig.Load(...)`.
-- [ ] Update `cmd/makeslop/main_test.go:3713` and `:3739`: `_, cache, _, err := projectconfig.Load(...)`.
-- [ ] Update `internal/security/security_test.go:58`: `excl, _, _, err := projectconfig.Load(dir)`.
-- [ ] Write test: absent `environments:` block → `nil` env (existing config file without the block).
-- [ ] Write test: missing file and empty/whitespace-only file → `nil` env.
-- [ ] Write test: confirm existing unknown-field/typo strictness still triggers (e.g. `enviroments:` typo errors).
-- [ ] Run tests (`go test ./...`) — `projectconfig`, `cmd/makeslop` must compile and pass before next task.
+- [x] Change `Load` signature to `(Excludes, Cache, []string, error)`; call `validateEnvironments` in the main path.
+- [x] Update the `Load` doc comment (projectconfig.go:173-181) to document the new env return value (4-value return; absent block → `nil`).
+- [x] Add the `nil` env slot to **every** early-return path in `Load` (ErrNotExist/missing file, read error, EOF/empty file, decode error, and each validation-error return) — there are ~10 returns.
+- [x] Update `cmd/makeslop/main.go` (~line 123): `yamlExcludes, cacheCfg, envVars, err := projectconfig.Load(...)`.
+- [x] Update `cmd/makeslop/status.go` (~line 280): `yamlExcludes, _, _, pcErr := projectconfig.Load(...)`.
+- [x] Update `cmd/makeslop/main_test.go:3713` and `:3739`: `_, cache, _, err := projectconfig.Load(...)`.
+- [x] Update `internal/security/security_test.go:58`: `excl, _, _, err := projectconfig.Load(dir)`.
+- [x] Write test: absent `environments:` block → `nil` env (existing config file without the block).
+- [x] Write test: missing file and empty/whitespace-only file → `nil` env.
+- [x] Write test: confirm existing unknown-field/typo strictness still triggers (e.g. `enviroments:` typo errors).
+- [x] Run tests (`go test ./...`) — `projectconfig`, `cmd/makeslop` must compile and pass before next task.
 
 ### Task 3: Render env vars in the docker Spec
 

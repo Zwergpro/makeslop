@@ -277,7 +277,7 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, jso
 	// 5. Secret scan summary (non-blocking)
 	// Only run when workspace was successfully resolved.
 	if workspaceRoot != "" {
-		yamlExcludes, _, pcErr := projectconfig.Load(workspaceRoot)
+		yamlExcludes, _, _, pcErr := projectconfig.Load(workspaceRoot)
 		if pcErr != nil {
 			checks = append(checks, statusCheck{
 				Name:   "secret scan",
