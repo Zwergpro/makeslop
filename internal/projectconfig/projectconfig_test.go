@@ -259,6 +259,21 @@ func TestLoad_ValidationRules(t *testing.T) {
 			yaml:        "exclude:\n  dirs:\n    - foo/..\n  files: []\n",
 			wantErrFrag: "refers to project root",
 		},
+		{
+			name:        "environments key with equals sign",
+			yaml:        "environments:\n  \"A=B\": value\n",
+			wantErrFrag: "must not contain '='",
+		},
+		{
+			name:        "environments non-scalar value",
+			yaml:        "environments:\n  FOO:\n    - a\n    - b\n",
+			wantErrFrag: "must be a scalar value",
+		},
+		{
+			name:        "environments null value",
+			yaml:        "environments:\n  KEY: null\n",
+			wantErrFrag: "has no value",
+		},
 	}
 
 	for _, tc := range cases {
@@ -1024,23 +1039,12 @@ func TestStub_MatchesDefaultRenderStub(t *testing.T) {
 // TestValidateEnvironments_ValidMap verifies that a valid environments map
 // produces a sorted []string of "KEY=VALUE" pairs.
 func TestValidateEnvironments_ValidMap(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
-	root := evalSymlinks(t, t.TempDir())
-
-	content := "environments:\n  NODE_ENV: production\n  LOG_LEVEL: info\n  API_BASE_URL: https://api.example.com\n"
-	if err := os.WriteFile(filepath.Join(root, Filename), []byte(content), 0o644); err != nil {
-		t.Fatalf("write: %v", err)
+	nodes := map[string]yaml.Node{
+		"NODE_ENV":    {Kind: yaml.ScalarNode, Tag: "!!str", Value: "production"},
+		"LOG_LEVEL":   {Kind: yaml.ScalarNode, Tag: "!!str", Value: "info"},
+		"API_BASE_URL": {Kind: yaml.ScalarNode, Tag: "!!str", Value: "https://api.example.com"},
 	}
-	data, err := os.ReadFile(filepath.Join(root, Filename))
-	if err != nil {
-		t.Fatalf("read: %v", err)
-	}
-	var schema yamlSchema
-	dec := newKnownFieldsDecoder(data)
-	if err := dec.Decode(&schema); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	got, err := validateEnvironments(schema.Environments)
+	got, err := validateEnvironments(nodes)
 	if err != nil {
 		t.Fatalf("validateEnvironments error: %v", err)
 	}
@@ -1058,34 +1062,64 @@ func TestValidateEnvironments_ValidMap(t *testing.T) {
 // TestValidateEnvironments_ScalarCoercion verifies that numeric and boolean
 // values in environments: are coerced to their string representations.
 func TestValidateEnvironments_ScalarCoercion(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
-	root := evalSymlinks(t, t.TempDir())
-
-	content := "environments:\n  PORT: 8080\n  DEBUG: true\n"
-	if err := os.WriteFile(filepath.Join(root, Filename), []byte(content), 0o644); err != nil {
-		t.Fatalf("write: %v", err)
+	// yaml.v3 decodes numeric/boolean scalars with the appropriate tag, but
+	// validateEnvironments uses node.Value (the raw string form), so PORT: 8080
+	// yields Value="8080" and DEBUG: true yields Value="true".
+	nodes := map[string]yaml.Node{
+		"PORT":  {Kind: yaml.ScalarNode, Tag: "!!int", Value: "8080"},
+		"DEBUG": {Kind: yaml.ScalarNode, Tag: "!!bool", Value: "true"},
 	}
-
-	// We need a Load-level way to observe the env vars; for Task 1 we test
-	// validateEnvironments directly since Load signature hasn't changed yet.
-	// Use the internal function via a YAML decode.
-	data, err := os.ReadFile(filepath.Join(root, Filename))
-	if err != nil {
-		t.Fatalf("read: %v", err)
-	}
-	var schema yamlSchema
-	dec := newKnownFieldsDecoder(data)
-	if err := dec.Decode(&schema); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	got, err := validateEnvironments(schema.Environments)
+	got, err := validateEnvironments(nodes)
 	if err != nil {
 		t.Fatalf("validateEnvironments error: %v", err)
 	}
-	// PORT and DEBUG: the order after sorting is DEBUG < PORT
+	// After sorting: DEBUG < PORT
 	want := []string{"DEBUG=true", "PORT=8080"}
 	if !stringSlicesEqual(got, want) {
 		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+// TestValidateEnvironments_EqualsInKeyRejected verifies that a key containing
+// '=' is rejected (would produce "A=B=value" which Docker misparses).
+func TestValidateEnvironments_EqualsInKeyRejected(t *testing.T) {
+	valNode := yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "val"}
+	_, err := validateEnvironments(map[string]yaml.Node{"A=B": valNode})
+	if err == nil {
+		t.Fatal("expected error for key with '=', got nil")
+	}
+	if !strings.Contains(err.Error(), "must not contain '='") {
+		t.Errorf("error %q does not contain \"must not contain '='\"", err.Error())
+	}
+	if !strings.HasPrefix(err.Error(), "projectconfig:") {
+		t.Errorf("error missing 'projectconfig:' prefix: %q", err.Error())
+	}
+}
+
+// TestValidateEnvironments_NewlineInValueRejected verifies that a value
+// containing a newline is rejected (breaks ShellCommand dry-run output).
+func TestValidateEnvironments_NewlineInValueRejected(t *testing.T) {
+	cases := []struct {
+		name  string
+		value string
+	}{
+		{"LF", "line1\nline2"},
+		{"CR", "line1\rline2"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			valNode := yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: tc.value}
+			_, err := validateEnvironments(map[string]yaml.Node{"KEY": valNode})
+			if err == nil {
+				t.Fatalf("expected error for newline in value (%s), got nil", tc.name)
+			}
+			if !strings.Contains(err.Error(), "must not contain newlines") {
+				t.Errorf("error %q does not contain 'must not contain newlines'", err.Error())
+			}
+			if !strings.HasPrefix(err.Error(), "projectconfig:") {
+				t.Errorf("error missing 'projectconfig:' prefix: %q", err.Error())
+			}
+		})
 	}
 }
 
@@ -1143,64 +1177,26 @@ func TestValidateEnvironments_NonScalarRejected(t *testing.T) {
 // TestValidateEnvironments_NullScalarRejected verifies that null-tagged scalars
 // (bare KEY: or KEY: null) are rejected fail-loud.
 func TestValidateEnvironments_NullScalarRejected(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
-	root := evalSymlinks(t, t.TempDir())
-
-	cases := []struct {
-		name    string
-		content string
-	}{
-		{"bare key", "environments:\n  KEY:\n"},
-		{"explicit null", "environments:\n  KEY: null\n"},
+	// yaml.v3 decodes both `KEY:` and `KEY: null` as ScalarNode with Tag="!!null".
+	nullNode := yaml.Node{Kind: yaml.ScalarNode, Tag: "!!null", Value: "null"}
+	_, err := validateEnvironments(map[string]yaml.Node{"KEY": nullNode})
+	if err == nil {
+		t.Fatal("expected error for null scalar, got nil")
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if err := os.WriteFile(filepath.Join(root, Filename), []byte(tc.content), 0o644); err != nil {
-				t.Fatalf("write: %v", err)
-			}
-			data, err := os.ReadFile(filepath.Join(root, Filename))
-			if err != nil {
-				t.Fatalf("read: %v", err)
-			}
-			var schema yamlSchema
-			dec := newKnownFieldsDecoder(data)
-			if err := dec.Decode(&schema); err != nil {
-				t.Fatalf("decode: %v", err)
-			}
-			_, err = validateEnvironments(schema.Environments)
-			if err == nil {
-				t.Fatalf("expected error for null scalar, got nil")
-			}
-			if !strings.Contains(err.Error(), "has no value") {
-				t.Errorf("error %q does not contain 'has no value'", err.Error())
-			}
-			if !strings.HasPrefix(err.Error(), "projectconfig:") {
-				t.Errorf("error missing 'projectconfig:' prefix: %q", err.Error())
-			}
-		})
+	if !strings.Contains(err.Error(), "has no value") {
+		t.Errorf("error %q does not contain 'has no value'", err.Error())
+	}
+	if !strings.HasPrefix(err.Error(), "projectconfig:") {
+		t.Errorf("error missing 'projectconfig:' prefix: %q", err.Error())
 	}
 }
 
 // TestValidateEnvironments_ExplicitEmptyString verifies that an explicit empty
 // string value (KEY: "") is accepted and produces "KEY=".
 func TestValidateEnvironments_ExplicitEmptyString(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
-	root := evalSymlinks(t, t.TempDir())
-
-	content := "environments:\n  EMPTY_VAR: \"\"\n"
-	if err := os.WriteFile(filepath.Join(root, Filename), []byte(content), 0o644); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-	data, err := os.ReadFile(filepath.Join(root, Filename))
-	if err != nil {
-		t.Fatalf("read: %v", err)
-	}
-	var schema yamlSchema
-	dec := newKnownFieldsDecoder(data)
-	if err := dec.Decode(&schema); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	got, err := validateEnvironments(schema.Environments)
+	// yaml.v3 decodes KEY: "" as ScalarNode with Tag="!!str" and Value="".
+	emptyNode := yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: ""}
+	got, err := validateEnvironments(map[string]yaml.Node{"EMPTY_VAR": emptyNode})
 	if err != nil {
 		t.Fatalf("validateEnvironments error: %v", err)
 	}
@@ -1227,7 +1223,7 @@ func TestValidateEnvironments_SortedOutput(t *testing.T) {
 	}
 }
 
-// ---- Load 4-value return (Task 2) ----
+// ---- Load environments: integration tests ----
 
 // TestLoad_AbsentEnvironments_NilEnv verifies that a config file without an
 // environments: block returns nil env (absent block → nil, backward-compatible).

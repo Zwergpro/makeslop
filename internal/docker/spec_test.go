@@ -1295,10 +1295,20 @@ func TestArgs_EnvFlagsEmittedAfterSecOptBeforeMounts(t *testing.T) {
 	if firstEnv == -1 {
 		t.Fatal("-e flag not found in Args()")
 	}
-	if lastSecOpt != -1 && firstEnv <= lastSecOpt {
-		t.Errorf("-e at %d appears before or at --security-opt at %d; want after", firstEnv, lastSecOpt)
+	// sampleOptions() always produces SecOpt via BuildSpec; assert it is present
+	// so that the boundary check is not silently skipped.
+	if lastSecOpt == -1 {
+		t.Fatal("--security-opt not found in Args(); boundary check would be vacuous")
 	}
-	if firstMount != -1 && firstEnv >= firstMount {
+	if firstEnv <= lastSecOpt {
+		t.Errorf("-e at %d appears before or at last --security-opt at %d; want after", firstEnv, lastSecOpt)
+	}
+	// sampleOptions() always produces mounts (MountAgentCache + MountContentCache = true);
+	// assert mount is present so the boundary check is not silently skipped.
+	if firstMount == -1 {
+		t.Fatal("--mount not found in Args(); boundary check would be vacuous")
+	}
+	if firstEnv >= firstMount {
 		t.Errorf("-e at %d appears at or after first --mount at %d; want before", firstEnv, firstMount)
 	}
 

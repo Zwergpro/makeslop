@@ -16,6 +16,7 @@ Complete reference for all `makeslop` commands, flags, runtime behavior, and con
 - [Setup flow and self-healing](#setup-flow-and-self-healing)
 - [Cache layout](#cache-layout)
 - [Container layout and mount table](#container-layout-and-mount-table)
+- [Environment variables](#environment-variables-environments-block-in-makeslopya-ml)
 - [In-container security flags](#in-container-security-flags)
 - [Host UID](#host-uid)
 - [TTY policy](#tty-policy)
@@ -97,7 +98,9 @@ Builds (or rebuilds) the base Docker image from `~/.makeslop/Dockerfile` via the
 From within a registered workspace, launches an interactive, project-scoped Docker container with
 the workspace source tree mounted in. By default, per-workspace + global agent config
 (`.claude/`, `.codex/`, `CLAUDE.md`, `docs/`) are also mounted as overlay groups; individual
-groups can be disabled via `cache.content` and `cache.agent` in `.makeslop.yaml`.
+groups can be disabled via `cache.content` and `cache.agent` in `.makeslop.yaml`. Static
+environment variables can be injected via the `environments:` block — see
+[Environment variables](#environment-variables-environments-block-in-makeslopya-ml).
 
 - Exits with the container's exit code.
 - Refuses to launch when stdin or stdout is not a TTY (see [TTY policy](#tty-policy)).

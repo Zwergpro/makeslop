@@ -377,15 +377,23 @@ func validateEnvironments(env map[string]yaml.Node) ([]string, error) {
 		if k == "" {
 			return nil, fmt.Errorf("projectconfig: empty key in environments")
 		}
+		if strings.ContainsRune(k, '=') {
+			return nil, fmt.Errorf("projectconfig: environment key %q must not contain '='", k)
+		}
 		if v.Kind != yaml.ScalarNode {
 			return nil, fmt.Errorf("projectconfig: environment %q must be a scalar value", k)
 		}
 		if v.Tag == "!!null" {
 			return nil, fmt.Errorf("projectconfig: environment %q has no value", k)
 		}
+		if strings.ContainsAny(v.Value, "\n\r") {
+			return nil, fmt.Errorf("projectconfig: environment %q value must not contain newlines", k)
+		}
 		result = append(result, k+"="+v.Value)
 	}
-	return dedupSorted(result), nil
+	// Map keys are inherently unique, so only sorting is needed here.
+	sort.Strings(result)
+	return result, nil
 }
 
 // statFilter Lstats each relative path under root; silently drops missing and
