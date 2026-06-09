@@ -380,6 +380,9 @@ func validateEnvironments(env map[string]yaml.Node) ([]string, error) {
 		if strings.ContainsRune(k, '=') {
 			return nil, fmt.Errorf("projectconfig: environment key %q must not contain '='", k)
 		}
+		if strings.ContainsAny(k, "\n\r\t") {
+			return nil, fmt.Errorf("projectconfig: environment key %q must not contain newline or tab characters", k)
+		}
 		if v.Kind != yaml.ScalarNode {
 			return nil, fmt.Errorf("projectconfig: environment %q must be a scalar value", k)
 		}

@@ -1123,6 +1123,35 @@ func TestValidateEnvironments_NewlineInValueRejected(t *testing.T) {
 	}
 }
 
+// TestValidateEnvironments_NewlineOrTabInKeyRejected verifies that a key
+// containing \n, \r, or \t is rejected (would produce a corrupted
+// "KEY\nNAME=value" entry in Spec.Env / ContainerConfig.Env).
+func TestValidateEnvironments_NewlineOrTabInKeyRejected(t *testing.T) {
+	cases := []struct {
+		name string
+		key  string
+	}{
+		{"LF", "KEY\nNAME"},
+		{"CR", "KEY\rNAME"},
+		{"TAB", "KEY\tNAME"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			valNode := yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "val"}
+			_, err := validateEnvironments(map[string]yaml.Node{tc.key: valNode})
+			if err == nil {
+				t.Fatalf("expected error for key with %s character, got nil", tc.name)
+			}
+			if !strings.Contains(err.Error(), "must not contain newline or tab characters") {
+				t.Errorf("error %q does not contain expected message", err.Error())
+			}
+			if !strings.HasPrefix(err.Error(), "projectconfig:") {
+				t.Errorf("error missing 'projectconfig:' prefix: %q", err.Error())
+			}
+		})
+	}
+}
+
 // TestValidateEnvironments_EmptyKeyRejected verifies that an empty key is
 // rejected with a "projectconfig: empty key" error.
 func TestValidateEnvironments_EmptyKeyRejected(t *testing.T) {
