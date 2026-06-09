@@ -24,6 +24,20 @@
 //     cache directory on top of the project. Set to false to use the project's own
 //     agent state directories inside the container.
 //
+// The environments block declares static environment variables to inject into the
+// app container at runtime:
+//
+//	environments:
+//	  NODE_ENV: production
+//	  PORT: 8080
+//	  DEBUG: "false"
+//
+// Values must be scalars (strings, numbers, booleans). Non-scalar values (lists,
+// maps) are rejected fail-loud. Null values (bare KEY: or KEY: null) are also
+// rejected — a valueless key is almost always a mistake. An explicit empty string
+// (KEY: "") is accepted and maps to "-e KEY=" (a valid docker env var). Load returns
+// a sorted []string of "KEY=VALUE" pairs (nil when the block is absent).
+//
 // The app container always uses standard Docker bridge networking. There is no
 // proxy or network isolation configuration.
 package projectconfig
@@ -124,10 +138,10 @@ type Cache struct {
 }
 
 // yamlSchema is the strict decode target. Using KnownFields(true) means any
-// top-level key other than "exclude" / "cache" (and their sub-keys) is
-// rejected immediately with a meaningful decoder error. In particular, a stale
-// "network:" block (from a prior makeslop version) will produce an
-// "unknown field" error, which is the intended loud break.
+// top-level key other than "exclude" / "cache" / "environments" (and their
+// sub-keys) is rejected immediately with a meaningful decoder error. In
+// particular, a stale "network:" block (from a prior makeslop version) will
+// produce an "unknown field" error, which is the intended loud break.
 type yamlSchema struct {
 	Exclude struct {
 		Scan struct {
@@ -141,6 +155,10 @@ type yamlSchema struct {
 		Content *bool `yaml:"content"`
 		Agent   *bool `yaml:"agent"`
 	} `yaml:"cache"`
+	// Environments holds static env vars to inject into the app container.
+	// Values are decoded as yaml.Node to enable lenient scalar coercion
+	// (numbers and booleans become their string representations).
+	Environments map[string]yaml.Node `yaml:"environments"`
 }
 
 // Scaffold creates <root>/.makeslop.yaml with the stub rendered for the given
@@ -322,6 +340,39 @@ func validateSkipDirs(entries []string) ([]string, error) {
 		}
 	}
 	return dedupSorted(entries), nil
+}
+
+// validateEnvironments validates a user-supplied environments: map and returns
+// a sorted []string of "KEY=VALUE" pairs suitable for docker run -e and
+// container.Config.Env.
+//
+// Rules:
+//   - Empty keys are rejected (a "-e =value" is broken docker syntax).
+//   - Values must be scalar YAML nodes (strings, numbers, booleans). Non-scalar
+//     values (lists, maps) are rejected fail-loud.
+//   - Null scalars (bare KEY: or KEY: null) are rejected — almost always a mistake.
+//   - Explicit empty string (KEY: "") is accepted → "KEY=" (intentional empty value).
+//
+// yaml.v3 already rejects duplicate map keys at decode time, so no dup-key
+// handling is needed here.
+func validateEnvironments(env map[string]yaml.Node) ([]string, error) {
+	if len(env) == 0 {
+		return nil, nil
+	}
+	result := make([]string, 0, len(env))
+	for k, v := range env {
+		if k == "" {
+			return nil, fmt.Errorf("projectconfig: empty key in environments")
+		}
+		if v.Kind != yaml.ScalarNode {
+			return nil, fmt.Errorf("projectconfig: environment %q must be a scalar value", k)
+		}
+		if v.Tag == "!!null" {
+			return nil, fmt.Errorf("projectconfig: environment %q has no value", k)
+		}
+		result = append(result, k+"="+v.Value)
+	}
+	return dedupSorted(result), nil
 }
 
 // statFilter Lstats each relative path under root; silently drops missing and

@@ -81,16 +81,16 @@
 - Modify: `internal/projectconfig/projectconfig.go`
 - Modify: `internal/projectconfig/projectconfig_test.go`
 
-- [ ] Add `Environments map[string]yaml.Node \`yaml:"environments"\`` to `yamlSchema` (required — `KnownFields(true)` would otherwise reject `environments:` as unknown).
-- [ ] Add `validateEnvironments(map[string]yaml.Node) ([]string, error)`: reject empty key; require `yaml.ScalarNode` value (else fail-loud error); build `"KEY=VALUE"` from `node.Value`; return `dedupSorted(...)`.
-- [ ] Update the package doc comment at the top of the file to document the `environments:` block (static vars, scalar coercion, fail-loud on non-scalar).
-- [ ] Write test: valid map → sorted `[]string` of `KEY=VALUE`.
-- [ ] Write test: scalar coercion (`PORT: 8080` → `"PORT=8080"`, `DEBUG: true` → `"DEBUG=true"`).
-- [ ] Write test (error): empty key rejected.
-- [ ] Write test (error): non-scalar value (`FOO: [a, b]` and a nested map) rejected.
-- [ ] Write test (error): null scalar (`KEY:` / `KEY: null`) rejected.
-- [ ] Write test: explicit empty string (`KEY: ""`) → `"KEY="` accepted.
-- [ ] Run tests — must pass before next task.
+- [x] Add `Environments map[string]yaml.Node \`yaml:"environments"\`` to `yamlSchema` (required — `KnownFields(true)` would otherwise reject `environments:` as unknown).
+- [x] Add `validateEnvironments(map[string]yaml.Node) ([]string, error)`: reject empty key; require `yaml.ScalarNode` value (else fail-loud error); build `"KEY=VALUE"` from `node.Value`; return `dedupSorted(...)`.
+- [x] Update the package doc comment at the top of the file to document the `environments:` block (static vars, scalar coercion, fail-loud on non-scalar).
+- [x] Write test: valid map → sorted `[]string` of `KEY=VALUE`.
+- [x] Write test: scalar coercion (`PORT: 8080` → `"PORT=8080"`, `DEBUG: true` → `"DEBUG=true"`).
+- [x] Write test (error): empty key rejected.
+- [x] Write test (error): non-scalar value (`FOO: [a, b]` and a nested map) rejected.
+- [x] Write test (error): null scalar (`KEY:` / `KEY: null`) rejected.
+- [x] Write test: explicit empty string (`KEY: ""`) → `"KEY="` accepted.
+- [x] Run tests — must pass before next task.
 
 ### Task 2: Thread env vars through `Load` and both call sites
 

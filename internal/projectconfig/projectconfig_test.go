@@ -1,12 +1,14 @@
 package projectconfig
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/Zwergpro/makeslop/internal/docker"
+	"gopkg.in/yaml.v3"
 )
 
 // evalSymlinks resolves a temp dir path — on macOS /tmp is a symlink, so raw
@@ -1015,6 +1017,222 @@ func TestStub_MatchesDefaultRenderStub(t *testing.T) {
 	if string(Stub) != string(want) {
 		t.Errorf("Stub does not match renderStub(Cache{true,true}):\nStub:  %q\nwant: %q", Stub, want)
 	}
+}
+
+// ---- environments: block tests ----
+
+// TestValidateEnvironments_ValidMap verifies that a valid environments map
+// produces a sorted []string of "KEY=VALUE" pairs.
+func TestValidateEnvironments_ValidMap(t *testing.T) {
+	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	root := evalSymlinks(t, t.TempDir())
+
+	content := "environments:\n  NODE_ENV: production\n  LOG_LEVEL: info\n  API_BASE_URL: https://api.example.com\n"
+	if err := os.WriteFile(filepath.Join(root, Filename), []byte(content), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, Filename))
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	var schema yamlSchema
+	dec := newKnownFieldsDecoder(data)
+	if err := dec.Decode(&schema); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	got, err := validateEnvironments(schema.Environments)
+	if err != nil {
+		t.Fatalf("validateEnvironments error: %v", err)
+	}
+	// After sorting: API_BASE_URL < LOG_LEVEL < NODE_ENV
+	want := []string{
+		"API_BASE_URL=https://api.example.com",
+		"LOG_LEVEL=info",
+		"NODE_ENV=production",
+	}
+	if !stringSlicesEqual(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+// TestValidateEnvironments_ScalarCoercion verifies that numeric and boolean
+// values in environments: are coerced to their string representations.
+func TestValidateEnvironments_ScalarCoercion(t *testing.T) {
+	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	root := evalSymlinks(t, t.TempDir())
+
+	content := "environments:\n  PORT: 8080\n  DEBUG: true\n"
+	if err := os.WriteFile(filepath.Join(root, Filename), []byte(content), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	// We need a Load-level way to observe the env vars; for Task 1 we test
+	// validateEnvironments directly since Load signature hasn't changed yet.
+	// Use the internal function via a YAML decode.
+	data, err := os.ReadFile(filepath.Join(root, Filename))
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	var schema yamlSchema
+	dec := newKnownFieldsDecoder(data)
+	if err := dec.Decode(&schema); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	got, err := validateEnvironments(schema.Environments)
+	if err != nil {
+		t.Fatalf("validateEnvironments error: %v", err)
+	}
+	// PORT and DEBUG: the order after sorting is DEBUG < PORT
+	want := []string{"DEBUG=true", "PORT=8080"}
+	if !stringSlicesEqual(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+// TestValidateEnvironments_EmptyKeyRejected verifies that an empty key is
+// rejected with a "projectconfig: empty key" error.
+func TestValidateEnvironments_EmptyKeyRejected(t *testing.T) {
+	// yaml.v3 does not permit an empty string key in a YAML map literal —
+	// "" as a bare map key isn't representable without quoting. We test
+	// validateEnvironments directly.
+	valNode := yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "val"}
+	_, err := validateEnvironments(map[string]yaml.Node{"": valNode})
+	if err == nil {
+		t.Fatal("expected error for empty key, got nil")
+	}
+	if !strings.Contains(err.Error(), "empty key") {
+		t.Errorf("error %q does not contain 'empty key'", err.Error())
+	}
+	if !strings.HasPrefix(err.Error(), "projectconfig:") {
+		t.Errorf("error missing 'projectconfig:' prefix: %q", err.Error())
+	}
+}
+
+// TestValidateEnvironments_NonScalarRejected verifies that non-scalar values
+// (sequences and mappings) are rejected fail-loud.
+func TestValidateEnvironments_NonScalarRejected(t *testing.T) {
+	cases := []struct {
+		name string
+		node yaml.Node
+	}{
+		{
+			"sequence value",
+			yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"},
+		},
+		{
+			"mapping value",
+			yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := validateEnvironments(map[string]yaml.Node{"FOO": tc.node})
+			if err == nil {
+				t.Fatalf("expected error for non-scalar %s, got nil", tc.name)
+			}
+			if !strings.Contains(err.Error(), "must be a scalar value") {
+				t.Errorf("error %q does not contain 'must be a scalar value'", err.Error())
+			}
+			if !strings.HasPrefix(err.Error(), "projectconfig:") {
+				t.Errorf("error missing 'projectconfig:' prefix: %q", err.Error())
+			}
+		})
+	}
+}
+
+// TestValidateEnvironments_NullScalarRejected verifies that null-tagged scalars
+// (bare KEY: or KEY: null) are rejected fail-loud.
+func TestValidateEnvironments_NullScalarRejected(t *testing.T) {
+	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	root := evalSymlinks(t, t.TempDir())
+
+	cases := []struct {
+		name    string
+		content string
+	}{
+		{"bare key", "environments:\n  KEY:\n"},
+		{"explicit null", "environments:\n  KEY: null\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := os.WriteFile(filepath.Join(root, Filename), []byte(tc.content), 0o644); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			data, err := os.ReadFile(filepath.Join(root, Filename))
+			if err != nil {
+				t.Fatalf("read: %v", err)
+			}
+			var schema yamlSchema
+			dec := newKnownFieldsDecoder(data)
+			if err := dec.Decode(&schema); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			_, err = validateEnvironments(schema.Environments)
+			if err == nil {
+				t.Fatalf("expected error for null scalar, got nil")
+			}
+			if !strings.Contains(err.Error(), "has no value") {
+				t.Errorf("error %q does not contain 'has no value'", err.Error())
+			}
+			if !strings.HasPrefix(err.Error(), "projectconfig:") {
+				t.Errorf("error missing 'projectconfig:' prefix: %q", err.Error())
+			}
+		})
+	}
+}
+
+// TestValidateEnvironments_ExplicitEmptyString verifies that an explicit empty
+// string value (KEY: "") is accepted and produces "KEY=".
+func TestValidateEnvironments_ExplicitEmptyString(t *testing.T) {
+	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	root := evalSymlinks(t, t.TempDir())
+
+	content := "environments:\n  EMPTY_VAR: \"\"\n"
+	if err := os.WriteFile(filepath.Join(root, Filename), []byte(content), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, Filename))
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	var schema yamlSchema
+	dec := newKnownFieldsDecoder(data)
+	if err := dec.Decode(&schema); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	got, err := validateEnvironments(schema.Environments)
+	if err != nil {
+		t.Fatalf("validateEnvironments error: %v", err)
+	}
+	if len(got) != 1 || got[0] != "EMPTY_VAR=" {
+		t.Errorf("got %v, want [\"EMPTY_VAR=\"]", got)
+	}
+}
+
+// TestValidateEnvironments_SortedOutput verifies that validateEnvironments
+// returns keys in sorted (deterministic) order.
+func TestValidateEnvironments_SortedOutput(t *testing.T) {
+	nodes := map[string]yaml.Node{
+		"Z_VAR": {Kind: yaml.ScalarNode, Tag: "!!str", Value: "z"},
+		"A_VAR": {Kind: yaml.ScalarNode, Tag: "!!str", Value: "a"},
+		"M_VAR": {Kind: yaml.ScalarNode, Tag: "!!str", Value: "m"},
+	}
+	got, err := validateEnvironments(nodes)
+	if err != nil {
+		t.Fatalf("validateEnvironments error: %v", err)
+	}
+	want := []string{"A_VAR=a", "M_VAR=m", "Z_VAR=z"}
+	if !stringSlicesEqual(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+// newKnownFieldsDecoder is a test helper that creates a strict YAML decoder
+// (mirrors the decoder in Load) for use in unit tests of validate* functions.
+func newKnownFieldsDecoder(data []byte) *yaml.Decoder {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	return dec
 }
 
 // stringSlicesEqual returns true if two string slices are element-wise equal.
