@@ -135,10 +135,10 @@
 - [x] Run tests — must pass before next task.
 
 ### Task 4: Verify acceptance criteria
-- [ ] Verify a `.makeslop.yaml` with an `environments:` block produces correct `-e` flags in `makeslop run --dry-run` output (manual or via test).
-- [ ] Verify absent block → no behavior change.
-- [ ] Run full test suite: `go test ./...`.
-- [ ] Confirm `MigrationVersion` and `CurrentVersion` are NOT bumped (Settings struct & embedded Dockerfile unchanged; `environments` lives in per-project `.makeslop.yaml`).
+- [x] Verify a `.makeslop.yaml` with an `environments:` block produces correct `-e` flags in `makeslop run --dry-run` output (manual or via test).
+- [x] Verify absent block → no behavior change.
+- [x] Run full test suite: `go test ./...`.
+- [x] Confirm `MigrationVersion` and `CurrentVersion` are NOT bumped (Settings struct & embedded Dockerfile unchanged; `environments` lives in per-project `.makeslop.yaml`).
 
 ### Task 5: Documentation
 - [ ] Update `docs/reference.md` to document the `environments:` block (static values, scalar coercion, null-rejection, examples).

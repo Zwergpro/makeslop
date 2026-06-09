@@ -3851,3 +3851,71 @@ func TestRunWithExitCode_VersionSucceeds(t *testing.T) {
 		t.Error("version command produced empty stdout")
 	}
 }
+
+// TestRun_EnvironmentsBlock_ProducesEnvFlags verifies end-to-end that an
+// environments: block in .makeslop.yaml flows into -e KEY=VALUE flags in the
+// --dry-run output. This is the acceptance test for Task 4 of the environments
+// config feature.
+func TestRun_EnvironmentsBlock_ProducesEnvFlags(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	initOut, _, err := runCmd(t, baseDir, "init")
+	if err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	workspaceDir := strings.TrimSpace(initOut)
+	_ = workspaceDir
+
+	resolvedPwd := evalSymlinks(t, pwd)
+
+	// Write a .makeslop.yaml with an environments: block.
+	yamlContent := "exclude:\n  dirs: []\n  files: []\n  scan:\n    patterns: []\nenvironments:\n  NODE_ENV: production\n  PORT: \"8080\"\n  DEBUG: \"false\"\n"
+	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(yamlContent), 0o644); err != nil {
+		t.Fatalf("write yaml: %v", err)
+	}
+
+	stubTTY(t, false)
+	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
+	if err != nil {
+		t.Fatalf("--dry-run failed: %v; stderr=%q", err, stderr)
+	}
+
+	// Environments are sorted: DEBUG < NODE_ENV < PORT
+	for _, want := range []string{"-e DEBUG=false", "-e NODE_ENV=production", "-e PORT=8080"} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("--dry-run stdout missing %q\nstdout:\n%s", want, stdout)
+		}
+	}
+}
+
+// TestRun_NoEnvironmentsBlock_NoEnvFlags verifies that an absent environments:
+// block in .makeslop.yaml produces no -e flags in the --dry-run output (backward
+// compatibility).
+func TestRun_NoEnvironmentsBlock_NoEnvFlags(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	stubTTY(t, false)
+	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
+	if err != nil {
+		t.Fatalf("--dry-run failed: %v; stderr=%q", err, stderr)
+	}
+	_ = stderr
+
+	// No -e flags should appear (init writes a stub with no environments: block).
+	for _, tok := range strings.Fields(stdout) {
+		if tok == "-e" {
+			t.Errorf("--dry-run output must not contain -e flags when environments: block is absent\nstdout:\n%s", stdout)
+			break
+		}
+	}
+}
