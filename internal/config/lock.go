@@ -10,39 +10,29 @@ import (
 
 const lockFile = ".settings.lock"
 
-// inProcessMu serializes WithLock callers within the same process.
-// flock(2) provides cross-process mutual exclusion but does NOT block
-// concurrent flock calls from different file descriptors within the same
-// process (Linux kernel behavior). inProcessMu fills that gap so that
-// goroutines within this binary are also serialized.
+// inProcessMu serializes same-process callers: flock(2) does NOT block
+// concurrent flock calls from different fds within one process (Linux kernel
+// behavior), so this mutex covers goroutines within this binary.
 var inProcessMu sync.Mutex
 
-// WithLock takes an exclusive advisory lock on <baseDir>/.settings.lock
-// and calls fn while holding the lock. The lock is released (and the fd
-// closed) when fn returns, whether or not it returns an error.
+// WithLock calls fn while holding an exclusive advisory lock on
+// <baseDir>/.settings.lock, releasing it (and closing the fd) when fn returns.
 //
-// The locking is two-level:
-//   - An in-process sync.Mutex serializes goroutines within the same binary
-//     (flock(2) does not block same-process callers on Linux).
-//   - A POSIX flock(LOCK_EX) guards against concurrent invocations from
-//     separate processes (e.g. two concurrent `makeslop init` shells).
+// Two-level: inProcessMu serializes goroutines (flock doesn't on Linux); a
+// POSIX flock(LOCK_EX) guards against separate processes (e.g. two concurrent
+// `makeslop init` shells).
 //
-// Both layers are released before WithLock returns.
-//
-// NO-NESTING INVARIANT: WithLock MUST NOT be nested. Each Load→mutate→Save
-// site acquires its own short-lived lock sequentially; no caller may wrap
-// another WithLock-protected call inside fn. A nested call in the same
-// goroutine would deadlock on inProcessMu.
+// NO-NESTING INVARIANT: WithLock MUST NOT be nested — a nested call in the same
+// goroutine self-deadlocks on inProcessMu. Each Load→mutate→Save site acquires
+// its own short-lived lock sequentially.
 func WithLock(baseDir string, fn func() error) error {
 	if err := os.MkdirAll(baseDir, 0o755); err != nil {
 		return fmt.Errorf("create base dir %s: %w", baseDir, err)
 	}
 
-	// Layer 1: in-process goroutine serialization.
 	inProcessMu.Lock()
 	defer inProcessMu.Unlock()
 
-	// Layer 2: cross-process advisory flock.
 	path := filepath.Join(baseDir, lockFile)
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {

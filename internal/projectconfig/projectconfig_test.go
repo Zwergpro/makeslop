@@ -3,12 +3,20 @@ package projectconfig
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
-	"github.com/Zwergpro/makeslop/internal/docker"
 	"gopkg.in/yaml.v3"
 )
+
+// skipNonPOSIX skips on non-POSIX hosts per the CLAUDE.md POSIX-only invariant.
+func skipNonPOSIX(t *testing.T, why string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip(why)
+	}
+}
 
 // evalSymlinks resolves a temp dir path — on macOS /tmp is a symlink, so raw
 // t.TempDir() paths violate the EvalSymlinks precondition.
@@ -22,7 +30,7 @@ func evalSymlinks(t *testing.T, dir string) string {
 }
 
 func TestScaffold_WritesStub(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
 	if err := Scaffold(root, Cache{Content: true, Agent: true}); err != nil {
@@ -39,7 +47,7 @@ func TestScaffold_WritesStub(t *testing.T) {
 }
 
 func TestScaffold_Idempotent(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
 	userContent := []byte("# my custom config\nexclude:\n  dirs:\n    - secrets\n  files: []\n")
@@ -61,7 +69,7 @@ func TestScaffold_Idempotent(t *testing.T) {
 }
 
 func TestLoad_MissingFile(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
 	excl, _, _, err := Load(root)
@@ -80,7 +88,7 @@ func TestLoad_MissingFile(t *testing.T) {
 }
 
 func TestLoad_DefaultStub_RoundTrips(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
 	if err := os.WriteFile(filepath.Join(root, Filename), Stub, 0o644); err != nil {
@@ -91,16 +99,13 @@ func TestLoad_DefaultStub_RoundTrips(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load on default stub: %v", err)
 	}
-	// explicit path lists remain empty
 	if len(excl.Files) != 0 || len(excl.Dirs) != 0 {
 		t.Errorf("expected zero Files/Dirs from default stub, got files=%v dirs=%v", excl.Files, excl.Dirs)
 	}
-	// default Stub must round-trip to Cache{true,true}.
 	if !cacheCfg.Content || !cacheCfg.Agent {
 		t.Errorf("Cache from default Stub: got {Content:%v Agent:%v}, want {true, true}", cacheCfg.Content, cacheCfg.Agent)
 	}
-	// default scan patterns are seeded — these must mirror Stub exactly (sorted).
-	// If you change Stub, update this list to match.
+	// Must mirror Stub exactly (sorted); update if Stub changes.
 	wantPatterns := []string{
 		"*.env",
 		"*.key",
@@ -115,17 +120,16 @@ func TestLoad_DefaultStub_RoundTrips(t *testing.T) {
 	if !stringSlicesEqual(excl.Patterns, wantPatterns) {
 		t.Errorf("Patterns: got %v, want %v\n(if Stub changed, update wantPatterns to match)", excl.Patterns, wantPatterns)
 	}
-	// default skip-dirs are seeded — these must mirror Stub exactly (sorted).
-	// If you change Stub, update this list to match.
+	// Must mirror Stub exactly (sorted); update if Stub changes.
 	wantSkipDirs := []string{".git", ".venv", "node_modules", "vendor"}
 	if !stringSlicesEqual(excl.SkipDirs, wantSkipDirs) {
 		t.Errorf("SkipDirs: got %v, want %v\n(if Stub changed, update wantSkipDirs to match)", excl.SkipDirs, wantSkipDirs)
 	}
 }
 
-// yaml.NewDecoder returns io.EOF for these cases; Load must treat it as zero config.
+// yaml.NewDecoder returns io.EOF for these; Load must treat it as zero config.
 func TestLoad_EmptyAndCommentOnlyFiles(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 
 	cases := []struct {
 		name    string
@@ -155,7 +159,6 @@ func TestLoad_EmptyAndCommentOnlyFiles(t *testing.T) {
 			if excl.SkipDirs != nil {
 				t.Errorf("expected nil SkipDirs for %q, got %v", tc.name, excl.SkipDirs)
 			}
-			// io.EOF branch must also default Cache to {true,true}.
 			if !cacheCfg.Content {
 				t.Errorf("Cache.Content: got false, want true for empty/comment-only file %q", tc.name)
 			}
@@ -167,7 +170,7 @@ func TestLoad_EmptyAndCommentOnlyFiles(t *testing.T) {
 }
 
 func TestLoad_MalformedYAML(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
 	if err := os.WriteFile(filepath.Join(root, Filename), []byte(":\tnot valid yaml{{{\n"), 0o644); err != nil {
@@ -184,7 +187,7 @@ func TestLoad_MalformedYAML(t *testing.T) {
 }
 
 func TestLoad_UnknownField(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
 	if err := os.WriteFile(filepath.Join(root, Filename), []byte("include:\n  files: []\n"), 0o644); err != nil {
@@ -201,7 +204,7 @@ func TestLoad_UnknownField(t *testing.T) {
 }
 
 func TestLoad_ValidationRules(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 
 	cases := []struct {
 		name        string
@@ -296,7 +299,7 @@ func TestLoad_ValidationRules(t *testing.T) {
 }
 
 func TestLoad_ReservedPaths(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 
 	for _, reserved := range []string{".claude", ".codex", "docs", "CLAUDE.md"} {
 		t.Run("dirs/"+reserved, func(t *testing.T) {
@@ -331,7 +334,7 @@ func TestLoad_ReservedPaths(t *testing.T) {
 }
 
 func TestLoad_CrossListDuplicate(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
 	content := "exclude:\n  files:\n    - mydir/secret\n  dirs:\n    - mydir/secret\n"
@@ -348,13 +351,12 @@ func TestLoad_CrossListDuplicate(t *testing.T) {
 	}
 }
 
-// TestLoad_CrossListDuplicate_NoFileOnDisk verifies the cross-list duplicate
-// check fires even when the path does NOT exist on disk (deterministic error).
+// Regression: the cross-list duplicate check must fire even when the path does
+// not exist on disk (deterministic error, independent of on-disk state).
 func TestLoad_CrossListDuplicate_NoFileOnDisk(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
-	// "ghost" does not exist on disk — but the error must still fire.
 	content := "exclude:\n  files:\n    - ghost\n  dirs:\n    - ghost\n"
 	if err := os.WriteFile(filepath.Join(root, Filename), []byte(content), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
@@ -370,7 +372,7 @@ func TestLoad_CrossListDuplicate_NoFileOnDisk(t *testing.T) {
 }
 
 func TestLoad_SilentlyDropsMissingEntries(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
 	content := "exclude:\n  files:\n    - nonexistent/api.key\n  dirs:\n    - phantom-dir\n"
@@ -388,7 +390,7 @@ func TestLoad_SilentlyDropsMissingEntries(t *testing.T) {
 }
 
 func TestLoad_DropsWrongType(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
 	if err := os.WriteFile(filepath.Join(root, "am-a-file"), []byte("data"), 0o644); err != nil {
@@ -398,8 +400,7 @@ func TestLoad_DropsWrongType(t *testing.T) {
 		t.Fatalf("mkdir: %v", err)
 	}
 
-	// am-a-file listed under dirs → should be dropped.
-	// am-a-dir listed under files → should be dropped.
+	// Deliberately cross-wired: file under dirs and dir under files; both drop.
 	content := "exclude:\n  dirs:\n    - am-a-file\n  files:\n    - am-a-dir\n"
 	if err := os.WriteFile(filepath.Join(root, Filename), []byte(content), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -415,7 +416,7 @@ func TestLoad_DropsWrongType(t *testing.T) {
 }
 
 func TestLoad_DropsSymlinks(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks and /‐paths required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks and /‐paths required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
 	realFile := filepath.Join(root, "real-file")
@@ -450,17 +451,14 @@ func TestLoad_DropsSymlinks(t *testing.T) {
 	}
 }
 
-// TODO(testing): statFilter non-ErrNotExist stat error path (e.g. chmod 000 on
-// parent directory) is not tested. Such a test requires chmod on a directory,
-// which is fragile on CI systems running as root or under certain container
-// configurations. Skip for now; the error path in statFilter is exercised by
-// careful code review.
+// TODO(testing): statFilter's non-ErrNotExist stat error path is untested —
+// it needs chmod on a directory, which is fragile under root/CI containers.
 
 func TestLoad_DeduplicatesWithinLists(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
-	// Create actual files/dirs on disk so they pass the stat filter.
+	// Real files/dirs so entries survive the stat filter.
 	if err := os.WriteFile(filepath.Join(root, "secret.txt"), []byte("s"), 0o644); err != nil {
 		t.Fatalf("write file: %v", err)
 	}
@@ -486,11 +484,10 @@ func TestLoad_DeduplicatesWithinLists(t *testing.T) {
 }
 
 func TestLoad_ReturnsAbsoluteSortedPaths(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
-	// Create real files/dirs — names chosen so z comes before a alphabetically
-	// ONLY if sorting is wrong. After sort: a < z.
+	// Names listed z-before-a so a wrong (unsorted) result is detectable.
 	files := []string{"z-secret.txt", "a-secret.txt"}
 	dirs := []string{"z-priv", "a-priv"}
 
@@ -543,12 +540,10 @@ func TestLoad_ReturnsAbsoluteSortedPaths(t *testing.T) {
 	}
 }
 
-// TestLoad_Network_BlockRejected verifies that a config file containing a
-// "network:" block (from a prior makeslop version that supported proxy egress)
-// is rejected with a strict-decode "unknown field" error. This is the intended
-// loud break — users with stale .makeslop.yaml files must remove the block.
+// A stale "network:" block (from a prior proxy-egress makeslop version) must be
+// rejected by strict decode — the intended loud break for old config files.
 func TestLoad_Network_BlockRejected(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 
 	cases := []struct {
 		name    string
@@ -586,10 +581,8 @@ func TestLoad_Network_BlockRejected(t *testing.T) {
 	}
 }
 
-// ---- exclude.scan tests ----
-
 func TestLoad_Scan_ValidPatternsAndSkipDirs(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 
 	cases := []struct {
 		name         string
@@ -650,7 +643,7 @@ func TestLoad_Scan_ValidPatternsAndSkipDirs(t *testing.T) {
 }
 
 func TestLoad_Scan_InvalidPatterns(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 
 	cases := []struct {
 		name        string
@@ -690,7 +683,7 @@ func TestLoad_Scan_InvalidPatterns(t *testing.T) {
 }
 
 func TestLoad_Scan_InvalidSkipDirs(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 
 	cases := []struct {
 		name        string
@@ -740,10 +733,9 @@ func TestLoad_Scan_InvalidSkipDirs(t *testing.T) {
 }
 
 func TestLoad_Scan_UnknownKeyRejected(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
-	// KnownFields(true) must reject an unknown key under exclude.scan.
 	content := "exclude:\n  scan:\n    patterns: []\n    skip-dirs: []\n    unknown-key: oops\n  dirs: []\n  files: []\n"
 	if err := os.WriteFile(filepath.Join(root, Filename), []byte(content), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
@@ -758,15 +750,11 @@ func TestLoad_Scan_UnknownKeyRejected(t *testing.T) {
 	}
 }
 
-// ---- cache: block tests ----
-
-// TestLoad_Cache_AbsentBlock verifies that an absent cache: block defaults both
-// Cache.Content and Cache.Agent to true (backward-compatible).
+// An absent cache: block defaults both fields to true (backward-compatible).
 func TestLoad_Cache_AbsentBlock(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
-	// Write a config without any cache: key.
 	content := "exclude:\n  dirs: []\n  files: []\n"
 	if err := os.WriteFile(filepath.Join(root, Filename), []byte(content), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
@@ -784,9 +772,8 @@ func TestLoad_Cache_AbsentBlock(t *testing.T) {
 	}
 }
 
-// TestLoad_Cache_MissingFile verifies that a missing file also defaults Cache to {true,true}.
 func TestLoad_Cache_MissingFile(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
 	_, cacheCfg, _, err := Load(root)
@@ -801,10 +788,8 @@ func TestLoad_Cache_MissingFile(t *testing.T) {
 	}
 }
 
-// TestLoad_Cache_BothFalse verifies that explicit content:false + agent:false
-// produces Cache{false,false}.
 func TestLoad_Cache_BothFalse(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
 	content := "cache:\n  content: false\n  agent: false\n"
@@ -824,10 +809,8 @@ func TestLoad_Cache_BothFalse(t *testing.T) {
 	}
 }
 
-// TestLoad_Cache_BothTrue verifies that explicit content:true + agent:true
-// produces Cache{true,true}.
 func TestLoad_Cache_BothTrue(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
 	content := "cache:\n  content: true\n  agent: true\n"
@@ -847,10 +830,9 @@ func TestLoad_Cache_BothTrue(t *testing.T) {
 	}
 }
 
-// TestLoad_Cache_MixedContentFalseAgentAbsent verifies that content:false with
-// agent absent produces Cache{false,true} (absent field defaults to true).
+// content:false with agent absent → Cache{false,true} (absent field defaults true).
 func TestLoad_Cache_MixedContentFalseAgentAbsent(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
 	content := "cache:\n  content: false\n"
@@ -870,10 +852,9 @@ func TestLoad_Cache_MixedContentFalseAgentAbsent(t *testing.T) {
 	}
 }
 
-// TestLoad_Cache_MixedAgentFalseContentAbsent verifies that agent:false with
-// content absent produces Cache{true,false}.
+// agent:false with content absent → Cache{true,false}.
 func TestLoad_Cache_MixedAgentFalseContentAbsent(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
 	content := "cache:\n  agent: false\n"
@@ -893,10 +874,8 @@ func TestLoad_Cache_MixedAgentFalseContentAbsent(t *testing.T) {
 	}
 }
 
-// TestLoad_Cache_UnknownKeyRejected verifies that KnownFields(true) rejects an
-// unknown key nested under cache:.
 func TestLoad_Cache_UnknownKeyRejected(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
 	content := "cache:\n  content: true\n  agent: true\n  typo: bad\n"
@@ -913,12 +892,9 @@ func TestLoad_Cache_UnknownKeyRejected(t *testing.T) {
 	}
 }
 
-// ---- renderStub / Scaffold(cache) round-trip tests ----
-
-// TestRenderStub_TrueTrue verifies that renderStub(Cache{true,true}) round-trips
-// through Load to Cache{Content:true, Agent:true}.
+// renderStub(Cache{true,true}) must round-trip through Load to Cache{true,true}.
 func TestRenderStub_TrueTrue(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
 	data := renderStub(Cache{Content: true, Agent: true})
@@ -938,10 +914,9 @@ func TestRenderStub_TrueTrue(t *testing.T) {
 	}
 }
 
-// TestRenderStub_FalseFalse verifies that renderStub(Cache{false,false})
-// round-trips through Load to Cache{Content:false, Agent:false}.
+// renderStub(Cache{false,false}) must round-trip through Load to Cache{false,false}.
 func TestRenderStub_FalseFalse(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
 	data := renderStub(Cache{Content: false, Agent: false})
@@ -961,10 +936,8 @@ func TestRenderStub_FalseFalse(t *testing.T) {
 	}
 }
 
-// TestScaffold_CacheFalseFalse verifies that Scaffold(root, Cache{false,false})
-// writes a file that Load parses as Cache{false,false}.
 func TestScaffold_CacheFalseFalse(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
 	if err := Scaffold(root, Cache{Content: false, Agent: false}); err != nil {
@@ -992,14 +965,12 @@ func TestScaffold_CacheFalseFalse(t *testing.T) {
 	}
 }
 
-// TestScaffold_IdempotentWithDifferentCache verifies that calling Scaffold a
-// second time with different Cache values is a no-op (idempotent: EEXIST wins,
-// no clobber of user edits).
+// A second Scaffold with different Cache values must be a no-op: EEXIST wins
+// over the c parameter, so user edits are never clobbered.
 func TestScaffold_IdempotentWithDifferentCache(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
-	// First scaffold with both=true.
 	if err := Scaffold(root, Cache{Content: true, Agent: true}); err != nil {
 		t.Fatalf("first Scaffold returned error: %v", err)
 	}
@@ -1009,7 +980,6 @@ func TestScaffold_IdempotentWithDifferentCache(t *testing.T) {
 		t.Fatalf("ReadFile after first scaffold: %v", err)
 	}
 
-	// Second scaffold with both=false — must not clobber.
 	if err := Scaffold(root, Cache{Content: false, Agent: false}); err != nil {
 		t.Fatalf("second Scaffold returned error: %v", err)
 	}
@@ -1024,8 +994,7 @@ func TestScaffold_IdempotentWithDifferentCache(t *testing.T) {
 	}
 }
 
-// TestStub_MatchesDefaultRenderStub verifies the exported Stub variable equals
-// renderStub(Cache{true,true}), so callers that compare against Stub still work.
+// Stub must equal renderStub(Cache{true,true}) so callers comparing against Stub work.
 func TestStub_MatchesDefaultRenderStub(t *testing.T) {
 	want := renderStub(Cache{Content: true, Agent: true})
 	if string(Stub) != string(want) {
@@ -1033,21 +1002,16 @@ func TestStub_MatchesDefaultRenderStub(t *testing.T) {
 	}
 }
 
-// ---- environments: block tests ----
-
-// TestValidateEnvironments_ValidMap verifies that a valid environments map
-// produces a sorted []string of "KEY=VALUE" pairs.
 func TestValidateEnvironments_ValidMap(t *testing.T) {
 	nodes := map[string]yaml.Node{
-		"NODE_ENV":    {Kind: yaml.ScalarNode, Tag: "!!str", Value: "production"},
-		"LOG_LEVEL":   {Kind: yaml.ScalarNode, Tag: "!!str", Value: "info"},
+		"NODE_ENV":     {Kind: yaml.ScalarNode, Tag: "!!str", Value: "production"},
+		"LOG_LEVEL":    {Kind: yaml.ScalarNode, Tag: "!!str", Value: "info"},
 		"API_BASE_URL": {Kind: yaml.ScalarNode, Tag: "!!str", Value: "https://api.example.com"},
 	}
 	got, err := validateEnvironments(nodes)
 	if err != nil {
 		t.Fatalf("validateEnvironments error: %v", err)
 	}
-	// After sorting: API_BASE_URL < LOG_LEVEL < NODE_ENV
 	want := []string{
 		"API_BASE_URL=https://api.example.com",
 		"LOG_LEVEL=info",
@@ -1058,12 +1022,9 @@ func TestValidateEnvironments_ValidMap(t *testing.T) {
 	}
 }
 
-// TestValidateEnvironments_ScalarCoercion verifies that numeric and boolean
-// values in environments: are coerced to their string representations.
 func TestValidateEnvironments_ScalarCoercion(t *testing.T) {
-	// yaml.v3 decodes numeric/boolean scalars with the appropriate tag, but
-	// validateEnvironments uses node.Value (the raw string form), so PORT: 8080
-	// yields Value="8080" and DEBUG: true yields Value="true".
+	// validateEnvironments reads node.Value (raw string form), so numeric/boolean
+	// scalars coerce: PORT: 8080 → "8080", DEBUG: true → "true".
 	nodes := map[string]yaml.Node{
 		"PORT":  {Kind: yaml.ScalarNode, Tag: "!!int", Value: "8080"},
 		"DEBUG": {Kind: yaml.ScalarNode, Tag: "!!bool", Value: "true"},
@@ -1072,15 +1033,13 @@ func TestValidateEnvironments_ScalarCoercion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("validateEnvironments error: %v", err)
 	}
-	// After sorting: DEBUG < PORT
 	want := []string{"DEBUG=true", "PORT=8080"}
 	if !stringSlicesEqual(got, want) {
 		t.Errorf("got %v, want %v", got, want)
 	}
 }
 
-// TestValidateEnvironments_EqualsInKeyRejected verifies that a key containing
-// '=' is rejected (would produce "A=B=value" which Docker misparses).
+// A key with '=' is rejected (would produce "A=B=value", which Docker misparses).
 func TestValidateEnvironments_EqualsInKeyRejected(t *testing.T) {
 	valNode := yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "val"}
 	_, err := validateEnvironments(map[string]yaml.Node{"A=B": valNode})
@@ -1095,8 +1054,7 @@ func TestValidateEnvironments_EqualsInKeyRejected(t *testing.T) {
 	}
 }
 
-// TestValidateEnvironments_NewlineOrTabInValueRejected verifies that a value
-// containing a newline or tab is rejected (breaks ShellCommand dry-run output).
+// A value with a newline or tab is rejected (breaks ShellCommand dry-run output).
 func TestValidateEnvironments_NewlineOrTabInValueRejected(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -1123,9 +1081,7 @@ func TestValidateEnvironments_NewlineOrTabInValueRejected(t *testing.T) {
 	}
 }
 
-// TestValidateEnvironments_NewlineOrTabInKeyRejected verifies that a key
-// containing \n, \r, or \t is rejected (would produce a corrupted
-// "KEY\nNAME=value" entry in Spec.Env / ContainerConfig.Env).
+// A key with \n, \r, or \t is rejected (would corrupt the "KEY=value" entry).
 func TestValidateEnvironments_NewlineOrTabInKeyRejected(t *testing.T) {
 	cases := []struct {
 		name string
@@ -1152,12 +1108,9 @@ func TestValidateEnvironments_NewlineOrTabInKeyRejected(t *testing.T) {
 	}
 }
 
-// TestValidateEnvironments_EmptyKeyRejected verifies that an empty key is
-// rejected with a "projectconfig: empty key" error.
+// An empty key is rejected. Tested directly because yaml.v3 can't represent an
+// unquoted empty map key.
 func TestValidateEnvironments_EmptyKeyRejected(t *testing.T) {
-	// yaml.v3 does not permit an empty string key in a YAML map literal —
-	// "" as a bare map key isn't representable without quoting. We test
-	// validateEnvironments directly.
 	valNode := yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "val"}
 	_, err := validateEnvironments(map[string]yaml.Node{"": valNode})
 	if err == nil {
@@ -1171,8 +1124,7 @@ func TestValidateEnvironments_EmptyKeyRejected(t *testing.T) {
 	}
 }
 
-// TestValidateEnvironments_NonScalarRejected verifies that non-scalar values
-// (sequences and mappings) are rejected fail-loud.
+// Non-scalar values (sequences, mappings) are rejected fail-loud.
 func TestValidateEnvironments_NonScalarRejected(t *testing.T) {
 	cases := []struct {
 		name string
@@ -1203,10 +1155,9 @@ func TestValidateEnvironments_NonScalarRejected(t *testing.T) {
 	}
 }
 
-// TestValidateEnvironments_NullScalarRejected verifies that null-tagged scalars
-// (bare KEY: or KEY: null) are rejected fail-loud.
+// Null scalars are rejected fail-loud. yaml.v3 decodes both `KEY:` and
+// `KEY: null` as ScalarNode with Tag="!!null".
 func TestValidateEnvironments_NullScalarRejected(t *testing.T) {
-	// yaml.v3 decodes both `KEY:` and `KEY: null` as ScalarNode with Tag="!!null".
 	nullNode := yaml.Node{Kind: yaml.ScalarNode, Tag: "!!null", Value: "null"}
 	_, err := validateEnvironments(map[string]yaml.Node{"KEY": nullNode})
 	if err == nil {
@@ -1220,10 +1171,8 @@ func TestValidateEnvironments_NullScalarRejected(t *testing.T) {
 	}
 }
 
-// TestValidateEnvironments_ExplicitEmptyString verifies that an explicit empty
-// string value (KEY: "") is accepted and produces "KEY=".
+// An explicit empty string (KEY: "") is accepted and produces "KEY=".
 func TestValidateEnvironments_ExplicitEmptyString(t *testing.T) {
-	// yaml.v3 decodes KEY: "" as ScalarNode with Tag="!!str" and Value="".
 	emptyNode := yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: ""}
 	got, err := validateEnvironments(map[string]yaml.Node{"EMPTY_VAR": emptyNode})
 	if err != nil {
@@ -1234,8 +1183,6 @@ func TestValidateEnvironments_ExplicitEmptyString(t *testing.T) {
 	}
 }
 
-// TestValidateEnvironments_SortedOutput verifies that validateEnvironments
-// returns keys in sorted (deterministic) order.
 func TestValidateEnvironments_SortedOutput(t *testing.T) {
 	nodes := map[string]yaml.Node{
 		"Z_VAR": {Kind: yaml.ScalarNode, Tag: "!!str", Value: "z"},
@@ -1252,15 +1199,11 @@ func TestValidateEnvironments_SortedOutput(t *testing.T) {
 	}
 }
 
-// ---- Load environments: integration tests ----
-
-// TestLoad_AbsentEnvironments_NilEnv verifies that a config file without an
-// environments: block returns nil env (absent block → nil, backward-compatible).
+// An absent environments: block returns nil env (backward-compatible).
 func TestLoad_AbsentEnvironments_NilEnv(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
-	// Write a config that has exclude + cache but no environments block.
 	content := `exclude:
   scan:
     patterns: ["*.env"]
@@ -1284,9 +1227,8 @@ cache:
 	}
 }
 
-// TestLoad_MissingFile_NilEnv verifies that a missing .makeslop.yaml returns nil env.
 func TestLoad_MissingFile_NilEnv(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
 	_, _, envVars, err := Load(root)
@@ -1298,10 +1240,9 @@ func TestLoad_MissingFile_NilEnv(t *testing.T) {
 	}
 }
 
-// TestLoad_EmptyAndWhitespaceFile_NilEnv verifies that empty/whitespace-only
-// files return nil env (EOF branch).
+// Empty/whitespace-only files return nil env (io.EOF branch).
 func TestLoad_EmptyAndWhitespaceFile_NilEnv(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 
 	cases := []struct {
 		name    string
@@ -1327,10 +1268,8 @@ func TestLoad_EmptyAndWhitespaceFile_NilEnv(t *testing.T) {
 	}
 }
 
-// TestLoad_EnvironmentsBlock_ReturnsSortedPairs verifies that a valid
-// environments: block is parsed and returned as sorted "KEY=VALUE" pairs.
 func TestLoad_EnvironmentsBlock_ReturnsSortedPairs(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
 	content := `environments:
@@ -1346,20 +1285,18 @@ func TestLoad_EnvironmentsBlock_ReturnsSortedPairs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
-	// Sorted order: LOG_LEVEL < NODE_ENV < PORT
 	want := []string{"LOG_LEVEL=info", "NODE_ENV=production", "PORT=8080"}
 	if !stringSlicesEqual(envVars, want) {
 		t.Errorf("got %v, want %v", envVars, want)
 	}
 }
 
-// TestLoad_TypoInEnvironments_StrictModeRejects verifies that a typo in the
-// top-level key (enviroments: instead of environments:) is rejected by strict mode.
+// A typo in the top-level key (enviroments:) is an unknown field that strict
+// mode must reject.
 func TestLoad_TypoInEnvironments_StrictModeRejects(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
-	// "enviroments" (missing 'n') is an unknown field — strict mode must reject it.
 	content := "enviroments:\n  NODE_ENV: production\n"
 	if err := os.WriteFile(filepath.Join(root, Filename), []byte(content), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
@@ -1374,8 +1311,7 @@ func TestLoad_TypoInEnvironments_StrictModeRejects(t *testing.T) {
 	}
 }
 
-// stringSlicesEqual returns true if two string slices are element-wise equal.
-// nil and empty [] are treated as equal (both have len 0).
+// stringSlicesEqual compares element-wise; nil and empty [] are treated as equal.
 func stringSlicesEqual(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

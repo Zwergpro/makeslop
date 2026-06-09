@@ -1,14 +1,6 @@
 // Package docker assembles and executes the `docker run` invocation. Argv
-// assembly (BuildSpec, Spec.Args, Spec.ShellCommand) is pure; exec lives in
-// run.go. Pure SDK-struct projections (Spec.ContainerConfig, Spec.HostConfig)
-// are also pure — they never touch the filesystem or exec anything — and
-// produce the same result for the same Spec, consistent with the CLAUDE.md
-// pure/impure split contract.
-//
-// BuildSpec emits three mount groups:
-//   - global (always): BaseDir/.claude/, BaseDir/.claude.json, BaseDir/.codex/
-//   - agent-state cache (when MountAgentCache is true): workspace .claude/ + .codex/
-//   - content cache (when MountContentCache is true): workspace docs/ + CLAUDE.md
+// assembly and SDK-struct projections are pure (spec.go); side-effecting exec
+// lives in run.go and build.go.
 package docker
 
 import (
@@ -30,60 +22,36 @@ type Options struct {
 	Image         string
 	Command       string // shell to exec inside the container
 	// MaskedFiles: absolute host paths under ProjectRoot to shadow with /dev/null.
-	// Under-root guarantee is the caller's. Nil or empty is a no-op.
 	MaskedFiles []string
 	// MaskedDirs: absolute host paths under ProjectRoot to replace with tmpfs.
-	// Under-root guarantee is the caller's. Nil or empty is a no-op.
 	MaskedDirs []string
 
-	// TmpDirSize is the size constraint passed verbatim to --tmpfs /tmp:size=<TmpDirSize>.
-	// config.Load is the single source of the default ("100m"); BuildSpec uses it
-	// verbatim without re-defaulting, matching how Image/Command are handled.
+	// TmpDirSize is passed verbatim to --tmpfs /tmp:size=<TmpDirSize>; config.Load
+	// owns the default, BuildSpec does not re-default.
 	TmpDirSize string
 
-	// Env is the list of environment variables to inject into the container,
-	// in "KEY=VALUE" form. Nil or empty is a no-op (no -e flags emitted).
-	// The caller is responsible for sorting; BuildSpec copies verbatim.
+	// Env holds "KEY=VALUE" pairs to inject; copied verbatim (caller sorts).
 	Env []string
 
-	// MountAgentCache controls whether the per-workspace agent-state cache
-	// directories are mounted into the container:
-	//
-	//	workspaceHost/.claude/ → workspacePath/.claude/
-	//	workspaceHost/.codex/  → workspacePath/.codex/
-	//
-	// When false, those two per-workspace overlays are omitted; the global
-	// ~/.makeslop/.claude/ and ~/.makeslop/.codex/ mounts are always present.
-	// Zero value is false; set from projectconfig.Cache by the caller
-	// (absent cache: block ⇒ true).
+	// MountAgentCache gates the per-workspace agent-state cache overlays
+	// (workspaceHost/.claude/, .codex/). The global ~/.makeslop equivalents are
+	// always present regardless.
 	MountAgentCache bool
 
-	// MountContentCache controls whether the per-workspace content cache
-	// directories are mounted into the container:
-	//
-	//	workspaceHost/docs/     → workspacePath/docs/
-	//	workspaceHost/CLAUDE.md → workspacePath/CLAUDE.md
-	//
-	// When false, those two per-workspace overlays are omitted, allowing the
-	// project's own docs/ and CLAUDE.md to be visible inside the container.
-	// Zero value is false; set from projectconfig.Cache by the caller
-	// (absent cache: block ⇒ true).
+	// MountContentCache gates the per-workspace content cache overlays
+	// (workspaceHost/docs/, CLAUDE.md); false lets the project's own files show.
 	MountContentCache bool
 }
 
-// Mount is a single docker mount entry.
-//
-// Type: "" or "bind" → type=bind; "tmpfs" → type=tmpfs (Host ignored);
-// "volume" → type=volume (Host is the volume name, ReadOnly appends ",readonly").
-// ReadOnly: when true, appends ",readonly" to bind and volume mounts; zero value
-// is backward-compatible (existing mounts render byte-identically).
+// Mount is a single docker mount entry. Type "" or "bind" → bind; "tmpfs" →
+// tmpfs (Host ignored); "volume" → volume (Host is the volume name).
 type Mount struct {
 	Type            string
 	Host, Container string
 	ReadOnly        bool
 }
 
-// Spec is the deterministic shape of a `docker run` invocation; Args() is a pure projection.
+// Spec is the deterministic shape of a `docker run` invocation.
 type Spec struct {
 	Image   string
 	Command string
@@ -95,25 +63,16 @@ type Spec struct {
 	SecOpt  []string
 }
 
-// BuildSpec is pure: same Options → same Spec. Mount order is deterministic:
-//  1. Group 1: project root bind + global agent binds (BaseDir/.claude/, .claude.json, .codex/) — always present
-//  2. Group 2: agent-state cache mounts (workspaceHost/.claude/, .codex/) — when MountAgentCache is true
-//  3. Group 3: content cache mounts (workspaceHost/docs/, CLAUDE.md) — when MountContentCache is true
-//  4. MaskedFiles /dev/null overlays
-//  5. MaskedDirs tmpfs overlays
-//
-// Overlays (4–5) follow the directory bind they shadow so docker's argv-order
-// evaluation makes them win. Entries are omitted when their group is disabled —
-// they are never reordered.
+// BuildSpec is pure: same Options → same Spec. Mask overlays must follow the
+// directory bind they shadow so docker's argv-order evaluation makes them win;
+// disabled groups are omitted, never reordered.
 func BuildSpec(o Options) Spec {
 	workspacePath := "/workspace/" + o.WorkspaceName
 	workspaceHost := filepath.Join(o.BaseDir, config.WorkspacesDir, o.WorkspaceName)
 
 	// Trailing slashes on directory mounts are intentional — they match the
-	// reference claude.sh exactly, and a trailing slash on the host side coaxes
-	// docker into failing fast if the path is unexpectedly a file.
-
-	// Group 1: project root + global mounts (always present).
+	// reference claude.sh, and coax docker into failing fast if the host path
+	// is unexpectedly a file.
 	mounts := []Mount{
 		{Host: o.ProjectRoot, Container: workspacePath},
 		{Host: filepath.Join(o.BaseDir, ".claude") + "/", Container: "/home/user/.claude/"},
@@ -121,7 +80,6 @@ func BuildSpec(o Options) Spec {
 		{Host: filepath.Join(o.BaseDir, ".codex") + "/", Container: "/home/user/.codex/"},
 	}
 
-	// Group 2: per-workspace agent-state cache (config-gated).
 	if o.MountAgentCache {
 		mounts = append(mounts,
 			Mount{Host: filepath.Join(workspaceHost, ".claude") + "/", Container: workspacePath + "/.claude/"},
@@ -129,7 +87,6 @@ func BuildSpec(o Options) Spec {
 		)
 	}
 
-	// Group 3: per-workspace content cache (config-gated).
 	if o.MountContentCache {
 		mounts = append(mounts,
 			Mount{Host: filepath.Join(workspaceHost, "docs") + "/", Container: workspacePath + "/docs/"},
@@ -138,7 +95,7 @@ func BuildSpec(o Options) Spec {
 	}
 
 	for _, host := range o.MaskedFiles {
-		// security.Scan guarantees host is under ProjectRoot; Rel never errors on POSIX.
+		// Caller guarantees host is under ProjectRoot; Rel never errors on POSIX.
 		rel, _ := filepath.Rel(o.ProjectRoot, host)
 		mounts = append(mounts, Mount{
 			Host:      "/dev/null",
@@ -147,7 +104,7 @@ func BuildSpec(o Options) Spec {
 	}
 
 	for _, host := range o.MaskedDirs {
-		// projectconfig.Load guarantees host is under ProjectRoot; Rel never errors on POSIX.
+		// Caller guarantees host is under ProjectRoot; Rel never errors on POSIX.
 		rel, _ := filepath.Rel(o.ProjectRoot, host)
 		mounts = append(mounts, Mount{
 			Type:      "tmpfs",
@@ -196,8 +153,7 @@ func (s Spec) Args() []string {
 				val += ",readonly"
 			}
 			args = append(args, "--mount", val)
-		default:
-			// "" or "bind" both render as type=bind.
+		default: // "" or "bind"
 			val := "type=bind," + csvField("source="+m.Host) + "," + csvField("target="+m.Container)
 			if m.ReadOnly {
 				val += ",readonly"
@@ -211,8 +167,8 @@ func (s Spec) Args() []string {
 
 var shellSafeRe = regexp.MustCompile(`^[A-Za-z0-9_./:=,@+-]+$`)
 
-// shellQuote returns s safe for POSIX shell inclusion: bare if alphanumeric-safe,
-// empty string as ”, otherwise single-quoted with '\” escaping.
+// shellQuote returns s safe for POSIX shell inclusion: bare when safe, else
+// single-quoted (embedded quotes escaped the usual POSIX way).
 func shellQuote(s string) string {
 	if s != "" && shellSafeRe.MatchString(s) {
 		return s
@@ -220,8 +176,7 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
-// ShellCommand renders s as a multi-line backslash-continued `docker run`
-// command. Pure: same Spec → same string.
+// ShellCommand renders s as a multi-line backslash-continued `docker run` command.
 func (s Spec) ShellCommand() string {
 	args := s.Args() // starts with "run", not "docker"
 
@@ -256,7 +211,6 @@ func (s Spec) ShellCommand() string {
 }
 
 // ContainerConfig returns the SDK container.Config for this Spec.
-// Pure: same Spec → same *container.Config. Never touches the filesystem.
 func (s Spec) ContainerConfig() *container.Config {
 	return &container.Config{
 		Image:        s.Image,
@@ -272,7 +226,6 @@ func (s Spec) ContainerConfig() *container.Config {
 }
 
 // HostConfig returns the SDK container.HostConfig for this Spec.
-// Pure: same Spec → same *container.HostConfig. Never touches the filesystem.
 func (s Spec) HostConfig() *container.HostConfig {
 	return &container.HostConfig{
 		AutoRemove:  true,
@@ -283,10 +236,9 @@ func (s Spec) HostConfig() *container.HostConfig {
 	}
 }
 
-// tmpfsMap converts a slice of "target:opts" (or "target" with no colon)
-// entries into the map[string]string that container.HostConfig.Tmpfs expects.
-// The split is on the first colon only, so target paths containing ':'
-// are not supported (docker itself doesn't support them either).
+// tmpfsMap converts "target:opts" (or bare "target") entries into the
+// container.HostConfig.Tmpfs map. Splits on the first colon only — matching
+// docker, target paths may not contain ':'.
 func tmpfsMap(entries []string) map[string]string {
 	if len(entries) == 0 {
 		return nil
@@ -302,8 +254,7 @@ func tmpfsMap(entries []string) map[string]string {
 	return m
 }
 
-// mountsFor translates the package-local []Mount slice into the SDK
-// []mount.Mount form used by container.HostConfig.
+// mountsFor translates []Mount into the SDK []mount.Mount form.
 func mountsFor(mounts []Mount) []mount.Mount {
 	if len(mounts) == 0 {
 		return nil
@@ -317,15 +268,14 @@ func mountsFor(mounts []Mount) []mount.Mount {
 				Target: m.Container,
 			}
 		case "volume":
-			// Host field carries the Docker volume name for volume mounts.
+			// Host carries the Docker volume name for volume mounts.
 			out[i] = mount.Mount{
 				Type:     mount.TypeVolume,
 				Source:   m.Host,
 				Target:   m.Container,
 				ReadOnly: m.ReadOnly,
 			}
-		default:
-			// "" or "bind" both map to bind mount.
+		default: // "" or "bind"
 			out[i] = mount.Mount{
 				Type:     mount.TypeBind,
 				Source:   m.Host,
@@ -337,20 +287,18 @@ func mountsFor(mounts []Mount) []mount.Mount {
 	return out
 }
 
-// BuildOptions is the caller-supplied input to Build. All path fields must be
-// absolute. ContextDir may be left empty; Build will create a temporary empty
-// directory automatically.
+// BuildOptions is the caller-supplied input to Build. Path fields must be absolute.
 type BuildOptions struct {
 	Image          string   // -t tag (required)
 	DockerfilePath string   // -f path (required)
-	ContextDir     string   // positional build context; empty means Build auto-creates a temp dir
-	NoCache        bool     // --no-cache when true
-	BuildArgs      []string // each forwarded as a build argument to the daemon
-	Quiet          bool     // --quiet: suppress build progress output
+	ContextDir     string   // empty ⇒ Build auto-creates a temp dir
+	NoCache        bool     // --no-cache
+	BuildArgs      []string // forwarded as build arguments
+	Quiet          bool     // suppress build progress output
 }
 
-// csvField returns s as a single RFC 4180 CSV field: unquoted when it contains
-// no CSV-special characters, otherwise wrapped in `"` with embedded `"` doubled.
+// csvField returns s as a single RFC 4180 CSV field: unquoted when free of
+// CSV-special characters, otherwise wrapped in `"` with embedded `"` doubled.
 func csvField(s string) string {
 	if !strings.ContainsAny(s, ",\"\n\r") {
 		return s

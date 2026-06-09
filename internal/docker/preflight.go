@@ -9,20 +9,17 @@ import (
 	moby "github.com/moby/moby/client"
 )
 
-// preflightTimeout is the deadline applied to daemon-ping and image-inspect
-// calls on the preflight paths (runRun, status). It does NOT apply to the
-// long-lived docker.Run or docker.Build calls.
+// preflightTimeout bounds preflight ping/inspect calls so they never hang on a
+// black-hole DOCKER_HOST. Not applied to long-lived Run/Build.
 const preflightTimeout = 10 * time.Second
 
-// WithPreflightTimeout wraps parent with a preflightTimeout deadline and
-// returns the derived context and its cancel function. Callers must defer
-// the returned cancel.
+// WithPreflightTimeout wraps parent with a preflightTimeout deadline; callers
+// must defer the returned cancel.
 func WithPreflightTimeout(parent context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(parent, preflightTimeout)
 }
 
-// ErrDaemonUnreachable is returned by CheckDaemon when the Docker daemon cannot
-// be reached. The wrapped error carries the underlying cause.
+// ErrDaemonUnreachable is returned by CheckDaemon when the daemon cannot be reached.
 type ErrDaemonUnreachable struct {
 	Endpoint string
 	Cause    error
@@ -37,40 +34,19 @@ func (e *ErrDaemonUnreachable) Error() string {
 
 func (e *ErrDaemonUnreachable) Unwrap() error { return e.Cause }
 
-// CheckDaemon pings the Docker daemon. It returns *ErrDaemonUnreachable if the
-// daemon cannot be reached, and nil on success.
-func CheckDaemon(ctx context.Context) error {
-	c, err := newClientFn()
+// checkDaemon implements CheckDaemon with an injected apiClient.
+func checkDaemon(ctx context.Context, c apiClient) error {
+	_, err := c.Ping(ctx, moby.PingOptions{})
 	if err != nil {
-		return &ErrDaemonUnreachable{Cause: err}
-	}
-	defer c.Close() //nolint:errcheck
-
-	_, err = c.Ping(ctx, moby.PingOptions{})
-	if err != nil {
-		// Attempt to extract DOCKER_HOST from environment for richer messages.
-		// The real moby.Client exposes DaemonHost() but our narrow interface
-		// does not. Use the error text only.
+		// The narrow interface lacks DaemonHost(), so Endpoint is left empty.
 		return &ErrDaemonUnreachable{Cause: err}
 	}
 	return nil
 }
 
-// ImageExists reports whether the named image tag exists locally.
-//
-//   - (true, nil)  — image found
-//   - (false, nil) — image absent (cerrdefs.IsNotFound classified)
-//   - (false, err) — any other error (daemon error, permission, …); the caller
-//     must NOT treat this as "image absent" — a dead daemon must surface as
-//     a daemon error, not a misleading "run 'makeslop build'" hint.
-func ImageExists(ctx context.Context, image string) (bool, error) {
-	c, err := newClientFn()
-	if err != nil {
-		return false, err
-	}
-	defer c.Close() //nolint:errcheck
-
-	_, err = c.ImageInspect(ctx, image)
+// imageExists implements ImageExists with an injected apiClient.
+func imageExists(ctx context.Context, c apiClient, image string) (bool, error) {
+	_, err := c.ImageInspect(ctx, image)
 	if err == nil {
 		return true, nil
 	}
@@ -79,3 +55,4 @@ func ImageExists(ctx context.Context, image string) (bool, error) {
 	}
 	return false, err
 }
+

@@ -8,12 +8,10 @@ import (
 	"testing"
 )
 
-// TestWithLock_SerializesLoadSave verifies that two goroutines incrementing a
-// counter via Load→mutate→Save under the lock both persist without a lost update.
+// Concurrent Load→mutate→Save under the lock must not lose updates.
 func TestWithLock_SerializesLoadSave(t *testing.T) {
 	base := t.TempDir()
 
-	// Seed an initial settings file.
 	seed := &Settings{
 		Version:    CurrentVersion,
 		Image:      DefaultImage,
@@ -39,7 +37,7 @@ func TestWithLock_SerializesLoadSave(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				// Use MigratedVersion as a monotone counter proxy.
+				// MigratedVersion doubles as a monotone counter here.
 				s.MigratedVersion++
 				return Save(base, s)
 			})
@@ -63,30 +61,25 @@ func TestWithLock_SerializesLoadSave(t *testing.T) {
 	}
 }
 
-// TestWithLock_ReleasesOnFnError verifies that the lock is released when fn
-// returns an error, so a subsequent sequential acquisition succeeds.
+// The lock must be released even when fn errors, so a later acquisition succeeds.
 func TestWithLock_ReleasesOnFnError(t *testing.T) {
 	base := t.TempDir()
 
 	sentinel := errors.New("sentinel error")
 
-	// First acquisition: fn returns an error.
 	err := WithLock(base, func() error { return sentinel })
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("WithLock error = %v, want sentinel", err)
 	}
 
-	// Second acquisition: must succeed (lock was released by the first).
 	err = WithLock(base, func() error { return nil })
 	if err != nil {
 		t.Fatalf("second WithLock: %v", err)
 	}
 }
 
-// TestWithLock_SequentialAcquisitionsSucceed verifies that back-to-back
-// sequential acquisitions in the same goroutine both succeed. This documents
-// the no-nesting boundary: sequential calls are fine; nested calls would
-// self-deadlock.
+// Sequential acquisitions in one goroutine are fine (nested calls would
+// self-deadlock — see WithLock's no-nesting invariant).
 func TestWithLock_SequentialAcquisitionsSucceed(t *testing.T) {
 	base := t.TempDir()
 
@@ -97,8 +90,7 @@ func TestWithLock_SequentialAcquisitionsSucceed(t *testing.T) {
 	}
 }
 
-// TestWithLock_CreatesLockFile verifies that WithLock creates the .settings.lock
-// file as a side effect, and that the lock file persists (not cleaned up).
+// WithLock creates .settings.lock and leaves it in place (not cleaned up).
 func TestWithLock_CreatesLockFile(t *testing.T) {
 	base := t.TempDir()
 
@@ -112,8 +104,7 @@ func TestWithLock_CreatesLockFile(t *testing.T) {
 	}
 }
 
-// TestWithLock_CreatesMissingBaseDir verifies that WithLock calls MkdirAll so
-// callers don't need to pre-create the base directory.
+// WithLock must MkdirAll so callers needn't pre-create the base directory.
 func TestWithLock_CreatesMissingBaseDir(t *testing.T) {
 	parent := t.TempDir()
 	base := filepath.Join(parent, "does", "not", "exist")

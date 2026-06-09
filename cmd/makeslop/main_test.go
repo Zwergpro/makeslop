@@ -5,14 +5,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
-
-	"golang.org/x/term"
 
 	"github.com/Zwergpro/makeslop/internal/assets"
 	"github.com/Zwergpro/makeslop/internal/config"
@@ -21,19 +22,109 @@ import (
 	"github.com/Zwergpro/makeslop/internal/workspace"
 )
 
-// Tests in this file swap docker.ttyCheck and docker.newClientFn via the
-// package-level SetForTest helpers. Do not add t.Parallel() to tests that
-// touch those swaps — the underlying state is process-global.
+// fakeDocker is a boundary fake satisfying all four consumer interfaces, injected
+// via newRootCmdWithDeps.
+type fakeDocker struct {
+	exitCode int
+	isTTY    bool // when false, Run returns docker.ErrNoTTY
+	Started  bool // set when Run is reached past the TTY check
 
+	PingErr      error // CheckDaemon returns this wrapped in ErrDaemonUnreachable
+	ImageMissing bool  // ImageExists returns (false, nil)
+	ImageErr     error // ImageExists returns (false, err) unless ImageMissing
+
+	BuildErr      error
+	LastBuildOpts docker.BuildOptions
+}
+
+func newFakeDocker(exitCode int, isTTY bool) *fakeDocker {
+	return &fakeDocker{exitCode: exitCode, isTTY: isTTY}
+}
+
+func (f *fakeDocker) Run(_ context.Context, _ docker.Spec) error {
+	if !f.isTTY {
+		return docker.ErrNoTTY
+	}
+	f.Started = true
+	if f.exitCode != 0 {
+		return &docker.ExitError{Code: f.exitCode}
+	}
+	return nil
+}
+
+func (f *fakeDocker) Build(_ context.Context, o docker.BuildOptions, _, _ io.Writer) error {
+	f.LastBuildOpts = o
+	if f.BuildErr != nil {
+		return f.BuildErr
+	}
+	return nil
+}
+
+func (f *fakeDocker) CheckDaemon(_ context.Context) error {
+	if f.PingErr != nil {
+		return &docker.ErrDaemonUnreachable{Cause: f.PingErr}
+	}
+	return nil
+}
+
+func (f *fakeDocker) ImageExists(_ context.Context, _ string) (bool, error) {
+	if f.ImageMissing {
+		return false, nil
+	}
+	if f.ImageErr != nil {
+		return false, f.ImageErr
+	}
+	return true, nil
+}
+
+// runCmd runs the cobra tree against a production root (live client factory).
+// Use runCmdWithDeps when a fake docker is needed.
 func runCmd(t *testing.T, baseDir string, args ...string) (stdout, stderr string, err error) {
 	t.Helper()
-	cmd := newRootCmd(baseDir)
+	cmd, closeDocker := newRootCmd(baseDir)
+	defer closeDocker()
 	var out, errBuf bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&errBuf)
 	cmd.SetArgs(args)
-	err = cmd.Execute()
+	err = cmd.ExecuteContext(context.Background())
 	return out.String(), errBuf.String(), err
+}
+
+func runCmdWithDeps(t *testing.T, baseDir string, deps dockerDeps, args ...string) (stdout, stderr string, err error) {
+	t.Helper()
+	cmd := newRootCmdWithDeps(baseDir, deps)
+	var out, errBuf bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errBuf)
+	cmd.SetArgs(args)
+	err = cmd.ExecuteContext(context.Background())
+	return out.String(), errBuf.String(), err
+}
+
+func depsFrom(f *fakeDocker) dockerDeps {
+	return dockerDeps{runner: f, builder: f, daemon: f, image: f}
+}
+
+// runWithExitCodeAndDeps mirrors runWithExitCode with injected deps and a plain
+// background context (no signal wiring needed in tests).
+func runWithExitCodeAndDeps(baseDir string, stdout, stderr io.Writer, deps dockerDeps, args []string) int {
+	cmd := newRootCmdWithDeps(baseDir, deps)
+	cmd.SetArgs(args)
+	cmd.SetOut(stdout)
+	cmd.SetErr(stderr)
+	err := cmd.ExecuteContext(context.Background())
+	if err == nil {
+		return 0
+	}
+	var de *docker.ExitError
+	if errors.As(err, &de) {
+		return de.Code
+	}
+	if !errors.Is(err, errSilent) {
+		fmt.Fprintf(stderr, "makeslop: %v\n", err)
+	}
+	return 1
 }
 
 func snapshotTree(t *testing.T, root string) map[string][]byte {
@@ -110,13 +201,21 @@ func evalSymlinks(t *testing.T, dir string) string {
 	return resolved
 }
 
-// setHomeToTestParent sets HOME to the parent of t.TempDir(), making all
-// subsequent TempDir() calls siblings that satisfy ensureWithinHome.
+// setHomeToTestParent sets HOME to the parent of t.TempDir() so subsequent
+// TempDir() calls are siblings that satisfy ensureWithinHome.
 func setHomeToTestParent(t *testing.T) {
 	t.Helper()
 	sentinel := t.TempDir()
 	parent := evalSymlinks(t, filepath.Dir(sentinel))
 	t.Setenv("HOME", parent)
+}
+
+// skipNonPOSIX skips the test on non-POSIX hosts per the CLAUDE.md invariant.
+func skipNonPOSIX(t *testing.T, why string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip(why)
+	}
 }
 
 func TestRun_NotRegistered_NoMutation(t *testing.T) {
@@ -209,32 +308,14 @@ func TestInit_FromScratch(t *testing.T) {
 	}
 }
 
-// installFakeRunClient installs a fake docker client that returns the given exit
-// code from ContainerWait and stubs out the TTY raw-mode call so tests work
-// without a real PTY. Returns the fake so tests can inspect fc.Started.
-func installFakeRunClient(t *testing.T, exitCode int) *docker.FakeRunClient {
+// installFakeBuildClient builds a fakeDocker whose Build fails for a non-zero exitCode.
+func installFakeBuildClient(t *testing.T, exitCode int) *fakeDocker {
 	t.Helper()
-	fc := docker.NewFakeRunClient(exitCode)
-	t.Cleanup(docker.SetClientForTest(fc))
-	// Stub term.MakeRaw: tests run without a real PTY, so raw mode would fail.
-	t.Cleanup(docker.SetTermMakeRawForTest(func(_ int) (*term.State, error) {
-		return nil, nil
-	}))
-	return fc
-}
-
-func stubTTY(t *testing.T, ok bool) {
-	t.Helper()
-	t.Cleanup(docker.SetTTYCheckForTest(func() bool { return ok }))
-}
-
-// installFakeBuildClient installs a fake docker client that records
-// ImageBuildOptions and returns exitCode (0 = success, non-zero = error).
-func installFakeBuildClient(t *testing.T, exitCode int) *docker.FakeBuildClient {
-	t.Helper()
-	fbc := docker.NewFakeBuildClient(exitCode)
-	t.Cleanup(docker.SetClientForTest(fbc))
-	return fbc
+	fd := &fakeDocker{}
+	if exitCode != 0 {
+		fd.BuildErr = fmt.Errorf("build exited with code %d", exitCode)
+	}
+	return fd
 }
 
 // Milestone-1 regression guard: makeslop go must not print the cache path on stdout.
@@ -250,11 +331,10 @@ func TestRun_AfterInit_LaunchesDocker(t *testing.T) {
 	}
 	workspaceDir := strings.TrimSpace(initOut)
 
-	fc := installFakeRunClient(t, 0)
-	stubTTY(t, true)
+	fc := newFakeDocker(0, true)
 
 	snapBefore := snapshotTree(t, baseDir)
-	stdout, stderr, err := runCmd(t, baseDir, "run")
+	stdout, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fc), "run")
 	if err != nil {
 		t.Fatalf("root failed: %v; stderr=%q", err, stderr)
 	}
@@ -268,7 +348,6 @@ func TestRun_AfterInit_LaunchesDocker(t *testing.T) {
 		t.Error("docker.Run must have been invoked (fc.Started must be true)")
 	}
 
-	// Verify the spec that would be passed to docker.Run matches expectations.
 	resolvedPwd := evalSymlinks(t, pwd)
 	s, loadErr := config.Load(baseDir)
 	if loadErr != nil {
@@ -302,10 +381,9 @@ func TestRun_FromSubdirectory_MountsRegisteredAncestor(t *testing.T) {
 	}
 	t.Chdir(sub)
 
-	fc := installFakeRunClient(t, 0)
-	stubTTY(t, true)
+	fc := newFakeDocker(0, true)
 
-	if _, _, err := runCmd(t, baseDir, "run"); err != nil {
+	if _, _, err := runCmdWithDeps(t, baseDir, depsFrom(fc), "run"); err != nil {
 		t.Fatalf("root failed: %v", err)
 	}
 
@@ -313,7 +391,7 @@ func TestRun_FromSubdirectory_MountsRegisteredAncestor(t *testing.T) {
 		t.Error("docker.Run must have been invoked for a registered workspace")
 	}
 
-	// Verify the spec uses the registered ancestor (parent), not the subdir.
+	// Spec must mount the registered ancestor (parent), not the subdir.
 	resolvedParent := evalSymlinks(t, parent)
 	s, loadErr := config.Load(baseDir)
 	if loadErr != nil {
@@ -347,10 +425,9 @@ func TestRun_Unregistered_DoesNotInvokeDocker(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	fc := installFakeRunClient(t, 0)
-	stubTTY(t, true)
+	fc := newFakeDocker(0, true)
 
-	_, stderr, err := runCmd(t, baseDir, "run")
+	_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fc), "run")
 	if err == nil {
 		t.Fatalf("expected error from unregistered makeslop go, got nil")
 	}
@@ -372,10 +449,9 @@ func TestRun_NoTTY_FailsBeforeDocker(t *testing.T) {
 	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
 		t.Fatalf("init failed: %v", err)
 	}
-	fc := installFakeRunClient(t, 0)
-	// Do NOT stub ttyCheck — the real predicate returns false under go test.
+	fc := newFakeDocker(0, false)
 
-	_, stderr, err := runCmd(t, baseDir, "run")
+	_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fc), "run")
 	if err == nil {
 		t.Fatalf("expected error when stdin/stdout are not TTYs, got nil")
 	}
@@ -402,23 +478,17 @@ func TestRun_ExitCodePropagation(t *testing.T) {
 	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
 		t.Fatalf("init failed: %v", err)
 	}
-	// Fake client returns StatusCode 42; runWithExitCode must propagate it.
-	installFakeRunClient(t, 42)
-	stubTTY(t, true)
+	fc := newFakeDocker(42, true)
 
 	var stdout, stderr bytes.Buffer
-	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"run"})
+	code := runWithExitCodeAndDeps(baseDir, &stdout, &stderr, depsFrom(fc), []string{"run"})
 	if code != 42 {
 		t.Errorf("runWithExitCode = %d, want 42; stderr=%q", code, stderr.String())
 	}
 }
 
-// TestRunWithExitCode_DaemonReports137_MapsTo137 is a pure mapping test:
-// the daemon reports StatusCode 137 (128 + SIGKILL) and runWithExitCode must
-// propagate it verbatim as exit code 137.
-// Note: with the SDK, we no longer fork a docker process, so we no longer
-// derive 128+signum from OS WaitStatus. The daemon reports 128+signum in
-// StatusCode, which we pass through directly. No SkipNonPOSIX needed.
+// Daemon-reported StatusCode 137 (128+SIGKILL) must pass through verbatim. With
+// the SDK there is no forked process / OS WaitStatus to derive 128+signum from.
 func TestRunWithExitCode_DaemonReports137_MapsTo137(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -429,12 +499,10 @@ func TestRunWithExitCode_DaemonReports137_MapsTo137(t *testing.T) {
 		t.Fatalf("init failed: %v", err)
 	}
 
-	// Fake client returns StatusCode 137 (128 + SIGKILL).
-	installFakeRunClient(t, 137)
-	stubTTY(t, true)
+	fc := newFakeDocker(137, true)
 
 	var stdout, stderr bytes.Buffer
-	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"run"})
+	code := runWithExitCodeAndDeps(baseDir, &stdout, &stderr, depsFrom(fc), []string{"run"})
 	if code != 137 {
 		t.Errorf("runWithExitCode = %d, want 137 (daemon-reported 128+SIGKILL); stderr=%q", code, stderr.String())
 	}
@@ -460,9 +528,6 @@ func TestRun_CustomImageAndShell_FlowFromSettings(t *testing.T) {
 		t.Fatalf("save settings: %v", err)
 	}
 
-	// Use --dry-run to capture the argv without actually running docker, so
-	// we can verify the image and shell flow from settings.json into the spec.
-	stubTTY(t, false)
 	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
 	if err != nil {
 		t.Fatalf("go --dry-run failed: %v; stderr=%q", err, stderr)
@@ -487,12 +552,36 @@ func TestRunWithExitCode_NonExitErrorPrintsPrefix(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"run"})
+	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"run"}, nil)
 	if code != 1 {
 		t.Errorf("exit code = %d, want 1", code)
 	}
 	if !strings.HasPrefix(stderr.String(), "makeslop: ") {
 		t.Errorf("stderr missing 'makeslop: ' prefix: %q", stderr.String())
+	}
+}
+
+// runWithExitCode must hand the observer a cancellable context, not context.Background().
+func TestRunWithExitCode_ContextObserver(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+
+	var observedCtx context.Context
+	observer := func(ctx context.Context) {
+		observedCtx = ctx
+	}
+
+	var stdout, stderr bytes.Buffer
+	runWithExitCode(baseDir, &stdout, &stderr, []string{"version"}, observer)
+
+	if observedCtx == nil {
+		t.Fatal("contextObserver was not called")
+	}
+	if observedCtx == context.Background() {
+		t.Error("contextObserver received context.Background(); expected a signal-cancellable child context")
+	}
+	if observedCtx.Done() == nil {
+		t.Error("observed context has no Done channel; expected a cancellable context")
 	}
 }
 
@@ -519,8 +608,7 @@ func TestInit_Twice_Idempotent(t *testing.T) {
 	snapAfter := snapshotTree(t, baseDir)
 	assertSnapshotsEqual(t, snapBefore, snapAfter)
 
-	// Verify that the second init did not modify .makeslop.yaml in the project
-	// directory — Scaffold must be idempotent and leave a hand-edited file untouched.
+	// Scaffold must be idempotent — second init must not touch .makeslop.yaml.
 	yamlPath := filepath.Join(pwd, projectconfig.Filename)
 	got, err := os.ReadFile(yamlPath)
 	if err != nil {
@@ -560,8 +648,7 @@ func TestInit_FromSubdir_ReusesParent(t *testing.T) {
 	snapAfter := snapshotTree(t, baseDir)
 	assertSnapshotsEqual(t, snapBefore, snapAfter)
 
-	// Scaffold placement: .makeslop.yaml must appear in the parent (workspace root),
-	// NOT in the subdirectory from which init was called.
+	// .makeslop.yaml belongs in the workspace root (parent), not the subdir init ran from.
 	resolvedParent := evalSymlinks(t, parent)
 	resolvedSub := evalSymlinks(t, sub)
 	if _, err := os.Stat(filepath.Join(resolvedSub, projectconfig.Filename)); err == nil {
@@ -573,7 +660,7 @@ func TestInit_FromSubdir_ReusesParent(t *testing.T) {
 }
 
 func TestInit_SymlinkInvariant(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks unreliable on Windows; makeslop is POSIX-only")
+	skipNonPOSIX(t, "symlinks unreliable on Windows; makeslop is POSIX-only")
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	real := t.TempDir()
@@ -616,7 +703,7 @@ func TestInit_SymlinkInvariant(t *testing.T) {
 	snapFinal := snapshotTree(t, baseDir)
 	assertSnapshotsEqual(t, snapBefore, snapFinal)
 
-	// settings.json must key by the resolved path, not the alias.
+	// Must key by the resolved path, not the symlink alias.
 	settingsData, err := os.ReadFile(filepath.Join(baseDir, "settings.json"))
 	if err != nil {
 		t.Fatalf("read settings: %v", err)
@@ -660,7 +747,6 @@ func TestRun_CorruptSettings_ReportsError(t *testing.T) {
 	if stdout != "" {
 		t.Errorf("expected empty stdout, got %q", stdout)
 	}
-	// main() prints this error; ensure it carries diagnostic context.
 	if !strings.Contains(err.Error(), "settings") {
 		t.Errorf("expected error to mention 'settings' context, got %q", err.Error())
 	}
@@ -758,11 +844,10 @@ func TestRun_OutsideHome_Refuses(t *testing.T) {
 	outsidePwd := t.TempDir()
 	t.Chdir(outsidePwd)
 
-	fc := installFakeRunClient(t, 0)
-	stubTTY(t, true)
+	fc := newFakeDocker(0, true)
 
 	snapBefore := snapshotTree(t, baseDir)
-	_, stderr, err := runCmd(t, baseDir, "run")
+	_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fc), "run")
 	if err == nil {
 		t.Fatalf("expected error from makeslop go outside HOME, got nil")
 	}
@@ -811,8 +896,7 @@ func TestInit_OutsideHome_Refuses(t *testing.T) {
 	if !strings.HasSuffix(stderr, "\n") {
 		t.Errorf("stderr does not end with newline: %q", stderr)
 	}
-	// Guard: ensureWithinHome must fire BEFORE config.Bootstrap, so baseDir
-	// must be completely untouched (no workspaces/, no agent artifacts).
+	// Guard fires before config.Bootstrap, so baseDir must be untouched.
 	snapAfter := snapshotTree(t, baseDir)
 	assertSnapshotsEqual(t, snapBefore, snapAfter)
 }
@@ -848,10 +932,9 @@ func TestOutOfHomeFlag_Bypasses(t *testing.T) {
 		t.Errorf("init --out-of-home: stderr unexpectedly contains 'refusing to run': %q", stderr)
 	}
 
-	fc := installFakeRunClient(t, 0)
-	stubTTY(t, true)
+	fc := newFakeDocker(0, true)
 
-	_, stderr, err = runCmd(t, baseDir, "run", "--out-of-home")
+	_, stderr, err = runCmdWithDeps(t, baseDir, depsFrom(fc), "run", "--out-of-home")
 	if err != nil {
 		t.Fatalf("makeslop run --out-of-home should succeed outside HOME, got: %v; stderr=%q", err, stderr)
 	}
@@ -889,16 +972,11 @@ func TestRun_MasksFoundEnvFiles_ArgvContainsDevNullMounts(t *testing.T) {
 		t.Fatalf("write local.env: %v", err)
 	}
 
-	// Config-driven scan: write .makeslop.yaml with patterns that match the files above.
 	yamlContent := "exclude:\n  scan:\n    patterns:\n      - \"*.env\"\n      - \".env.*\"\n  files: []\n  dirs: []\n"
 	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(yamlContent), 0o644); err != nil {
 		t.Fatalf("write yaml: %v", err)
 	}
 
-	// Use --dry-run to verify the spec contains /dev/null mounts without
-	// actually running docker. The same spec is passed to docker.Run in the
-	// non-dry-run path (verified by the pure spec drift-guard in spec_test.go).
-	stubTTY(t, false)
 	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
 	if err != nil {
 		t.Fatalf("--dry-run failed: %v; stderr=%q", err, stderr)
@@ -917,7 +995,7 @@ func TestRun_MasksFoundEnvFiles_ArgvContainsDevNullMounts(t *testing.T) {
 		t.Errorf("--dry-run stdout missing /dev/null mount for local.env: want %q\nstdout:\n%s", wantMount2, stdout)
 	}
 
-	// Verify the overlay mounts appear after the project bind mount (tail ordering).
+	// Overlay mounts must come after the project bind mount (tail ordering).
 	projectMount := "source=" + resolvedPwd + ",target=/workspace/" + name
 	projectIdx := strings.Index(stdout, projectMount)
 	env1Idx := strings.Index(stdout, wantMount1)
@@ -943,8 +1021,6 @@ func TestRun_NoEnvFiles_PrintsNothingExtraOnStderr(t *testing.T) {
 		t.Fatalf("init failed: %v", err)
 	}
 
-	// Use --dry-run: no docker needed, and we can verify no /dev/null mounts in output.
-	stubTTY(t, false)
 	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
 	if err != nil {
 		t.Fatalf("--dry-run failed: %v; stderr=%q", err, stderr)
@@ -959,7 +1035,6 @@ func TestRun_NoEnvFiles_PrintsNothingExtraOnStderr(t *testing.T) {
 	}
 }
 
-// No workspace init, docker shim, or fd shim required.
 func TestRoot_BareInvocation_PrintsHelp(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -1100,7 +1175,7 @@ func TestMergeUniqueSorted(t *testing.T) {
 	}
 }
 
-// "no exec" contract: --dry-run succeeds even when TTY is false (no docker exec).
+// --dry-run succeeds even when TTY is false (no docker exec).
 func TestRun_DryRun_SkipsDocker(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -1111,10 +1186,9 @@ func TestRun_DryRun_SkipsDocker(t *testing.T) {
 		t.Fatalf("init failed: %v", err)
 	}
 
-	fc := installFakeRunClient(t, 0)
-	stubTTY(t, false)
+	fc := newFakeDocker(0, false)
 
-	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
+	stdout, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fc), "run", "--dry-run")
 	if err != nil {
 		t.Fatalf("--dry-run should succeed, got err: %v; stderr=%q", err, stderr)
 	}
@@ -1126,9 +1200,7 @@ func TestRun_DryRun_SkipsDocker(t *testing.T) {
 	}
 }
 
-// Single source of truth: --dry-run stdout must equal BuildSpec(opts).ShellCommand()
-// (after stripping the trailing newline from fmt.Fprintln).
-// Direct (bridge) is the default: the spec does NOT include --network none or proxy env vars.
+// --dry-run stdout must equal BuildSpec(opts).ShellCommand() (single source of truth).
 func TestRun_DryRun_StdoutEqualsBuildSpecShellCommand(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -1141,8 +1213,6 @@ func TestRun_DryRun_StdoutEqualsBuildSpecShellCommand(t *testing.T) {
 	}
 	workspaceDir := strings.TrimSpace(initOut)
 
-	stubTTY(t, false)
-
 	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
 	if err != nil {
 		t.Fatalf("--dry-run failed: %v; stderr=%q", err, stderr)
@@ -1153,8 +1223,7 @@ func TestRun_DryRun_StdoutEqualsBuildSpecShellCommand(t *testing.T) {
 	if loadErr != nil {
 		t.Fatalf("load settings: %v", loadErr)
 	}
-	// Bridge networking is the default.
-	// Cache mounts default to true (absent cache: block ⇒ both groups enabled).
+	// Absent cache: block ⇒ both cache groups default to true.
 	want := docker.BuildSpec(docker.Options{
 		ProjectRoot:       resolvedPwd,
 		WorkspaceName:     filepath.Base(workspaceDir),
@@ -1181,8 +1250,6 @@ func TestRun_DryRun_ShortFlag(t *testing.T) {
 	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
 		t.Fatalf("init failed: %v", err)
 	}
-
-	stubTTY(t, false)
 
 	stdoutLong, stderrLong, errLong := runCmd(t, baseDir, "run", "--dry-run")
 	if errLong != nil {
@@ -1211,10 +1278,7 @@ func TestRun_DryRun_NoTTY_Succeeds(t *testing.T) {
 		t.Fatalf("init failed: %v", err)
 	}
 
-	// Scan is config-driven (WalkDir); no fd shim needed.
-	// Do NOT stub ttyCheck — the real predicate returns false under go test.
-	// Do NOT install docker shim — docker.Run must never be called.
-
+	// Real ttyCheck returns false under go test; docker.Run must never be reached.
 	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
 	if err != nil {
 		t.Fatalf("--dry-run must succeed with no TTY (TTY check lives in docker.Run which is skipped); err=%v; stderr=%q", err, stderr)
@@ -1228,8 +1292,7 @@ func TestRun_DryRun_Unregistered_StillRefuses(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
-	t.Chdir(pwd)
-	// No init — workspace is not registered.
+	t.Chdir(pwd) // no init — workspace not registered
 
 	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
 	if err == nil {
@@ -1290,9 +1353,6 @@ func TestRun_DryRun_OutOfHomeBypasses(t *testing.T) {
 
 	t.Chdir(insidePwd)
 
-	stubTTY(t, false)
-
-	// --out-of-home is now scoped to `run` (not a root persistent flag).
 	stdout, stderr, err := runCmd(t, baseDir, "run", "--out-of-home", "--dry-run")
 	if err != nil {
 		t.Fatalf("--out-of-home --dry-run should succeed; err=%v; stderr=%q", err, stderr)
@@ -1312,15 +1372,13 @@ func TestRun_DryRun_CorruptSettings(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	// Register workspace so init succeeds, then corrupt settings so ws.Lookup fails.
+	// Register, then corrupt settings so ws.Lookup fails.
 	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
 		t.Fatalf("init failed: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(baseDir, "settings.json"), []byte("{not json"), 0o644); err != nil {
 		t.Fatalf("corrupt settings: %v", err)
 	}
-
-	stubTTY(t, false)
 
 	stdout, _, err := runCmd(t, baseDir, "run", "--dry-run")
 	if err == nil {
@@ -1361,12 +1419,10 @@ func TestRun_DryRun_MasksEnvFiles_StdoutContainsDevNullMounts(t *testing.T) {
 		t.Fatalf("write local.env: %v", err)
 	}
 
-	// Config-driven scan: write .makeslop.yaml with patterns that match the files above.
 	yamlContent := "exclude:\n  scan:\n    patterns:\n      - \"*.env\"\n      - \".env.*\"\n  files: []\n  dirs: []\n"
 	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(yamlContent), 0o644); err != nil {
 		t.Fatalf("write yaml: %v", err)
 	}
-	stubTTY(t, false)
 
 	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
 	if err != nil {
@@ -1386,8 +1442,7 @@ func TestRun_DryRun_MasksEnvFiles_StdoutContainsDevNullMounts(t *testing.T) {
 		t.Errorf("stdout missing /dev/null mount for local.env: want substring %q\nstdout:\n%s", wantMount2, stdout)
 	}
 
-	// Verify the /dev/null overlay mounts appear AFTER the project bind mount
-	// in the printed output (mount-order invariant).
+	// Overlay mounts must come after the project bind mount (mount-order invariant).
 	projectMount := "source=" + resolvedPwd + ",target=/workspace/" + name
 	projectIdx := strings.Index(stdout, projectMount)
 	env1Idx := strings.Index(stdout, wantMount1)
@@ -1421,8 +1476,6 @@ func TestRun_DryRun_FromSubdir_MountsAncestor(t *testing.T) {
 	}
 	t.Chdir(sub)
 
-	stubTTY(t, false)
-
 	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
 	if err != nil {
 		t.Fatalf("--dry-run from subdir failed: %v; stderr=%q", err, stderr)
@@ -1445,8 +1498,7 @@ func TestInit_DryRunFlagRejected(t *testing.T) {
 	if err == nil {
 		t.Fatalf("init --dry-run should fail, got nil error")
 	}
-	// The error message must mention "dry-run" (exact cobra phrasing may vary
-	// across versions, so we check for the flag name substring only).
+	// Match the flag name only; cobra's exact phrasing varies by version.
 	if !strings.Contains(err.Error(), "dry-run") {
 		t.Errorf("error must mention 'dry-run', got: %q", err.Error())
 	}
@@ -1503,10 +1555,7 @@ func TestInit_PreservesExistingProjectConfig(t *testing.T) {
 
 // ── projectconfig.Load wiring tests ───────────────────────────────────────────
 
-// TestGo_EmptyScanPatterns_NoFilesMasked asserts the opt-in rule: when
-// exclude.scan.patterns is absent (or the .makeslop.yaml is absent entirely),
-// no files are masked and go succeeds even when secret files exist on disk.
-// This also verifies that the absence of fd/fdfind is no longer an issue.
+// Opt-in masking: absent scan patterns ⇒ nothing masked even when secrets exist on disk.
 func TestRun_EmptyScanPatterns_NoFilesMasked(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -1518,22 +1567,19 @@ func TestRun_EmptyScanPatterns_NoFilesMasked(t *testing.T) {
 	}
 	resolvedPwd := evalSymlinks(t, pwd)
 
-	// Write a "secret" file that would have been caught by the old fd scan.
 	envFile := filepath.Join(resolvedPwd, ".env")
 	if err := os.WriteFile(envFile, []byte("SECRET=1"), 0o644); err != nil {
 		t.Fatalf("write .env: %v", err)
 	}
 
-	// Overwrite .makeslop.yaml with an empty scan block (no patterns).
 	yamlContent := "exclude:\n  scan:\n    patterns: []\n  files: []\n  dirs: []\n"
 	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(yamlContent), 0o644); err != nil {
 		t.Fatalf("write yaml: %v", err)
 	}
 
-	installFakeRunClient(t, 0)
-	stubTTY(t, true)
+	fc := newFakeDocker(0, true)
 
-	_, stderr, err := runCmd(t, baseDir, "run")
+	_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fc), "run")
 	if err != nil {
 		t.Fatalf("go must succeed when exclude.scan.patterns is empty; err=%v; stderr=%q", err, stderr)
 	}
@@ -1567,21 +1613,17 @@ func TestRun_LoadsYamlAndMergesMaskedFiles(t *testing.T) {
 		t.Fatalf("write token.txt: %v", err)
 	}
 
-	// Config-driven scan: write .makeslop.yaml with patterns (scan finds .env) and
-	// an explicit file mask (private/token.txt goes via exclude.files).
+	// Scan finds .env; private/token.txt comes via exclude.files (not counted in masked N).
 	yamlContent := "exclude:\n  scan:\n    patterns:\n      - \"*.env\"\n  files: [private/token.txt]\n  dirs: []\n"
 	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(yamlContent), 0o644); err != nil {
 		t.Fatalf("write yaml: %v", err)
 	}
 
-	// Use --dry-run to verify spec content without running docker.
-	stubTTY(t, false)
 	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
 	if err != nil {
 		t.Fatalf("go --dry-run failed: %v; stderr=%q", err, stderr)
 	}
 
-	// Scan hits .env (1 file); private/token.txt is via exclude.files (not counted in masked N).
 	if !strings.Contains(stderr, "masked 1 secret file") {
 		t.Errorf("stderr must mention 'masked 1 secret file'; got %q", stderr)
 	}
@@ -1596,7 +1638,7 @@ func TestRun_LoadsYamlAndMergesMaskedFiles(t *testing.T) {
 		t.Errorf("--dry-run stdout missing /dev/null mount for private/token.txt: want %q\nstdout:\n%s", wantMount2, stdout)
 	}
 
-	// Lex-sorted order: .env < private/token.txt — check position in output.
+	// Lex order: .env < private/token.txt.
 	idx1 := strings.Index(stdout, wantMount1)
 	idx2 := strings.Index(stdout, wantMount2)
 	if idx1 >= 0 && idx2 >= 0 && idx1 >= idx2 {
@@ -1604,8 +1646,6 @@ func TestRun_LoadsYamlAndMergesMaskedFiles(t *testing.T) {
 	}
 }
 
-// TestGo_BadScanPattern_AbortsBeforeDocker verifies that a malformed glob pattern in
-// exclude.scan.patterns causes makeslop go to abort with an error before invoking docker.
 func TestRun_BadScanPattern_AbortsBeforeDocker(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -1617,7 +1657,7 @@ func TestRun_BadScanPattern_AbortsBeforeDocker(t *testing.T) {
 	}
 	resolvedPwd := evalSymlinks(t, pwd)
 
-	// Write .makeslop.yaml with an invalid glob pattern (unclosed bracket).
+	// Invalid glob (unclosed bracket).
 	yamlContent := "exclude:\n  scan:\n    patterns:\n      - \"[bad\"\n  files: []\n  dirs: []\n"
 	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(yamlContent), 0o644); err != nil {
 		t.Fatalf("write yaml: %v", err)
@@ -1642,7 +1682,7 @@ func TestRun_LoadsYamlMaskedDirs_TmpfsMountInArgv(t *testing.T) {
 	workspaceDir := strings.TrimSpace(initOut)
 	resolvedPwd := evalSymlinks(t, pwd)
 
-	// Create the directory on disk so projectconfig.Load stat-keeps it.
+	// The directory must exist on disk so projectconfig.Load keeps it.
 	nodeModules := filepath.Join(resolvedPwd, "node_modules")
 	if err := os.MkdirAll(nodeModules, 0o755); err != nil {
 		t.Fatalf("mkdir node_modules: %v", err)
@@ -1653,8 +1693,6 @@ func TestRun_LoadsYamlMaskedDirs_TmpfsMountInArgv(t *testing.T) {
 		t.Fatalf("write yaml: %v", err)
 	}
 
-	// Use --dry-run to verify spec contains the tmpfs mount without running docker.
-	stubTTY(t, false)
 	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
 	if err != nil {
 		t.Fatalf("go --dry-run failed: %v; stderr=%q", err, stderr)
@@ -1667,7 +1705,7 @@ func TestRun_LoadsYamlMaskedDirs_TmpfsMountInArgv(t *testing.T) {
 	if !strings.Contains(stdout, wantTmpfs) {
 		t.Errorf("--dry-run stdout missing tmpfs mount: want %q\nstdout:\n%s", wantTmpfs, stdout)
 	}
-	// Verify ordering: tmpfs appears after project bind mount.
+	// tmpfs must appear after the project bind mount.
 	projectIdx := strings.Index(stdout, projectMount)
 	tmpfsIdx := strings.Index(stdout, wantTmpfs)
 	if projectIdx >= 0 && tmpfsIdx >= 0 && tmpfsIdx <= projectIdx {
@@ -1680,8 +1718,7 @@ func TestRun_LoadsYamlMaskedDirs_TmpfsMountInArgv(t *testing.T) {
 	}
 }
 
-// TestRun_YamlAbsentIsBitIdenticalArgv verifies that when .makeslop.yaml is absent
-// the output equals plain BuildSpec with bridge networking. Bridge is the default.
+// Absent .makeslop.yaml must yield the plain bridge-default BuildSpec output.
 func TestRun_YamlAbsentIsBitIdenticalArgv(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -1699,8 +1736,6 @@ func TestRun_YamlAbsentIsBitIdenticalArgv(t *testing.T) {
 		t.Fatalf("remove yaml: %v", err)
 	}
 
-	// Use --dry-run: yaml absent → direct/bridge is default (no socket wired).
-	stubTTY(t, false)
 	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
 	if err != nil {
 		t.Fatalf("go --dry-run failed: %v; stderr=%q", err, stderr)
@@ -1710,8 +1745,7 @@ func TestRun_YamlAbsentIsBitIdenticalArgv(t *testing.T) {
 	if loadErr != nil {
 		t.Fatalf("load settings: %v", loadErr)
 	}
-	// Bridge networking is the default.
-	// Cache mounts default to true (absent yaml ⇒ both groups enabled).
+	// Absent yaml ⇒ both cache groups default to true.
 	want := docker.BuildSpec(docker.Options{
 		ProjectRoot:       resolvedPwd,
 		WorkspaceName:     filepath.Base(workspaceDir),
@@ -1747,15 +1781,12 @@ func TestRun_YamlDedupsAgainstScan(t *testing.T) {
 		t.Fatalf("write .env: %v", err)
 	}
 
-	// Config-driven scan finds .env AND explicit files list also includes .env —
-	// mergeUniqueSorted must deduplicate so only one /dev/null mount appears.
+	// Scan and explicit files both match .env; mergeUniqueSorted must dedup to one mount.
 	yamlContent := "exclude:\n  scan:\n    patterns:\n      - \"*.env\"\n  dirs: []\n  files: [.env]\n"
 	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(yamlContent), 0o644); err != nil {
 		t.Fatalf("write yaml: %v", err)
 	}
 
-	// Use --dry-run to verify dedup without running docker.
-	stubTTY(t, false)
 	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
 	if err != nil {
 		t.Fatalf("go --dry-run failed: %v; stderr=%q", err, stderr)
@@ -1771,8 +1802,8 @@ func TestRun_YamlDedupsAgainstScan(t *testing.T) {
 
 // ── YAML error propagation tests ──────────────────────────────────────────────
 
-// Guards the secret-masking invariant: docker must never start when yaml parse fails.
-// Uses runWithExitCode (not runCmd) so non-errSilent errors appear on stderr.
+// Docker must never start when yaml parse fails (secret-masking invariant).
+// runWithExitCode (not runCmd) so non-errSilent errors land on stderr.
 func TestRun_YamlMalformedAbortsBeforeDocker(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -1789,11 +1820,10 @@ func TestRun_YamlMalformedAbortsBeforeDocker(t *testing.T) {
 		t.Fatalf("write bad yaml: %v", err)
 	}
 
-	fc := installFakeRunClient(t, 0)
-	stubTTY(t, true)
+	fc := newFakeDocker(0, true)
 
 	var stdout, stderr bytes.Buffer
-	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"run"})
+	code := runWithExitCodeAndDeps(baseDir, &stdout, &stderr, depsFrom(fc), []string{"run"})
 	if code == 0 {
 		t.Fatalf("expected non-zero exit from malformed yaml, got 0; stderr=%q", stderr.String())
 	}
@@ -1822,11 +1852,10 @@ func TestRun_YamlReservedPathAbortsBeforeDocker(t *testing.T) {
 		t.Fatalf("write yaml: %v", err)
 	}
 
-	fc := installFakeRunClient(t, 0)
-	stubTTY(t, true)
+	fc := newFakeDocker(0, true)
 
 	var stdout, stderr bytes.Buffer
-	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"run"})
+	code := runWithExitCodeAndDeps(baseDir, &stdout, &stderr, depsFrom(fc), []string{"run"})
 	if code == 0 {
 		t.Fatalf("expected non-zero exit from reserved path, got 0; stderr=%q", stderr.String())
 	}
@@ -1855,11 +1884,10 @@ func TestRun_YamlDirAndFileDupAborts(t *testing.T) {
 		t.Fatalf("write yaml: %v", err)
 	}
 
-	fc := installFakeRunClient(t, 0)
-	stubTTY(t, true)
+	fc := newFakeDocker(0, true)
 
 	var stdout, stderr bytes.Buffer
-	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"run"})
+	code := runWithExitCodeAndDeps(baseDir, &stdout, &stderr, depsFrom(fc), []string{"run"})
 	if code == 0 {
 		t.Fatalf("expected non-zero exit from cross-list dup, got 0; stderr=%q", stderr.String())
 	}
@@ -1871,11 +1899,8 @@ func TestRun_YamlDirAndFileDupAborts(t *testing.T) {
 	}
 }
 
-// TestRun_StaleNetworkBlockAbortsBeforeDocker verifies that a .makeslop.yaml
-// file containing a stale "network:" block (from a prior makeslop version that
-// supported proxy egress) causes `run` to abort before contacting the Docker
-// daemon. This is the intended loud break: users with old YAML files must
-// remove the network: block to upgrade.
+// A stale "network:" block (from the removed proxy feature) must abort `run` —
+// the intended loud break forcing users to drop it on upgrade.
 func TestRun_StaleNetworkBlockAbortsBeforeDocker(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -1892,11 +1917,10 @@ func TestRun_StaleNetworkBlockAbortsBeforeDocker(t *testing.T) {
 		t.Fatalf("write stale yaml: %v", err)
 	}
 
-	fc := installFakeRunClient(t, 0)
-	stubTTY(t, true)
+	fc := newFakeDocker(0, true)
 
 	var stdout, stderr bytes.Buffer
-	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"run"})
+	code := runWithExitCodeAndDeps(baseDir, &stdout, &stderr, depsFrom(fc), []string{"run"})
 	if code == 0 {
 		t.Fatalf("expected non-zero exit from stale network: block, got 0; stderr=%q", stderr.String())
 	}
@@ -1923,11 +1947,8 @@ func TestRun_YamlMissingPathSkippedSilently(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(yamlContent), 0o644); err != nil {
 		t.Fatalf("write yaml: %v", err)
 	}
-	// Explicitly ensure the file does not exist.
 	_ = os.Remove(filepath.Join(resolvedPwd, "secrets", "api.key"))
 
-	// Use --dry-run to verify spec without running docker.
-	stubTTY(t, false)
 	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
 	if err != nil {
 		t.Fatalf("expected success when missing path is silently skipped, got: %v; stderr=%q", err, stderr)
@@ -1940,8 +1961,7 @@ func TestRun_YamlMissingPathSkippedSilently(t *testing.T) {
 	}
 }
 
-// TestRun_DryRun_DefaultIsBridge verifies that the default is plain bridge
-// networking: no --network, no HTTP_PROXY, no proxy volume mount.
+// Default is plain bridge networking: no --network, no HTTP_PROXY, no proxy volume.
 func TestRun_DryRun_DefaultIsBridge(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -1957,14 +1977,11 @@ func TestRun_DryRun_DefaultIsBridge(t *testing.T) {
 
 	_ = os.Remove(filepath.Join(resolvedPwd, projectconfig.Filename))
 
-	stubTTY(t, false)
-
 	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
 	if err != nil {
 		t.Fatalf("--dry-run failed: %v; stderr=%q", err, stderr)
 	}
 
-	// Bridge networking: no --network, no proxy env vars, no proxy volume.
 	if strings.Contains(stdout, "--network") {
 		t.Errorf("default: stdout must not contain --network\nstdout:\n%s", stdout)
 	}
@@ -1974,8 +1991,7 @@ func TestRun_DryRun_DefaultIsBridge(t *testing.T) {
 	if strings.Contains(stdout, "HTTPS_PROXY") {
 		t.Errorf("default: stdout must not contain HTTPS_PROXY\nstdout:\n%s", stdout)
 	}
-	// Verify the output matches plain BuildSpec (no proxy options).
-	// Cache mounts default to true (absent yaml ⇒ both groups enabled).
+	// Absent yaml ⇒ both cache groups default to true.
 	s, loadErr := config.Load(baseDir)
 	if loadErr != nil {
 		t.Fatalf("load settings: %v", loadErr)
@@ -1998,8 +2014,6 @@ func TestRun_DryRun_DefaultIsBridge(t *testing.T) {
 
 // ── migrate subcommand tests ───────────────────────────────────────────────────
 
-// TestMigrate_FirstRun_PrintsUpdatedAndWritesDockerfile verifies that a fresh
-// migrate on an empty baseDir prints "updated" and creates the Dockerfile.
 func TestMigrate_FirstRun_PrintsUpdatedAndWritesDockerfile(t *testing.T) {
 	baseDir := t.TempDir()
 
@@ -2024,8 +2038,7 @@ func TestMigrate_FirstRun_PrintsUpdatedAndWritesDockerfile(t *testing.T) {
 	}
 }
 
-// TestMigrate_SecondRun_PrintsAlreadyUpToDate verifies idempotence: a second
-// migrate returns "already up to date" and does not re-write the file.
+// Second migrate is idempotent: "already up to date", file unchanged.
 func TestMigrate_SecondRun_PrintsAlreadyUpToDate(t *testing.T) {
 	baseDir := t.TempDir()
 
@@ -2046,11 +2059,9 @@ func TestMigrate_SecondRun_PrintsAlreadyUpToDate(t *testing.T) {
 	assertSnapshotsEqual(t, snapBefore, snapAfter)
 }
 
-// TestMigrate_WithoutPriorInit_SucceedsAndWritesDockerfile verifies that
 // migrate works standalone (no prior init, no pre-created dirs).
 func TestMigrate_WithoutPriorInit_SucceedsAndWritesDockerfile(t *testing.T) {
-	// Use a fresh, non-existing subdirectory inside a TempDir so migrate must
-	// create the directory itself.
+	// Non-existing subdir so migrate must create the directory itself.
 	parent := t.TempDir()
 	baseDir := filepath.Join(parent, "brand-new-dir")
 
@@ -2068,8 +2079,6 @@ func TestMigrate_WithoutPriorInit_SucceedsAndWritesDockerfile(t *testing.T) {
 	}
 }
 
-// TestMigrate_CorruptSettings_ReportsError verifies that migrate with a corrupt
-// settings.json exits non-zero and surfaces an error mentioning "settings".
 func TestMigrate_CorruptSettings_ReportsError(t *testing.T) {
 	baseDir := t.TempDir()
 
@@ -2086,8 +2095,6 @@ func TestMigrate_CorruptSettings_ReportsError(t *testing.T) {
 	}
 }
 
-// TestRoot_BareInvocation_ListsMigrateCommand checks that the bare help output
-// lists the migrate subcommand in the Available Commands section.
 func TestRoot_BareInvocation_ListsMigrateCommand(t *testing.T) {
 	baseDir := t.TempDir()
 
@@ -2123,8 +2130,6 @@ func TestRun_DryRunIncludesMaskedDirs(t *testing.T) {
 		t.Fatalf("write yaml: %v", err)
 	}
 
-	stubTTY(t, false)
-
 	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
 	if err != nil {
 		t.Fatalf("--dry-run failed: %v; stderr=%q", err, stderr)
@@ -2144,81 +2149,71 @@ func TestRun_DryRunIncludesMaskedDirs(t *testing.T) {
 
 // ── build subcommand tests ─────────────────────────────────────────────────────
 
-// TestBuild_SeedsSelfHealAndInvokesSDK verifies that `makeslop build` on a
-// fresh (empty) baseDir bootstraps the Dockerfile then calls ImageBuild via
-// the SDK with the claudebox image tag and the correct Dockerfile basename.
+// build on a fresh baseDir self-heals the Dockerfile then invokes Build.
 func TestBuild_SeedsSelfHealAndInvokesSDK(t *testing.T) {
 	baseDir := t.TempDir()
 	fbc := installFakeBuildClient(t, 0)
 
-	stdout, stderr, err := runCmd(t, baseDir, "build")
+	stdout, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fbc), "build")
 	if err != nil {
 		t.Fatalf("build failed: %v; stdout=%q stderr=%q", err, stdout, stderr)
 	}
 
-	// Dockerfile must have been seeded (self-heal).
 	dockerfilePath := filepath.Join(baseDir, config.DockerfileFile)
 	if _, statErr := os.Stat(dockerfilePath); statErr != nil {
 		t.Errorf("Dockerfile not seeded by build: %v", statErr)
 	}
 
-	// Verify SDK was called with the right image tag.
-	tags := fbc.LastBuildOptions.Tags
-	if len(tags) == 0 || tags[0] != "claudebox" {
-		t.Errorf("ImageBuild Tags = %v, want [claudebox]", tags)
+	if fbc.LastBuildOpts.Image != "claudebox" {
+		t.Errorf("Build Image = %q, want %q", fbc.LastBuildOpts.Image, "claudebox")
 	}
 
-	// Verify Dockerfile basename is set (SDK receives basename, not full path).
-	if fbc.LastBuildOptions.Dockerfile != "Dockerfile" {
-		t.Errorf("ImageBuild Dockerfile = %q, want %q", fbc.LastBuildOptions.Dockerfile, "Dockerfile")
+	if filepath.Base(fbc.LastBuildOpts.DockerfilePath) != "Dockerfile" {
+		t.Errorf("Build DockerfilePath basename = %q, want %q", filepath.Base(fbc.LastBuildOpts.DockerfilePath), "Dockerfile")
 	}
-
-	// Verify BuildKit mode selected (Version = "2").
-	if string(fbc.LastBuildOptions.Version) != "2" {
-		t.Errorf("ImageBuild Version = %q, want %q", fbc.LastBuildOptions.Version, "2")
-	}
+	// BuildKit version selection is covered in internal/docker build_test.go.
 }
 
-// TestBuild_NoCacheAndBuildArg verifies that --no-cache and --build-arg flags
-// are forwarded to ImageBuildOptions.
 func TestBuild_NoCacheAndBuildArg(t *testing.T) {
 	baseDir := t.TempDir()
 	fbc := installFakeBuildClient(t, 0)
 
-	_, stderr, err := runCmd(t, baseDir, "build", "--no-cache", "--build-arg", "GO_VERSION=1.26.3")
+	_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fbc), "build", "--no-cache", "--build-arg", "GO_VERSION=1.26.3")
 	if err != nil {
 		t.Fatalf("build --no-cache --build-arg failed: %v; stderr=%q", err, stderr)
 	}
 
-	if !fbc.LastBuildOptions.NoCache {
-		t.Error("ImageBuildOptions.NoCache must be true when --no-cache is passed")
+	if !fbc.LastBuildOpts.NoCache {
+		t.Error("BuildOptions.NoCache must be true when --no-cache is passed")
 	}
-	val, ok := fbc.LastBuildOptions.BuildArgs["GO_VERSION"]
-	if !ok || val == nil || *val != "1.26.3" {
-		t.Errorf("ImageBuildOptions.BuildArgs[GO_VERSION] = %v, want 1.26.3", fbc.LastBuildOptions.BuildArgs)
+	var foundGOVersion bool
+	for _, arg := range fbc.LastBuildOpts.BuildArgs {
+		if arg == "GO_VERSION=1.26.3" {
+			foundGOVersion = true
+			break
+		}
+	}
+	if !foundGOVersion {
+		t.Errorf("BuildOptions.BuildArgs missing GO_VERSION=1.26.3; got %v", fbc.LastBuildOpts.BuildArgs)
 	}
 }
 
-// TestBuild_NonZeroExit_PropagatesCode verifies that when ImageBuild returns
-// an error, runWithExitCode returns a non-zero exit code.
 func TestBuild_NonZeroExit_PropagatesCode(t *testing.T) {
 	baseDir := t.TempDir()
-	installFakeBuildClient(t, 1)
+	fbc := installFakeBuildClient(t, 1)
 
 	var stdout, stderr bytes.Buffer
-	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"build"})
+	code := runWithExitCodeAndDeps(baseDir, &stdout, &stderr, depsFrom(fbc), []string{"build"})
 	if code != 1 {
 		t.Errorf("runWithExitCode = %d, want 1 (generic error); stderr=%q", code, stderr.String())
 	}
 }
 
-// TestBuild_CustomImage_FromSettings verifies that a custom image name in
-// settings.json is used as the Tags[0] passed to ImageBuild.
+// A custom image name in settings.json flows into the Build options.
 func TestBuild_CustomImage_FromSettings(t *testing.T) {
 	baseDir := t.TempDir()
 	fbc := installFakeBuildClient(t, 0)
 
-	// Bootstrap the baseDir so config.Save has the directory structure in place.
 	if err := config.Bootstrap(baseDir); err != nil {
 		t.Fatalf("bootstrap: %v", err)
 	}
@@ -2231,19 +2226,16 @@ func TestBuild_CustomImage_FromSettings(t *testing.T) {
 		t.Fatalf("save settings: %v", err)
 	}
 
-	_, stderr, err := runCmd(t, baseDir, "build")
+	_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fbc), "build")
 	if err != nil {
 		t.Fatalf("build failed: %v; stderr=%q", err, stderr)
 	}
 
-	tags := fbc.LastBuildOptions.Tags
-	if len(tags) == 0 || tags[0] != "my-custom-image:v2" {
-		t.Errorf("ImageBuild Tags = %v, want [my-custom-image:v2]", tags)
+	if fbc.LastBuildOpts.Image != "my-custom-image:v2" {
+		t.Errorf("Build Image = %q, want %q", fbc.LastBuildOpts.Image, "my-custom-image:v2")
 	}
 }
 
-// TestRoot_BareInvocation_ListsBuildCommand checks that the bare help output
-// lists the build subcommand in the Available Commands section.
 func TestRoot_BareInvocation_ListsBuildCommand(t *testing.T) {
 	baseDir := t.TempDir()
 
@@ -2259,14 +2251,8 @@ func TestRoot_BareInvocation_ListsBuildCommand(t *testing.T) {
 	}
 }
 
-// TestBuild_CorruptSettings_ReportsError verifies that `makeslop build` with a
-// corrupt settings.json exits non-zero and surfaces an error mentioning
-// "settings". Mirrors TestMigrate_CorruptSettings_ReportsError and
-// TestInit_CorruptSettings_ReportsError.
 func TestBuild_CorruptSettings_ReportsError(t *testing.T) {
 	baseDir := t.TempDir()
-	// Seed the Dockerfile so Bootstrap doesn't fail before the settings check,
-	// but write a corrupt settings.json that config.Load will reject.
 	if err := os.WriteFile(filepath.Join(baseDir, "settings.json"), []byte("{not json"), 0o644); err != nil {
 		t.Fatalf("seed corrupt settings: %v", err)
 	}
@@ -2280,13 +2266,12 @@ func TestBuild_CorruptSettings_ReportsError(t *testing.T) {
 	}
 }
 
-// TestBuild_MultipleBuildArgs verifies that --build-arg is repeatable and all
-// values are forwarded to ImageBuildOptions.BuildArgs.
+// --build-arg is repeatable; all values forwarded.
 func TestBuild_MultipleBuildArgs(t *testing.T) {
 	baseDir := t.TempDir()
 	fbc := installFakeBuildClient(t, 0)
 
-	_, stderr, err := runCmd(t, baseDir, "build",
+	_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fbc), "build",
 		"--build-arg", "GO_VERSION=1.26.3",
 		"--build-arg", "HTTP_PROXY=http://proxy.example.com:8080",
 		"--build-arg", "FOO=bar",
@@ -2295,46 +2280,43 @@ func TestBuild_MultipleBuildArgs(t *testing.T) {
 		t.Fatalf("build --build-arg (multiple) failed: %v; stderr=%q", err, stderr)
 	}
 
-	wantArgs := map[string]string{
-		"GO_VERSION": "1.26.3",
-		"HTTP_PROXY": "http://proxy.example.com:8080",
-		"FOO":        "bar",
-	}
-	for key, want := range wantArgs {
-		val, ok := fbc.LastBuildOptions.BuildArgs[key]
-		if !ok || val == nil || *val != want {
-			t.Errorf("BuildArgs[%s] = %v, want %q", key, val, want)
+	wantArgs := []string{"GO_VERSION=1.26.3", "HTTP_PROXY=http://proxy.example.com:8080", "FOO=bar"}
+	for _, want := range wantArgs {
+		var found bool
+		for _, arg := range fbc.LastBuildOpts.BuildArgs {
+			if arg == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("BuildOptions.BuildArgs missing %q; got %v", want, fbc.LastBuildOpts.BuildArgs)
 		}
 	}
 }
 
-// TestBuild_BuildKitVersion_IsSet verifies that the SDK Build call uses
-// BuilderBuildKit ("2") so cache mounts and BuildKit features are active.
-// This replaces the old DOCKER_BUILDKIT=1 env test which was CLI-specific.
+// build invokes the Build dep. BuildKit version selection is covered in
+// internal/docker build_test.go.
 func TestBuild_BuildKitVersion_IsSet(t *testing.T) {
 	baseDir := t.TempDir()
 	fbc := installFakeBuildClient(t, 0)
 
-	_, stderr, err := runCmd(t, baseDir, "build")
+	_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fbc), "build")
 	if err != nil {
 		t.Fatalf("build failed: %v; stderr=%q", err, stderr)
 	}
 
-	if string(fbc.LastBuildOptions.Version) != "2" {
-		t.Errorf("ImageBuild Version = %q, want \"2\" (BuilderBuildKit)", fbc.LastBuildOptions.Version)
+	if fbc.LastBuildOpts.Image == "" {
+		t.Error("Build was not invoked (LastBuildOpts.Image is empty)")
 	}
 }
 
-// TestBuild_Refresh_OverwritesDockerfileAndBuilds verifies that `makeslop build
-// --refresh` overwrites a stale Dockerfile with the embedded assets version and
-// still calls ImageBuild via the SDK.
+// build --refresh overwrites a stale Dockerfile with the embedded assets version.
 func TestBuild_Refresh_OverwritesDockerfileAndBuilds(t *testing.T) {
 	baseDir := t.TempDir()
 	fbc := installFakeBuildClient(t, 0)
 
-	// Bootstrap creates the Dockerfile from embedded assets; then overwrite it
-	// with a STALE marker. Bootstrap is no-overwrite, so the next build (without
-	// --refresh) would preserve the STALE content. With --refresh it must reset.
+	// Bootstrap is no-overwrite, so the STALE marker survives without --refresh.
 	if err := config.Bootstrap(baseDir); err != nil {
 		t.Fatalf("bootstrap: %v", err)
 	}
@@ -2344,12 +2326,11 @@ func TestBuild_Refresh_OverwritesDockerfileAndBuilds(t *testing.T) {
 		t.Fatalf("write stale Dockerfile: %v", err)
 	}
 
-	_, stderr, err := runCmd(t, baseDir, "build", "--refresh")
+	_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fbc), "build", "--refresh")
 	if err != nil {
 		t.Fatalf("build --refresh failed: %v; stderr=%q", err, stderr)
 	}
 
-	// On-disk Dockerfile must equal assets.Dockerfile (the STALE marker is gone).
 	got, err := os.ReadFile(dockerfilePath)
 	if err != nil {
 		t.Fatalf("read Dockerfile after --refresh: %v", err)
@@ -2359,19 +2340,16 @@ func TestBuild_Refresh_OverwritesDockerfileAndBuilds(t *testing.T) {
 			len(got), len(assets.Dockerfile))
 	}
 
-	// ImageBuild must have been called (LastBuildOptions.Tags must be non-empty).
-	if len(fbc.LastBuildOptions.Tags) == 0 {
-		t.Error("ImageBuild was not called after --refresh")
+	if fbc.LastBuildOpts.Image == "" {
+		t.Error("Build was not called after --refresh")
 	}
 }
 
-// TestBuild_NoRefresh_LeavesDockerfileIntact verifies that a plain `makeslop
-// build` (without --refresh) does NOT overwrite a hand-edited Dockerfile.
+// Plain build (no --refresh) must not overwrite a hand-edited Dockerfile.
 func TestBuild_NoRefresh_LeavesDockerfileIntact(t *testing.T) {
 	baseDir := t.TempDir()
-	installFakeBuildClient(t, 0)
+	fbc := installFakeBuildClient(t, 0)
 
-	// Bootstrap, then overwrite Dockerfile with a STALE marker.
 	if err := config.Bootstrap(baseDir); err != nil {
 		t.Fatalf("bootstrap: %v", err)
 	}
@@ -2381,7 +2359,7 @@ func TestBuild_NoRefresh_LeavesDockerfileIntact(t *testing.T) {
 		t.Fatalf("write stale Dockerfile: %v", err)
 	}
 
-	_, stderr, err := runCmd(t, baseDir, "build")
+	_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fbc), "build")
 	if err != nil {
 		t.Fatalf("build (no --refresh) failed: %v; stderr=%q", err, stderr)
 	}
@@ -2395,14 +2373,13 @@ func TestBuild_NoRefresh_LeavesDockerfileIntact(t *testing.T) {
 	}
 }
 
-// TestBuild_Refresh_Quiet_SuppressesNotice verifies that --quiet suppresses the
-// "refreshed…" stderr notice, while the non-quiet path emits it.
+// --quiet suppresses the "refreshed…" stderr notice; non-quiet emits it.
 func TestBuild_Refresh_Quiet_SuppressesNotice(t *testing.T) {
 	t.Run("quiet suppresses notice", func(t *testing.T) {
 		baseDir := t.TempDir()
-		installFakeBuildClient(t, 0)
+		fbc := installFakeBuildClient(t, 0)
 
-		_, stderr, err := runCmd(t, baseDir, "build", "--refresh", "--quiet")
+		_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fbc), "build", "--refresh", "--quiet")
 		if err != nil {
 			t.Fatalf("build --refresh --quiet failed: %v; stderr=%q", err, stderr)
 		}
@@ -2413,9 +2390,9 @@ func TestBuild_Refresh_Quiet_SuppressesNotice(t *testing.T) {
 
 	t.Run("non-quiet emits notice", func(t *testing.T) {
 		baseDir := t.TempDir()
-		installFakeBuildClient(t, 0)
+		fbc := installFakeBuildClient(t, 0)
 
-		_, stderr, err := runCmd(t, baseDir, "build", "--refresh")
+		_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fbc), "build", "--refresh")
 		if err != nil {
 			t.Fatalf("build --refresh failed: %v; stderr=%q", err, stderr)
 		}
@@ -2430,8 +2407,7 @@ func TestBuild_Refresh_Quiet_SuppressesNotice(t *testing.T) {
 
 // ── config subcommand tests ───────────────────────────────────────────────────
 
-// TestConfig_BareInvocation_PrintsSettings verifies that bare `makeslop config`
-// now prints key = value settings (not help) and exits 0.
+// Bare `config` prints key = value settings (not help) and exits 0.
 func TestConfig_BareInvocation_PrintsSettings(t *testing.T) {
 	baseDir := t.TempDir()
 
@@ -2442,7 +2418,6 @@ func TestConfig_BareInvocation_PrintsSettings(t *testing.T) {
 	if stderr != "" {
 		t.Errorf("expected empty stderr, got %q", stderr)
 	}
-	// Should print the same output as `config list`.
 	if !strings.Contains(stdout, "image = ") {
 		t.Errorf("config output missing 'image = ' key: %q", stdout)
 	}
@@ -2454,8 +2429,6 @@ func TestConfig_BareInvocation_PrintsSettings(t *testing.T) {
 	}
 }
 
-// TestRoot_BareInvocation_ListsConfigCommand checks that bare makeslop help
-// lists the config subcommand in the Available Commands section.
 func TestRoot_BareInvocation_ListsConfigCommand(t *testing.T) {
 	baseDir := t.TempDir()
 
@@ -2468,9 +2441,7 @@ func TestRoot_BareInvocation_ListsConfigCommand(t *testing.T) {
 	}
 }
 
-// TestConfigList_FreshBaseDir_PrintsThreeDefaults verifies that `config list`
-// on a fresh (empty) baseDir prints the three keys with their default values in
-// registry order (image, shell, tmp_dir_size).
+// config list on a fresh baseDir prints the three keys with defaults in registry order.
 func TestConfigList_FreshBaseDir_PrintsThreeDefaults(t *testing.T) {
 	baseDir := t.TempDir()
 
@@ -2482,7 +2453,6 @@ func TestConfigList_FreshBaseDir_PrintsThreeDefaults(t *testing.T) {
 		t.Errorf("expected empty stderr, got %q", stderr)
 	}
 
-	// Verify all three default lines are present.
 	wantLines := []string{
 		"image = " + config.DefaultImage,
 		"shell = " + config.DefaultShell,
@@ -2494,7 +2464,7 @@ func TestConfigList_FreshBaseDir_PrintsThreeDefaults(t *testing.T) {
 		}
 	}
 
-	// Verify registry order: image appears before shell, shell before tmp_dir_size.
+	// Registry order: image, shell, tmp_dir_size.
 	idxImage := strings.Index(stdout, "image =")
 	idxShell := strings.Index(stdout, "shell =")
 	idxTmpDir := strings.Index(stdout, "tmp_dir_size =")
@@ -2506,9 +2476,7 @@ func TestConfigList_FreshBaseDir_PrintsThreeDefaults(t *testing.T) {
 	}
 }
 
-// TestConfigSet_ThenList_ShowsNewValue verifies that `config set` persists
-// changes for all three keys (image, shell, tmp_dir_size) and `config list`
-// reflects each updated value.
+// config set persists each of the three keys and config list reflects it.
 func TestConfigSet_ThenList_ShowsNewValue(t *testing.T) {
 	baseDir := t.TempDir()
 
@@ -2523,7 +2491,6 @@ func TestConfigSet_ThenList_ShowsNewValue(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.key, func(t *testing.T) {
-			// Set the value.
 			stdout, stderr, err := runCmd(t, baseDir, "config", "set", tc.key, tc.val)
 			if err != nil {
 				t.Fatalf("config set %s %s failed: %v; stderr=%q", tc.key, tc.val, err, stderr)
@@ -2532,7 +2499,6 @@ func TestConfigSet_ThenList_ShowsNewValue(t *testing.T) {
 				t.Errorf("config set stdout missing %q: %q", tc.wantLine, stdout)
 			}
 
-			// List should now show the updated value.
 			listOut, listErr, err := runCmd(t, baseDir, "config", "list")
 			if err != nil {
 				t.Fatalf("config list failed: %v; stderr=%q", err, listErr)
@@ -2541,7 +2507,6 @@ func TestConfigSet_ThenList_ShowsNewValue(t *testing.T) {
 				t.Errorf("config list output missing %q: %q", tc.wantLine, listOut)
 			}
 
-			// Verify it is persisted to settings.json.
 			s, loadErr := config.Load(baseDir)
 			if loadErr != nil {
 				t.Fatalf("load settings: %v", loadErr)
@@ -2553,17 +2518,14 @@ func TestConfigSet_ThenList_ShowsNewValue(t *testing.T) {
 	}
 }
 
-// TestConfigSet_InvalidTmpDirSize_ExitsOneAndFileUnchanged verifies that an
-// invalid tmp_dir_size value is rejected (exit 1, error on stderr) without
-// mutating the settings file.
+// An invalid tmp_dir_size is rejected (exit 1) without mutating the settings file.
 func TestConfigSet_InvalidTmpDirSize_ExitsOneAndFileUnchanged(t *testing.T) {
 	baseDir := t.TempDir()
 
-	// Take a snapshot of settings before the invalid set.
 	snapBefore := snapshotTree(t, baseDir)
 
 	var stdout, stderr bytes.Buffer
-	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"config", "set", "tmp_dir_size", "9z"})
+	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"config", "set", "tmp_dir_size", "9z"}, nil)
 	if code != 1 {
 		t.Errorf("exit code = %d, want 1", code)
 	}
@@ -2574,18 +2536,16 @@ func TestConfigSet_InvalidTmpDirSize_ExitsOneAndFileUnchanged(t *testing.T) {
 		t.Errorf("expected empty stdout, got %q", stdout.String())
 	}
 
-	// File tree must be unchanged.
 	snapAfter := snapshotTree(t, baseDir)
 	assertSnapshotsEqual(t, snapBefore, snapAfter)
 }
 
-// TestConfigSet_UnknownKey_ExitsOneAndListsValidKeys verifies that an unknown
-// key is rejected (exit 1) and the error on stderr mentions all valid keys.
+// An unknown key is rejected (exit 1) and stderr lists all valid keys.
 func TestConfigSet_UnknownKey_ExitsOneAndListsValidKeys(t *testing.T) {
 	baseDir := t.TempDir()
 
 	var stdout, stderr bytes.Buffer
-	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"config", "set", "bogus", "x"})
+	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"config", "set", "bogus", "x"}, nil)
 	if code != 1 {
 		t.Errorf("exit code = %d, want 1", code)
 	}
@@ -2600,10 +2560,8 @@ func TestConfigSet_UnknownKey_ExitsOneAndListsValidKeys(t *testing.T) {
 	}
 }
 
-// TestConfigSet_WithoutPriorInit_SelfHeals verifies that `config set` works
-// without a prior `makeslop init` (Save's MkdirAll heals the missing dir).
+// config set works without a prior init (Save's MkdirAll heals the missing dir).
 func TestConfigSet_WithoutPriorInit_SelfHeals(t *testing.T) {
-	// Use a non-existing subdirectory so config.Save must create it.
 	parent := t.TempDir()
 	baseDir := filepath.Join(parent, "brand-new-makeslop-dir")
 
@@ -2615,13 +2573,11 @@ func TestConfigSet_WithoutPriorInit_SelfHeals(t *testing.T) {
 		t.Errorf("config set stdout missing 'shell = /bin/bash': %q", stdout)
 	}
 
-	// settings.json must have been created.
 	settingsPath := filepath.Join(baseDir, config.SettingsFile)
 	if _, statErr := os.Stat(settingsPath); statErr != nil {
 		t.Errorf("settings.json not created by config set: %v", statErr)
 	}
 
-	// Reload and verify value persisted.
 	s, loadErr := config.Load(baseDir)
 	if loadErr != nil {
 		t.Fatalf("load settings: %v", loadErr)
@@ -2631,20 +2587,16 @@ func TestConfigSet_WithoutPriorInit_SelfHeals(t *testing.T) {
 	}
 }
 
-// TestConfigSet_ExistingFileByteStableUntilSet verifies that an on-disk
-// settings.json without a tmp_dir_size field is not modified by `config list`
-// (read-only — omitempty keeps the file byte-stable).
+// config list is read-only: omitempty keeps a minimal settings.json byte-stable.
 func TestConfigSet_ExistingFileByteStableUntilSet(t *testing.T) {
 	baseDir := t.TempDir()
 
-	// Write a minimal settings.json with no tmp_dir_size field.
 	minimal := []byte(`{"version":1,"workspaces":{}}` + "\n")
 	settingsPath := filepath.Join(baseDir, config.SettingsFile)
 	if err := os.WriteFile(settingsPath, minimal, 0o644); err != nil {
 		t.Fatalf("write minimal settings: %v", err)
 	}
 
-	// `config list` must not touch the file.
 	if _, _, err := runCmd(t, baseDir, "config", "list"); err != nil {
 		t.Fatalf("config list failed: %v", err)
 	}
@@ -2658,8 +2610,6 @@ func TestConfigSet_ExistingFileByteStableUntilSet(t *testing.T) {
 	}
 }
 
-// TestConfigSet_CorruptSettings_ReportsError verifies that `config set` with a
-// corrupt settings.json exits non-zero and surfaces an error mentioning "settings".
 func TestConfigSet_CorruptSettings_ReportsError(t *testing.T) {
 	baseDir := t.TempDir()
 
@@ -2668,7 +2618,7 @@ func TestConfigSet_CorruptSettings_ReportsError(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"config", "set", "image", "foo"})
+	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"config", "set", "image", "foo"}, nil)
 	if code == 0 {
 		t.Fatalf("expected non-zero exit from config set with corrupt settings; stdout=%q stderr=%q", stdout.String(), stderr.String())
 	}
@@ -2677,8 +2627,6 @@ func TestConfigSet_CorruptSettings_ReportsError(t *testing.T) {
 	}
 }
 
-// TestConfigList_CorruptSettings_ReportsError mirrors the set variant above for
-// config list.
 func TestConfigList_CorruptSettings_ReportsError(t *testing.T) {
 	baseDir := t.TempDir()
 
@@ -2687,7 +2635,7 @@ func TestConfigList_CorruptSettings_ReportsError(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"config", "list"})
+	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"config", "list"}, nil)
 	if code == 0 {
 		t.Fatalf("expected non-zero exit from config list with corrupt settings; stdout=%q stderr=%q", stdout.String(), stderr.String())
 	}
@@ -2696,8 +2644,7 @@ func TestConfigList_CorruptSettings_ReportsError(t *testing.T) {
 	}
 }
 
-// TestConfigSet_WrongArgCount_ExitsOne verifies that cobra's ExactArgs(2)
-// enforcement is exercised: too few args or too many args both exit non-zero.
+// cobra's ExactArgs(2): too few or too many args both exit non-zero.
 func TestConfigSet_WrongArgCount_ExitsOne(t *testing.T) {
 	baseDir := t.TempDir()
 
@@ -2712,7 +2659,7 @@ func TestConfigSet_WrongArgCount_ExitsOne(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
-			code := runWithExitCode(baseDir, &stdout, &stderr, tc.args)
+			code := runWithExitCode(baseDir, &stdout, &stderr, tc.args, nil)
 			if code == 0 {
 				t.Errorf("%s: expected non-zero exit, got 0; stdout=%q stderr=%q", tc.name, stdout.String(), stderr.String())
 			}
@@ -2720,10 +2667,7 @@ func TestConfigSet_WrongArgCount_ExitsOne(t *testing.T) {
 	}
 }
 
-// TestGo_CustomTmpDirSize_FlowsIntoDockerArgv verifies that a tmp_dir_size set
-// in settings.json is threaded all the way into the docker run argv emitted by
-// `makeslop go`, matching the existing TestGo_CustomImageAndShell_FlowFromSettings
-// pattern.
+// tmp_dir_size from settings.json threads into the docker run argv.
 func TestRun_CustomTmpDirSize_FlowsIntoDockerArgv(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -2742,8 +2686,6 @@ func TestRun_CustomTmpDirSize_FlowsIntoDockerArgv(t *testing.T) {
 		t.Fatalf("save settings: %v", err)
 	}
 
-	// Use --dry-run to verify the tmpfs size flows into the spec.
-	stubTTY(t, false)
 	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
 	if err != nil {
 		t.Fatalf("makeslop go --dry-run failed: %v; stderr=%q", err, stderr)
@@ -2756,13 +2698,9 @@ func TestRun_CustomTmpDirSize_FlowsIntoDockerArgv(t *testing.T) {
 
 // ── version subcommand tests ──────────────────────────────────────────────────
 
-// TestVersion_PrintsVersionAndExitsZero verifies that `makeslop version` prints
-// the current version string followed by a newline and exits 0.
 func TestVersion_PrintsVersionAndExitsZero(t *testing.T) {
-	// Override the package-level version to a deterministic value so the test
-	// does not depend on ldflags or git state.
-	// NOTE: mutates the package-level var; this test must not run in parallel
-	// with other tests that read or write version.
+	// Mutates the package-level version var; must not run parallel with other
+	// tests touching it.
 	orig := version
 	version = "test-1.2.3"
 	t.Cleanup(func() { version = orig })
@@ -2781,10 +2719,8 @@ func TestVersion_PrintsVersionAndExitsZero(t *testing.T) {
 	}
 }
 
-// TestVersion_ExemptFromHomeDirGuard verifies that `makeslop version` succeeds
-// even when cwd is outside the user's home directory (no home-dir guard applied).
+// version is exempt from the home-dir guard.
 func TestVersion_ExemptFromHomeDirGuard(t *testing.T) {
-	// Set HOME to a temp dir, then chdir somewhere outside it.
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", evalSymlinks(t, tmpHome))
 
@@ -2805,13 +2741,10 @@ func TestVersion_ExemptFromHomeDirGuard(t *testing.T) {
 	}
 }
 
-// TestVersion_ExemptFromTTYCheck verifies that `makeslop version` succeeds
-// even when stdin/stdout are not TTYs (pipe-safe, no ttyCheck consulted).
+// version is pipe-safe: the real (false) ttyCheck under go test must not block it.
 func TestVersion_ExemptFromTTYCheck(t *testing.T) {
 	baseDir := t.TempDir()
 
-	// Do NOT stub ttyCheck — the real predicate returns false under go test.
-	// If version consulted ttyCheck it would fail here.
 	stdout, stderr, err := runCmd(t, baseDir, "version")
 	if err != nil {
 		t.Fatalf("makeslop version must succeed without a TTY; err=%v; stderr=%q", err, stderr)
@@ -2824,8 +2757,6 @@ func TestVersion_ExemptFromTTYCheck(t *testing.T) {
 	}
 }
 
-// TestRoot_BareInvocation_ListsVersionCommand checks that bare `makeslop` help
-// lists the version subcommand in the Available Commands section.
 func TestRoot_BareInvocation_ListsVersionCommand(t *testing.T) {
 	baseDir := t.TempDir()
 
@@ -2840,10 +2771,8 @@ func TestRoot_BareInvocation_ListsVersionCommand(t *testing.T) {
 
 // ── Task 4: init seed-at-latest and stale-nudge tests ────────────────────────
 
-// TestInit_FreshSeed_StampsMigratedVersion verifies that a brand-new init
-// (no prior settings.json) stamps MigratedVersion = MigrationVersion and
-// emits the "registered … run 'makeslop build' then 'makeslop run'" message on
-// stderr while keeping the bare workspace path on stdout.
+// Fresh init (no prior settings.json) stamps MigratedVersion = MigrationVersion,
+// so a freshly-init'd dir is never reported stale.
 func TestInit_FreshSeed_StampsMigratedVersion(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -2855,7 +2784,6 @@ func TestInit_FreshSeed_StampsMigratedVersion(t *testing.T) {
 		t.Fatalf("init failed: %v; stderr=%q", err, stderr)
 	}
 
-	// stdout must contain only the bare workspace path (no extra lines).
 	workspacePath := strings.TrimSpace(stdout)
 	if workspacePath == "" {
 		t.Fatalf("init produced empty stdout")
@@ -2864,7 +2792,6 @@ func TestInit_FreshSeed_StampsMigratedVersion(t *testing.T) {
 		t.Errorf("stdout must be a single bare path; got %q", stdout)
 	}
 
-	// stderr must carry the "registered" success message.
 	if !strings.Contains(stderr, "registered") {
 		t.Errorf("stderr missing 'registered': %q", stderr)
 	}
@@ -2875,7 +2802,6 @@ func TestInit_FreshSeed_StampsMigratedVersion(t *testing.T) {
 		t.Errorf("stderr missing 'makeslop run' hint: %q", stderr)
 	}
 
-	// MigratedVersion must be stamped to MigrationVersion.
 	s, loadErr := config.Load(baseDir)
 	if loadErr != nil {
 		t.Fatalf("load settings after init: %v", loadErr)
@@ -2885,17 +2811,15 @@ func TestInit_FreshSeed_StampsMigratedVersion(t *testing.T) {
 	}
 }
 
-// TestInit_StaleConfig_NudgesWithoutStamping verifies that when an existing
-// settings.json has a MigratedVersion below the current MigrationVersion, init
-// emits the non-blocking nudge on stderr but does NOT overwrite MigratedVersion.
+// An existing stale config gets a non-blocking nudge but MigratedVersion is NOT
+// stamped — stamping would skip the actual migration.
 func TestInit_StaleConfig_NudgesWithoutStamping(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	// Seed a settings.json with MigratedVersion = 0 (stale) directly so that
-	// BaseConfigExists returns true and we exercise the "existing-but-stale" path.
+	// Seed a stale settings.json so we hit the "existing-but-stale" path.
 	staleMigrated := 0
 	if config.MigrationVersion == 0 {
 		t.Skip("MigrationVersion is 0; nothing would be stale")
@@ -2917,7 +2841,6 @@ func TestInit_StaleConfig_NudgesWithoutStamping(t *testing.T) {
 		t.Fatalf("init on stale config failed: %v; stderr=%q", err, stderr)
 	}
 
-	// Nudge must appear on stderr.
 	if !strings.Contains(stderr, "note: your base config is") {
 		t.Errorf("stderr missing stale-config nudge: %q", stderr)
 	}
@@ -2925,7 +2848,6 @@ func TestInit_StaleConfig_NudgesWithoutStamping(t *testing.T) {
 		t.Errorf("stderr missing 'makeslop migrate' in nudge: %q", stderr)
 	}
 
-	// MigratedVersion must NOT have been stamped — that would skip the real migration.
 	after, loadErr := config.Load(baseDir)
 	if loadErr != nil {
 		t.Fatalf("load settings after init: %v", loadErr)
@@ -2936,8 +2858,7 @@ func TestInit_StaleConfig_NudgesWithoutStamping(t *testing.T) {
 	}
 }
 
-// TestInit_FreshSeed_StdoutIsBarePathOnly verifies that stdout contains only
-// the bare workspace path (no labels, no extra lines).
+// init stdout is the bare workspace path only (no labels, no extra lines).
 func TestInit_FreshSeed_StdoutIsBarePathOnly(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -2952,34 +2873,27 @@ func TestInit_FreshSeed_StdoutIsBarePathOnly(t *testing.T) {
 	if line == "" {
 		t.Fatalf("stdout is empty; expected workspace path")
 	}
-	// Must be a single token (no spaces/newlines inside the path).
 	if strings.ContainsAny(line, " \t\n") {
 		t.Errorf("stdout must be a bare path with no extra whitespace; got %q", stdout)
 	}
-	// Path must be under baseDir/workspaces/.
 	workspacesRoot := filepath.Join(baseDir, "workspaces")
 	if !strings.HasPrefix(line, workspacesRoot+string(filepath.Separator)) {
 		t.Errorf("workspace path %q not under %q", line, workspacesRoot)
 	}
 }
 
-// TestInit_AfterBuild_TreatedAsFresh verifies the edge case:
-// `makeslop build` calls Bootstrap (creates dirs + Dockerfile) but never writes
-// settings.json. A subsequent `makeslop init` must detect no settings.json and
-// treat the directory as a fresh seed — stamping MigratedVersion to MigrationVersion
-// rather than (incorrectly) treating it as an older stale config.
+// Edge case: build's Bootstrap creates dirs + Dockerfile but no settings.json,
+// so a later init must treat the dir as fresh (stamp latest), not stale.
 func TestInit_AfterBuild_TreatedAsFresh(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	// Simulate build: Bootstrap seeds dirs + Dockerfile but leaves no settings.json.
 	if err := config.Bootstrap(baseDir); err != nil {
 		t.Fatalf("Bootstrap (simulating build): %v", err)
 	}
 
-	// Verify no settings.json exists (pre-condition for the edge case).
 	exists, err := config.BaseConfigExists(baseDir)
 	if err != nil {
 		t.Fatalf("BaseConfigExists: %v", err)
@@ -2988,13 +2902,11 @@ func TestInit_AfterBuild_TreatedAsFresh(t *testing.T) {
 		t.Fatal("pre-condition failed: settings.json must not exist after Bootstrap alone")
 	}
 
-	// Now init — must treat as fresh and stamp latest.
 	_, stderr, err := runCmd(t, baseDir, "init")
 	if err != nil {
 		t.Fatalf("init after build failed: %v; stderr=%q", err, stderr)
 	}
 
-	// MigratedVersion must be stamped — not treated as stale-detectable.
 	s, loadErr := config.Load(baseDir)
 	if loadErr != nil {
 		t.Fatalf("load settings after init: %v", loadErr)
@@ -3004,28 +2916,23 @@ func TestInit_AfterBuild_TreatedAsFresh(t *testing.T) {
 			s.MigratedVersion, config.MigrationVersion, stderr)
 	}
 
-	// The nudge must NOT appear — this is a fresh seed path, not stale.
 	if strings.Contains(stderr, "note: your base config is") {
 		t.Errorf("stale-config nudge must not appear after build+init (fresh seed); stderr=%q", stderr)
 	}
 }
 
-// TestInit_UpToDateConfig_NoNudge verifies that when an existing settings.json
-// already has MigratedVersion == MigrationVersion, init emits the "registered"
-// message but does NOT emit the stale-config nudge.
+// An up-to-date config must not emit the stale-config nudge.
 func TestInit_UpToDateConfig_NoNudge(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	// First init seeds at MigrationVersion.
 	_, _, err := runCmd(t, baseDir, "init")
 	if err != nil {
 		t.Fatalf("first init failed: %v", err)
 	}
 
-	// Second init — up-to-date config, must not nudge.
 	_, stderr, err := runCmd(t, baseDir, "init")
 	if err != nil {
 		t.Fatalf("second init failed: %v", err)
@@ -3037,9 +2944,7 @@ func TestInit_UpToDateConfig_NoNudge(t *testing.T) {
 
 // ── Task 6: run pre-flight tests ─────────────────────────────────────────────
 
-// TestRun_DaemonDown_AbortsWithRemedy verifies that when the Docker daemon is
-// unreachable, `makeslop run` exits non-zero with a remedy hint and does NOT
-// invoke the container lifecycle (fc.Started must remain false).
+// Unreachable daemon: run aborts with a remedy and never starts the container.
 func TestRun_DaemonDown_AbortsWithRemedy(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -3050,13 +2955,10 @@ func TestRun_DaemonDown_AbortsWithRemedy(t *testing.T) {
 		t.Fatalf("init failed: %v", err)
 	}
 
-	fc := docker.NewFakeRunClient(0)
+	fc := newFakeDocker(0, true)
 	fc.PingErr = errors.New("connection refused")
-	t.Cleanup(docker.SetClientForTest(fc))
-	t.Cleanup(docker.SetTermMakeRawForTest(func(_ int) (*term.State, error) { return nil, nil }))
-	stubTTY(t, true)
 
-	_, stderr, err := runCmd(t, baseDir, "run")
+	_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fc), "run")
 	if err == nil {
 		t.Fatalf("expected error when daemon is down, got nil; stderr=%q", stderr)
 	}
@@ -3071,9 +2973,7 @@ func TestRun_DaemonDown_AbortsWithRemedy(t *testing.T) {
 	}
 }
 
-// TestRun_ImageMissing_AbortsWithRemedy verifies that when the image is absent
-// locally, `makeslop run` exits non-zero with an exact remedy string
-// "run 'makeslop build'" and does NOT auto-build or invoke the container.
+// Missing image: run aborts with the build remedy; no auto-build, no container.
 func TestRun_ImageMissing_AbortsWithRemedy(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -3084,13 +2984,10 @@ func TestRun_ImageMissing_AbortsWithRemedy(t *testing.T) {
 		t.Fatalf("init failed: %v", err)
 	}
 
-	fc := docker.NewFakeRunClient(0)
+	fc := newFakeDocker(0, true)
 	fc.ImageMissing = true
-	t.Cleanup(docker.SetClientForTest(fc))
-	t.Cleanup(docker.SetTermMakeRawForTest(func(_ int) (*term.State, error) { return nil, nil }))
-	stubTTY(t, true)
 
-	_, stderr, err := runCmd(t, baseDir, "run")
+	_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fc), "run")
 	if err == nil {
 		t.Fatalf("expected error when image is missing, got nil; stderr=%q", stderr)
 	}
@@ -3108,10 +3005,8 @@ func TestRun_ImageMissing_AbortsWithRemedy(t *testing.T) {
 	}
 }
 
-// TestRun_ImageOtherError_PropagatesError verifies that when ImageExists returns
-// a non-not-found error (e.g. permission denied reading image store), `makeslop run`
-// prints a user-friendly message to stderr and exits non-zero without starting the
-// container. This distinguishes a transient daemon/store error from a missing image.
+// A non-not-found ImageExists error must report "is docker running?" (not "not
+// built"), distinguishing a store/daemon error from a genuinely missing image.
 func TestRun_ImageOtherError_PropagatesError(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -3122,21 +3017,16 @@ func TestRun_ImageOtherError_PropagatesError(t *testing.T) {
 		t.Fatalf("init failed: %v", err)
 	}
 
-	fc := docker.NewFakeRunClient(0)
+	fc := newFakeDocker(0, true)
 	fc.ImageErr = errors.New("permission denied reading image store")
-	t.Cleanup(docker.SetClientForTest(fc))
-	t.Cleanup(docker.SetTermMakeRawForTest(func(_ int) (*term.State, error) { return nil, nil }))
-	stubTTY(t, true)
 
-	_, stderr, err := runCmd(t, baseDir, "run")
+	_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fc), "run")
 	if err == nil {
 		t.Fatalf("expected error when ImageExists returns other-error, got nil; stderr=%q", stderr)
 	}
-	// errSilent is returned — the message was already printed to stderr.
 	if !errors.Is(err, errSilent) {
 		t.Errorf("image other-error should return errSilent (message printed to stderr); got %v", err)
 	}
-	// Must print a user-friendly message with "is docker running?" hint — not "not built".
 	if !strings.Contains(stderr, "is docker running?") {
 		t.Errorf("image other-error must emit 'is docker running?' hint; stderr=%q", stderr)
 	}
@@ -3148,10 +3038,8 @@ func TestRun_ImageOtherError_PropagatesError(t *testing.T) {
 	}
 }
 
-// TestRun_DryRun_SkipsDaemonAndImageCheck verifies that --dry-run bypasses
-// the daemon and image pre-flight checks entirely (printed == executed, but no
-// daemon contact is made). The fake client has PingErr set and ImageMissing=true
-// to confirm neither is consulted.
+// --dry-run skips the daemon and image pre-flight checks. PingErr and
+// ImageMissing are both set to confirm neither is consulted.
 func TestRun_DryRun_SkipsDaemonAndImageCheck(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -3162,14 +3050,11 @@ func TestRun_DryRun_SkipsDaemonAndImageCheck(t *testing.T) {
 		t.Fatalf("init failed: %v", err)
 	}
 
-	// Both daemon-down and image-missing are set — --dry-run must ignore both.
-	fc := docker.NewFakeRunClient(0)
+	fc := newFakeDocker(0, false)
 	fc.PingErr = errors.New("connection refused")
 	fc.ImageMissing = true
-	t.Cleanup(docker.SetClientForTest(fc))
-	stubTTY(t, false)
 
-	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
+	stdout, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fc), "run", "--dry-run")
 	if err != nil {
 		t.Fatalf("--dry-run must succeed even when daemon is down and image is missing; err=%v; stderr=%q", err, stderr)
 	}
@@ -3181,10 +3066,7 @@ func TestRun_DryRun_SkipsDaemonAndImageCheck(t *testing.T) {
 	}
 }
 
-// TestRun_HappyPath_LaunchesDocker verifies the end-to-end happy path:
-// daemon ok, image present, workspace registered → container is started.
-// This mirrors the existing TestRun_AfterInit_LaunchesDocker test but
-// explicitly names the pre-flight success conditions.
+// Happy path: daemon ok, image present, workspace registered → container starts.
 func TestRun_HappyPath_LaunchesDocker(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -3195,11 +3077,9 @@ func TestRun_HappyPath_LaunchesDocker(t *testing.T) {
 		t.Fatalf("init failed: %v", err)
 	}
 
-	// Default FakeRunClient: Ping ok, image found, exit 0.
-	fc := installFakeRunClient(t, 0)
-	stubTTY(t, true)
+	fc := newFakeDocker(0, true)
 
-	_, stderr, err := runCmd(t, baseDir, "run")
+	_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fc), "run")
 	if err != nil {
 		t.Fatalf("run must succeed when daemon is ok and image exists; err=%v; stderr=%q", err, stderr)
 	}
@@ -3210,8 +3090,7 @@ func TestRun_HappyPath_LaunchesDocker(t *testing.T) {
 
 // ── Task 7: config bare / --out-of-home scope / --quiet tests ────────────────
 
-// TestConfig_Bare_EqualsConfigList verifies that bare `makeslop config` prints
-// exactly the same output as `makeslop config list` — both print key = value lines.
+// Bare `config` output must equal `config list`.
 func TestConfig_Bare_EqualsConfigList(t *testing.T) {
 	baseDir := t.TempDir()
 
@@ -3229,8 +3108,7 @@ func TestConfig_Bare_EqualsConfigList(t *testing.T) {
 	}
 }
 
-// TestOutOfHome_RejectedOnVersion verifies that --out-of-home is unknown on
-// commands where it is not registered (version, migrate, build, config, status).
+// --out-of-home is rejected on commands that don't register it.
 func TestOutOfHome_RejectedOnVersion(t *testing.T) {
 	baseDir := t.TempDir()
 
@@ -3253,15 +3131,13 @@ func TestOutOfHome_RejectedOnVersion(t *testing.T) {
 	}
 }
 
-// TestQuiet_SuppressesInitNudge verifies that --quiet suppresses the stale-config
-// nudge (chrome) but not errors.
+// --quiet suppresses the stale-config nudge (chrome) but not errors.
 func TestQuiet_SuppressesInitNudge(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	// Seed a stale settings.json so the nudge fires.
 	if config.MigrationVersion == 0 {
 		t.Skip("MigrationVersion is 0; nothing would be stale")
 	}
@@ -3277,7 +3153,6 @@ func TestQuiet_SuppressesInitNudge(t *testing.T) {
 		t.Fatalf("seed stale settings: %v", err)
 	}
 
-	// Without --quiet: nudge appears.
 	_, stderrNoQuiet, err := runCmd(t, baseDir, "init")
 	if err != nil {
 		t.Fatalf("init failed: %v; stderr=%q", err, stderrNoQuiet)
@@ -3286,13 +3161,11 @@ func TestQuiet_SuppressesInitNudge(t *testing.T) {
 		t.Errorf("expected nudge on stderr without --quiet; got: %q", stderrNoQuiet)
 	}
 
-	// Re-seed stale settings for the next call.
-	s.MigratedVersion = 0
+	s.MigratedVersion = 0 // re-seed stale for the next call
 	if err := config.Save(baseDir, s); err != nil {
 		t.Fatalf("re-seed stale settings: %v", err)
 	}
 
-	// With --quiet: nudge is suppressed.
 	_, stderrQuiet, err := runCmd(t, baseDir, "--quiet", "init")
 	if err != nil {
 		t.Fatalf("init --quiet failed: %v; stderr=%q", err, stderrQuiet)
@@ -3302,9 +3175,7 @@ func TestQuiet_SuppressesInitNudge(t *testing.T) {
 	}
 }
 
-// TestQuiet_SuppressesMaskedCount verifies that --quiet suppresses the
-// "masked N secret file(s)" notice during `makeslop run`, but the container
-// still gets the correct /dev/null mounts.
+// --quiet suppresses the "masked N" notice but the /dev/null mounts still appear.
 func TestQuiet_SuppressesMaskedCount(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -3325,9 +3196,6 @@ func TestQuiet_SuppressesMaskedCount(t *testing.T) {
 		t.Fatalf("write yaml: %v", err)
 	}
 
-	stubTTY(t, false)
-
-	// Without --quiet: notice appears.
 	stdout1, stderr1, err := runCmd(t, baseDir, "run", "--dry-run")
 	if err != nil {
 		t.Fatalf("--dry-run failed: %v; stderr=%q", err, stderr1)
@@ -3336,7 +3204,6 @@ func TestQuiet_SuppressesMaskedCount(t *testing.T) {
 		t.Errorf("expected 'masked 1 secret file' on stderr without --quiet; got: %q", stderr1)
 	}
 
-	// With --quiet: notice suppressed, but /dev/null mount still present in output.
 	stdout2, stderr2, err := runCmd(t, baseDir, "--quiet", "run", "--dry-run")
 	if err != nil {
 		t.Fatalf("--quiet --dry-run failed: %v; stderr=%q", err, stderr2)
@@ -3344,18 +3211,15 @@ func TestQuiet_SuppressesMaskedCount(t *testing.T) {
 	if strings.Contains(stderr2, "masked") {
 		t.Errorf("--quiet must suppress 'masked' notice; got: %q", stderr2)
 	}
-	// The spec itself (stdout) must still contain the /dev/null mount.
 	if !strings.Contains(stdout2, "/dev/null") {
 		t.Errorf("--quiet --dry-run output must still contain /dev/null mounts; stdout:\n%s", stdout2)
 	}
-	// Outputs should be identical aside from the stderr difference.
 	if stdout1 != stdout2 {
 		t.Errorf("stdout differs between --quiet and non-quiet runs:\nnon-quiet: %s\nquiet: %s", stdout1, stdout2)
 	}
 }
 
-// TestQuiet_SuppressesRegisteredNotice verifies that --quiet suppresses the
-// "registered …" success notice on init but stdout (workspace path) is unaffected.
+// --quiet suppresses the "registered …" notice but not the stdout workspace path.
 func TestQuiet_SuppressesRegisteredNotice(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -3366,11 +3230,9 @@ func TestQuiet_SuppressesRegisteredNotice(t *testing.T) {
 	if err != nil {
 		t.Fatalf("init --quiet failed: %v; stderr=%q", err, stderr)
 	}
-	// stderr chrome (registered notice) must be absent.
 	if strings.Contains(stderr, "registered") {
 		t.Errorf("--quiet must suppress 'registered' notice; stderr=%q", stderr)
 	}
-	// stdout must still carry the bare workspace path.
 	path := strings.TrimSpace(stdout)
 	if path == "" {
 		t.Errorf("stdout must contain the workspace path even with --quiet; got empty")
@@ -3383,9 +3245,7 @@ func TestQuiet_SuppressesRegisteredNotice(t *testing.T) {
 
 // ── Task 8: error-voice tests ─────────────────────────────────────────────────
 
-// TestErrorVoice_HomeGuard_ContainsRemedy verifies that the home-guard error
-// follows the "makeslop: <what> — <remedy>" format: the remedy clause uses
-// the em-dash separator and names the specific flag to use.
+// Error-voice format "makeslop: <what> — <remedy>" with the --out-of-home flag named.
 func TestErrorVoice_HomeGuard_ContainsRemedy(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", evalSymlinks(t, tmpHome))
@@ -3398,7 +3258,6 @@ func TestErrorVoice_HomeGuard_ContainsRemedy(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error from run outside HOME")
 	}
-	// Must follow the "makeslop: <what> — <remedy>" format.
 	if !strings.HasPrefix(stderr, "makeslop: ") {
 		t.Errorf("home-guard error must start with 'makeslop: '; got: %q", stderr)
 	}
@@ -3410,14 +3269,12 @@ func TestErrorVoice_HomeGuard_ContainsRemedy(t *testing.T) {
 	}
 }
 
-// TestErrorVoice_NoWorkspace_ContainsRemedy verifies that the no-workspace error
-// follows "makeslop: <what> — <remedy>" with em-dash and 'makeslop init' hint.
+// Error-voice format with the 'makeslop init' remedy.
 func TestErrorVoice_NoWorkspace_ContainsRemedy(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
 	t.Chdir(pwd)
-	// No init — no workspace registered.
 
 	_, stderr, err := runCmd(t, baseDir, "run")
 	if err == nil {
@@ -3434,8 +3291,7 @@ func TestErrorVoice_NoWorkspace_ContainsRemedy(t *testing.T) {
 	}
 }
 
-// TestErrorVoice_NoTTY_ContainsRemedy verifies that the no-TTY error follows
-// "makeslop: <what> — <remedy>" with em-dash and an actionable terminal hint.
+// Error-voice format with an interactive-terminal remedy.
 func TestErrorVoice_NoTTY_ContainsRemedy(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -3445,10 +3301,9 @@ func TestErrorVoice_NoTTY_ContainsRemedy(t *testing.T) {
 	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
 		t.Fatalf("init failed: %v", err)
 	}
-	installFakeRunClient(t, 0)
-	// Do NOT stub ttyCheck — real predicate returns false under go test.
+	fc := newFakeDocker(0, false)
 
-	_, stderr, err := runCmd(t, baseDir, "run")
+	_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fc), "run")
 	if err == nil {
 		t.Fatalf("expected error when stdin/stdout are not TTYs")
 	}
@@ -3463,8 +3318,7 @@ func TestErrorVoice_NoTTY_ContainsRemedy(t *testing.T) {
 	}
 }
 
-// TestErrorVoice_DaemonDown_ContainsRemedy verifies that the daemon-down error
-// follows "makeslop: <what> — <remedy>" with an actionable docker hint.
+// Error-voice format with a 'docker running' remedy.
 func TestErrorVoice_DaemonDown_ContainsRemedy(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -3475,12 +3329,10 @@ func TestErrorVoice_DaemonDown_ContainsRemedy(t *testing.T) {
 		t.Fatalf("init failed: %v", err)
 	}
 
-	fc := docker.NewFakeRunClient(0)
+	fc := newFakeDocker(0, true)
 	fc.PingErr = errors.New("connection refused")
-	t.Cleanup(docker.SetClientForTest(fc))
-	stubTTY(t, true)
 
-	_, stderr, err := runCmd(t, baseDir, "run")
+	_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fc), "run")
 	if err == nil {
 		t.Fatalf("expected error when daemon is down")
 	}
@@ -3495,8 +3347,7 @@ func TestErrorVoice_DaemonDown_ContainsRemedy(t *testing.T) {
 	}
 }
 
-// TestErrorVoice_ImageMissing_ContainsRemedy verifies that the image-missing error
-// follows "makeslop: <what> — <remedy>" with an actionable build hint.
+// Error-voice format with a 'makeslop build' remedy.
 func TestErrorVoice_ImageMissing_ContainsRemedy(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -3507,12 +3358,10 @@ func TestErrorVoice_ImageMissing_ContainsRemedy(t *testing.T) {
 		t.Fatalf("init failed: %v", err)
 	}
 
-	fc := docker.NewFakeRunClient(0)
+	fc := newFakeDocker(0, true)
 	fc.ImageMissing = true
-	t.Cleanup(docker.SetClientForTest(fc))
-	stubTTY(t, true)
 
-	_, stderr, err := runCmd(t, baseDir, "run")
+	_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fc), "run")
 	if err == nil {
 		t.Fatalf("expected error when image is missing")
 	}
@@ -3529,9 +3378,8 @@ func TestErrorVoice_ImageMissing_ContainsRemedy(t *testing.T) {
 
 // ── cache mount config tests ──────────────────────────────────────────────────
 
-// TestRun_DryRun_CacheDisabled verifies that a .makeslop.yaml with
-// cache:{content:false, agent:false} causes the per-workspace cache mounts
-// to be absent from the dry-run output.
+// cache:{content:false,agent:false} drops all per-workspace cache mounts; global
+// mounts and the project bind stay.
 func TestRun_DryRun_CacheDisabled(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -3545,14 +3393,11 @@ func TestRun_DryRun_CacheDisabled(t *testing.T) {
 	workspaceDir := strings.TrimSpace(initOut)
 	workspaceName := filepath.Base(workspaceDir)
 
-	// Write .makeslop.yaml with both cache groups disabled.
 	resolvedPwd := evalSymlinks(t, pwd)
 	yamlContent := "cache:\n  content: false\n  agent: false\n"
 	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(yamlContent), 0o644); err != nil {
 		t.Fatalf("write .makeslop.yaml: %v", err)
 	}
-
-	stubTTY(t, false)
 
 	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
 	if err != nil {
@@ -3560,21 +3405,20 @@ func TestRun_DryRun_CacheDisabled(t *testing.T) {
 	}
 
 	workspacePath := "/workspace/" + workspaceName
-	// Per-workspace agent-state mounts must be absent.
+	// Per-workspace mounts must be absent.
 	if strings.Contains(stdout, workspacePath+"/.claude/") {
 		t.Errorf("agent .claude/ mount must be absent when agent cache disabled; stdout:\n%s", stdout)
 	}
 	if strings.Contains(stdout, workspacePath+"/.codex/") {
 		t.Errorf("agent .codex/ mount must be absent when agent cache disabled; stdout:\n%s", stdout)
 	}
-	// Per-workspace content mounts must be absent.
 	if strings.Contains(stdout, workspacePath+"/docs/") {
 		t.Errorf("content docs/ mount must be absent when content cache disabled; stdout:\n%s", stdout)
 	}
 	if strings.Contains(stdout, workspacePath+"/CLAUDE.md") {
 		t.Errorf("content CLAUDE.md mount must be absent when content cache disabled; stdout:\n%s", stdout)
 	}
-	// Global mounts (BaseDir/.claude/, .claude.json, .codex/) must still be present.
+	// Global mounts must still be present.
 	if !strings.Contains(stdout, "target=/home/user/.claude/") {
 		t.Errorf("global .claude/ mount must be present; stdout:\n%s", stdout)
 	}
@@ -3584,15 +3428,12 @@ func TestRun_DryRun_CacheDisabled(t *testing.T) {
 	if !strings.Contains(stdout, "target=/home/user/.codex/") {
 		t.Errorf("global .codex/ mount must be present; stdout:\n%s", stdout)
 	}
-	// Project root bind must be present.
 	if !strings.Contains(stdout, "source="+resolvedPwd+",target="+workspacePath) {
 		t.Errorf("project root bind must be present; stdout:\n%s", stdout)
 	}
 }
 
-// TestRun_DryRun_CacheDefault verifies that an absent cache: block (the default)
-// keeps all per-workspace cache mounts present — byte-identical behavior to
-// pre-change operation.
+// Absent cache: block keeps all per-workspace cache mounts present (default = true).
 func TestRun_DryRun_CacheDefault(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -3606,14 +3447,11 @@ func TestRun_DryRun_CacheDefault(t *testing.T) {
 	workspaceDir := strings.TrimSpace(initOut)
 	workspaceName := filepath.Base(workspaceDir)
 
-	// Write .makeslop.yaml with no cache: block at all (uses defaults).
 	resolvedPwd := evalSymlinks(t, pwd)
 	yamlContent := "exclude:\n  scan:\n    patterns: []\n  files: []\n  dirs: []\n"
 	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(yamlContent), 0o644); err != nil {
 		t.Fatalf("write .makeslop.yaml: %v", err)
 	}
-
-	stubTTY(t, false)
 
 	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
 	if err != nil {
@@ -3623,7 +3461,6 @@ func TestRun_DryRun_CacheDefault(t *testing.T) {
 	workspacePath := "/workspace/" + workspaceName
 	workspaceHost := filepath.Join(baseDir, "workspaces", workspaceName)
 
-	// Per-workspace agent-state mounts must be present (default = true).
 	wantAgentClaude := "source=" + filepath.Join(workspaceHost, ".claude") + "/,target=" + workspacePath + "/.claude/"
 	if !strings.Contains(stdout, wantAgentClaude) {
 		t.Errorf("agent .claude/ mount must be present by default; stdout:\n%s", stdout)
@@ -3632,7 +3469,6 @@ func TestRun_DryRun_CacheDefault(t *testing.T) {
 	if !strings.Contains(stdout, wantAgentCodex) {
 		t.Errorf("agent .codex/ mount must be present by default; stdout:\n%s", stdout)
 	}
-	// Per-workspace content mounts must be present (default = true).
 	wantDocs := "source=" + filepath.Join(workspaceHost, "docs") + "/,target=" + workspacePath + "/docs/"
 	if !strings.Contains(stdout, wantDocs) {
 		t.Errorf("content docs/ mount must be present by default; stdout:\n%s", stdout)
@@ -3643,9 +3479,8 @@ func TestRun_DryRun_CacheDefault(t *testing.T) {
 	}
 }
 
-// TestRun_DryRun_CacheMixed verifies that cache:{content:false} (agent=true, content=false)
-// keeps .claude/ and .codex/ workspace mounts but drops docs/ and CLAUDE.md.
-// This catches a wiring bug that would swap Content/Agent assignments in runRun.
+// cache:{content:false} keeps agent mounts but drops content mounts. Guards
+// against a runRun wiring bug that swaps the Content/Agent assignments.
 func TestRun_DryRun_CacheMixed(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -3659,14 +3494,12 @@ func TestRun_DryRun_CacheMixed(t *testing.T) {
 	workspaceDir := strings.TrimSpace(initOut)
 	workspaceName := filepath.Base(workspaceDir)
 
-	// Write .makeslop.yaml: content cache off, agent cache defaults to true.
+	// content cache off; agent cache defaults to true.
 	resolvedPwd := evalSymlinks(t, pwd)
 	yamlContent := "cache:\n  content: false\n"
 	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(yamlContent), 0o644); err != nil {
 		t.Fatalf("write .makeslop.yaml: %v", err)
 	}
-
-	stubTTY(t, false)
 
 	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
 	if err != nil {
@@ -3676,14 +3509,14 @@ func TestRun_DryRun_CacheMixed(t *testing.T) {
 	workspacePath := "/workspace/" + workspaceName
 	workspaceHost := filepath.Join(baseDir, "workspaces", workspaceName)
 
-	// Per-workspace content mounts must be ABSENT (content=false).
+	// Content mounts absent (content=false).
 	if strings.Contains(stdout, workspacePath+"/docs/") {
 		t.Errorf("content docs/ must be absent when content cache disabled; stdout:\n%s", stdout)
 	}
 	if strings.Contains(stdout, workspacePath+"/CLAUDE.md") {
 		t.Errorf("content CLAUDE.md must be absent when content cache disabled; stdout:\n%s", stdout)
 	}
-	// Per-workspace agent-state mounts must be PRESENT (agent defaults to true).
+	// Agent mounts present (agent defaults to true).
 	wantAgentClaude := "source=" + filepath.Join(workspaceHost, ".claude") + "/,target=" + workspacePath + "/.claude/"
 	if !strings.Contains(stdout, wantAgentClaude) {
 		t.Errorf("agent .claude/ mount must be present (agent=true); stdout:\n%s", stdout)
@@ -3696,8 +3529,7 @@ func TestRun_DryRun_CacheMixed(t *testing.T) {
 
 // ── Task 5: --global-only flag tests ──────────────────────────────────────────
 
-// TestInit_GlobalOnly_ScaffoldsCacheDisabled verifies that `init --global-only`
-// writes a .makeslop.yaml that Load parses to Cache{false, false}.
+// init --global-only scaffolds a .makeslop.yaml parsing to Cache{false, false}.
 func TestInit_GlobalOnly_ScaffoldsCacheDisabled(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -3722,8 +3554,7 @@ func TestInit_GlobalOnly_ScaffoldsCacheDisabled(t *testing.T) {
 	}
 }
 
-// TestInit_NoGlobalOnly_ScaffoldsCacheEnabled verifies that `init` without
-// --global-only writes a .makeslop.yaml that Load parses to Cache{true, true}.
+// Plain init scaffolds a .makeslop.yaml parsing to Cache{true, true}.
 func TestInit_NoGlobalOnly_ScaffoldsCacheEnabled(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -3748,9 +3579,8 @@ func TestInit_NoGlobalOnly_ScaffoldsCacheEnabled(t *testing.T) {
 	}
 }
 
-// TestInit_GlobalOnly_IsNopOnExistingFile verifies that `init --global-only` is
-// a no-op when .makeslop.yaml already exists (Scaffold is idempotent: EEXIST = success,
-// no clobber). The existing content must be preserved unchanged.
+// init --global-only is a no-op on an existing .makeslop.yaml (Scaffold is
+// idempotent: EEXIST = success, never clobbers).
 func TestInit_GlobalOnly_IsNopOnExistingFile(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -3758,14 +3588,12 @@ func TestInit_GlobalOnly_IsNopOnExistingFile(t *testing.T) {
 	t.Chdir(pwd)
 
 	resolvedPwd := evalSymlinks(t, pwd)
-	// Seed a hand-written config with cache explicitly enabled.
 	existing := []byte("exclude:\n  dirs: []\n  files: []\n  scan:\n    patterns: []\ncache:\n  content: true\n  agent: true\n")
 	configPath := filepath.Join(resolvedPwd, projectconfig.Filename)
 	if err := os.WriteFile(configPath, existing, 0o644); err != nil {
 		t.Fatalf("write pre-existing config: %v", err)
 	}
 
-	// init --global-only must succeed but must not clobber the existing file.
 	_, stderr, err := runCmd(t, baseDir, "init", "--global-only")
 	if err != nil {
 		t.Fatalf("init --global-only on existing config failed: %v; stderr=%q", err, stderr)
@@ -3780,9 +3608,7 @@ func TestInit_GlobalOnly_IsNopOnExistingFile(t *testing.T) {
 	}
 }
 
-// TestGlobalOnly_RejectedOnNonInitCommands verifies that --global-only is
-// registered only on `init` and is rejected as unknown by run, build, migrate,
-// config, status, and version.
+// --global-only is rejected as unknown on every command except init.
 func TestGlobalOnly_RejectedOnNonInitCommands(t *testing.T) {
 	baseDir := t.TempDir()
 
@@ -3806,43 +3632,36 @@ func TestGlobalOnly_RejectedOnNonInitCommands(t *testing.T) {
 	}
 }
 
-// TestRunWithExitCode_ContextIsCancellable verifies that runWithExitCode wires a
-// signal.NotifyContext-based context (not context.Background()) into ExecuteContext.
-// The test installs onContextForTest to observe the context created inside
-// runWithExitCode. The check is structural (non-Background, has Done channel) —
-// full signal delivery is not exercised in a unit test environment.
+// runWithExitCode must wire a signal.NotifyContext (not context.Background) into
+// ExecuteContext. Structural check only — signal delivery isn't exercised here.
 func TestRunWithExitCode_ContextIsCancellable(t *testing.T) {
 	baseDir := t.TempDir()
 
 	var captured context.Context
-	orig := onContextForTest
-	onContextForTest = func(ctx context.Context) { captured = ctx }
-	t.Cleanup(func() { onContextForTest = orig })
+	observer := func(ctx context.Context) { captured = ctx }
 
 	var stdout, stderr bytes.Buffer
-	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"version"})
+	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"version"}, observer)
 	if code != 0 {
 		t.Fatalf("runWithExitCode(version) = %d, want 0; stderr=%q", code, stderr.String())
 	}
 	if captured == nil {
-		t.Fatal("onContextForTest was not called — runWithExitCode did not invoke the hook")
+		t.Fatal("contextObserver was not called — runWithExitCode did not invoke the hook")
 	}
 	if captured == context.Background() {
 		t.Error("context passed to ExecuteContext must not be context.Background() — signal.NotifyContext wiring is missing")
 	}
-	// A cancellable context always has a non-nil Done channel.
 	if captured.Done() == nil {
 		t.Error("context.Done() must be non-nil — context must be cancellable")
 	}
 }
 
-// TestRunWithExitCode_VersionSucceeds verifies that switching from cmd.Execute()
-// to cmd.ExecuteContext() does not regress the normal success path.
+// Guards that ExecuteContext does not regress the normal success path.
 func TestRunWithExitCode_VersionSucceeds(t *testing.T) {
 	baseDir := t.TempDir()
 
 	var stdout, stderr bytes.Buffer
-	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"version"})
+	code := runWithExitCode(baseDir, &stdout, &stderr, []string{"version"}, nil)
 	if code != 0 {
 		t.Errorf("runWithExitCode(version) = %d, want 0; stderr=%q", code, stderr.String())
 	}
@@ -3852,10 +3671,7 @@ func TestRunWithExitCode_VersionSucceeds(t *testing.T) {
 	}
 }
 
-// TestRun_EnvironmentsBlock_ProducesEnvFlags verifies end-to-end that an
-// environments: block in .makeslop.yaml flows into -e KEY=VALUE flags in the
-// --dry-run output. This is the acceptance test for Task 4 of the environments
-// config feature.
+// An environments: block flows into -e KEY=VALUE flags (sorted) in the dry-run output.
 func TestRun_EnvironmentsBlock_ProducesEnvFlags(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -3871,13 +3687,11 @@ func TestRun_EnvironmentsBlock_ProducesEnvFlags(t *testing.T) {
 
 	resolvedPwd := evalSymlinks(t, pwd)
 
-	// Write a .makeslop.yaml with an environments: block.
 	yamlContent := "exclude:\n  dirs: []\n  files: []\n  scan:\n    patterns: []\nenvironments:\n  NODE_ENV: production\n  PORT: \"8080\"\n  DEBUG: \"false\"\n"
 	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(yamlContent), 0o644); err != nil {
 		t.Fatalf("write yaml: %v", err)
 	}
 
-	stubTTY(t, false)
 	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
 	if err != nil {
 		t.Fatalf("--dry-run failed: %v; stderr=%q", err, stderr)
@@ -3891,9 +3705,7 @@ func TestRun_EnvironmentsBlock_ProducesEnvFlags(t *testing.T) {
 	}
 }
 
-// TestRun_NoEnvironmentsBlock_NoEnvFlags verifies that an absent environments:
-// block in .makeslop.yaml produces no -e flags in the --dry-run output (backward
-// compatibility).
+// Absent environments: block produces no -e flags (backward compatibility).
 func TestRun_NoEnvironmentsBlock_NoEnvFlags(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -3904,14 +3716,12 @@ func TestRun_NoEnvironmentsBlock_NoEnvFlags(t *testing.T) {
 		t.Fatalf("init failed: %v", err)
 	}
 
-	stubTTY(t, false)
 	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
 	if err != nil {
 		t.Fatalf("--dry-run failed: %v; stderr=%q", err, stderr)
 	}
 	_ = stderr
 
-	// No -e flags should appear (init writes a stub with no environments: block).
 	for _, tok := range strings.Fields(stdout) {
 		if tok == "-e" {
 			t.Errorf("--dry-run output must not contain -e flags when environments: block is absent\nstdout:\n%s", stdout)

@@ -16,61 +16,85 @@ Keep these separate: pure functions never touch the filesystem or exec anything.
 
 These two renderings are kept honest by a drift-guard test.
 
-### testing.go in the production binary (known trade-off)
-`internal/docker/testing.go` is compiled into the production binary — it is **not** a `_test.go` file.
-This is intentional: `cmd/makeslop/main_test.go` is in `package main`, not `package docker_test`,
-so it cannot reach unexported symbols via an `export_test.go` bridge. Shipping the test helpers
-(`SetClientForTest`, `SetTTYCheckForTest`, `SetTermMakeRawForTest`, `FakeRunClient`,
-`FakeBuildClient`, `SkipNonPOSIX`) into the production binary is the accepted trade-off for
-testability. The binary size impact is negligible.
+### docker package: struct-DI via `Docker` and `New`
+`internal/docker` uses constructor dependency injection. There are no package-level mutable globals
+and no test helpers in the production binary.
 
-### apiClient seam and SetClientForTest
-`internal/docker/client.go` declares a narrow unexported `apiClient` interface with the methods
-used by `Run`, `Build`, `Ping`, and `ImageInspect`. A package-level `newClientFn` (defaulting to
-`newClient`, which calls `client.New(client.FromEnv)`) constructs the live client. A compile-time
-assertion `var _ apiClient = (*moby.Client)(nil)` guards against signature drift.
+**`Docker` struct and construction:**
+```go
+type Docker struct { /* client, isTTYFn, makeRaw — all unexported */ }
 
-The interface covers (raw SDK methods from `github.com/moby/moby/client`):
+func New(opts ...Option) (*Docker, error)          // real defaults from environment
+func WithClient(c apiClient) Option                // same-package _test.go only
+func WithTTYCheck(fn func() bool) Option
+func WithRawMode(fn func(int) (*term.State, error)) Option
+```
+`New` builds a moby client via `moby.New(moby.FromEnv)`, sets real stdin+stdout TTY detection, and
+sets real `term.MakeRaw`. Options override the defaults.
+
+**`apiClient` interface** (`client.go`) is the narrow unexported 11-method moby SDK adapter:
 `ContainerCreate`, `ContainerAttach`, `ContainerStart`, `ContainerWait`, `ContainerResize`,
 `ContainerRemove`, `ImageBuild`, `DialHijack`, `Ping`, `ImageInspect`, `Close`.
+A compile-time assertion `var _ apiClient = (*moby.Client)(nil)` guards against signature drift.
+The interface is not exported — `WithClient` is the only gateway, and only same-package
+`_test.go` files call it.
 
-`SetClientForTest(c apiClient) (restore func())` (in `testing.go`) replaces `newClientFn` for the
-duration of a test. Ready-made fakes live in `testing.go`:
+**Methods on `*Docker`:** `Run`, `Build`, `CheckDaemon`, `ImageExists`, `Close`.
+All four operation methods share a single `apiClient` for the struct's lifetime.
+`cmd` callers must `defer d.Close()` once after construction to release the client connection.
 
-- **`FakeRunClient`** — simulates the `Run` container lifecycle with a scripted exit code; also
-  supports `PingErr` to simulate daemon-down, `ImageMissing` to simulate absent images,
-  `BlockPing` to block `Ping` until the context is cancelled (used in preflight-timeout tests),
-  and `BlockImageInspect` to similarly block `ImageInspect`.
-  ```go
-  t.Cleanup(docker.SetClientForTest(docker.NewFakeRunClient(0))) // exit 0
-  ```
-- **`FakeBuildClient`** — simulates the `Build` SDK call and records `ImageBuildOptions`; also
-  supports `PingErr` and `ImageMissing` fields.
-  ```go
-  fbc := docker.NewFakeBuildClient(0)         // 0 = success
-  t.Cleanup(docker.SetClientForTest(fbc))
-  // ... call Build ...
-  opts := fbc.LastBuildOptions               // inspect what was passed to ImageBuild
-  ```
+**Test fakes** live in `internal/docker/fakes_test.go` (package `docker`, `_test.go` — never
+compiled into the production binary). The file provides:
+- `FakeRunClient` / `NewFakeRunClient(exitCode)` — scripts the `Run` container lifecycle; fields
+  `PingErr`, `ImageMissing`, `BlockPing`, `BlockImageInspect` cover error paths.
+- `FakeBuildClient` / `NewFakeBuildClient(exitCode)` — scripts `Build`; records
+  the last build options in its unexported `lastBuildOptions` field.
+- `newDockerWithClient(t, c, opts...)` — constructs a `*Docker` with a fake client via
+  `WithClient`; registers `d.Close` via `t.Cleanup`.
+- `noopMakeRaw`, `alwaysTTY`, `neverTTY` — stubs for option injection.
 
-This replaces the old shell-shim machinery (`WriteShim`, `SetDockerBinaryForTest`). There are no
-shell shims, no `dockerBinary` global, no `executableTempDir`.
+**Consumer-side interfaces in `cmd/makeslop`** (package `main`):
+```go
+type containerRunner interface { Run(ctx context.Context, s docker.Spec) error }
+type imageBuilder    interface { Build(ctx context.Context, o docker.BuildOptions, out, errw io.Writer) error }
+type daemonChecker   interface { CheckDaemon(ctx context.Context) error }
+type imageChecker    interface { ImageExists(ctx context.Context, image string) (bool, error) }
+```
+These are bundled in `dockerDeps`. `newRootCmd` constructs a `*docker.Docker`, calls `defer closeDocker()` via
+the returned cleanup func, and wraps the instance in `dockerDeps`; `newRootCmdWithDeps` accepts injected deps
+for tests (boundary fakes in `main_test.go`).
 
-### Shared preflight helpers (`internal/docker/preflight.go`)
+`dockerNewErrStub` (in `main.go`) is a fallback used when `docker.New()` fails: it implements all four
+interfaces and returns the construction error from every method call, so non-docker commands still work while
+docker-touching commands get a clear error instead of a panic.
 
-`CheckDaemon(ctx context.Context) error` — pings the daemon via `newClientFn`; returns
-`ErrDaemonUnreachable` on failure.
+`runWithExitCode` accepts an optional `contextObserver func(context.Context)` parameter (nil in production)
+that is called with the signal-cancellable context immediately after it is created. Tests pass a non-nil
+observer to verify that `ExecuteContext` receives a cancellable (non-Background) context.
 
-`ImageExists(ctx context.Context, image string) (bool, error)` — calls `ImageInspect`; returns
-`(true, nil)` when found, `(false, nil)` only when `cerrdefs.IsNotFound(err)`, and `(false, err)`
-for any other error (so a dead daemon is never misreported as "image absent").
+There are no shell shims, no `dockerBinary` global, no `executableTempDir`, no
+`SetClientForTest`/`SetTTYCheckForTest`/`SetTermMakeRawForTest` globals.
+
+**Note:** `CurrentVersion` and `MigrationVersion` are NOT bumped for this struct-DI refactor —
+no `Settings` struct fields changed and the embedded Dockerfile is unchanged.
+
+### Preflight methods (`internal/docker/preflight.go`)
+
+`(*Docker).CheckDaemon(ctx context.Context) error` — pings the daemon via the shared `d.client`;
+returns `*ErrDaemonUnreachable` on failure.
+
+`(*Docker).ImageExists(ctx context.Context, image string) (bool, error)` — calls `ImageInspect`
+on `d.client`; returns `(true, nil)` when found, `(false, nil)` only when
+`cerrdefs.IsNotFound(err)`, and `(false, err)` for any other error (so a dead daemon is never
+misreported as "image absent").
 
 `WithPreflightTimeout(ctx context.Context) (context.Context, context.CancelFunc)` — wraps the
-given context with a short deadline (5 s) so that preflight checks never hang on a black-hole
-`DOCKER_HOST`. Both `runRun` (main.go) and `runStatus` (status.go) use it around each preflight call.
+given context with a `preflightTimeout` deadline (10 s) so that preflight checks never hang on a
+black-hole `DOCKER_HOST`. Both `runRun` (main.go) and `runStatus` (status.go) use it around each
+preflight call.
 
-Both helpers build and close their own client (two constructions per `status` run — accepted for
-simplicity).
+Both methods share the `*Docker`'s single long-lived client — no per-call client construction
+or close. `cmd` callers must `defer d.Close()` once after construction to release the connection.
 
 ### Integration test for Build
 A gated integration test exercises the full `Build` flow against a live Docker daemon:
@@ -177,12 +201,18 @@ The env slice flows into `docker.Options.Env []string` in `runRun`, then into `S
 `.makeslop.yaml`, not in `~/.makeslop/settings.json` or the embedded Dockerfile.
 
 ### POSIX-only invariant
-makeslop targets POSIX systems only. Tests that rely on TTY/signal behavior call `SkipNonPOSIX` at the top.
-Do not add Windows compatibility paths.
+makeslop targets POSIX systems only. Tests that rely on TTY/signal behavior call an inline `skipNonPOSIX`
+helper defined locally in each test package (no shared export). Do not add Windows compatibility paths.
 
 ### TTY requirement is `run`-only
-`makeslop run` (formerly `go`) requires an interactive TTY (checked via `ttyCheck`).
-`makeslop build`, `makeslop init`, `makeslop migrate`, `makeslop config`, `makeslop status`, and `makeslop version` are CI/pipe-safe and never consult `ttyCheck`.
+`makeslop run` requires an interactive TTY (checked via `(*Docker).Run`'s `isTTYFn` predicate,
+injected at construction time via `WithTTYCheck`; defaults to real stdin+stdout detection).
+`makeslop build`, `makeslop init`, `makeslop migrate`, `makeslop config`, `makeslop status`, and `makeslop version` are CI/pipe-safe and never consult the TTY predicate.
+
+**Two distinct TTY notions** — do not conflate:
+- `docker.Docker`'s `isTTYFn` checks stdin+stdout and gates `Run` (returns `ErrNoTTY` when false).
+- `cmd`'s `isTTYFunc` / `defaultIsTTY` is writer-based and gates status color/glyph output
+  (`status.go`, `main.go`). These stay separate.
 
 ### Home-directory guard exemptions
 `makeslop run` and `makeslop init` enforce the home-directory guard.

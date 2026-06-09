@@ -18,11 +18,11 @@ const (
 	SettingsFile   = "settings.json"
 	WorkspacesDir  = "workspaces"
 	DockerfileFile = "Dockerfile"
-	CurrentVersion = 1 // settings schema version — increment when Settings fields change
+	CurrentVersion = 1 // settings schema version — bump when Settings fields change
 
-	// MigrationVersion is distinct from CurrentVersion: it gates the one-shot
-	// directory migration run by Migrate. Bump when a migration step is
-	// added or changed; Migrate re-runs all (idempotent) steps and re-stamps.
+	// MigrationVersion gates the one-shot directory migration run by Migrate
+	// (distinct from CurrentVersion). Bump when a migration step changes;
+	// Migrate re-runs all idempotent steps and re-stamps.
 	MigrationVersion = 2
 )
 
@@ -57,9 +57,9 @@ func DefaultBaseDir() (string, error) {
 	return filepath.Join(home, ".makeslop"), nil
 }
 
-// Load reads <baseDir>/settings.json. Missing file yields an empty Settings at
-// CurrentVersion (not an error); malformed JSON is an error. Empty Image/Shell/TmpDirSize
-// fields default to DefaultImage/DefaultShell/DefaultTmpDirSize for backward compatibility.
+// Load reads <baseDir>/settings.json. A missing file yields default Settings
+// (not an error); malformed JSON is an error. Empty Image/Shell/TmpDirSize
+// default for backward compatibility.
 func Load(baseDir string) (*Settings, error) {
 	path := filepath.Join(baseDir, SettingsFile)
 	data, err := os.ReadFile(path)
@@ -104,14 +104,14 @@ func Save(baseDir string, s *Settings) error {
 	if err != nil {
 		return fmt.Errorf("marshal settings: %w", err)
 	}
-	data = append(data, '\n') // POSIX-friendly trailing newline
+	data = append(data, '\n')
 
 	tmp, err := os.CreateTemp(baseDir, SettingsFile+".tmp-*")
 	if err != nil {
 		return fmt.Errorf("create temp settings file: %w", err)
 	}
 	tmpName := tmp.Name()
-	// Cleared once the rename succeeds; otherwise defer removes the temp file.
+	// Cleared once rename succeeds; otherwise the defer removes the temp file.
 	cleanup := true
 	defer func() {
 		if cleanup {
@@ -135,10 +135,8 @@ func Save(baseDir string, s *Settings) error {
 	return nil
 }
 
-// bootstrapFile writes content to path using a temp-file+rename pattern so
-// that a write failure never leaves a 0-byte or partially written file behind.
-// If path already exists the call is a no-op (idempotent — existing user edits
-// are never overwritten).
+// bootstrapFile writes content to path via temp-file+rename so a failed write
+// never leaves a partial file. A no-op (idempotent) if path already exists.
 func bootstrapFile(path string, content []byte) error {
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
@@ -161,32 +159,27 @@ func bootstrapFile(path string, content []byte) error {
 		return fmt.Errorf("close temp file for %s: %w", path, err)
 	}
 
-	// Rename the temp file to the final path only if it does not exist yet.
-	// os.Rename works on overlayfs and other filesystems where os.Link fails
-	// with EPERM (Docker containers, CI environments, network filesystems).
-	// Check existence first to preserve the idempotent/no-overwrite contract.
+	// Existence-check then Rename (not Link): os.Link fails with EPERM on
+	// overlayfs and other filesystems (Docker, CI, NFS); checking first
+	// preserves the idempotent no-overwrite contract.
 	if _, err := os.Lstat(path); err == nil {
-		// File already present — leave it and discard the temp file.
 		return nil
 	} else if !errors.Is(err, fs.ErrNotExist) {
-		// Lstat failed for a reason other than the file being absent (e.g.
-		// EACCES on the parent directory). Return the real error rather than
-		// falling through to Rename, which would produce a misleading message.
+		// Real Lstat failure (e.g. EACCES on parent) — surface it rather than
+		// fall through to Rename and produce a misleading message.
 		return fmt.Errorf("stat %s: %w", path, err)
 	}
 	if err := os.Rename(tmpName, path); err != nil {
 		return fmt.Errorf("install %s: %w", path, err)
 	}
-	cleanup = false // rename consumed the temp file
-	// Normalise to 0o644 so the file is readable regardless of the process umask.
+	cleanup = false
+	// Normalise to 0o644 regardless of the process umask.
 	if err := os.Chmod(path, 0o644); err != nil {
 		return fmt.Errorf("chmod %s: %w", path, err)
 	}
 	return nil
 }
 
-// Concurrent runs and pre-existing user edits both degrade to no-ops rather
-// than clobbering — bootstrapFile checks file existence before the final rename.
 var bootstrapDirs = []string{
 	"",
 	".codex",
@@ -202,10 +195,9 @@ var bootstrapFiles = []struct {
 	{DockerfileFile, assets.Dockerfile},
 }
 
-// BaseConfigExists reports whether <baseDir>/settings.json exists.
-// It returns (false, nil) when the file is absent (fs.ErrNotExist) and
-// (false, err) for any other stat failure so callers can distinguish
-// "not yet initialised" from "permission denied / unreadable filesystem".
+// BaseConfigExists reports whether <baseDir>/settings.json exists. Returns
+// (false, nil) when absent and (false, err) for any other stat failure, so
+// callers can distinguish "not initialised" from "unreadable".
 func BaseConfigExists(baseDir string) (bool, error) {
 	path := filepath.Join(baseDir, SettingsFile)
 	_, err := os.Stat(path)

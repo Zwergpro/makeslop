@@ -6,9 +6,8 @@ import (
 	"strings"
 )
 
-// tmpDirSizeRe validates docker --tmpfs size values.
-// Accepted: digits optionally followed by a single k/K/m/M/g/G suffix.
-// A bare number (no suffix) is interpreted by docker as bytes.
+// tmpDirSizeRe validates docker --tmpfs size values: digits with an optional
+// single k/K/m/M/g/G suffix (a bare number is bytes).
 var tmpDirSizeRe = regexp.MustCompile(`^[0-9]+[kKmMgG]?$`)
 
 // configKey describes a single settable configuration key.
@@ -24,9 +23,8 @@ type ConfigEntry struct {
 	Value string
 }
 
-// configKeys is the canonical ordered registry of all settable keys.
-// The order here determines the order of output in ConfigList and in
-// the valid-key list in unknown-key errors.
+// configKeys is the ordered registry of settable keys; order drives ConfigList
+// output and the valid-key list in unknown-key errors.
 var configKeys = []configKey{
 	{
 		name: "image",
@@ -67,8 +65,7 @@ func setTmpDirSize(s *Settings, v string) error {
 	if !tmpDirSizeRe.MatchString(v) {
 		return fmt.Errorf("tmp_dir_size: invalid value %q — expected digits with optional suffix k/K/m/M/g/G (e.g. 100m, 2g, 512k); a bare number is interpreted as bytes by docker", v)
 	}
-	// Reject "0": docker interprets --tmpfs /tmp:size=0 as unlimited, which
-	// silently removes the size cap rather than setting a zero-byte limit.
+	// docker interprets --tmpfs size=0 as unlimited, silently removing the cap.
 	if v == "0" {
 		return fmt.Errorf("tmp_dir_size: value %q is not allowed; docker interprets size=0 as unlimited (use a positive value, e.g. 100m)", v)
 	}
@@ -76,9 +73,7 @@ func setTmpDirSize(s *Settings, v string) error {
 	return nil
 }
 
-// ConfigGet returns the stored value for key. It returns ("", false) for
-// unknown keys; callers that have already verified the key via ConfigSet can
-// safely ignore the bool.
+// ConfigGet returns the stored value for key, or ("", false) for unknown keys.
 func ConfigGet(s *Settings, key string) (string, bool) {
 	for _, ck := range configKeys {
 		if ck.name == key {
@@ -105,7 +100,6 @@ func ConfigSet(s *Settings, key, val string) error {
 			return ck.set(s, val)
 		}
 	}
-	// Unknown key: collect valid key names only when building the error.
 	names := make([]string, len(configKeys))
 	for i, ck := range configKeys {
 		names[i] = ck.name

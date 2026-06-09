@@ -16,22 +16,14 @@ import (
 
 var ErrNoTTY = errors.New("interactive TTY required on stdin and stdout")
 
-var (
-	ttyCheck = func() bool { return isTTY(os.Stdin) && isTTY(os.Stdout) }
-
-	// termMakeRaw wraps term.MakeRaw so tests can stub it (e.g. when there is
-	// no real PTY available). The default is the real implementation.
-	termMakeRaw = func(fd int) (*term.State, error) { return term.MakeRaw(fd) }
-)
-
-// Uses term.IsTerminal (ioctl-based) rather than os.ModeCharDevice, which
-// also matches /dev/null and /dev/zero.
+// isTTY uses ioctl-based term.IsTerminal rather than os.ModeCharDevice (which
+// would also match /dev/null and /dev/zero).
 func isTTY(f *os.File) bool {
 	return term.IsTerminal(int(f.Fd()))
 }
 
-// ExitError is returned by Run when the container exits with a non-zero status
-// code. Code is the exit status reported by the daemon (e.g. 137 for SIGKILL).
+// ExitError is returned by Run on non-zero container exit. Code is the daemon's
+// status code (e.g. 137 for SIGKILL).
 type ExitError struct {
 	Code int
 }
@@ -40,25 +32,13 @@ func (e *ExitError) Error() string {
 	return fmt.Sprintf("container exited with code %d", e.Code)
 }
 
-// Run launches the container described by s interactively. It refuses to start
-// (returning ErrNoTTY) unless both stdin and stdout are TTYs.
-// On non-zero container exit, Run returns *ExitError with the exit code.
-func Run(ctx context.Context, s Spec) error {
-	cli, err := newClientFn()
-	if err != nil {
-		return fmt.Errorf("create docker client: %w", err)
-	}
-	return run(ctx, cli, s)
-}
-
-// run is the internal implementation of Run with an injected apiClient (for tests).
-func run(ctx context.Context, cli apiClient, s Spec) error {
-	if !ttyCheck() {
+// runContainer implements (*Docker).Run with injected apiClient, TTY predicate,
+// and raw-mode function. The caller owns the client lifetime.
+func runContainer(ctx context.Context, cli apiClient, isTTYFn func() bool, makeRawFn func(int) (*term.State, error), s Spec) error {
+	if !isTTYFn() {
 		return ErrNoTTY
 	}
-	defer cli.Close() //nolint:errcheck // teardown; error not actionable here
 
-	// Create container (but do not start it yet).
 	createRes, err := cli.ContainerCreate(ctx, moby.ContainerCreateOptions{
 		Config:     s.ContainerConfig(),
 		HostConfig: s.HostConfig(),
@@ -68,14 +48,11 @@ func run(ctx context.Context, cli apiClient, s Spec) error {
 	}
 	id := createRes.ID
 
-	// Track whether container started successfully so the deferred remove
-	// knows when to fire. AutoRemove handles cleanup on all exits; the deferred
-	// remove here handles pre-start aborts, start failures, and ctx cancellation.
+	// AutoRemove covers clean exits; this deferred force-remove covers pre-start
+	// aborts, start failures, and context cancellation.
 	startedCleanly := false
 	defer func() {
 		if !startedCleanly || ctx.Err() != nil {
-			// Best-effort force-remove to avoid leaked containers on
-			// pre-start abort, start failure, or context cancellation.
 			_, _ = cli.ContainerRemove(context.Background(), id, moby.ContainerRemoveOptions{Force: true})
 		}
 	}()
@@ -92,9 +69,9 @@ func run(ctx context.Context, cli apiClient, s Spec) error {
 	}
 	defer att.Conn.Close() //nolint:errcheck // teardown
 
-	// Put the terminal in raw mode so the container gets unmodified input.
+	// Raw mode so the container gets unmodified input.
 	fd := int(os.Stdin.Fd())
-	oldState, err := termMakeRaw(fd)
+	oldState, err := makeRawFn(fd)
 	if err != nil {
 		return fmt.Errorf("set terminal raw mode: %w", err)
 	}
@@ -102,7 +79,6 @@ func run(ctx context.Context, cli apiClient, s Spec) error {
 		defer term.Restore(fd, oldState) //nolint:errcheck // teardown
 	}
 
-	// Start the container.
 	if _, err = cli.ContainerStart(ctx, id, moby.ContainerStartOptions{}); err != nil {
 		return fmt.Errorf("container start: %w", err)
 	}
@@ -116,8 +92,7 @@ func run(ctx context.Context, cli apiClient, s Spec) error {
 		})
 	}
 
-	// Install SIGWINCH handler to forward terminal resize events.
-	// POSIX-only: SIGWINCH is not available on Windows (guarded by build tag in signal support).
+	// Forward terminal resize events. SIGWINCH is POSIX-only (absent on Windows).
 	if runtime.GOOS != "windows" {
 		winchCh := make(chan os.Signal, 1)
 		signal.Notify(winchCh, syscall.SIGWINCH)
@@ -137,11 +112,10 @@ func run(ctx context.Context, cli apiClient, s Spec) error {
 		}()
 	}
 
-	// Pump I/O: container uses a TTY so the stream is NOT multiplexed.
+	// Container uses a TTY, so the stream is NOT multiplexed.
 	go io.Copy(att.Conn, os.Stdin)    //nolint:errcheck
 	go io.Copy(os.Stdout, att.Reader) //nolint:errcheck
 
-	// Wait for the container to exit.
 	wr := cli.ContainerWait(ctx, id, moby.ContainerWaitOptions{})
 
 	select {
@@ -149,7 +123,6 @@ func run(ctx context.Context, cli apiClient, s Spec) error {
 		return fmt.Errorf("container wait: %w", err)
 	case res := <-wr.Result:
 		if res.Error != nil {
-			// WaitExitError carries a message string from the daemon.
 			return fmt.Errorf("container wait error: %s", res.Error.Message)
 		}
 		if res.StatusCode != 0 {

@@ -1,45 +1,14 @@
 // Package projectconfig parses and scaffolds the project-local .makeslop.yaml.
-// All returned paths are absolute and guaranteed to be under the project root
-// (trust boundary for user-supplied YAML).
+// Returned paths are absolute and guaranteed under the project root (trust
+// boundary for user-supplied YAML). All root parameters must be absolute and
+// EvalSymlinks-evaluated; direct callers must enforce this.
 //
-// root parameters must be absolute and EvalSymlinks-evaluated; any direct
-// caller must enforce this.
-//
-// The config has two distinct exclude mechanisms:
-//   - exclude.scan: drives the WalkDir secret scan (config-driven glob walk, no
-//     in-code denylist). Patterns are basename globs; skip-dirs are bare directory
-//     names pruned during the walk. These are names, not paths — no IsLocal/path
-//     checks apply.
-//   - exclude.files / exclude.dirs: explicit host paths for /dev/null and tmpfs
-//     overlays. Load returns only paths that are under root. Symlinks are silently
-//     dropped (masking a symlink has ambiguous semantics: the symlink itself or its
-//     target?). Reserved agent paths (.claude, .codex, docs, CLAUDE.md) are a hard
-//     error because a user overlay would shadow the agent mount.
-//
-// The cache block controls per-workspace cache overlay mounts:
-//   - cache.content (default true): mount docs/ + CLAUDE.md from the per-workspace
-//     cache directory on top of the project. Set to false to let the project's own
-//     docs/ and CLAUDE.md show through inside the container.
-//   - cache.agent (default true): mount .claude/ + .codex/ from the per-workspace
-//     cache directory on top of the project. Set to false to use the project's own
-//     agent state directories inside the container.
-//
-// The environments block declares static environment variables to inject into the
-// app container at runtime:
-//
-//	environments:
-//	  NODE_ENV: production
-//	  PORT: 8080
-//	  DEBUG: "false"
-//
-// Values must be scalars (strings, numbers, booleans). Non-scalar values (lists,
-// maps) are rejected fail-loud. Null values (bare KEY: or KEY: null) are also
-// rejected — a valueless key is almost always a mistake. An explicit empty string
-// (KEY: "") is accepted and maps to "-e KEY=" (a valid docker env var). Load returns
-// a sorted []string of "KEY=VALUE" pairs (nil when the block is absent).
-//
-// The app container always uses standard Docker bridge networking. There is no
-// proxy or network isolation configuration.
+// exclude.scan drives the WalkDir secret scan via basename globs (patterns) and
+// bare skip-dir names — these are names, not paths, so no IsLocal/path checks
+// apply. exclude.files/exclude.dirs are explicit host paths for /dev/null and
+// tmpfs overlays; symlinks are silently dropped (ambiguous: the link or its
+// target?) and reserved agent paths are a hard error (a user overlay would
+// shadow the agent mount).
 package projectconfig
 
 import (
@@ -56,9 +25,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// renderStub returns the canonical .makeslop.yaml stub bytes for the given
-// Cache defaults. Callers that want the default rendering (both groups enabled)
-// should pass Cache{Content: true, Agent: true}.
+// renderStub returns the .makeslop.yaml stub bytes for the given Cache defaults.
 func renderStub(c Cache) []byte {
 	return []byte(fmt.Sprintf(`exclude:
   scan:
@@ -88,24 +55,15 @@ cache:
 // Filename is the project-local config file name, relative to the project root.
 const Filename = ".makeslop.yaml"
 
-// Stub is the content Scaffold writes when called with the default Cache
-// (Content: true, Agent: true). Exported so tests can compare without
-// hardcoding. It seeds the default scan filters (patterns + skip-dirs) as
-// active values so that new projects get secret masking out of the box without
-// requiring manual configuration.
+// Stub is the content Scaffold writes for the default Cache{true,true}. It seeds
+// the default scan filters as active values so new projects get secret masking
+// out of the box.
 var Stub = renderStub(Cache{Content: true, Agent: true})
 
-// reservedPaths lists paths that docker.BuildSpec may mount over the project
-// root; user overlays in exclude.dirs/exclude.files would silently shadow them
-// when both are active.
-//
-// Note: when MountContentCache=false, docs/ and CLAUDE.md are not mounted, and
-// when MountAgentCache=false, .claude/ and .codex/ are not mounted. The
-// reservation check fires regardless of the cache config, so a user who
-// disables a cache group and also lists those paths in exclude.dirs/exclude.files
-// will get a "collides with a reserved agent path" error even though the mount
-// is not active. This is conservative (safe) but may be surprising; an error
-// message calling the path "reserved" is slightly misleading in that case.
+// reservedPaths lists paths docker.BuildSpec may mount over the project root;
+// user overlays in exclude.dirs/exclude.files would silently shadow them. The
+// check fires regardless of cache config, so disabling a cache group and still
+// listing such a path errors even when the mount is inactive (conservative).
 var reservedPaths = map[string]struct{}{
 	".claude":   {},
 	".codex":    {},
@@ -123,25 +81,15 @@ type Excludes struct {
 }
 
 // Cache is the parsed cache-overlay configuration. Both fields default to true
-// when the cache: block is absent from .makeslop.yaml (backward-compatible).
-//
-// Content controls whether the per-workspace cache docs/ and CLAUDE.md
-// directories are mounted on top of the project inside the container. When
-// false, the project's own docs/ and CLAUDE.md are visible instead.
-//
-// Agent controls whether the per-workspace cache .claude/ and .codex/
-// directories are mounted on top of the project inside the container. When
-// false, the project's own agent state directories are visible instead.
+// when the cache: block is absent (backward-compatible).
 type Cache struct {
 	Content bool // mount per-workspace cache docs/ + CLAUDE.md (default true)
 	Agent   bool // mount per-workspace cache .claude/ + .codex/ (default true)
 }
 
-// yamlSchema is the strict decode target. Using KnownFields(true) means any
-// top-level key other than "exclude" / "cache" / "environments" (and their
-// sub-keys) is rejected immediately with a meaningful decoder error. In
-// particular, a stale "network:" block (from a prior makeslop version) will
-// produce an "unknown field" error, which is the intended loud break.
+// yamlSchema is the strict decode target. KnownFields(true) rejects any unknown
+// key — including a stale "network:" block from a prior makeslop version, the
+// intended loud break.
 type yamlSchema struct {
 	Exclude struct {
 		Scan struct {
@@ -155,16 +103,15 @@ type yamlSchema struct {
 		Content *bool `yaml:"content"`
 		Agent   *bool `yaml:"agent"`
 	} `yaml:"cache"`
-	// Environments holds static env vars to inject into the app container.
-	// Values are decoded as yaml.Node to enable lenient scalar coercion
-	// (numbers and booleans become their string representations).
+	// Decoded as yaml.Node for lenient scalar coercion (numbers/booleans
+	// become their string representations).
 	Environments map[string]yaml.Node `yaml:"environments"`
 }
 
-// Scaffold creates <root>/.makeslop.yaml with the stub rendered for the given
-// Cache defaults. Idempotent: EEXIST is success, user edits are never
-// clobbered (the c parameter is a no-op on an already-present file). root
-// must be absolute and EvalSymlinks-evaluated.
+// Scaffold creates <root>/.makeslop.yaml with the stub for the given Cache
+// defaults. Idempotent: EEXIST is success and user edits are never clobbered
+// (c is a no-op on an existing file). root must be absolute and
+// EvalSymlinks-evaluated.
 func Scaffold(root string, c Cache) error {
 	path := filepath.Join(root, Filename)
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
@@ -176,9 +123,8 @@ func Scaffold(root string, c Cache) error {
 	}
 	defer f.Close()
 	if _, err := f.Write(renderStub(c)); err != nil {
-		// Remove the empty/partial file so a subsequent Scaffold call can retry
-		// (otherwise O_EXCL would see ErrExist and return nil, leaving the file
-		// corrupt forever).
+		// Remove the partial file so a retry isn't blocked by O_EXCL seeing
+		// ErrExist and returning nil, leaving the file corrupt forever.
 		writeErr := fmt.Errorf("scaffold %s: %w", Filename, err)
 		if removeErr := os.Remove(path); removeErr != nil {
 			return fmt.Errorf("%w; also failed to remove partial file (manual cleanup required): %v", writeErr, removeErr)
@@ -188,23 +134,16 @@ func Scaffold(root string, c Cache) error {
 	return nil
 }
 
-// Load parses <root>/.makeslop.yaml and returns validated Excludes, Cache,
-// env vars, and any error.
-//
-// The four-value return is (Excludes, Cache, []string, error):
+// Load parses <root>/.makeslop.yaml. The four-value return is:
 //   - Excludes: file/dir masks and scan patterns.
-//   - Cache: per-workspace cache overlay settings (defaults to {true,true}).
-//   - []string: sorted "KEY=VALUE" env pairs from the environments: block; nil
-//     when the block is absent (nil ≡ no env injection, backward-compatible).
-//   - error: non-nil for any parse, validation, or filesystem error.
+//   - Cache: per-workspace overlay settings; defaults to {true,true} when the
+//     cache: block (or the whole file) is absent.
+//   - []string: sorted "KEY=VALUE" env pairs from environments:; nil when the
+//     block is absent (nil ≡ no env injection, backward-compatible).
+//   - error: any parse, validation, or filesystem error, wrapped "projectconfig: ".
 //
-// A missing file yields zero Excludes, Cache{true,true}, and nil env.
-// Malformed YAML, unknown fields (including a stale "network:" block),
-// cross-list duplicates, reserved-path collisions, and invalid paths are errors
-// wrapped with "projectconfig: ". Symlinks and missing entries are silently
-// dropped. An absent cache: block within an existing config file defaults both
-// Cache fields to true.
-// root must be absolute and EvalSymlinks-evaluated.
+// Symlinks and missing entries are silently dropped. root must be absolute and
+// EvalSymlinks-evaluated.
 func Load(root string) (Excludes, Cache, []string, error) {
 	path := filepath.Join(root, Filename)
 	data, err := os.ReadFile(path)
@@ -215,16 +154,15 @@ func Load(root string) (Excludes, Cache, []string, error) {
 		return Excludes{}, Cache{}, nil, fmt.Errorf("projectconfig: read %s: %w", Filename, err)
 	}
 
-	// Decode with strict mode: unknown top-level fields cause an error, surfacing
-	// typos (e.g. "excludes:" vs "exclude:") and stale "network:" blocks (from
-	// a prior makeslop version that supported proxy egress) immediately.
+	// Strict mode: unknown fields error out, surfacing typos and stale
+	// "network:" blocks from prior makeslop versions.
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
 
 	var schema yamlSchema
 	if err := dec.Decode(&schema); err != nil {
 		if errors.Is(err, io.EOF) {
-			// Empty file, whitespace-only, or comment-only YAML: treat as zero config.
+			// Empty, whitespace-only, or comment-only YAML: zero config.
 			return Excludes{}, Cache{Content: true, Agent: true}, nil, nil
 		}
 		return Excludes{}, Cache{}, nil, fmt.Errorf("projectconfig: parse %s: %w", Filename, err)
@@ -248,8 +186,8 @@ func Load(root string) (Excludes, Cache, []string, error) {
 		return Excludes{}, Cache{}, nil, err
 	}
 
-	// Cross-list duplicate check: a path in both lists is an error. Done before
-	// stat-drop so the error is deterministic regardless of on-disk state.
+	// A path in both lists is an error. Checked before stat-drop so the error is
+	// deterministic regardless of on-disk state.
 	seen := make(map[string]struct{}, len(cleanedFiles))
 	for _, rel := range cleanedFiles {
 		seen[rel] = struct{}{}
@@ -272,8 +210,8 @@ func Load(root string) (Excludes, Cache, []string, error) {
 	files = dedupSorted(files)
 	dirs = dedupSorted(dirs)
 
-	// Resolve cache defaults: absent pointer (nil) means the field was not set in
-	// YAML, which defaults to true (backward-compatible: absent block = both mounted).
+	// Absent pointer (nil) means the field was unset in YAML, defaulting to true
+	// (backward-compatible: absent block = both mounted).
 	cacheCfg := Cache{
 		Content: schema.Cache.Content == nil || *schema.Cache.Content,
 		Agent:   schema.Cache.Agent == nil || *schema.Cache.Agent,
@@ -287,8 +225,8 @@ func Load(root string) (Excludes, Cache, []string, error) {
 	return Excludes{Files: files, Dirs: dirs, Patterns: patterns, SkipDirs: skipDirs}, cacheCfg, envVars, nil
 }
 
-// validateEntries cleans and validates user-supplied relative paths for the
-// given list; returns an error on the first invalid entry.
+// validateEntries cleans and validates relative paths, erroring on the first
+// invalid entry.
 func validateEntries(entries []string, listName string) ([]string, error) {
 	cleaned := make([]string, 0, len(entries))
 	for _, entry := range entries {
@@ -314,31 +252,26 @@ func validateEntries(entries []string, listName string) ([]string, error) {
 	return cleaned, nil
 }
 
-// validatePatterns cleans and validates user-supplied basename glob patterns for
-// exclude.scan.patterns. Rejects empty entries and syntactically invalid globs
-// (filepath.ErrBadPattern). Returns deduplicated, sorted patterns.
+// validatePatterns validates exclude.scan.patterns basename globs, rejecting
+// empty entries and invalid glob syntax. Returns deduplicated, sorted patterns.
 func validatePatterns(entries []string) ([]string, error) {
 	for _, p := range entries {
 		if p == "" {
 			return nil, fmt.Errorf("projectconfig: empty pattern in exclude.scan.patterns")
 		}
-		// filepath.Match with "" as name validates syntax without matching anything.
+		// Matching against "" validates glob syntax without matching anything.
 		if _, err := filepath.Match(p, ""); err != nil {
 			return nil, fmt.Errorf("projectconfig: invalid scan pattern %q: %w", p, err)
 		}
 	}
-	// Patterns are basename globs, not paths — filepath.Clean is intentionally
-	// not applied. "*.env" and ".env.*" are not path components, so cleaning
-	// them would be wrong (e.g. it would strip leading dots or reduce "a/../b"
-	// in a glob into something unintended). The original entries are passed
-	// directly to dedupSorted.
+	// No filepath.Clean: these are basename globs, not paths — cleaning would
+	// mangle entries like ".env.*".
 	return dedupSorted(entries), nil
 }
 
-// validateSkipDirs cleans and validates user-supplied bare directory names for
-// exclude.scan.skip-dirs. Rejects empty entries, entries containing a path
-// separator, and the special names "." and "..". Returns deduplicated, sorted
-// names.
+// validateSkipDirs validates exclude.scan.skip-dirs bare directory names,
+// rejecting empty entries, path separators, and "."/"..". Returns deduplicated,
+// sorted names.
 func validateSkipDirs(entries []string) ([]string, error) {
 	for _, d := range entries {
 		if d == "" {
@@ -347,7 +280,6 @@ func validateSkipDirs(entries []string) ([]string, error) {
 		if d == "." || d == ".." {
 			return nil, fmt.Errorf("projectconfig: skip-dir %q must be a bare directory name", d)
 		}
-		// Reject entries that contain a path separator.
 		if strings.Contains(d, "/") {
 			return nil, fmt.Errorf("projectconfig: skip-dir %q must be a bare directory name", d)
 		}
@@ -355,21 +287,15 @@ func validateSkipDirs(entries []string) ([]string, error) {
 	return dedupSorted(entries), nil
 }
 
-// validateEnvironments validates a user-supplied environments: map and returns
-// a sorted []string of "KEY=VALUE" pairs suitable for docker run -e and
-// container.Config.Env.
+// validateEnvironments validates an environments: map into a sorted []string of
+// "KEY=VALUE" pairs. Rules:
+//   - Empty keys rejected ("-e =value" is broken docker syntax).
+//   - Keys must not contain '=' (breaks KEY=VALUE encoding) or newline/tab.
+//   - Values must be scalar nodes; non-scalars (lists/maps) rejected fail-loud.
+//   - Null scalars (bare KEY: or KEY: null) rejected — almost always a mistake.
+//   - Explicit empty string (KEY: "") accepted → "KEY=".
 //
-// Rules:
-//   - Empty keys are rejected (a "-e =value" is broken docker syntax).
-//   - Keys must not contain '=' (would break KEY=VALUE encoding).
-//   - Keys must not contain newline or tab characters.
-//   - Values must be scalar YAML nodes (strings, numbers, booleans). Non-scalar
-//     values (lists, maps) are rejected fail-loud.
-//   - Null scalars (bare KEY: or KEY: null) are rejected — almost always a mistake.
-//   - Explicit empty string (KEY: "") is accepted → "KEY=" (intentional empty value).
-//
-// yaml.v3 already rejects duplicate map keys at decode time, so no dup-key
-// handling is needed here.
+// yaml.v3 rejects duplicate map keys at decode time, so no dup-key handling here.
 func validateEnvironments(env map[string]yaml.Node) ([]string, error) {
 	if len(env) == 0 {
 		return nil, nil
@@ -396,12 +322,11 @@ func validateEnvironments(env map[string]yaml.Node) ([]string, error) {
 		}
 		result = append(result, k+"="+v.Value)
 	}
-	// Map keys are inherently unique, so only sorting is needed here.
 	sort.Strings(result)
 	return result, nil
 }
 
-// statFilter Lstats each relative path under root; silently drops missing and
+// statFilter Lstats each path under root, silently dropping missing and
 // wrong-type entries (symlinks included). keep decides the acceptable type.
 func statFilter(root string, cleaned []string, keep func(os.FileInfo) bool) ([]string, error) {
 	var result []string
@@ -430,10 +355,8 @@ func dedupSorted(paths []string) []string {
 	cp := make([]string, len(paths))
 	copy(cp, paths)
 	sort.Strings(cp)
-	// compact: keep only the first of each run of equal strings.
-	// Aliasing cp[:1] as the output slice is safe because deduplication only
-	// shrinks the slice — out never overtakes the read head, so writes never
-	// clobber elements that have not yet been processed.
+	// Aliasing cp[:1] as output is safe: dedup only shrinks, so out never
+	// overtakes the read head and never clobbers unprocessed elements.
 	out := cp[:1]
 	for _, p := range cp[1:] {
 		if p != out[len(out)-1] {
