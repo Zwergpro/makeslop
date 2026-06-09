@@ -63,37 +63,3 @@ func imageExists(ctx context.Context, c apiClient, image string) (bool, error) {
 	return false, err
 }
 
-// CheckDaemon pings the Docker daemon. It returns *ErrDaemonUnreachable if the
-// daemon cannot be reached, and nil on success.
-//
-// Deprecated: use (*Docker).CheckDaemon instead. This package-level shim is
-// kept for backward compatibility during the struct-DI migration and will be
-// removed in Task 5.
-func CheckDaemon(ctx context.Context) error {
-	c, err := newClientFn()
-	if err != nil {
-		return &ErrDaemonUnreachable{Cause: err}
-	}
-	defer c.Close() //nolint:errcheck // shim owns its client
-	return checkDaemon(ctx, c)
-}
-
-// ImageExists reports whether the named image tag exists locally.
-//
-//   - (true, nil)  — image found
-//   - (false, nil) — image absent (cerrdefs.IsNotFound classified)
-//   - (false, err) — any other error (daemon error, permission, …); the caller
-//     must NOT treat this as "image absent" — a dead daemon must surface as
-//     a daemon error, not a misleading "run 'makeslop build'" hint.
-//
-// Deprecated: use (*Docker).ImageExists instead. This package-level shim is
-// kept for backward compatibility during the struct-DI migration and will be
-// removed in Task 5.
-func ImageExists(ctx context.Context, image string) (bool, error) {
-	c, err := newClientFn()
-	if err != nil {
-		return false, err
-	}
-	defer c.Close() //nolint:errcheck // shim owns its client
-	return imageExists(ctx, c, image)
-}

@@ -3,12 +3,20 @@ package projectconfig
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
-	"github.com/Zwergpro/makeslop/internal/docker"
 	"gopkg.in/yaml.v3"
 )
+
+// skipNonPOSIX skips on non-POSIX hosts per the CLAUDE.md invariant.
+func skipNonPOSIX(t *testing.T, why string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip(why)
+	}
+}
 
 // evalSymlinks resolves a temp dir path — on macOS /tmp is a symlink, so raw
 // t.TempDir() paths violate the EvalSymlinks precondition.
@@ -22,7 +30,7 @@ func evalSymlinks(t *testing.T, dir string) string {
 }
 
 func TestScaffold_WritesStub(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
 	if err := Scaffold(root, Cache{Content: true, Agent: true}); err != nil {
@@ -39,7 +47,7 @@ func TestScaffold_WritesStub(t *testing.T) {
 }
 
 func TestScaffold_Idempotent(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
 	userContent := []byte("# my custom config\nexclude:\n  dirs:\n    - secrets\n  files: []\n")
@@ -61,7 +69,7 @@ func TestScaffold_Idempotent(t *testing.T) {
 }
 
 func TestLoad_MissingFile(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
 	excl, _, _, err := Load(root)
@@ -80,7 +88,7 @@ func TestLoad_MissingFile(t *testing.T) {
 }
 
 func TestLoad_DefaultStub_RoundTrips(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
 	if err := os.WriteFile(filepath.Join(root, Filename), Stub, 0o644); err != nil {
@@ -125,7 +133,7 @@ func TestLoad_DefaultStub_RoundTrips(t *testing.T) {
 
 // yaml.NewDecoder returns io.EOF for these cases; Load must treat it as zero config.
 func TestLoad_EmptyAndCommentOnlyFiles(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 
 	cases := []struct {
 		name    string
@@ -167,7 +175,7 @@ func TestLoad_EmptyAndCommentOnlyFiles(t *testing.T) {
 }
 
 func TestLoad_MalformedYAML(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
 	if err := os.WriteFile(filepath.Join(root, Filename), []byte(":\tnot valid yaml{{{\n"), 0o644); err != nil {
@@ -184,7 +192,7 @@ func TestLoad_MalformedYAML(t *testing.T) {
 }
 
 func TestLoad_UnknownField(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
 	if err := os.WriteFile(filepath.Join(root, Filename), []byte("include:\n  files: []\n"), 0o644); err != nil {
@@ -201,7 +209,7 @@ func TestLoad_UnknownField(t *testing.T) {
 }
 
 func TestLoad_ValidationRules(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 
 	cases := []struct {
 		name        string
@@ -296,7 +304,7 @@ func TestLoad_ValidationRules(t *testing.T) {
 }
 
 func TestLoad_ReservedPaths(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 
 	for _, reserved := range []string{".claude", ".codex", "docs", "CLAUDE.md"} {
 		t.Run("dirs/"+reserved, func(t *testing.T) {
@@ -331,7 +339,7 @@ func TestLoad_ReservedPaths(t *testing.T) {
 }
 
 func TestLoad_CrossListDuplicate(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
 	content := "exclude:\n  files:\n    - mydir/secret\n  dirs:\n    - mydir/secret\n"
@@ -351,7 +359,7 @@ func TestLoad_CrossListDuplicate(t *testing.T) {
 // TestLoad_CrossListDuplicate_NoFileOnDisk verifies the cross-list duplicate
 // check fires even when the path does NOT exist on disk (deterministic error).
 func TestLoad_CrossListDuplicate_NoFileOnDisk(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
 	// "ghost" does not exist on disk — but the error must still fire.
@@ -370,7 +378,7 @@ func TestLoad_CrossListDuplicate_NoFileOnDisk(t *testing.T) {
 }
 
 func TestLoad_SilentlyDropsMissingEntries(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
 	content := "exclude:\n  files:\n    - nonexistent/api.key\n  dirs:\n    - phantom-dir\n"
@@ -388,7 +396,7 @@ func TestLoad_SilentlyDropsMissingEntries(t *testing.T) {
 }
 
 func TestLoad_DropsWrongType(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
 	if err := os.WriteFile(filepath.Join(root, "am-a-file"), []byte("data"), 0o644); err != nil {
@@ -415,7 +423,7 @@ func TestLoad_DropsWrongType(t *testing.T) {
 }
 
 func TestLoad_DropsSymlinks(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks and /‐paths required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks and /‐paths required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
 	realFile := filepath.Join(root, "real-file")
@@ -457,7 +465,7 @@ func TestLoad_DropsSymlinks(t *testing.T) {
 // careful code review.
 
 func TestLoad_DeduplicatesWithinLists(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
 	// Create actual files/dirs on disk so they pass the stat filter.
@@ -486,7 +494,7 @@ func TestLoad_DeduplicatesWithinLists(t *testing.T) {
 }
 
 func TestLoad_ReturnsAbsoluteSortedPaths(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
 	// Create real files/dirs — names chosen so z comes before a alphabetically
@@ -548,7 +556,7 @@ func TestLoad_ReturnsAbsoluteSortedPaths(t *testing.T) {
 // is rejected with a strict-decode "unknown field" error. This is the intended
 // loud break — users with stale .makeslop.yaml files must remove the block.
 func TestLoad_Network_BlockRejected(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 
 	cases := []struct {
 		name    string
@@ -589,7 +597,7 @@ func TestLoad_Network_BlockRejected(t *testing.T) {
 // ---- exclude.scan tests ----
 
 func TestLoad_Scan_ValidPatternsAndSkipDirs(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 
 	cases := []struct {
 		name         string
@@ -650,7 +658,7 @@ func TestLoad_Scan_ValidPatternsAndSkipDirs(t *testing.T) {
 }
 
 func TestLoad_Scan_InvalidPatterns(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 
 	cases := []struct {
 		name        string
@@ -690,7 +698,7 @@ func TestLoad_Scan_InvalidPatterns(t *testing.T) {
 }
 
 func TestLoad_Scan_InvalidSkipDirs(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 
 	cases := []struct {
 		name        string
@@ -740,7 +748,7 @@ func TestLoad_Scan_InvalidSkipDirs(t *testing.T) {
 }
 
 func TestLoad_Scan_UnknownKeyRejected(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
 	// KnownFields(true) must reject an unknown key under exclude.scan.
@@ -763,7 +771,7 @@ func TestLoad_Scan_UnknownKeyRejected(t *testing.T) {
 // TestLoad_Cache_AbsentBlock verifies that an absent cache: block defaults both
 // Cache.Content and Cache.Agent to true (backward-compatible).
 func TestLoad_Cache_AbsentBlock(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
 	// Write a config without any cache: key.
@@ -786,7 +794,7 @@ func TestLoad_Cache_AbsentBlock(t *testing.T) {
 
 // TestLoad_Cache_MissingFile verifies that a missing file also defaults Cache to {true,true}.
 func TestLoad_Cache_MissingFile(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
 	_, cacheCfg, _, err := Load(root)
@@ -804,7 +812,7 @@ func TestLoad_Cache_MissingFile(t *testing.T) {
 // TestLoad_Cache_BothFalse verifies that explicit content:false + agent:false
 // produces Cache{false,false}.
 func TestLoad_Cache_BothFalse(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
 	content := "cache:\n  content: false\n  agent: false\n"
@@ -827,7 +835,7 @@ func TestLoad_Cache_BothFalse(t *testing.T) {
 // TestLoad_Cache_BothTrue verifies that explicit content:true + agent:true
 // produces Cache{true,true}.
 func TestLoad_Cache_BothTrue(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
 	content := "cache:\n  content: true\n  agent: true\n"
@@ -850,7 +858,7 @@ func TestLoad_Cache_BothTrue(t *testing.T) {
 // TestLoad_Cache_MixedContentFalseAgentAbsent verifies that content:false with
 // agent absent produces Cache{false,true} (absent field defaults to true).
 func TestLoad_Cache_MixedContentFalseAgentAbsent(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
 	content := "cache:\n  content: false\n"
@@ -873,7 +881,7 @@ func TestLoad_Cache_MixedContentFalseAgentAbsent(t *testing.T) {
 // TestLoad_Cache_MixedAgentFalseContentAbsent verifies that agent:false with
 // content absent produces Cache{true,false}.
 func TestLoad_Cache_MixedAgentFalseContentAbsent(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
 	content := "cache:\n  agent: false\n"
@@ -896,7 +904,7 @@ func TestLoad_Cache_MixedAgentFalseContentAbsent(t *testing.T) {
 // TestLoad_Cache_UnknownKeyRejected verifies that KnownFields(true) rejects an
 // unknown key nested under cache:.
 func TestLoad_Cache_UnknownKeyRejected(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
 	content := "cache:\n  content: true\n  agent: true\n  typo: bad\n"
@@ -918,7 +926,7 @@ func TestLoad_Cache_UnknownKeyRejected(t *testing.T) {
 // TestRenderStub_TrueTrue verifies that renderStub(Cache{true,true}) round-trips
 // through Load to Cache{Content:true, Agent:true}.
 func TestRenderStub_TrueTrue(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
 	data := renderStub(Cache{Content: true, Agent: true})
@@ -941,7 +949,7 @@ func TestRenderStub_TrueTrue(t *testing.T) {
 // TestRenderStub_FalseFalse verifies that renderStub(Cache{false,false})
 // round-trips through Load to Cache{Content:false, Agent:false}.
 func TestRenderStub_FalseFalse(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
 	data := renderStub(Cache{Content: false, Agent: false})
@@ -964,7 +972,7 @@ func TestRenderStub_FalseFalse(t *testing.T) {
 // TestScaffold_CacheFalseFalse verifies that Scaffold(root, Cache{false,false})
 // writes a file that Load parses as Cache{false,false}.
 func TestScaffold_CacheFalseFalse(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
 	if err := Scaffold(root, Cache{Content: false, Agent: false}); err != nil {
@@ -996,7 +1004,7 @@ func TestScaffold_CacheFalseFalse(t *testing.T) {
 // second time with different Cache values is a no-op (idempotent: EEXIST wins,
 // no clobber of user edits).
 func TestScaffold_IdempotentWithDifferentCache(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
 	// First scaffold with both=true.
@@ -1257,7 +1265,7 @@ func TestValidateEnvironments_SortedOutput(t *testing.T) {
 // TestLoad_AbsentEnvironments_NilEnv verifies that a config file without an
 // environments: block returns nil env (absent block → nil, backward-compatible).
 func TestLoad_AbsentEnvironments_NilEnv(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
 	// Write a config that has exclude + cache but no environments block.
@@ -1286,7 +1294,7 @@ cache:
 
 // TestLoad_MissingFile_NilEnv verifies that a missing .makeslop.yaml returns nil env.
 func TestLoad_MissingFile_NilEnv(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
 	_, _, envVars, err := Load(root)
@@ -1301,7 +1309,7 @@ func TestLoad_MissingFile_NilEnv(t *testing.T) {
 // TestLoad_EmptyAndWhitespaceFile_NilEnv verifies that empty/whitespace-only
 // files return nil env (EOF branch).
 func TestLoad_EmptyAndWhitespaceFile_NilEnv(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 
 	cases := []struct {
 		name    string
@@ -1330,7 +1338,7 @@ func TestLoad_EmptyAndWhitespaceFile_NilEnv(t *testing.T) {
 // TestLoad_EnvironmentsBlock_ReturnsSortedPairs verifies that a valid
 // environments: block is parsed and returned as sorted "KEY=VALUE" pairs.
 func TestLoad_EnvironmentsBlock_ReturnsSortedPairs(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
 	content := `environments:
@@ -1356,7 +1364,7 @@ func TestLoad_EnvironmentsBlock_ReturnsSortedPairs(t *testing.T) {
 // TestLoad_TypoInEnvironments_StrictModeRejects verifies that a typo in the
 // top-level key (enviroments: instead of environments:) is rejected by strict mode.
 func TestLoad_TypoInEnvironments_StrictModeRejects(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
 	// "enviroments" (missing 'n') is an unknown field — strict mode must reject it.

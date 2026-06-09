@@ -113,28 +113,10 @@ func stageDockerfile(path string) (dir string, cleanup func(), err error) {
 	return tmp, func() { _ = os.RemoveAll(tmp) }, nil
 }
 
-// Build builds the docker image described by o, writing build output to stdout
-// and stderr. When o.ContextDir is empty, Build creates a temporary empty
-// directory as the build context (the Dockerfile never COPYs from context) and
-// removes it on return.
-//
-// Build never checks for a TTY and is CI/pipe-safe.
-//
-// Deprecated: use (*Docker).Build instead. This package-level shim is kept for
-// backward compatibility during the struct-DI migration and will be removed in
-// Task 5.
-func Build(ctx context.Context, o BuildOptions, stdout, stderr io.Writer) error {
-	cli, err := newClientFn()
-	if err != nil {
-		return fmt.Errorf("create docker client: %w", err)
-	}
-	defer cli.Close() //nolint:errcheck // shim owns its client
-	return build(ctx, cli, o, stdout, stderr)
-}
-
-// build is the internal implementation of Build with an injected apiClient.
-// The caller owns the client lifetime; build does NOT call cli.Close().
-func build(ctx context.Context, cli apiClient, o BuildOptions, stdout, stderr io.Writer) error {
+// buildImage is the internal implementation of (*Docker).Build with an injected
+// apiClient. The caller owns the client lifetime; buildImage does NOT call
+// cli.Close().
+func buildImage(ctx context.Context, cli apiClient, o BuildOptions, stdout, stderr io.Writer) error {
 	if o.ContextDir == "" {
 		dir, err := os.MkdirTemp("", "makeslop-build-*")
 		if err != nil {

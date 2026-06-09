@@ -10,7 +10,7 @@ import (
 
 // apiClient is the narrow subset of the moby/moby/client.APIClient interface
 // that this package actually uses. *client.Client satisfies it (see the
-// compile-time assertion below). Tests inject a fake via newClientFn.
+// compile-time assertion below). Tests inject a fake via WithClient.
 type apiClient interface {
 	ContainerCreate(ctx context.Context, options moby.ContainerCreateOptions) (moby.ContainerCreateResult, error)
 	ContainerAttach(ctx context.Context, container string, options moby.ContainerAttachOptions) (moby.ContainerAttachResult, error)
@@ -35,6 +35,3 @@ func newClient() (apiClient, error) {
 	return moby.New(moby.FromEnv)
 }
 
-// newClientFn is the swap point used by tests to inject a fake apiClient.
-// Production code always uses the default newClient.
-var newClientFn = newClient

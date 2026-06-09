@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 
 	"golang.org/x/term"
 )
@@ -45,21 +46,15 @@ func WithRawMode(fn func(int) (*term.State, error)) Option {
 // New constructs a Docker with real defaults: a moby client built from the
 // environment (DOCKER_HOST etc.), stdin+stdout TTY detection, and real
 // term.MakeRaw. Options are applied after the defaults.
-//
-// The default isTTY and makeRaw closures delegate through the package-level
-// ttyCheck/termMakeRaw globals so that SetTTYCheckForTest and
-// SetTermMakeRawForTest still take effect during the struct-DI migration
-// (Task 3/4 transition). Similarly, the client is obtained via newClientFn so
-// SetClientForTest takes effect. In Task 5 those globals are deleted.
 func New(opts ...Option) (*Docker, error) {
-	cli, err := newClientFn()
+	cli, err := newClient()
 	if err != nil {
 		return nil, fmt.Errorf("create docker client: %w", err)
 	}
 	d := &Docker{
 		client:  cli,
-		isTTY:   func() bool { return ttyCheck() },
-		makeRaw: func(fd int) (*term.State, error) { return termMakeRaw(fd) },
+		isTTY:   func() bool { return isTTY(os.Stdin) && isTTY(os.Stdout) },
+		makeRaw: func(fd int) (*term.State, error) { return term.MakeRaw(fd) },
 	}
 	for _, o := range opts {
 		o(d)
@@ -76,13 +71,13 @@ func (d *Docker) Close() error {
 // (returning ErrNoTTY) unless both stdin and stdout are TTYs.
 // On non-zero container exit, Run returns *ExitError with the exit code.
 func (d *Docker) Run(ctx context.Context, s Spec) error {
-	return run(ctx, d.client, d.isTTY, d.makeRaw, s)
+	return runContainer(ctx, d.client, d.isTTY, d.makeRaw, s)
 }
 
 // Build builds the docker image described by o, writing build output to out
 // and errw. It is CI/pipe-safe and never checks for a TTY.
 func (d *Docker) Build(ctx context.Context, o BuildOptions, out, errw io.Writer) error {
-	return build(ctx, d.client, o, out, errw)
+	return buildImage(ctx, d.client, o, out, errw)
 }
 
 // CheckDaemon pings the Docker daemon. It returns *ErrDaemonUnreachable if the

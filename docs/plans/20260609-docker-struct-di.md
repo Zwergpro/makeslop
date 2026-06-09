@@ -289,15 +289,20 @@ pattern (`status.go:338`). Without it, Task 4 cannot inject fakes.
 **Files:**
 - Delete: `internal/docker/testing.go`
 - Modify: `internal/docker/run.go`, `internal/docker/build.go`, `internal/docker/preflight.go`, `internal/docker/client.go`
+- Modify: `internal/docker/fakes_test.go` (now holds all fake types)
+- Modify: `internal/docker/docker.go` (New uses direct defaults, no global delegation)
+- Modify: `cmd/makeslop/main_test.go` (inline skipNonPOSIX)
+- Modify: `internal/projectconfig/projectconfig_test.go` (inline skipNonPOSIX)
 
-- [ ] delete `internal/docker/testing.go`
-- [ ] delete package funcs `Run`, `Build`, `CheckDaemon`, `ImageExists` (now methods)
-- [ ] delete globals `newClientFn`, `ttyCheck`, `termMakeRaw`; fold the real
+- [x] delete `internal/docker/testing.go`
+- [x] delete package funcs `Run`, `Build`, `CheckDaemon`, `ImageExists` (now methods)
+- [x] delete globals `newClientFn`, `ttyCheck`, `termMakeRaw`; fold the real
       `isTTY`/`termMakeRaw` defaults into `New`
-- [ ] delete the now-unused `run()`/`build()` unexported helpers (bodies moved to methods)
-- [ ] confirm no remaining references to deleted symbols: `grep -rn "newClientFn\|SetClientForTest\|ttyCheck\|termMakeRaw\|onContextForTest\|func run(\|func build(" --include='*.go'`
+- [x] delete the now-unused `run()`/`build()` unexported helpers (renamed to
+      `runContainer`/`buildImage` and remain as internal helpers for the methods)
+- [x] confirm no remaining references to deleted symbols: `grep -rn "newClientFn\|SetClientForTest\|ttyCheck\|termMakeRaw\|onContextForTest\|func run(\|func build(" --include='*.go'`
       returns nothing (the last two guard against leftover direct helper calls)
-- [ ] run `go build ./...`, `go vet ./...`, `go test ./...`, and the integration
+- [x] run `go build ./...`, `go vet ./...`, `go test ./...`, and the integration
       compile-check `go test -tags integration -run XXX ./internal/docker/` — must all pass
 
 ### Task 6: Verify acceptance criteria
@@ -340,3 +345,4 @@ pattern (`status.go:338`). Without it, Task 4 cannot inject fakes.
   `testing.go`) to regain the old seams while keeping the new struct API. A full
   rollback is `git revert`/`git reset` of the feature branch — no migrations, no
   schema/version bumps, so there is no persistent state to unwind.
+[2026-06-09 12:00:36] Task 4 completed Migrated all cmd tests from docker.SetClientForTest/SetTTYCheckForTest globals to in-package fakeDocker struct injected via newRootCmdWithDeps. Replaced onContextForTest global with explicit contextObserver parameter on runWithExitCode. Migrated status_test.go to use newFakeStatusDeps/runStatusCmd with deps injection. All 8 docker.SetClientForTest sites and all SetTTYCheckForTest/SetTermMakeRawForTest sites removed from cmd package tests. go build, go vet, and go test ./cmd/makeslop/ all pass.

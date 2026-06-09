@@ -261,13 +261,10 @@ func (q *quietWriter) Write(p []byte) (int, error) {
 }
 
 // newRootCmd constructs the production cobra tree. It creates a *docker.Docker
-// via docker.New() (which respects newClientFn/ttyCheck/termMakeRaw globals so
-// existing SetClientForTest/SetTTYCheckForTest test seams still work during the
-// Task 3→4 transition).
-// moby.New(moby.FromEnv) only parses env vars — it never dials and essentially
-// never fails. If it does fail, the error is wrapped and returned by the first
-// docker-touching command (run, build, status); init/migrate/config/version work
-// regardless.
+// via docker.New(). moby.New(moby.FromEnv) only parses env vars — it never
+// dials and essentially never fails. If it does fail, the error is wrapped and
+// returned by the first docker-touching command (run, build, status);
+// init/migrate/config/version work regardless.
 func newRootCmd(baseDir string) *cobra.Command {
 	d, newErr := docker.New()
 	var deps dockerDeps

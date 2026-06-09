@@ -16,15 +16,7 @@ import (
 
 var ErrNoTTY = errors.New("interactive TTY required on stdin and stdout")
 
-var (
-	ttyCheck = func() bool { return isTTY(os.Stdin) && isTTY(os.Stdout) }
-
-	// termMakeRaw wraps term.MakeRaw so tests can stub it (e.g. when there is
-	// no real PTY available). The default is the real implementation.
-	termMakeRaw = func(fd int) (*term.State, error) { return term.MakeRaw(fd) }
-)
-
-// Uses term.IsTerminal (ioctl-based) rather than os.ModeCharDevice, which
+// isTTY uses term.IsTerminal (ioctl-based) rather than os.ModeCharDevice, which
 // also matches /dev/null and /dev/zero.
 func isTTY(f *os.File) bool {
 	return term.IsTerminal(int(f.Fd()))
@@ -40,26 +32,10 @@ func (e *ExitError) Error() string {
 	return fmt.Sprintf("container exited with code %d", e.Code)
 }
 
-// Run launches the container described by s interactively. It refuses to start
-// (returning ErrNoTTY) unless both stdin and stdout are TTYs.
-// On non-zero container exit, Run returns *ExitError with the exit code.
-//
-// Deprecated: use (*Docker).Run instead. This package-level shim is kept for
-// backward compatibility during the struct-DI migration and will be removed in
-// Task 5.
-func Run(ctx context.Context, s Spec) error {
-	cli, err := newClientFn()
-	if err != nil {
-		return fmt.Errorf("create docker client: %w", err)
-	}
-	defer cli.Close() //nolint:errcheck // shim owns its client
-	return run(ctx, cli, ttyCheck, termMakeRaw, s)
-}
-
-// run is the internal implementation of Run with an injected apiClient, TTY
-// check predicate, and raw-mode function (used by both the package-level Run
-// shim and the Docker method).
-func run(ctx context.Context, cli apiClient, isTTYFn func() bool, makeRawFn func(int) (*term.State, error), s Spec) error {
+// runContainer is the internal implementation of (*Docker).Run. It uses the
+// provided apiClient, TTY check predicate, and raw-mode function. The caller
+// owns the client lifetime; runContainer does NOT call cli.Close().
+func runContainer(ctx context.Context, cli apiClient, isTTYFn func() bool, makeRawFn func(int) (*term.State, error), s Spec) error {
 	if !isTTYFn() {
 		return ErrNoTTY
 	}

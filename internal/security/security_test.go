@@ -12,10 +12,6 @@ import (
 )
 
 // skipNonPOSIX skips on non-POSIX hosts per the CLAUDE.md invariant.
-// This is a private copy of docker.SkipNonPOSIX. Importing the docker package
-// here would introduce an unwanted upward dependency from the low-level security
-// package into docker (which drags in config, assets, and testing helpers).
-// The two copies must stay in sync; the implementation is one line.
 func skipNonPOSIX(t *testing.T, why string) {
 	t.Helper()
 	if runtime.GOOS == "windows" {

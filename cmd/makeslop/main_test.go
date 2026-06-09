@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -222,6 +223,14 @@ func setHomeToTestParent(t *testing.T) {
 	sentinel := t.TempDir()
 	parent := evalSymlinks(t, filepath.Dir(sentinel))
 	t.Setenv("HOME", parent)
+}
+
+// skipNonPOSIX skips the test on non-POSIX hosts per the CLAUDE.md invariant.
+func skipNonPOSIX(t *testing.T, why string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip(why)
+	}
 }
 
 func TestRun_NotRegistered_NoMutation(t *testing.T) {
@@ -674,7 +683,7 @@ func TestInit_FromSubdir_ReusesParent(t *testing.T) {
 }
 
 func TestInit_SymlinkInvariant(t *testing.T) {
-	docker.SkipNonPOSIX(t, "symlinks unreliable on Windows; makeslop is POSIX-only")
+	skipNonPOSIX(t, "symlinks unreliable on Windows; makeslop is POSIX-only")
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	real := t.TempDir()
