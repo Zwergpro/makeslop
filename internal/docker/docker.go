@@ -13,9 +13,9 @@ import (
 // ImageExists. Construct one with New; all methods share the same client
 // for the lifetime of the struct. Call Close when done.
 type Docker struct {
-	client   apiClient
-	isTTY    func() bool
-	makeRaw  func(fd int) (*term.State, error)
+	client  apiClient
+	isTTYFn func() bool
+	makeRaw func(fd int) (*term.State, error)
 }
 
 // Option is a functional option for New.
@@ -32,7 +32,7 @@ func WithClient(c apiClient) Option {
 // WithTTYCheck overrides the TTY-detection predicate used by Run.
 func WithTTYCheck(fn func() bool) Option {
 	return func(d *Docker) {
-		d.isTTY = fn
+		d.isTTYFn = fn
 	}
 }
 
@@ -45,19 +45,23 @@ func WithRawMode(fn func(int) (*term.State, error)) Option {
 
 // New constructs a Docker with real defaults: a moby client built from the
 // environment (DOCKER_HOST etc.), stdin+stdout TTY detection, and real
-// term.MakeRaw. Options are applied after the defaults.
+// term.MakeRaw. Options are applied before client construction so that
+// WithClient can suppress the real newClient() call — preventing an orphaned
+// transport when a test injects its own fake.
 func New(opts ...Option) (*Docker, error) {
-	cli, err := newClient()
-	if err != nil {
-		return nil, fmt.Errorf("create docker client: %w", err)
-	}
 	d := &Docker{
-		client:  cli,
-		isTTY:   func() bool { return isTTY(os.Stdin) && isTTY(os.Stdout) },
+		isTTYFn: func() bool { return isTTY(os.Stdin) && isTTY(os.Stdout) },
 		makeRaw: func(fd int) (*term.State, error) { return term.MakeRaw(fd) },
 	}
 	for _, o := range opts {
 		o(d)
+	}
+	if d.client == nil {
+		cli, err := newClient()
+		if err != nil {
+			return nil, fmt.Errorf("create docker client: %w", err)
+		}
+		d.client = cli
 	}
 	return d, nil
 }
@@ -71,7 +75,7 @@ func (d *Docker) Close() error {
 // (returning ErrNoTTY) unless both stdin and stdout are TTYs.
 // On non-zero container exit, Run returns *ExitError with the exit code.
 func (d *Docker) Run(ctx context.Context, s Spec) error {
-	return runContainer(ctx, d.client, d.isTTY, d.makeRaw, s)
+	return runContainer(ctx, d.client, d.isTTYFn, d.makeRaw, s)
 }
 
 // Build builds the docker image described by o, writing build output to out

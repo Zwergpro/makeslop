@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"net"
 	"strings"
@@ -143,16 +142,20 @@ func TestRun_NoTTY_ReturnsSentinel_NoClientCall(t *testing.T) {
 }
 
 // TestRun_ExitMapping_ZeroCode: status 0 → nil error.
+// Exercises the real exit-mapping logic in runContainer via d.Run().
 func TestRun_ExitMapping_ZeroCode(t *testing.T) {
-	err := mapWaitResponse(container.WaitResponse{StatusCode: 0})
-	if err != nil {
+	fc := &fakeClient{waitResult: container.WaitResponse{StatusCode: 0}}
+	d := newDockerWithClient(t, fc, WithTTYCheck(alwaysTTY), WithRawMode(noopMakeRaw))
+	if err := d.Run(context.Background(), sampleSpec()); err != nil {
 		t.Errorf("expected nil for StatusCode 0, got %v", err)
 	}
 }
 
 // TestRun_ExitMapping_NonZero: non-zero StatusCode → *ExitError.
 func TestRun_ExitMapping_NonZero(t *testing.T) {
-	err := mapWaitResponse(container.WaitResponse{StatusCode: 42})
+	fc := &fakeClient{waitResult: container.WaitResponse{StatusCode: 42}}
+	d := newDockerWithClient(t, fc, WithTTYCheck(alwaysTTY), WithRawMode(noopMakeRaw))
+	err := d.Run(context.Background(), sampleSpec())
 	var ee *ExitError
 	if !errors.As(err, &ee) {
 		t.Fatalf("expected *ExitError, got %T: %v", err, err)
@@ -164,7 +167,9 @@ func TestRun_ExitMapping_NonZero(t *testing.T) {
 
 // TestRun_ExitMapping_Signal: daemon reports 137 (128+SIGKILL) → ExitError{137}.
 func TestRun_ExitMapping_Signal(t *testing.T) {
-	err := mapWaitResponse(container.WaitResponse{StatusCode: 137})
+	fc := &fakeClient{waitResult: container.WaitResponse{StatusCode: 137}}
+	d := newDockerWithClient(t, fc, WithTTYCheck(alwaysTTY), WithRawMode(noopMakeRaw))
+	err := d.Run(context.Background(), sampleSpec())
 	var ee *ExitError
 	if !errors.As(err, &ee) {
 		t.Fatalf("expected *ExitError, got %T: %v", err, err)
@@ -176,10 +181,12 @@ func TestRun_ExitMapping_Signal(t *testing.T) {
 
 // TestRun_ExitMapping_WaitExitError: WaitExitError → plain error (not *ExitError).
 func TestRun_ExitMapping_WaitExitError(t *testing.T) {
-	err := mapWaitResponse(container.WaitResponse{
+	fc := &fakeClient{waitResult: container.WaitResponse{
 		StatusCode: 1,
 		Error:      &container.WaitExitError{Message: "daemon error"},
-	})
+	}}
+	d := newDockerWithClient(t, fc, WithTTYCheck(alwaysTTY), WithRawMode(noopMakeRaw))
+	err := d.Run(context.Background(), sampleSpec())
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -237,6 +244,9 @@ func TestRun_CtxCancel_ForcesRemove(t *testing.T) {
 	case err := <-done:
 		if err == nil {
 			t.Fatal("expected error on ctx cancel, got nil")
+		}
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("expected context.Canceled, got %v", err)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("d.Run did not return within 5s after cancel")
@@ -317,18 +327,6 @@ func TestRun_WaitErrorChannel(t *testing.T) {
 	}
 }
 
-// mapWaitResponse is the exit-translation logic extracted for unit testing.
-// It must match what run() does in the select case for wr.Result.
-func mapWaitResponse(res container.WaitResponse) error {
-	if res.Error != nil {
-		return fmt.Errorf("container wait error: %s", res.Error.Message)
-	}
-	if res.StatusCode != 0 {
-		return &ExitError{Code: int(res.StatusCode)}
-	}
-	return nil
-}
-
 // blockingWaitClient is a fake apiClient whose ContainerWait blocks until the
 // test's context is cancelled.
 type blockingWaitClient struct {
@@ -359,4 +357,20 @@ func (b *blockingWaitClient) ContainerStart(_ context.Context, _ string, _ moby.
 		close(b.startedCh)
 	}
 	return moby.ContainerStartResult{}, nil
+}
+
+// TestDocker_Close_PropagatedToClient verifies that d.Close() calls Close on the
+// underlying apiClient, ensuring the transport is released.
+func TestDocker_Close_PropagatedToClient(t *testing.T) {
+	fc := &fakeClient{}
+	d, err := New(WithClient(fc))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := d.Close(); err != nil {
+		t.Fatalf("d.Close() unexpected error: %v", err)
+	}
+	if !fc.closed {
+		t.Error("d.Close() must propagate to the underlying apiClient")
+	}
 }

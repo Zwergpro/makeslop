@@ -94,8 +94,7 @@ Inject static environment variables into the container with an `environments:` b
 
 ```yaml
 environments:
-  NODE_ENV: production
-  PORT: 8080
+  HTTP_PROXY: "http://192.168.1.1:11111"
 ```
 
 Values must be scalars; numbers and booleans are coerced to strings. Absent block = no `-e` flags (backward-compatible). See [docs/reference.md](docs/reference.md#environment-variables-environments-block-in-makeslopya-ml) for the full spec.

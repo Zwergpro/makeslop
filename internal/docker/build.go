@@ -10,7 +10,7 @@
 //     RemoteContext="client-session".
 //  4. Render the daemon's build-trace stream via progressui (BuildKit) or plain
 //     text fallback for non-BuildKit streams.
-//  5. Close session + client.
+//  5. Close session (client is owned by the *Docker struct, not closed here).
 package docker
 
 import (

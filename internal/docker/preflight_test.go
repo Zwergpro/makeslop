@@ -13,7 +13,7 @@ import (
 // TestCheckDaemonOK verifies that CheckDaemon returns nil when the fake ping
 // succeeds.
 func TestCheckDaemonOK(t *testing.T) {
-	f := NewFakeRunClient(0) // PingErr unset → success
+	f := newFakeRunClient(0) // PingErr unset → success
 	d := newDockerWithClient(t, f)
 
 	if err := d.CheckDaemon(context.Background()); err != nil {
@@ -24,7 +24,7 @@ func TestCheckDaemonOK(t *testing.T) {
 // TestCheckDaemonDown verifies that CheckDaemon returns *ErrDaemonUnreachable
 // when Ping fails.
 func TestCheckDaemonDown(t *testing.T) {
-	f := NewFakeRunClient(0)
+	f := newFakeRunClient(0)
 	f.PingErr = errors.New("connection refused")
 	d := newDockerWithClient(t, f)
 
@@ -45,7 +45,7 @@ func TestCheckDaemonDown(t *testing.T) {
 // TestImageExistsPresent verifies that ImageExists returns (true, nil) when the
 // image is found.
 func TestImageExistsPresent(t *testing.T) {
-	f := NewFakeRunClient(0) // ImageMissing unset → found
+	f := newFakeRunClient(0) // ImageMissing unset → found
 	d := newDockerWithClient(t, f)
 
 	found, err := d.ImageExists(context.Background(), "myimage:latest")
@@ -60,7 +60,7 @@ func TestImageExistsPresent(t *testing.T) {
 // TestImageExistsNotFound verifies that ImageExists returns (false, nil) —
 // not an error — when the image is absent (cerrdefs.IsNotFound classification).
 func TestImageExistsNotFound(t *testing.T) {
-	f := NewFakeRunClient(0)
+	f := newFakeRunClient(0)
 	f.ImageMissing = true
 	d := newDockerWithClient(t, f)
 
@@ -77,7 +77,7 @@ func TestImageExistsNotFound(t *testing.T) {
 // errors rather than misclassifying them as "image absent". A dead daemon must
 // surface as a real error, not a misleading build hint.
 func TestImageExistsOtherError(t *testing.T) {
-	f := NewFakeRunClient(0)
+	f := newFakeRunClient(0)
 	f.ImageErr = errors.New("permission denied reading image store")
 	d := newDockerWithClient(t, f)
 
@@ -99,18 +99,18 @@ func TestImageExistsOtherError(t *testing.T) {
 	}
 }
 
-// TestCheckDaemonBuildClient verifies CheckDaemon works with FakeBuildClient
+// TestCheckDaemonBuildClient verifies CheckDaemon works with fakeBuildClient
 // as well (both fake types satisfy the wider interface).
 func TestCheckDaemonBuildClient(t *testing.T) {
 	t.Run("ok", func(t *testing.T) {
-		f := NewFakeBuildClient(0)
+		f := newFakeBuildClient(0)
 		d := newDockerWithClient(t, f)
 		if err := d.CheckDaemon(context.Background()); err != nil {
 			t.Fatalf("CheckDaemon() unexpected error: %v", err)
 		}
 	})
 	t.Run("down", func(t *testing.T) {
-		f := NewFakeBuildClient(0)
+		f := newFakeBuildClient(0)
 		f.PingErr = errors.New("dial tcp: no such file or directory")
 		d := newDockerWithClient(t, f)
 
@@ -134,7 +134,7 @@ func TestCheckDaemonBuildClient(t *testing.T) {
 // does NOT prove that a real SDK call against a black-hole DOCKER_HOST also
 // aborts (that is integration-only and beyond the scope of unit tests here).
 func TestCheckDaemonTimeoutBlockingPing(t *testing.T) {
-	f := NewFakeRunClient(0)
+	f := newFakeRunClient(0)
 	f.BlockPing = true // blocks until ctx is cancelled
 	d := newDockerWithClient(t, f)
 
@@ -163,7 +163,7 @@ func TestCheckDaemonTimeoutBlockingPing(t *testing.T) {
 //
 // NOTE: same caveat as TestCheckDaemonTimeoutBlockingPing: unit-test scope only.
 func TestImageExistsTimeoutBlockingInspect(t *testing.T) {
-	f := NewFakeRunClient(0)
+	f := newFakeRunClient(0)
 	f.BlockImageInspect = true // blocks until ctx is cancelled
 	d := newDockerWithClient(t, f)
 
@@ -189,7 +189,7 @@ func TestImageExistsTimeoutBlockingInspect(t *testing.T) {
 // TestWithPreflightTimeoutHappyPath verifies that a fast fake Ping and
 // ImageInspect succeed within the normal preflightTimeout — no regression.
 func TestWithPreflightTimeoutHappyPath(t *testing.T) {
-	f := NewFakeRunClient(0) // instant success
+	f := newFakeRunClient(0) // instant success
 	d := newDockerWithClient(t, f)
 
 	ctx, cancel := WithPreflightTimeout(context.Background())
@@ -208,6 +208,54 @@ func TestWithPreflightTimeoutHappyPath(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("ImageExists() expected true, got false")
+	}
+}
+
+// TestWithPreflightTimeout_BlockingPing verifies that WithPreflightTimeout
+// supplies a deadline-carrying context to CheckDaemon. If WithPreflightTimeout
+// ever returned a non-deadline context, BlockPing would hang this test.
+// This complements TestCheckDaemonTimeoutBlockingPing which uses a hand-rolled
+// deadline; this test exercises the actual WithPreflightTimeout helper.
+func TestWithPreflightTimeout_BlockingPing(t *testing.T) {
+	f := newFakeRunClient(0)
+	f.BlockPing = true
+	d := newDockerWithClient(t, f)
+
+	ctx, cancel := WithPreflightTimeout(context.Background())
+	defer cancel()
+	// Immediately cancel so the test doesn't wait 10 s for the real timeout.
+	cancel()
+
+	err := d.CheckDaemon(ctx)
+	if err == nil {
+		t.Fatal("CheckDaemon() expected error on cancelled WithPreflightTimeout context, got nil")
+	}
+	var dr *ErrDaemonUnreachable
+	if !errors.As(err, &dr) {
+		t.Fatalf("expected *ErrDaemonUnreachable, got %T: %v", err, err)
+	}
+}
+
+// TestWithPreflightTimeout_BlockingInspect verifies that WithPreflightTimeout
+// supplies a deadline-carrying context to ImageExists.
+func TestWithPreflightTimeout_BlockingInspect(t *testing.T) {
+	f := newFakeRunClient(0)
+	f.BlockImageInspect = true
+	d := newDockerWithClient(t, f)
+
+	ctx, cancel := WithPreflightTimeout(context.Background())
+	defer cancel()
+	cancel() // cancel immediately to avoid waiting 10 s
+
+	found, err := d.ImageExists(ctx, "myimage:latest")
+	if err == nil {
+		t.Fatal("ImageExists() expected error on cancelled WithPreflightTimeout context, got nil")
+	}
+	if found {
+		t.Fatal("ImageExists() must return false on cancelled context")
+	}
+	if cerrdefs.IsNotFound(err) {
+		t.Fatal("cancellation error must not be misclassified as image-not-found")
 	}
 }
 

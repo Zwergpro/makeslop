@@ -4,10 +4,9 @@ package docker
 //
 // This file provides:
 //   - noopClient: a no-op stub implementing all apiClient methods.
-//   - FakeRunClient/NewFakeRunClient: fake client for Run tests (scripted exit code,
+//   - fakeRunClient/newFakeRunClient: fake client for Run tests (scripted exit code,
 //     TTY lifecycle, BlockPing/BlockImageInspect, etc.).
-//   - FakeBuildClient/NewFakeBuildClient: fake client for Build tests.
-//   - SkipNonPOSIX: test helper to skip on non-POSIX hosts.
+//   - fakeBuildClient/newFakeBuildClient: fake client for Build tests.
 //   - newDockerWithClient: constructor helper that builds a *Docker with an
 //     injected fake via WithClient.
 //   - noopMakeRaw, alwaysTTY, neverTTY: stub functions for option injection.
@@ -18,7 +17,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"runtime"
 	"testing"
 
 	"github.com/containerd/errdefs"
@@ -27,16 +25,8 @@ import (
 	"golang.org/x/term"
 )
 
-// SkipNonPOSIX skips on non-POSIX hosts per the CLAUDE.md invariant.
-func SkipNonPOSIX(t *testing.T, why string) {
-	t.Helper()
-	if runtime.GOOS == "windows" {
-		t.Skip(why)
-	}
-}
-
 // noopClient provides no-op stub implementations of all apiClient methods.
-// FakeRunClient and FakeBuildClient embed it and override only the methods
+// fakeRunClient and fakeBuildClient embed it and override only the methods
 // that carry meaningful test logic.
 type noopClient struct{}
 
@@ -88,15 +78,15 @@ func (noopClient) ImageInspect(_ context.Context, _ string, _ ...moby.ImageInspe
 
 func (noopClient) Close() error { return nil }
 
-// FakeRunClient is a test fake apiClient that instruments Run calls with a
+// fakeRunClient is a test fake apiClient that instruments Run calls with a
 // scripted exit code and records whether the container was started.
 //
 // To simulate daemon-down, set PingErr. To simulate a missing image, set
 // ImageMissing = true. To simulate another image error, set ImageErr.
-type FakeRunClient struct {
+type fakeRunClient struct {
 	noopClient
 	ExitCode     int
-	Started      bool
+	wasStarted   bool
 	PingErr      error // if non-nil, Ping returns this error
 	ImageMissing bool  // if true, ImageInspect returns a not-found error
 	ImageErr     error // if non-nil (and ImageMissing false), ImageInspect returns this error
@@ -118,15 +108,15 @@ type FakeRunClient struct {
 	BlockImageInspect bool
 }
 
-// NewFakeRunClient creates a FakeRunClient that will return the given exit code
+// newFakeRunClient creates a fakeRunClient that will return the given exit code
 // from ContainerWait.
-func NewFakeRunClient(exitCode int) *FakeRunClient {
-	return &FakeRunClient{ExitCode: exitCode}
+func newFakeRunClient(exitCode int) *fakeRunClient {
+	return &fakeRunClient{ExitCode: exitCode}
 }
 
 // Ping returns PingErr if set, otherwise delegates to noopClient (success).
 // If BlockPing is true, Ping blocks until ctx is cancelled and returns ctx.Err().
-func (f *FakeRunClient) Ping(ctx context.Context, _ moby.PingOptions) (moby.PingResult, error) {
+func (f *fakeRunClient) Ping(ctx context.Context, _ moby.PingOptions) (moby.PingResult, error) {
 	if f.BlockPing {
 		<-ctx.Done()
 		return moby.PingResult{}, ctx.Err()
@@ -140,7 +130,7 @@ func (f *FakeRunClient) Ping(ctx context.Context, _ moby.PingOptions) (moby.Ping
 // ImageInspect returns a not-found error when ImageMissing is true, ImageErr
 // when ImageErr is set, or a found result otherwise.
 // If BlockImageInspect is true, ImageInspect blocks until ctx is cancelled.
-func (f *FakeRunClient) ImageInspect(ctx context.Context, imageID string, _ ...moby.ImageInspectOption) (moby.ImageInspectResult, error) {
+func (f *fakeRunClient) ImageInspect(ctx context.Context, imageID string, _ ...moby.ImageInspectOption) (moby.ImageInspectResult, error) {
 	if f.BlockImageInspect {
 		<-ctx.Done()
 		return moby.ImageInspectResult{}, ctx.Err()
@@ -155,12 +145,12 @@ func (f *FakeRunClient) ImageInspect(ctx context.Context, imageID string, _ ...m
 }
 
 // ContainerRemove records the removed container ID.
-func (f *FakeRunClient) ContainerRemove(_ context.Context, id string, _ moby.ContainerRemoveOptions) (moby.ContainerRemoveResult, error) {
+func (f *fakeRunClient) ContainerRemove(_ context.Context, id string, _ moby.ContainerRemoveOptions) (moby.ContainerRemoveResult, error) {
 	f.RemovedContainers = append(f.RemovedContainers, id)
 	return moby.ContainerRemoveResult{}, nil
 }
 
-func (f *FakeRunClient) ContainerCreate(_ context.Context, opts moby.ContainerCreateOptions) (moby.ContainerCreateResult, error) {
+func (f *fakeRunClient) ContainerCreate(_ context.Context, opts moby.ContainerCreateOptions) (moby.ContainerCreateResult, error) {
 	f.LastContainerCreateOpts = opts
 	if f.ContainerCreateErr != nil {
 		return moby.ContainerCreateResult{}, f.ContainerCreateErr
@@ -168,54 +158,53 @@ func (f *FakeRunClient) ContainerCreate(_ context.Context, opts moby.ContainerCr
 	return moby.ContainerCreateResult{ID: "fake-id"}, nil
 }
 
-func (f *FakeRunClient) ContainerAttach(_ context.Context, _ string, _ moby.ContainerAttachOptions) (moby.ContainerAttachResult, error) {
+func (f *fakeRunClient) ContainerAttach(_ context.Context, _ string, _ moby.ContainerAttachOptions) (moby.ContainerAttachResult, error) {
 	pr, pw := net.Pipe()
 	go func() { _ = pw.Close() }()
 	hr := moby.NewHijackedResponse(pr, "")
 	return moby.ContainerAttachResult{HijackedResponse: hr}, nil
 }
 
-func (f *FakeRunClient) ContainerStart(_ context.Context, _ string, _ moby.ContainerStartOptions) (moby.ContainerStartResult, error) {
+func (f *fakeRunClient) ContainerStart(_ context.Context, _ string, _ moby.ContainerStartOptions) (moby.ContainerStartResult, error) {
 	if f.ContainerStartErr != nil {
 		return moby.ContainerStartResult{}, f.ContainerStartErr
 	}
-	f.Started = true
+	f.wasStarted = true
 	return moby.ContainerStartResult{}, nil
 }
 
-func (f *FakeRunClient) ContainerWait(_ context.Context, _ string, _ moby.ContainerWaitOptions) moby.ContainerWaitResult {
+func (f *fakeRunClient) ContainerWait(_ context.Context, _ string, _ moby.ContainerWaitOptions) moby.ContainerWaitResult {
 	resultC := make(chan container.WaitResponse, 1)
 	errC := make(chan error, 1)
 	resultC <- container.WaitResponse{StatusCode: int64(f.ExitCode)}
 	return moby.ContainerWaitResult{Result: resultC, Error: errC}
 }
 
-// FakeBuildClient is a test fake apiClient for Build tests. It records the
+// fakeBuildClient is a test fake apiClient for Build tests. It records the
 // ImageBuildOptions passed to ImageBuild and returns a scripted result.
 //
 // To simulate daemon-down, set PingErr. To simulate a missing image, set
 // ImageMissing = true. To simulate another image error, set ImageErr.
-type FakeBuildClient struct {
+type fakeBuildClient struct {
 	noopClient
 	// ExitCode is returned as an error from ImageBuild when non-zero.
 	ExitCode int
 	// Err overrides ExitCode if non-nil: ImageBuild returns this error directly.
 	Err error
-	// LastBuildOptions records the ImageBuildOptions from the most recent
-	// ImageBuild call.
-	LastBuildOptions moby.ImageBuildOptions
+	// lastBuildOptions records the ImageBuildOptions from the most recent ImageBuild call.
+	lastBuildOptions moby.ImageBuildOptions
 	PingErr          error // if non-nil, Ping returns this error
 	ImageMissing     bool  // if true, ImageInspect returns a not-found error
 	ImageErr         error // if non-nil (and ImageMissing false), ImageInspect returns this error
 }
 
-// NewFakeBuildClient creates a FakeBuildClient. exitCode 0 means success.
-func NewFakeBuildClient(exitCode int) *FakeBuildClient {
-	return &FakeBuildClient{ExitCode: exitCode}
+// newFakeBuildClient creates a fakeBuildClient. exitCode 0 means success.
+func newFakeBuildClient(exitCode int) *fakeBuildClient {
+	return &fakeBuildClient{ExitCode: exitCode}
 }
 
 // Ping returns PingErr if set, otherwise delegates to noopClient (success).
-func (f *FakeBuildClient) Ping(_ context.Context, _ moby.PingOptions) (moby.PingResult, error) {
+func (f *fakeBuildClient) Ping(_ context.Context, _ moby.PingOptions) (moby.PingResult, error) {
 	if f.PingErr != nil {
 		return moby.PingResult{}, f.PingErr
 	}
@@ -224,7 +213,7 @@ func (f *FakeBuildClient) Ping(_ context.Context, _ moby.PingOptions) (moby.Ping
 
 // ImageInspect returns a not-found error when ImageMissing is true, ImageErr
 // when ImageErr is set, or a found result otherwise.
-func (f *FakeBuildClient) ImageInspect(_ context.Context, imageID string, _ ...moby.ImageInspectOption) (moby.ImageInspectResult, error) {
+func (f *fakeBuildClient) ImageInspect(_ context.Context, imageID string, _ ...moby.ImageInspectOption) (moby.ImageInspectResult, error) {
 	if f.ImageMissing {
 		return moby.ImageInspectResult{}, fmt.Errorf("image %q: %w", imageID, errdefs.ErrNotFound)
 	}
@@ -234,8 +223,8 @@ func (f *FakeBuildClient) ImageInspect(_ context.Context, imageID string, _ ...m
 	return moby.ImageInspectResult{}, nil
 }
 
-func (f *FakeBuildClient) ImageBuild(_ context.Context, _ io.Reader, opts moby.ImageBuildOptions) (moby.ImageBuildResult, error) {
-	f.LastBuildOptions = opts
+func (f *fakeBuildClient) ImageBuild(_ context.Context, _ io.Reader, opts moby.ImageBuildOptions) (moby.ImageBuildResult, error) {
+	f.lastBuildOptions = opts
 	if f.Err != nil {
 		return moby.ImageBuildResult{}, f.Err
 	}
@@ -246,11 +235,11 @@ func (f *FakeBuildClient) ImageBuild(_ context.Context, _ io.Reader, opts moby.I
 	return moby.ImageBuildResult{Body: io.NopCloser(bytes.NewReader(nil))}, nil
 }
 
-func (f *FakeBuildClient) DialHijack(_ context.Context, _, _ string, _ map[string][]string) (net.Conn, error) {
-	// Return a closed pipe so the session dialer fails gracefully.
-	c, _ := net.Pipe()
-	_ = c.Close()
-	return c, nil
+func (f *fakeBuildClient) DialHijack(_ context.Context, _, _ string, _ map[string][]string) (net.Conn, error) {
+	// Return an error so the session dialer fails deterministically.
+	// A pre-closed pipe would introduce a race: ImageBuild might not be reached
+	// before the session notices the broken pipe.
+	return nil, fmt.Errorf("DialHijack: not implemented in fakeBuildClient")
 }
 
 // ─── Constructor helpers ──────────────────────────────────────────────────────

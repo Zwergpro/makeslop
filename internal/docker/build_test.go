@@ -192,12 +192,17 @@ func TestBuild_FakeSelf_ImageBuildOptions(t *testing.T) {
 		DockerfilePath: dockerfilePath,
 		ContextDir:     t.TempDir(),
 	}
-	// Build may return an error (session dial fails for fakeClient), but
-	// ImageBuild should still be called before or during session teardown.
-	_ = d.Build(context.Background(), o, io.Discard, io.Discard)
+	// Build may return an error because fakeClient.DialHijack returns an error,
+	// causing the session to fail. ImageBuild is still called first (the session
+	// goroutine races with the ImageBuild call). The integration test covers the
+	// full end-to-end flow; this unit test only verifies option propagation.
+	err := d.Build(context.Background(), o, io.Discard, io.Discard)
+	// An error is expected here: DialHijack fails, so the session fails.
+	// We only care that ImageBuild was reached with the correct options.
+	_ = err
 
 	if !rc.buildCalled {
-		t.Fatal("ImageBuild was not called (session may have failed before reaching ImageBuild; integration-test covers full flow)")
+		t.Fatal("ImageBuild was not called; ensure DialHijack error does not race past ImageBuild")
 	}
 	opts := rc.lastOpts
 	if len(opts.Tags) == 0 || opts.Tags[0] != "claudebox" {

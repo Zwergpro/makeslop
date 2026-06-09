@@ -58,18 +58,18 @@ func TestNoopClientImageInspectFound(t *testing.T) {
 	}
 }
 
-// TestFakeRunClientPingScripting verifies that FakeRunClient returns the
+// TestFakeRunClientPingScripting verifies that fakeRunClient returns the
 // scripted PingErr when set, and success otherwise.
 func TestFakeRunClientPingScripting(t *testing.T) {
 	t.Run("success", func(t *testing.T) {
-		f := NewFakeRunClient(0)
+		f := newFakeRunClient(0)
 		_, err := f.Ping(context.Background(), moby.PingOptions{})
 		if err != nil {
 			t.Fatalf("expected ping success, got: %v", err)
 		}
 	})
 	t.Run("daemon-down", func(t *testing.T) {
-		f := NewFakeRunClient(0)
+		f := newFakeRunClient(0)
 		f.PingErr = errors.New("connection refused")
 		_, err := f.Ping(context.Background(), moby.PingOptions{})
 		if err == nil {
@@ -82,14 +82,14 @@ func TestFakeRunClientPingScripting(t *testing.T) {
 // image-missing, and other-error cases.
 func TestFakeRunClientImageInspectScripting(t *testing.T) {
 	t.Run("image-present", func(t *testing.T) {
-		f := NewFakeRunClient(0)
+		f := newFakeRunClient(0)
 		_, err := f.ImageInspect(context.Background(), "myimage")
 		if err != nil {
 			t.Fatalf("expected image found, got: %v", err)
 		}
 	})
 	t.Run("image-missing returns not-found", func(t *testing.T) {
-		f := NewFakeRunClient(0)
+		f := newFakeRunClient(0)
 		f.ImageMissing = true
 		_, err := f.ImageInspect(context.Background(), "myimage")
 		if err == nil {
@@ -100,7 +100,7 @@ func TestFakeRunClientImageInspectScripting(t *testing.T) {
 		}
 	})
 	t.Run("image other-error propagates", func(t *testing.T) {
-		f := NewFakeRunClient(0)
+		f := newFakeRunClient(0)
 		f.ImageErr = errors.New("permission denied")
 		_, err := f.ImageInspect(context.Background(), "myimage")
 		if err == nil {
@@ -112,17 +112,17 @@ func TestFakeRunClientImageInspectScripting(t *testing.T) {
 	})
 }
 
-// TestFakeBuildClientPingScripting verifies FakeBuildClient ping scripting.
+// TestFakeBuildClientPingScripting verifies fakeBuildClient ping scripting.
 func TestFakeBuildClientPingScripting(t *testing.T) {
 	t.Run("success", func(t *testing.T) {
-		f := NewFakeBuildClient(0)
+		f := newFakeBuildClient(0)
 		_, err := f.Ping(context.Background(), moby.PingOptions{})
 		if err != nil {
 			t.Fatalf("expected ping success, got: %v", err)
 		}
 	})
 	t.Run("daemon-down", func(t *testing.T) {
-		f := NewFakeBuildClient(0)
+		f := newFakeBuildClient(0)
 		f.PingErr = errors.New("connection refused")
 		_, err := f.Ping(context.Background(), moby.PingOptions{})
 		if err == nil {
@@ -132,17 +132,17 @@ func TestFakeBuildClientPingScripting(t *testing.T) {
 }
 
 // TestFakeBuildClientImageInspectScripting verifies image scripting on
-// FakeBuildClient: present, missing (not-found), and other-error cases.
+// fakeBuildClient: present, missing (not-found), and other-error cases.
 func TestFakeBuildClientImageInspectScripting(t *testing.T) {
 	t.Run("image-present", func(t *testing.T) {
-		f := NewFakeBuildClient(0)
+		f := newFakeBuildClient(0)
 		_, err := f.ImageInspect(context.Background(), "myimage")
 		if err != nil {
 			t.Fatalf("expected image found, got: %v", err)
 		}
 	})
 	t.Run("image-missing returns not-found", func(t *testing.T) {
-		f := NewFakeBuildClient(0)
+		f := newFakeBuildClient(0)
 		f.ImageMissing = true
 		_, err := f.ImageInspect(context.Background(), "myimage")
 		if err == nil {
@@ -153,7 +153,7 @@ func TestFakeBuildClientImageInspectScripting(t *testing.T) {
 		}
 	})
 	t.Run("image other-error propagates", func(t *testing.T) {
-		f := NewFakeBuildClient(0)
+		f := newFakeBuildClient(0)
 		f.ImageErr = errors.New("permission denied")
 		_, err := f.ImageInspect(context.Background(), "myimage")
 		if err == nil {

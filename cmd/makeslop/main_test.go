@@ -28,8 +28,8 @@ import (
 type fakeDocker struct {
 	// Run behavior
 	exitCode int
-	isTTY    bool   // if false, Run returns docker.ErrNoTTY
-	Started  bool   // set to true when Run is called and TTY check passes
+	isTTY    bool // if false, Run returns docker.ErrNoTTY
+	Started  bool // set to true when Run is called and TTY check passes
 
 	// Pre-flight / daemon behavior
 	PingErr      error // if non-nil, CheckDaemon returns this
@@ -93,12 +93,13 @@ func (f *fakeDocker) ImageExists(_ context.Context, _ string) (bool, error) {
 // client factory). Use runCmdWithDeps for tests that need a fake docker.
 func runCmd(t *testing.T, baseDir string, args ...string) (stdout, stderr string, err error) {
 	t.Helper()
-	cmd := newRootCmd(baseDir)
+	cmd, closeDocker := newRootCmd(baseDir)
+	defer closeDocker()
 	var out, errBuf bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&errBuf)
 	cmd.SetArgs(args)
-	err = cmd.Execute()
+	err = cmd.ExecuteContext(context.Background())
 	return out.String(), errBuf.String(), err
 }
 
@@ -111,7 +112,7 @@ func runCmdWithDeps(t *testing.T, baseDir string, deps dockerDeps, args ...strin
 	cmd.SetOut(&out)
 	cmd.SetErr(&errBuf)
 	cmd.SetArgs(args)
-	err = cmd.Execute()
+	err = cmd.ExecuteContext(context.Background())
 	return out.String(), errBuf.String(), err
 }
 
@@ -321,24 +322,6 @@ func TestInit_FromScratch(t *testing.T) {
 	if filepath.Base(workspacePath) != name {
 		t.Errorf("workspace dir basename %q != entry name %q", filepath.Base(workspacePath), name)
 	}
-}
-
-// installFakeRunClient creates a fakeDocker (TTY=true by default) and returns it.
-// Tests must call runCmdWithDeps(t, baseDir, depsFrom(fc), args...) to use it.
-// The fake records fc.Started when Run is called.
-func installFakeRunClient(t *testing.T, exitCode int) *fakeDocker {
-	t.Helper()
-	return newFakeDocker(exitCode, true)
-}
-
-// stubTTY is a no-op marker function kept for migration clarity. Because
-// fakeDocker.Run checks f.isTTY, callers should set fake.isTTY directly or use
-// newFakeDocker(exitCode, isTTY). This function exists only to ease incremental
-// migration of tests that call stubTTY before they are fully converted.
-// It is intentionally empty — TTY is now set per-fake, not globally.
-func stubTTY(_ *testing.T, _ bool) {
-	// TTY state is carried in fakeDocker.isTTY, not a global.
-	// Callers that still use the global seam path should migrate to fakeDocker.
 }
 
 // installFakeBuildClient creates a fakeDocker configured for build tests and
@@ -572,7 +555,6 @@ func TestRun_CustomImageAndShell_FlowFromSettings(t *testing.T) {
 
 	// Use --dry-run to capture the argv without actually running docker, so
 	// we can verify the image and shell flow from settings.json into the spec.
-	stubTTY(t, false)
 	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
 	if err != nil {
 		t.Fatalf("go --dry-run failed: %v; stderr=%q", err, stderr)
@@ -603,6 +585,33 @@ func TestRunWithExitCode_NonExitErrorPrintsPrefix(t *testing.T) {
 	}
 	if !strings.HasPrefix(stderr.String(), "makeslop: ") {
 		t.Errorf("stderr missing 'makeslop: ' prefix: %q", stderr.String())
+	}
+}
+
+// TestRunWithExitCode_ContextObserver verifies that runWithExitCode calls the
+// contextObserver with a non-nil, cancellable context — not context.Background().
+func TestRunWithExitCode_ContextObserver(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+
+	var observedCtx context.Context
+	observer := func(ctx context.Context) {
+		observedCtx = ctx
+	}
+
+	// Use "version" so no docker interaction is needed.
+	var stdout, stderr bytes.Buffer
+	runWithExitCode(baseDir, &stdout, &stderr, []string{"version"}, observer)
+
+	if observedCtx == nil {
+		t.Fatal("contextObserver was not called")
+	}
+	if observedCtx == context.Background() {
+		t.Error("contextObserver received context.Background(); expected a signal-cancellable child context")
+	}
+	// The observed context must have a Done channel (cancellable).
+	if observedCtx.Done() == nil {
+		t.Error("observed context has no Done channel; expected a cancellable context")
 	}
 }
 
@@ -1006,7 +1015,6 @@ func TestRun_MasksFoundEnvFiles_ArgvContainsDevNullMounts(t *testing.T) {
 	// Use --dry-run to verify the spec contains /dev/null mounts without
 	// actually running docker. The same spec is passed to docker.Run in the
 	// non-dry-run path (verified by the pure spec drift-guard in spec_test.go).
-	stubTTY(t, false)
 	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
 	if err != nil {
 		t.Fatalf("--dry-run failed: %v; stderr=%q", err, stderr)
@@ -1052,7 +1060,6 @@ func TestRun_NoEnvFiles_PrintsNothingExtraOnStderr(t *testing.T) {
 	}
 
 	// Use --dry-run: no docker needed, and we can verify no /dev/null mounts in output.
-	stubTTY(t, false)
 	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
 	if err != nil {
 		t.Fatalf("--dry-run failed: %v; stderr=%q", err, stderr)
@@ -1248,8 +1255,6 @@ func TestRun_DryRun_StdoutEqualsBuildSpecShellCommand(t *testing.T) {
 	}
 	workspaceDir := strings.TrimSpace(initOut)
 
-	stubTTY(t, false)
-
 	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
 	if err != nil {
 		t.Fatalf("--dry-run failed: %v; stderr=%q", err, stderr)
@@ -1288,8 +1293,6 @@ func TestRun_DryRun_ShortFlag(t *testing.T) {
 	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
 		t.Fatalf("init failed: %v", err)
 	}
-
-	stubTTY(t, false)
 
 	stdoutLong, stderrLong, errLong := runCmd(t, baseDir, "run", "--dry-run")
 	if errLong != nil {
@@ -1397,8 +1400,6 @@ func TestRun_DryRun_OutOfHomeBypasses(t *testing.T) {
 
 	t.Chdir(insidePwd)
 
-	stubTTY(t, false)
-
 	// --out-of-home is now scoped to `run` (not a root persistent flag).
 	stdout, stderr, err := runCmd(t, baseDir, "run", "--out-of-home", "--dry-run")
 	if err != nil {
@@ -1426,8 +1427,6 @@ func TestRun_DryRun_CorruptSettings(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(baseDir, "settings.json"), []byte("{not json"), 0o644); err != nil {
 		t.Fatalf("corrupt settings: %v", err)
 	}
-
-	stubTTY(t, false)
 
 	stdout, _, err := runCmd(t, baseDir, "run", "--dry-run")
 	if err == nil {
@@ -1473,7 +1472,6 @@ func TestRun_DryRun_MasksEnvFiles_StdoutContainsDevNullMounts(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(yamlContent), 0o644); err != nil {
 		t.Fatalf("write yaml: %v", err)
 	}
-	stubTTY(t, false)
 
 	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
 	if err != nil {
@@ -1527,8 +1525,6 @@ func TestRun_DryRun_FromSubdir_MountsAncestor(t *testing.T) {
 		t.Fatalf("mkdir sub: %v", err)
 	}
 	t.Chdir(sub)
-
-	stubTTY(t, false)
 
 	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
 	if err != nil {
@@ -1681,7 +1677,6 @@ func TestRun_LoadsYamlAndMergesMaskedFiles(t *testing.T) {
 	}
 
 	// Use --dry-run to verify spec content without running docker.
-	stubTTY(t, false)
 	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
 	if err != nil {
 		t.Fatalf("go --dry-run failed: %v; stderr=%q", err, stderr)
@@ -1760,7 +1755,6 @@ func TestRun_LoadsYamlMaskedDirs_TmpfsMountInArgv(t *testing.T) {
 	}
 
 	// Use --dry-run to verify spec contains the tmpfs mount without running docker.
-	stubTTY(t, false)
 	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
 	if err != nil {
 		t.Fatalf("go --dry-run failed: %v; stderr=%q", err, stderr)
@@ -1806,7 +1800,6 @@ func TestRun_YamlAbsentIsBitIdenticalArgv(t *testing.T) {
 	}
 
 	// Use --dry-run: yaml absent → direct/bridge is default (no socket wired).
-	stubTTY(t, false)
 	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
 	if err != nil {
 		t.Fatalf("go --dry-run failed: %v; stderr=%q", err, stderr)
@@ -1861,7 +1854,6 @@ func TestRun_YamlDedupsAgainstScan(t *testing.T) {
 	}
 
 	// Use --dry-run to verify dedup without running docker.
-	stubTTY(t, false)
 	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
 	if err != nil {
 		t.Fatalf("go --dry-run failed: %v; stderr=%q", err, stderr)
@@ -2029,7 +2021,6 @@ func TestRun_YamlMissingPathSkippedSilently(t *testing.T) {
 	_ = os.Remove(filepath.Join(resolvedPwd, "secrets", "api.key"))
 
 	// Use --dry-run to verify spec without running docker.
-	stubTTY(t, false)
 	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
 	if err != nil {
 		t.Fatalf("expected success when missing path is silently skipped, got: %v; stderr=%q", err, stderr)
@@ -2058,8 +2049,6 @@ func TestRun_DryRun_DefaultIsBridge(t *testing.T) {
 	resolvedPwd := evalSymlinks(t, pwd)
 
 	_ = os.Remove(filepath.Join(resolvedPwd, projectconfig.Filename))
-
-	stubTTY(t, false)
 
 	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
 	if err != nil {
@@ -2224,8 +2213,6 @@ func TestRun_DryRunIncludesMaskedDirs(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(yamlContent), 0o644); err != nil {
 		t.Fatalf("write yaml: %v", err)
 	}
-
-	stubTTY(t, false)
 
 	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
 	if err != nil {
@@ -2850,7 +2837,6 @@ func TestRun_CustomTmpDirSize_FlowsIntoDockerArgv(t *testing.T) {
 	}
 
 	// Use --dry-run to verify the tmpfs size flows into the spec.
-	stubTTY(t, false)
 	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
 	if err != nil {
 		t.Fatalf("makeslop go --dry-run failed: %v; stderr=%q", err, stderr)
@@ -3420,8 +3406,6 @@ func TestQuiet_SuppressesMaskedCount(t *testing.T) {
 		t.Fatalf("write yaml: %v", err)
 	}
 
-	stubTTY(t, false)
-
 	// Without --quiet: notice appears.
 	stdout1, stderr1, err := runCmd(t, baseDir, "run", "--dry-run")
 	if err != nil {
@@ -3643,8 +3627,6 @@ func TestRun_DryRun_CacheDisabled(t *testing.T) {
 		t.Fatalf("write .makeslop.yaml: %v", err)
 	}
 
-	stubTTY(t, false)
-
 	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
 	if err != nil {
 		t.Fatalf("--dry-run failed: %v; stderr=%q", err, stderr)
@@ -3704,8 +3686,6 @@ func TestRun_DryRun_CacheDefault(t *testing.T) {
 		t.Fatalf("write .makeslop.yaml: %v", err)
 	}
 
-	stubTTY(t, false)
-
 	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
 	if err != nil {
 		t.Fatalf("--dry-run failed: %v; stderr=%q", err, stderr)
@@ -3756,8 +3736,6 @@ func TestRun_DryRun_CacheMixed(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(yamlContent), 0o644); err != nil {
 		t.Fatalf("write .makeslop.yaml: %v", err)
 	}
-
-	stubTTY(t, false)
 
 	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
 	if err != nil {
@@ -3966,7 +3944,6 @@ func TestRun_EnvironmentsBlock_ProducesEnvFlags(t *testing.T) {
 		t.Fatalf("write yaml: %v", err)
 	}
 
-	stubTTY(t, false)
 	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
 	if err != nil {
 		t.Fatalf("--dry-run failed: %v; stderr=%q", err, stderr)
@@ -3993,7 +3970,6 @@ func TestRun_NoEnvironmentsBlock_NoEnvFlags(t *testing.T) {
 		t.Fatalf("init failed: %v", err)
 	}
 
-	stubTTY(t, false)
 	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
 	if err != nil {
 		t.Fatalf("--dry-run failed: %v; stderr=%q", err, stderr)

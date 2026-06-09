@@ -265,21 +265,23 @@ func (q *quietWriter) Write(p []byte) (int, error) {
 // dials and essentially never fails. If it does fail, the error is wrapped and
 // returned by the first docker-touching command (run, build, status);
 // init/migrate/config/version work regardless.
-func newRootCmd(baseDir string) *cobra.Command {
+//
+// The second return value is a cleanup function that closes the Docker client.
+// Callers must call it when the command has finished executing (typically via defer).
+func newRootCmd(baseDir string) (*cobra.Command, func()) {
 	d, newErr := docker.New()
-	var deps dockerDeps
-	if d != nil {
-		deps = dockerDeps{runner: d, builder: d, daemon: d, image: d}
-	} else {
+	if newErr != nil {
 		// Construction failed: wrap the error in stubs that surface it on first use.
-		deps = dockerDeps{
+		deps := dockerDeps{
 			runner:  dockerNewErrStub{newErr},
 			builder: dockerNewErrStub{newErr},
 			daemon:  dockerNewErrStub{newErr},
 			image:   dockerNewErrStub{newErr},
 		}
+		return newRootCmdWithDeps(baseDir, deps), func() {}
 	}
-	return newRootCmdWithDeps(baseDir, deps)
+	deps := dockerDeps{runner: d, builder: d, daemon: d, image: d}
+	return newRootCmdWithDeps(baseDir, deps), func() { _ = d.Close() }
 }
 
 // dockerNewErrStub is a stub that returns a client-construction error from all
@@ -291,7 +293,7 @@ func (s dockerNewErrStub) Run(_ context.Context, _ docker.Spec) error { return s
 func (s dockerNewErrStub) Build(_ context.Context, _ docker.BuildOptions, _, _ io.Writer) error {
 	return s.err
 }
-func (s dockerNewErrStub) CheckDaemon(_ context.Context) error            { return s.err }
+func (s dockerNewErrStub) CheckDaemon(_ context.Context) error { return s.err }
 func (s dockerNewErrStub) ImageExists(_ context.Context, _ string) (bool, error) {
 	return false, s.err
 }
@@ -602,7 +604,8 @@ func runWithExitCode(baseDir string, stdout, stderr io.Writer, args []string, co
 		contextObserver(ctx)
 	}
 
-	cmd := newRootCmd(baseDir)
+	cmd, closeDocker := newRootCmd(baseDir)
+	defer closeDocker()
 	cmd.SetArgs(args)
 	cmd.SetOut(stdout)
 	cmd.SetErr(stderr)
