@@ -132,7 +132,7 @@ func TestRun_NoTTY_ReturnsSentinel_NoClientCall(t *testing.T) {
 	t.Cleanup(SetTTYCheckForTest(func() bool { return false }))
 
 	fc := &fakeClient{}
-	err := run(context.Background(), fc, sampleSpec())
+	err := run(context.Background(), fc, func() bool { return false }, func(_ int) (*term.State, error) { return nil, nil }, sampleSpec())
 	if !errors.Is(err, ErrNoTTY) {
 		t.Fatalf("expected ErrNoTTY, got %v", err)
 	}
@@ -258,7 +258,7 @@ func TestRun_ContainerCreate_Failure(t *testing.T) {
 	createErr := errors.New("no such image")
 	fc := &fakeClient{createErr: createErr}
 
-	err := run(context.Background(), fc, sampleSpec())
+	err := run(context.Background(), fc, func() bool { return true }, func(_ int) (*term.State, error) { return nil, nil }, sampleSpec())
 	if err == nil {
 		t.Fatal("expected error from ContainerCreate failure, got nil")
 	}
@@ -279,7 +279,7 @@ func TestRun_ContainerAttach_Failure(t *testing.T) {
 	attachErr := errors.New("stream attach refused")
 	fc := &fakeClient{attachErr: attachErr}
 
-	err := run(context.Background(), fc, sampleSpec())
+	err := run(context.Background(), fc, func() bool { return true }, func(_ int) (*term.State, error) { return nil, nil }, sampleSpec())
 	if err == nil {
 		t.Fatal("expected error from ContainerAttach failure, got nil")
 	}
@@ -324,9 +324,9 @@ func mapWaitResponse(res container.WaitResponse) error {
 // exercise the full run() path without a real PTY. ttyCheck must be stubbed
 // true by the caller before calling this.
 func runWithForceTTY(ctx context.Context, cli apiClient, s Spec) error {
-	restore := SetTermMakeRawForTest(func(_ int) (*term.State, error) { return nil, nil })
-	defer restore()
-	return run(ctx, cli, s)
+	noopMakeRaw := func(_ int) (*term.State, error) { return nil, nil }
+	alwaysTTY := func() bool { return true }
+	return run(ctx, cli, alwaysTTY, noopMakeRaw, s)
 }
 
 // blockingWaitClient is a fake apiClient whose ContainerWait blocks until the

@@ -43,20 +43,26 @@ func (e *ExitError) Error() string {
 // Run launches the container described by s interactively. It refuses to start
 // (returning ErrNoTTY) unless both stdin and stdout are TTYs.
 // On non-zero container exit, Run returns *ExitError with the exit code.
+//
+// Deprecated: use (*Docker).Run instead. This package-level shim is kept for
+// backward compatibility during the struct-DI migration and will be removed in
+// Task 5.
 func Run(ctx context.Context, s Spec) error {
 	cli, err := newClientFn()
 	if err != nil {
 		return fmt.Errorf("create docker client: %w", err)
 	}
-	return run(ctx, cli, s)
+	defer cli.Close() //nolint:errcheck // shim owns its client
+	return run(ctx, cli, ttyCheck, termMakeRaw, s)
 }
 
-// run is the internal implementation of Run with an injected apiClient (for tests).
-func run(ctx context.Context, cli apiClient, s Spec) error {
-	if !ttyCheck() {
+// run is the internal implementation of Run with an injected apiClient, TTY
+// check predicate, and raw-mode function (used by both the package-level Run
+// shim and the Docker method).
+func run(ctx context.Context, cli apiClient, isTTYFn func() bool, makeRawFn func(int) (*term.State, error), s Spec) error {
+	if !isTTYFn() {
 		return ErrNoTTY
 	}
-	defer cli.Close() //nolint:errcheck // teardown; error not actionable here
 
 	// Create container (but do not start it yet).
 	createRes, err := cli.ContainerCreate(ctx, moby.ContainerCreateOptions{
@@ -94,7 +100,7 @@ func run(ctx context.Context, cli apiClient, s Spec) error {
 
 	// Put the terminal in raw mode so the container gets unmodified input.
 	fd := int(os.Stdin.Fd())
-	oldState, err := termMakeRaw(fd)
+	oldState, err := makeRawFn(fd)
 	if err != nil {
 		return fmt.Errorf("set terminal raw mode: %w", err)
 	}

@@ -119,15 +119,21 @@ func stageDockerfile(path string) (dir string, cleanup func(), err error) {
 // removes it on return.
 //
 // Build never checks for a TTY and is CI/pipe-safe.
+//
+// Deprecated: use (*Docker).Build instead. This package-level shim is kept for
+// backward compatibility during the struct-DI migration and will be removed in
+// Task 5.
 func Build(ctx context.Context, o BuildOptions, stdout, stderr io.Writer) error {
 	cli, err := newClientFn()
 	if err != nil {
 		return fmt.Errorf("create docker client: %w", err)
 	}
+	defer cli.Close() //nolint:errcheck // shim owns its client
 	return build(ctx, cli, o, stdout, stderr)
 }
 
 // build is the internal implementation of Build with an injected apiClient.
+// The caller owns the client lifetime; build does NOT call cli.Close().
 func build(ctx context.Context, cli apiClient, o BuildOptions, stdout, stderr io.Writer) error {
 	if o.ContextDir == "" {
 		dir, err := os.MkdirTemp("", "makeslop-build-*")
@@ -137,7 +143,6 @@ func build(ctx context.Context, cli apiClient, o BuildOptions, stdout, stderr io
 		defer os.RemoveAll(dir) //nolint:errcheck
 		o.ContextDir = dir
 	}
-	defer cli.Close() //nolint:errcheck
 
 	// Stage the Dockerfile in an isolated temp dir so that only the Dockerfile
 	// is synced to the daemon — not the entire ~/.makeslop/ directory (which

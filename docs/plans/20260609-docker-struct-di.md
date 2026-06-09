@@ -177,25 +177,25 @@ Key design decisions / rationale:
 - Create: `internal/docker/docker.go`
 - Modify: `internal/docker/run.go`, `internal/docker/build.go`, `internal/docker/preflight.go`, `internal/docker/client.go`
 
-- [ ] create `internal/docker/docker.go` with `Docker` struct (`client`, `isTTY`,
+- [x] create `internal/docker/docker.go` with `Docker` struct (`client`, `isTTY`,
       `makeRaw`), `New(...Option) (*Docker, error)`, `Option func(*Docker)`,
       `WithClient`/`WithTTYCheck`/`WithRawMode`, and `(*Docker) Close() error`
-- [ ] move client construction logic from `client.go` into `New`'s default (keep
+- [x] move client construction logic from `client.go` into `New`'s default (keep
       `apiClient`, the compile-time assertion, and `newClient`; remove `newClientFn`
       only in Task 5)
-- [ ] add `(d *Docker) Run(ctx, Spec) error` mirroring the existing `run()` body but
+- [x] add `(d *Docker) Run(ctx, Spec) error` mirroring the existing `run()` body but
       using `d.client`/`d.isTTY`/`d.makeRaw`; **remove the per-call `defer cli.Close()`**
-- [ ] add `(d *Docker) Build(ctx, BuildOptions, out, errw) error` mirroring `build()`;
+- [x] add `(d *Docker) Build(ctx, BuildOptions, out, errw) error` mirroring `build()`;
       **remove the per-call `defer cli.Close()`** (`build.go:140`)
-- [ ] add `(d *Docker) CheckDaemon(ctx) error` and `(d *Docker) ImageExists(ctx, image) (bool, error)`
+- [x] add `(d *Docker) CheckDaemon(ctx) error` and `(d *Docker) ImageExists(ctx, image) (bool, error)`
       using `d.client`; **remove the per-call `defer c.Close()`** from both (`preflight.go:47/71`)
-- [ ] ⚠️ verify NO method body retains a per-call `Close()` (use-after-close hazard;
+- [x] ⚠️ verify NO method body retains a per-call `Close()` (use-after-close hazard;
       fakes cannot detect it — see Technical Details / Client lifecycle)
-- [ ] relocate the `golang.org/x/term` import to `docker.go` (currently in `run.go` +
+- [x] relocate the `golang.org/x/term` import to `docker.go` (currently in `run.go` +
       `testing.go`); fold real `isTTY` (stdin+stdout) and `termMakeRaw` defaults into `New`
-- [ ] keep the old package funcs (`Run`/`Build`/`CheckDaemon`/`ImageExists`) and
+- [x] keep the old package funcs (`Run`/`Build`/`CheckDaemon`/`ImageExists`) and
       globals temporarily so the tree still compiles
-- [ ] run `go build ./...` and `go vet ./...` — must pass before next task
+- [x] run `go build ./...` and `go vet ./...` — must pass before next task
 
 ### Task 2: Migrate `internal/docker` tests to `New(WithClient(...))`
 
