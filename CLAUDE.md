@@ -164,7 +164,8 @@ the block is absent (backward-compatible — nil means no `-e` flags emitted).
 - Values must be `yaml.ScalarNode` (strings, numbers, booleans coerced to string).
 - Null scalars (`KEY:` / `KEY: null`) rejected fail-loud.
 - Explicit empty string (`KEY: ""`) accepted → `"KEY="`.
-- Returns `dedupSorted(...)` for deterministic output.
+- Keys must not contain `=` or newline/tab characters.
+- Returns a `sort.Strings`-sorted `[]string` for deterministic output.
 
 The env slice flows into `docker.Options.Env []string` in `runRun`, then into `Spec.Env` via
 `BuildSpec`, then:

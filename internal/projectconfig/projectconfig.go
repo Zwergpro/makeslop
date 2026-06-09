@@ -361,6 +361,8 @@ func validateSkipDirs(entries []string) ([]string, error) {
 //
 // Rules:
 //   - Empty keys are rejected (a "-e =value" is broken docker syntax).
+//   - Keys must not contain '=' (would break KEY=VALUE encoding).
+//   - Keys must not contain newline or tab characters.
 //   - Values must be scalar YAML nodes (strings, numbers, booleans). Non-scalar
 //     values (lists, maps) are rejected fail-loud.
 //   - Null scalars (bare KEY: or KEY: null) are rejected — almost always a mistake.
@@ -377,20 +379,20 @@ func validateEnvironments(env map[string]yaml.Node) ([]string, error) {
 		if k == "" {
 			return nil, fmt.Errorf("projectconfig: empty key in environments")
 		}
-		if strings.ContainsRune(k, '=') {
+		if strings.Contains(k, "=") {
 			return nil, fmt.Errorf("projectconfig: environment key %q must not contain '='", k)
 		}
 		if strings.ContainsAny(k, "\n\r\t") {
 			return nil, fmt.Errorf("projectconfig: environment key %q must not contain newline or tab characters", k)
 		}
 		if v.Kind != yaml.ScalarNode {
-			return nil, fmt.Errorf("projectconfig: environment %q must be a scalar value", k)
+			return nil, fmt.Errorf("projectconfig: environment key %q must be a scalar value", k)
 		}
 		if v.Tag == "!!null" {
-			return nil, fmt.Errorf("projectconfig: environment %q has no value", k)
+			return nil, fmt.Errorf("projectconfig: environment key %q has no value", k)
 		}
-		if strings.ContainsAny(v.Value, "\n\r") {
-			return nil, fmt.Errorf("projectconfig: environment %q value must not contain newlines", k)
+		if strings.ContainsAny(v.Value, "\n\r\t") {
+			return nil, fmt.Errorf("projectconfig: environment key %q value must not contain newline or tab characters", k)
 		}
 		result = append(result, k+"="+v.Value)
 	}

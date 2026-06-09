@@ -1,7 +1,6 @@
 package projectconfig
 
 import (
-	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1096,25 +1095,26 @@ func TestValidateEnvironments_EqualsInKeyRejected(t *testing.T) {
 	}
 }
 
-// TestValidateEnvironments_NewlineInValueRejected verifies that a value
-// containing a newline is rejected (breaks ShellCommand dry-run output).
-func TestValidateEnvironments_NewlineInValueRejected(t *testing.T) {
+// TestValidateEnvironments_NewlineOrTabInValueRejected verifies that a value
+// containing a newline or tab is rejected (breaks ShellCommand dry-run output).
+func TestValidateEnvironments_NewlineOrTabInValueRejected(t *testing.T) {
 	cases := []struct {
 		name  string
 		value string
 	}{
 		{"LF", "line1\nline2"},
 		{"CR", "line1\rline2"},
+		{"TAB", "val1\tval2"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			valNode := yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: tc.value}
 			_, err := validateEnvironments(map[string]yaml.Node{"KEY": valNode})
 			if err == nil {
-				t.Fatalf("expected error for newline in value (%s), got nil", tc.name)
+				t.Fatalf("expected error for newline/tab in value (%s), got nil", tc.name)
 			}
-			if !strings.Contains(err.Error(), "must not contain newlines") {
-				t.Errorf("error %q does not contain 'must not contain newlines'", err.Error())
+			if !strings.Contains(err.Error(), "must not contain newline or tab characters") {
+				t.Errorf("error %q does not contain 'must not contain newline or tab characters'", err.Error())
 			}
 			if !strings.HasPrefix(err.Error(), "projectconfig:") {
 				t.Errorf("error missing 'projectconfig:' prefix: %q", err.Error())
@@ -1372,14 +1372,6 @@ func TestLoad_TypoInEnvironments_StrictModeRejects(t *testing.T) {
 	if !strings.HasPrefix(err.Error(), "projectconfig:") {
 		t.Errorf("error missing 'projectconfig:' prefix: %q", err.Error())
 	}
-}
-
-// newKnownFieldsDecoder is a test helper that creates a strict YAML decoder
-// (mirrors the decoder in Load) for use in unit tests of validate* functions.
-func newKnownFieldsDecoder(data []byte) *yaml.Decoder {
-	dec := yaml.NewDecoder(bytes.NewReader(data))
-	dec.KnownFields(true)
-	return dec
 }
 
 // stringSlicesEqual returns true if two string slices are element-wise equal.
