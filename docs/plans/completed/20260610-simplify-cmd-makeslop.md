@@ -158,9 +158,9 @@ JSON output and rendering consume `checkList.checks` / `checkList.ready` exactly
 - [x] size goals (approximate, non-blocking — byte-identical output is the hard gate, line counts are not): production files ≤ ~250 lines, `runStatus` ~110, `runRun` ~90
 
 ### Task 5: [Final] Update documentation
-- [ ] update CLAUDE.md references: `dockerNewErrStub` "(in `main.go`)" → `deps.go`; "Both `runRun` (main.go) and `runStatus` (status.go) use it" (preflight section) → `runRun` is in `run.go`; the TTY-notions section's "(`status.go`, `main.go`)" → `runRun`'s usage now in `run.go`
-- [ ] note the per-command file layout under the consumer-side interfaces section; four-interface pattern explicitly retained
-- [ ] move this plan to `docs/plans/completed/`
+- [x] update CLAUDE.md references: `dockerNewErrStub` "(in `main.go`)" → `deps.go`; "Both `runRun` (main.go) and `runStatus` (status.go) use it" (preflight section) → `runRun` is in `run.go`; the TTY-notions section's "(`status.go`, `main.go`)" → `runRun`'s usage now in `run.go`
+- [x] note the per-command file layout under the consumer-side interfaces section; four-interface pattern explicitly retained
+- [x] move this plan to `docs/plans/completed/`
 
 ## Post-Completion
 *No external systems involved. Optional manual check:*

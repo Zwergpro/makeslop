@@ -133,8 +133,8 @@ misreported as "image absent").
 
 `WithPreflightTimeout(ctx context.Context) (context.Context, context.CancelFunc)` — wraps the
 given context with a `preflightTimeout` deadline (10 s) so that preflight checks never hang on a
-black-hole `DOCKER_HOST`. Both `runRun` (main.go) and `runStatus` (status.go) use it around each
-preflight call.
+black-hole `DOCKER_HOST`. Both `runRun` (run.go) and `runStatus` (status.go) use it around each
+preflight call (via the `checkDaemonPreflight`/`imageExistsPreflight` wrappers on `dockerDeps`).
 
 Both methods share the `*Docker`'s single long-lived client — no per-call client construction
 or close. `cmd` callers must `defer d.Close()` once after construction to release the connection.
@@ -283,7 +283,7 @@ injected at construction time via `WithTTYCheck`; defaults to real stdin+stdout 
 **Two distinct TTY notions** — do not conflate:
 - `docker.Docker`'s `isTTYFn` checks stdin+stdout and gates `Run` (returns `ErrNoTTY` when false).
 - `cmd`'s `isTTYFunc` / `defaultIsTTY` is writer-based and gates status color/glyph output
-  (`status.go`, `main.go`). These stay separate.
+  (`status.go`, `run.go`). These stay separate.
 
 ### Home-directory guard exemptions
 `makeslop run` and `makeslop init` enforce the home-directory guard.
