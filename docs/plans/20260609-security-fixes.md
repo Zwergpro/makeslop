@@ -193,12 +193,12 @@ updates only.
 - Modify: `cmd/makeslop/main.go`
 - Modify: `cmd/makeslop/main_test.go`
 
-- [ ] in `runRun`, Lstat `<workspaceRoot>/.makeslop.yaml` (regular file → `ProtectProjectConfig: true`) and `<workspaceRoot>/.git` (directory → `MaskGitHooks: true`; a `.git` *file* — worktree/submodule gitfile — leaves it false); set both on `docker.Options`
-- [ ] print `security.Scan` symlink warnings and `Excludes.Warnings` to `cmd.ErrOrStderr()` directly — NOT via `quietWriter` (warnings bypass `--quiet`)
-- [ ] write boundary tests using **real temp-dir workspaces** (security.Scan and the Lstat gates are not injected — tests must create a real `.makeslop.yaml`, `.git/` dir, symlinks): git project + config present → both mounts in the spec the fake runner receives; no `.git` / no `.makeslop.yaml` → respective mount absent; `.git` as a regular file → hooks mount absent
-- [ ] write quiet-contract test: with `--quiet`, the `masked N secret file(s)` chrome line IS suppressed while symlink warnings are NOT — both assertions in one test to lock the contract
-- [ ] write `--dry-run` test: output includes the new mounts
-- [ ] run `go test ./cmd/makeslop/` — must pass before task 5
+- [x] in `runRun`, Lstat `<workspaceRoot>/.makeslop.yaml` (regular file → `ProtectProjectConfig: true`) and `<workspaceRoot>/.git` (directory → `MaskGitHooks: true`; a `.git` *file* — worktree/submodule gitfile — leaves it false); set both on `docker.Options`
+- [x] print `security.Scan` symlink warnings and `Excludes.Warnings` to `cmd.ErrOrStderr()` directly — NOT via `quietWriter` (warnings bypass `--quiet`)
+- [x] write boundary tests using **real temp-dir workspaces** (security.Scan and the Lstat gates are not injected — tests must create a real `.makeslop.yaml`, `.git/` dir, symlinks): git project + config present → both mounts in the spec the fake runner receives; no `.git` / no `.makeslop.yaml` → respective mount absent; `.git` as a regular file → hooks mount absent
+- [x] write quiet-contract test: with `--quiet`, the `masked N secret file(s)` chrome line IS suppressed while symlink warnings are NOT — both assertions in one test to lock the contract
+- [x] write `--dry-run` test: output includes the new mounts
+- [x] run `go test ./cmd/makeslop/` — must pass before task 5
 
 ### Task 5: Dockerfile hardening + MigrationVersion bump
 

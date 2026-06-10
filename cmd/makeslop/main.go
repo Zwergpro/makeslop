@@ -137,13 +137,29 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfH
 	if err != nil {
 		return err
 	}
-	masked, _, err := security.Scan(cmd.Context(), workspaceRoot, yamlExcludes.Patterns, yamlExcludes.SkipDirs)
+
+	// Print projectconfig symlink warnings directly to stderr, bypassing --quiet.
+	// Degraded protection is always surfaced regardless of verbosity.
+	for _, w := range yamlExcludes.Warnings {
+		fmt.Fprintf(cmd.ErrOrStderr(), "makeslop: warning: %s\n", w)
+	}
+
+	masked, symlinkMatches, err := security.Scan(cmd.Context(), workspaceRoot, yamlExcludes.Patterns, yamlExcludes.SkipDirs)
 	if err != nil {
 		return err
 	}
 	if len(masked) > 0 {
 		chrome := &quietWriter{w: cmd.ErrOrStderr(), quiet: quiet}
 		fmt.Fprintf(chrome, "makeslop: masked %d secret file(s)\n", len(masked))
+	}
+	// Print symlink warnings directly to stderr, bypassing --quiet.
+	for _, sym := range symlinkMatches {
+		rel, relErr := filepath.Rel(workspaceRoot, sym)
+		if relErr != nil {
+			rel = sym
+		}
+		fmt.Fprintf(cmd.ErrOrStderr(),
+			"makeslop: warning: symlink %s matches a secret pattern but is NOT masked\n", rel)
 	}
 	maskedFiles := mergeUniqueSorted(masked, yamlExcludes.Files)
 
@@ -152,18 +168,36 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfH
 		return err
 	}
 
+	// Gate sandbox-policy mounts on host filesystem state. BuildSpec is pure
+	// (no filesystem access), so the Lstat checks live here.
+	var protectProjectConfig, maskGitHooks bool
+	if fi, statErr := os.Lstat(filepath.Join(workspaceRoot, ".makeslop.yaml")); statErr == nil {
+		// Only bind-mount when it is a regular file: a missing bind source fails
+		// container create, and masking an absent file would create an empty one
+		// through the rw bind (disabling scan patterns).
+		protectProjectConfig = fi.Mode().IsRegular()
+	}
+	if fi, statErr := os.Lstat(filepath.Join(workspaceRoot, ".git")); statErr == nil {
+		// Only overlay hooks when .git is a directory. In git worktrees/submodules
+		// .git is a regular file (gitfile); the real hooks dir lives outside the
+		// workspace and is therefore not masked (documented residual risk).
+		maskGitHooks = fi.IsDir()
+	}
+
 	opts := docker.Options{
-		ProjectRoot:       workspaceRoot,
-		WorkspaceName:     filepath.Base(workspaceDir),
-		BaseDir:           baseDir,
-		Image:             s.Image,
-		Command:           s.Shell,
-		TmpDirSize:        s.TmpDirSize,
-		MaskedFiles:       maskedFiles,
-		MaskedDirs:        yamlExcludes.Dirs,
-		MountContentCache: cacheCfg.Content,
-		MountAgentCache:   cacheCfg.Agent,
-		Env:               envVars,
+		ProjectRoot:          workspaceRoot,
+		WorkspaceName:        filepath.Base(workspaceDir),
+		BaseDir:              baseDir,
+		Image:                s.Image,
+		Command:              s.Shell,
+		TmpDirSize:           s.TmpDirSize,
+		MaskedFiles:          maskedFiles,
+		MaskedDirs:           yamlExcludes.Dirs,
+		MountContentCache:    cacheCfg.Content,
+		MountAgentCache:      cacheCfg.Agent,
+		Env:                  envVars,
+		ProtectProjectConfig: protectProjectConfig,
+		MaskGitHooks:         maskGitHooks,
 	}
 
 	// ProjectRoot is the registered ancestor, not pwd, so running from a subdir

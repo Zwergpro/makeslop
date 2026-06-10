@@ -35,17 +35,20 @@ type fakeDocker struct {
 
 	BuildErr      error
 	LastBuildOpts docker.BuildOptions
+
+	LastSpec docker.Spec // set when Run is called (isTTY=true)
 }
 
 func newFakeDocker(exitCode int, isTTY bool) *fakeDocker {
 	return &fakeDocker{exitCode: exitCode, isTTY: isTTY}
 }
 
-func (f *fakeDocker) Run(_ context.Context, _ docker.Spec) error {
+func (f *fakeDocker) Run(_ context.Context, s docker.Spec) error {
 	if !f.isTTY {
 		return docker.ErrNoTTY
 	}
 	f.Started = true
+	f.LastSpec = s
 	if f.exitCode != 0 {
 		return &docker.ExitError{Code: f.exitCode}
 	}
@@ -1223,16 +1226,17 @@ func TestRun_DryRun_StdoutEqualsBuildSpecShellCommand(t *testing.T) {
 	if loadErr != nil {
 		t.Fatalf("load settings: %v", loadErr)
 	}
-	// Absent cache: block ⇒ both cache groups default to true.
+	// init scaffolds .makeslop.yaml ⇒ ProtectProjectConfig true; both cache groups default to true.
 	want := docker.BuildSpec(docker.Options{
-		ProjectRoot:       resolvedPwd,
-		WorkspaceName:     filepath.Base(workspaceDir),
-		BaseDir:           baseDir,
-		Image:             s.Image,
-		Command:           s.Shell,
-		TmpDirSize:        s.TmpDirSize,
-		MountContentCache: true,
-		MountAgentCache:   true,
+		ProjectRoot:          resolvedPwd,
+		WorkspaceName:        filepath.Base(workspaceDir),
+		BaseDir:              baseDir,
+		Image:                s.Image,
+		Command:              s.Shell,
+		TmpDirSize:           s.TmpDirSize,
+		MountContentCache:    true,
+		MountAgentCache:      true,
+		ProtectProjectConfig: true,
 	}).ShellCommand()
 
 	got := strings.TrimSuffix(stdout, "\n")
@@ -3727,5 +3731,329 @@ func TestRun_NoEnvironmentsBlock_NoEnvFlags(t *testing.T) {
 			t.Errorf("--dry-run output must not contain -e flags when environments: block is absent\nstdout:\n%s", stdout)
 			break
 		}
+	}
+}
+
+// ── Task 4: runRun gating + warning output tests ──────────────────────────────
+
+// Helper: hasMountWithContainer returns true iff spec.Mounts contains a mount
+// whose Container field equals target.
+func hasMountWithContainer(mounts []docker.Mount, target string) bool {
+	for _, m := range mounts {
+		if m.Container == target {
+			return true
+		}
+	}
+	return false
+}
+
+// helper: mount with matching container AND host
+func hasMountWithContainerAndHost(mounts []docker.Mount, container, host string) bool {
+	for _, m := range mounts {
+		if m.Container == container && m.Host == host {
+			return true
+		}
+	}
+	return false
+}
+
+// Git project + .makeslop.yaml present → both sandbox mounts in the spec
+// the fake runner receives.
+func TestRun_GitAndConfig_BothSandboxMounts(t *testing.T) {
+	skipNonPOSIX(t, "symlinks/Lstat behaviour is POSIX-specific")
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	initOut, _, err := runCmd(t, baseDir, "init")
+	if err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	workspaceDir := strings.TrimSpace(initOut)
+	workspaceName := filepath.Base(workspaceDir)
+	resolvedPwd := evalSymlinks(t, pwd)
+
+	// Create .git as a directory (git project gate).
+	if err := os.MkdirAll(filepath.Join(resolvedPwd, ".git", "hooks"), 0o755); err != nil {
+		t.Fatalf("mkdir .git/hooks: %v", err)
+	}
+	// .makeslop.yaml was created by init (regular file). No need to re-create.
+
+	fc := newFakeDocker(0, true)
+	_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fc), "run")
+	if err != nil {
+		t.Fatalf("run failed: %v; stderr=%q", err, stderr)
+	}
+	if !fc.Started {
+		t.Fatal("docker.Run was not invoked")
+	}
+
+	workspacePath := "/workspace/" + workspaceName
+	wantConfigContainer := workspacePath + "/.makeslop.yaml"
+	wantHooksContainer := workspacePath + "/.git/hooks"
+
+	if !hasMountWithContainerAndHost(fc.LastSpec.Mounts, wantConfigContainer, filepath.Join(resolvedPwd, ".makeslop.yaml")) {
+		t.Errorf("ProtectProjectConfig mount not found in spec\nmounts: %+v", fc.LastSpec.Mounts)
+	}
+	// Verify read-only flag.
+	for _, m := range fc.LastSpec.Mounts {
+		if m.Container == wantConfigContainer && !m.ReadOnly {
+			t.Errorf("ProtectProjectConfig mount must be read-only; got ReadOnly=false")
+		}
+	}
+
+	if !hasMountWithContainer(fc.LastSpec.Mounts, wantHooksContainer) {
+		t.Errorf("MaskGitHooks tmpfs mount not found in spec\nmounts: %+v", fc.LastSpec.Mounts)
+	}
+	// Verify tmpfs type.
+	for _, m := range fc.LastSpec.Mounts {
+		if m.Container == wantHooksContainer && m.Type != "tmpfs" {
+			t.Errorf("MaskGitHooks mount type = %q, want %q", m.Type, "tmpfs")
+		}
+	}
+}
+
+// No .git directory → MaskGitHooks mount absent.
+func TestRun_NoGit_NoHooksMask(t *testing.T) {
+	skipNonPOSIX(t, "symlinks/Lstat behaviour is POSIX-specific")
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	initOut, _, err := runCmd(t, baseDir, "init")
+	if err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	workspaceDir := strings.TrimSpace(initOut)
+	workspaceName := filepath.Base(workspaceDir)
+	resolvedPwd := evalSymlinks(t, pwd)
+
+	// Ensure .git does NOT exist.
+	_ = os.RemoveAll(filepath.Join(resolvedPwd, ".git"))
+
+	fc := newFakeDocker(0, true)
+	_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fc), "run")
+	if err != nil {
+		t.Fatalf("run failed: %v; stderr=%q", err, stderr)
+	}
+
+	workspacePath := "/workspace/" + workspaceName
+	wantHooksContainer := workspacePath + "/.git/hooks"
+	if hasMountWithContainer(fc.LastSpec.Mounts, wantHooksContainer) {
+		t.Errorf("MaskGitHooks mount must be absent when .git does not exist; mounts: %+v", fc.LastSpec.Mounts)
+	}
+}
+
+// No .makeslop.yaml → ProtectProjectConfig mount absent.
+func TestRun_NoConfig_NoConfigMount(t *testing.T) {
+	skipNonPOSIX(t, "symlinks/Lstat behaviour is POSIX-specific")
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	initOut, _, err := runCmd(t, baseDir, "init")
+	if err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	workspaceDir := strings.TrimSpace(initOut)
+	workspaceName := filepath.Base(workspaceDir)
+	resolvedPwd := evalSymlinks(t, pwd)
+
+	// Remove .makeslop.yaml so the gate is off.
+	if err := os.Remove(filepath.Join(resolvedPwd, projectconfig.Filename)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("remove .makeslop.yaml: %v", err)
+	}
+
+	fc := newFakeDocker(0, true)
+	_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fc), "run")
+	if err != nil {
+		t.Fatalf("run failed: %v; stderr=%q", err, stderr)
+	}
+
+	workspacePath := "/workspace/" + workspaceName
+	wantConfigContainer := workspacePath + "/.makeslop.yaml"
+	if hasMountWithContainer(fc.LastSpec.Mounts, wantConfigContainer) {
+		t.Errorf("ProtectProjectConfig mount must be absent when .makeslop.yaml does not exist; mounts: %+v", fc.LastSpec.Mounts)
+	}
+}
+
+// .git as a regular file (worktree/submodule gitfile) → MaskGitHooks mount absent.
+func TestRun_GitFile_NoHooksMask(t *testing.T) {
+	skipNonPOSIX(t, "symlinks/Lstat behaviour is POSIX-specific")
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	initOut, _, err := runCmd(t, baseDir, "init")
+	if err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	workspaceDir := strings.TrimSpace(initOut)
+	workspaceName := filepath.Base(workspaceDir)
+	resolvedPwd := evalSymlinks(t, pwd)
+
+	// Simulate a gitfile (worktree/submodule): .git is a regular file.
+	if err := os.WriteFile(filepath.Join(resolvedPwd, ".git"), []byte("gitdir: ../.git/worktrees/main\n"), 0o644); err != nil {
+		t.Fatalf("write .git gitfile: %v", err)
+	}
+
+	fc := newFakeDocker(0, true)
+	_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fc), "run")
+	if err != nil {
+		t.Fatalf("run failed: %v; stderr=%q", err, stderr)
+	}
+
+	workspacePath := "/workspace/" + workspaceName
+	wantHooksContainer := workspacePath + "/.git/hooks"
+	if hasMountWithContainer(fc.LastSpec.Mounts, wantHooksContainer) {
+		t.Errorf("MaskGitHooks mount must be absent when .git is a regular file (gitfile); mounts: %+v", fc.LastSpec.Mounts)
+	}
+}
+
+// Quiet-contract: --quiet suppresses "masked N" chrome but NOT symlink warnings.
+func TestRun_QuietContract_SuppressesMaskedButNotSymlinkWarnings(t *testing.T) {
+	skipNonPOSIX(t, "symlinks require POSIX")
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	resolvedPwd := evalSymlinks(t, pwd)
+
+	// Create a real .env so the scan finds 1 match for the chrome line.
+	if err := os.WriteFile(filepath.Join(resolvedPwd, "real.env"), []byte("SECRET=1"), 0o644); err != nil {
+		t.Fatalf("write real.env: %v", err)
+	}
+	// Create a symlink .env → real.env so the scan finds a symlink match.
+	if err := os.Symlink("real.env", filepath.Join(resolvedPwd, "symlink.env")); err != nil {
+		t.Fatalf("create symlink: %v", err)
+	}
+
+	yamlContent := "exclude:\n  scan:\n    patterns:\n      - \"*.env\"\n  files: []\n  dirs: []\n"
+	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(yamlContent), 0o644); err != nil {
+		t.Fatalf("write yaml: %v", err)
+	}
+
+	// Non-quiet: both "masked" chrome AND symlink warning appear.
+	_, stderrNonQuiet, err := runCmd(t, baseDir, "run", "--dry-run")
+	if err != nil {
+		t.Fatalf("non-quiet --dry-run failed: %v; stderr=%q", err, stderrNonQuiet)
+	}
+	if !strings.Contains(stderrNonQuiet, "masked 1 secret file") {
+		t.Errorf("non-quiet: stderr must contain 'masked 1 secret file'; got: %q", stderrNonQuiet)
+	}
+	if !strings.Contains(stderrNonQuiet, "symlink") {
+		t.Errorf("non-quiet: stderr must contain symlink warning; got: %q", stderrNonQuiet)
+	}
+
+	// Quiet: "masked" chrome IS suppressed; symlink warning is NOT.
+	_, stderrQuiet, err := runCmd(t, baseDir, "--quiet", "run", "--dry-run")
+	if err != nil {
+		t.Fatalf("quiet --dry-run failed: %v; stderr=%q", err, stderrQuiet)
+	}
+	if strings.Contains(stderrQuiet, "masked 1 secret file") {
+		t.Errorf("--quiet: 'masked N' chrome must be suppressed; stderr=%q", stderrQuiet)
+	}
+	if !strings.Contains(stderrQuiet, "symlink") {
+		t.Errorf("--quiet: symlink warning must NOT be suppressed; stderr=%q", stderrQuiet)
+	}
+}
+
+// --dry-run output includes the sandbox-policy mounts when gates are on.
+func TestRun_DryRun_SandboxMountsPresent(t *testing.T) {
+	skipNonPOSIX(t, "symlinks/Lstat behaviour is POSIX-specific")
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	initOut, _, err := runCmd(t, baseDir, "init")
+	if err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	workspaceDir := strings.TrimSpace(initOut)
+	workspaceName := filepath.Base(workspaceDir)
+	resolvedPwd := evalSymlinks(t, pwd)
+
+	// Create .git directory to activate MaskGitHooks.
+	if err := os.MkdirAll(filepath.Join(resolvedPwd, ".git", "hooks"), 0o755); err != nil {
+		t.Fatalf("mkdir .git/hooks: %v", err)
+	}
+	// .makeslop.yaml already created by init.
+
+	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
+	if err != nil {
+		t.Fatalf("--dry-run failed: %v; stderr=%q", err, stderr)
+	}
+
+	workspacePath := "/workspace/" + workspaceName
+
+	// ProtectProjectConfig: read-only bind of .makeslop.yaml.
+	wantConfigMount := "type=bind,source=" + filepath.Join(resolvedPwd, ".makeslop.yaml") +
+		",target=" + workspacePath + "/.makeslop.yaml,readonly"
+	if !strings.Contains(stdout, wantConfigMount) {
+		t.Errorf("--dry-run stdout missing ProtectProjectConfig mount\nwant substring: %q\nstdout:\n%s",
+			wantConfigMount, stdout)
+	}
+
+	// MaskGitHooks: tmpfs on .git/hooks.
+	wantHooksMount := "type=tmpfs,target=" + workspacePath + "/.git/hooks"
+	if !strings.Contains(stdout, wantHooksMount) {
+		t.Errorf("--dry-run stdout missing MaskGitHooks mount\nwant substring: %q\nstdout:\n%s",
+			wantHooksMount, stdout)
+	}
+}
+
+// projectconfig symlink warnings appear on stderr (bypassing --quiet).
+func TestRun_ProjectconfigSymlinkWarning(t *testing.T) {
+	skipNonPOSIX(t, "symlinks require POSIX")
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	resolvedPwd := evalSymlinks(t, pwd)
+
+	// Create a symlink that will be listed in exclude.files.
+	target := filepath.Join(resolvedPwd, "real_secret.key")
+	if err := os.WriteFile(target, []byte("SECRET"), 0o644); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	symlinkPath := filepath.Join(resolvedPwd, "sym_secret.key")
+	if err := os.Symlink(target, symlinkPath); err != nil {
+		t.Fatalf("create symlink: %v", err)
+	}
+
+	// List the symlink in exclude.files — projectconfig.Load should produce a warning.
+	yamlContent := "exclude:\n  scan:\n    patterns: []\n  files: [sym_secret.key]\n  dirs: []\n"
+	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(yamlContent), 0o644); err != nil {
+		t.Fatalf("write yaml: %v", err)
+	}
+
+	_, stderrNonQuiet, err := runCmd(t, baseDir, "run", "--dry-run")
+	if err != nil {
+		t.Fatalf("non-quiet --dry-run failed: %v; stderr=%q", err, stderrNonQuiet)
+	}
+	if !strings.Contains(stderrNonQuiet, "symlink") {
+		t.Errorf("non-quiet: stderr must contain projectconfig symlink warning; got: %q", stderrNonQuiet)
+	}
+
+	// --quiet must NOT suppress this warning.
+	_, stderrQuiet, err := runCmd(t, baseDir, "--quiet", "run", "--dry-run")
+	if err != nil {
+		t.Fatalf("quiet --dry-run failed: %v; stderr=%q", err, stderrQuiet)
+	}
+	if !strings.Contains(stderrQuiet, "symlink") {
+		t.Errorf("--quiet: projectconfig symlink warning must NOT be suppressed; got: %q", stderrQuiet)
 	}
 }
