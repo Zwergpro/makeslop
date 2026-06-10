@@ -4262,6 +4262,87 @@ func TestRun_DaemonCheckedBeforeYamlParse(t *testing.T) {
 }
 
 // Dry-run test: daemon down + --dry-run → command prints the shell command and
+// ── sandboxMountGates unit tests ──────────────────────────────────────────────
+
+// Regular .makeslop.yaml → protect=true; .makeslop.yaml removed from maskedFiles.
+func TestSandboxMountGates_RegularConfigFile_ProtectAndFilter(t *testing.T) {
+	root := t.TempDir()
+	cfgPath := filepath.Join(root, projectconfig.Filename)
+	if err := os.WriteFile(cfgPath, []byte("# yaml"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	maskedFiles := []string{cfgPath, filepath.Join(root, "other.env")}
+
+	protect, maskHooks, filtered := sandboxMountGates(root, maskedFiles)
+
+	if !protect {
+		t.Errorf("protect = false, want true (regular file)")
+	}
+	for _, f := range filtered {
+		if f == cfgPath {
+			t.Errorf("filtered must not contain configPath %q", cfgPath)
+		}
+	}
+	// other.env must still be present
+	found := false
+	for _, f := range filtered {
+		if f == filepath.Join(root, "other.env") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("filtered must still contain other.env; got %v", filtered)
+	}
+	// .git absent → maskHooks = false
+	if maskHooks {
+		t.Errorf("maskHooks = true, want false (.git absent)")
+	}
+}
+
+// Missing .makeslop.yaml → protect=false; maskedFiles unchanged.
+func TestSandboxMountGates_MissingConfig_NoProtect(t *testing.T) {
+	root := t.TempDir()
+	maskedFiles := []string{filepath.Join(root, ".env")}
+
+	protect, _, filtered := sandboxMountGates(root, maskedFiles)
+
+	if protect {
+		t.Errorf("protect = true, want false (config absent)")
+	}
+	if len(filtered) != len(maskedFiles) || (len(maskedFiles) > 0 && filtered[0] != maskedFiles[0]) {
+		t.Errorf("filtered must equal maskedFiles unchanged; got %v, want %v", filtered, maskedFiles)
+	}
+}
+
+// .git is a directory → maskHooks=true.
+func TestSandboxMountGates_GitDir_MaskHooks(t *testing.T) {
+	root := t.TempDir()
+	gitDir := filepath.Join(root, ".git")
+	if err := os.Mkdir(gitDir, 0o755); err != nil {
+		t.Fatalf("mkdir .git: %v", err)
+	}
+
+	_, maskHooks, _ := sandboxMountGates(root, nil)
+
+	if !maskHooks {
+		t.Errorf("maskHooks = false, want true (.git is a directory)")
+	}
+}
+
+// .git is a regular file (gitfile/worktree) → maskHooks=false.
+func TestSandboxMountGates_GitFile_NoMaskHooks(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, ".git"), []byte("gitdir: ../.git/worktrees/x\n"), 0o644); err != nil {
+		t.Fatalf("write gitfile: %v", err)
+	}
+
+	_, maskHooks, _ := sandboxMountGates(root, nil)
+
+	if maskHooks {
+		t.Errorf("maskHooks = true, want false (.git is a regular file / gitfile)")
+	}
+}
+
 // exits 0 (daemon preflight is skipped on --dry-run).
 func TestRun_DryRun_DaemonDown_StillPrints(t *testing.T) {
 	setHomeToTestParent(t)

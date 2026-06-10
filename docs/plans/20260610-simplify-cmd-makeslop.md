@@ -109,12 +109,12 @@ JSON output and rendering consume `checkList.checks` / `checkList.ready` exactly
 - Modify: `cmd/makeslop/main_test.go` (additions only)
 - Modify: `cmd/makeslop/status_test.go` (additions only)
 
-- [ ] add `checkDaemonPreflight` / `imageExistsPreflight` methods on `dockerDeps` in `main.go`; replace the 4 inline `WithPreflightTimeout` blocks (2 in `runRun`, 2 in `runStatus`)
-- [ ] add `checkList` collector in `status.go`; rewrite `runStatus` over it (target ~110 lines; output byte-identical)
-- [ ] extract `sandboxMountGates` and `reportScanResults` in `main.go`; `runRun` calls them; construct `chrome` once at top of `runRun`
-- [ ] extract `runInit` from the `initCmd` closure and `stampMigratedVersion` from its WithLock block; construct `chrome` once at top of `runInit`
-- [ ] write direct unit tests for `checkList` (ok/fail/warn/info, ready-clearing) and `sandboxMountGates` (regular file vs missing vs dir for both gates, filterOut interaction) — only contracts not already pinned by existing tests
-- [ ] run `go build ./... && go vet ./... && gofmt -l . && go test ./...` — all green, existing assertions untouched
+- [x] add `checkDaemonPreflight` / `imageExistsPreflight` methods on `dockerDeps` in `main.go`; replace the 4 inline `WithPreflightTimeout` blocks (2 in `runRun`, 2 in `runStatus`)
+- [x] add `checkList` collector in `status.go`; rewrite `runStatus` over it (target ~110 lines; output byte-identical)
+- [x] extract `sandboxMountGates` and `reportScanResults` in `main.go`; `runRun` calls them; construct `chrome` once at top of `runRun`
+- [x] extract `runInit` from the `initCmd` closure and `stampMigratedVersion` from its WithLock block; construct `chrome` once at top of `runInit`
+- [x] write direct unit tests for `checkList` (ok/fail/warn/info, ready-clearing) and `sandboxMountGates` (regular file vs missing vs dir for both gates, filterOut interaction) — only contracts not already pinned by existing tests
+- [x] run `go build ./... && go vet ./... && gofmt -l . && go test ./...` — all green, existing assertions untouched
 
 ### Task 2: Split production code into per-command files (commit b)
 

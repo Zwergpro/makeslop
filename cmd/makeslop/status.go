@@ -12,7 +12,6 @@ import (
 	"golang.org/x/term"
 
 	"github.com/Zwergpro/makeslop/internal/config"
-	"github.com/Zwergpro/makeslop/internal/docker"
 	"github.com/Zwergpro/makeslop/internal/projectconfig"
 	"github.com/Zwergpro/makeslop/internal/security"
 	"github.com/Zwergpro/makeslop/internal/workspace"
@@ -26,6 +25,31 @@ const (
 	checkWarn checkState = "warn"
 	checkInfo checkState = "info"
 )
+
+// checkList collects status checks in order. ready starts true and is cleared
+// by the first call to fail(). JSON output and renderChecks consume .checks /
+// .ready directly — byte-identical output to the previous inline append pattern.
+type checkList struct {
+	checks []statusCheck
+	ready  bool // starts true; fail() clears it
+}
+
+func (c *checkList) ok(name, detail string) {
+	c.checks = append(c.checks, statusCheck{Name: name, State: checkOK, Detail: detail})
+}
+
+func (c *checkList) fail(name, detail string) {
+	c.checks = append(c.checks, statusCheck{Name: name, State: checkFail, Detail: detail})
+	c.ready = false
+}
+
+func (c *checkList) warn(name, detail string) {
+	c.checks = append(c.checks, statusCheck{Name: name, State: checkWarn, Detail: detail})
+}
+
+func (c *checkList) info(name string) {
+	c.checks = append(c.checks, statusCheck{Name: name, State: checkInfo})
+}
 
 // statusGlyphs maps each state to its TTY glyph and plain-text fallback.
 var statusGlyphs = map[checkState]struct{ tty, plain string }{
@@ -123,71 +147,34 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, jso
 	ctx := cmd.Context()
 	stderr := cmd.ErrOrStderr()
 
-	var checks []statusCheck
-	ready := true // cleared when any blocking check fails
+	cl := &checkList{ready: true}
 
 	// 1. Daemon — bounded by preflightTimeout so a black-hole DOCKER_HOST cannot hang.
-	var daemonErr error
-	{
-		pfCtx, pfCancel := docker.WithPreflightTimeout(ctx)
-		daemonErr = deps.daemon.CheckDaemon(pfCtx)
-		pfCancel()
-	}
-	if daemonErr != nil {
-		checks = append(checks, statusCheck{
-			Name:   "daemon",
-			State:  checkFail,
-			Detail: "is docker running? — run 'docker info'",
-		})
-		ready = false
+	if daemonErr := deps.checkDaemonPreflight(ctx); daemonErr != nil {
+		cl.fail("daemon", "is docker running? — run 'docker info'")
 	} else {
-		checks = append(checks, statusCheck{
-			Name:  "daemon",
-			State: checkOK,
-		})
+		cl.ok("daemon", "")
 	}
 
 	// 2. Base config. loadedSettings is reused by the image check to avoid a second Load.
 	var loadedSettings *config.Settings
 	exists, err := config.BaseConfigExists(baseDir)
 	if err != nil {
-		checks = append(checks, statusCheck{
-			Name:   "base config",
-			State:  checkFail,
-			Detail: fmt.Sprintf("cannot read settings: %v", err),
-		})
-		ready = false
+		cl.fail("base config", fmt.Sprintf("cannot read settings: %v", err))
 	} else if !exists {
-		checks = append(checks, statusCheck{
-			Name:   "base config",
-			State:  checkFail,
-			Detail: "run 'makeslop init' to create ~/.makeslop",
-		})
-		ready = false
+		cl.fail("base config", "run 'makeslop init' to create ~/.makeslop")
 	} else {
 		s, loadErr := config.Load(baseDir)
 		if loadErr != nil {
-			checks = append(checks, statusCheck{
-				Name:   "base config",
-				State:  checkFail,
-				Detail: fmt.Sprintf("corrupt settings: %v", loadErr),
-			})
-			ready = false
+			cl.fail("base config", fmt.Sprintf("corrupt settings: %v", loadErr))
 		} else {
 			loadedSettings = s
 			current, latest, stale := config.MigrationStatus(s)
 			if stale {
-				checks = append(checks, statusCheck{
-					Name:   "base config",
-					State:  checkWarn,
-					Detail: fmt.Sprintf("v%d (latest: v%d) — run 'makeslop migrate'", current, latest),
-				})
 				// stale is non-blocking
+				cl.warn("base config", fmt.Sprintf("v%d (latest: v%d) — run 'makeslop migrate'", current, latest))
 			} else {
-				checks = append(checks, statusCheck{
-					Name:  "base config",
-					State: checkOK,
-				})
+				cl.ok("base config", "")
 			}
 		}
 	}
@@ -197,47 +184,22 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, jso
 	if loadedSettings != nil {
 		imageName = loadedSettings.Image
 	}
-	var imageFound bool
-	var imageErr error
-	{
-		pfCtx, pfCancel := docker.WithPreflightTimeout(ctx)
-		imageFound, imageErr = deps.image.ImageExists(pfCtx, imageName)
-		pfCancel()
-	}
+	imageFound, imageErr := deps.imageExistsPreflight(ctx, imageName)
 	if imageErr != nil {
-		checks = append(checks, statusCheck{
-			Name:   "image",
-			State:  checkFail,
-			Detail: fmt.Sprintf("error checking image %q: %v — is docker running?", imageName, imageErr),
-		})
-		ready = false
+		cl.fail("image", fmt.Sprintf("error checking image %q: %v — is docker running?", imageName, imageErr))
 	} else if !imageFound {
-		checks = append(checks, statusCheck{
-			Name:   "image",
-			State:  checkFail,
-			Detail: fmt.Sprintf("image %q not built — run 'makeslop build'", imageName),
-		})
-		ready = false
+		cl.fail("image", fmt.Sprintf("image %q not built — run 'makeslop build'", imageName))
 	} else {
-		checks = append(checks, statusCheck{
-			Name:  "image",
-			State: checkOK,
-		})
+		cl.ok("image", "")
 	}
 
 	// 4. Workspace — reuse loadedSettings from check 2; if settings are absent
 	// or corrupt, pass a nil settings so Lookup returns ErrNotRegistered rather
 	// than a redundant parse-error detail.
-	var pwd string
 	var workspaceRoot string
-	pwd, err = resolvePwd()
-	if err != nil {
-		checks = append(checks, statusCheck{
-			Name:   "workspace",
-			State:  checkFail,
-			Detail: fmt.Sprintf("cannot resolve cwd: %v", err),
-		})
-		ready = false
+	pwd, pwdErr := resolvePwd()
+	if pwdErr != nil {
+		cl.fail("workspace", fmt.Sprintf("cannot resolve cwd: %v", pwdErr))
 	} else {
 		// When settings were unreadable (loadedSettings == nil) we pass nil;
 		// Lookup treats nil as "no workspaces registered" → ErrNotRegistered.
@@ -253,24 +215,12 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, jso
 					// real remedy — surface the constraint more precisely.
 					detail = "cannot check — settings unreadable"
 				}
-				checks = append(checks, statusCheck{
-					Name:   "workspace",
-					State:  checkFail,
-					Detail: detail,
-				})
+				cl.fail("workspace", detail)
 			} else {
-				checks = append(checks, statusCheck{
-					Name:   "workspace",
-					State:  checkFail,
-					Detail: fmt.Sprintf("lookup error: %v", lookupErr),
-				})
+				cl.fail("workspace", fmt.Sprintf("lookup error: %v", lookupErr))
 			}
-			ready = false
 		} else {
-			checks = append(checks, statusCheck{
-				Name:  "workspace",
-				State: checkOK,
-			})
+			cl.ok("workspace", "")
 		}
 	}
 
@@ -278,41 +228,23 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, jso
 	if workspaceRoot != "" {
 		yamlExcludes, _, _, pcErr := projectconfig.Load(workspaceRoot)
 		if pcErr != nil {
-			checks = append(checks, statusCheck{
-				Name:   "secret scan",
-				State:  checkWarn,
-				Detail: fmt.Sprintf("cannot read .makeslop.yaml: %v", pcErr),
-			})
+			cl.warn("secret scan", fmt.Sprintf("cannot read .makeslop.yaml: %v", pcErr))
 		} else {
 			masked, _, scanErr := security.Scan(ctx, workspaceRoot, yamlExcludes.Patterns, yamlExcludes.SkipDirs)
 			if scanErr != nil {
-				checks = append(checks, statusCheck{
-					Name:   "secret scan",
-					State:  checkWarn,
-					Detail: fmt.Sprintf("scan error: %v", scanErr),
-				})
+				cl.warn("secret scan", fmt.Sprintf("scan error: %v", scanErr))
 			} else if len(masked) > 0 {
-				checks = append(checks, statusCheck{
-					Name:   "secret scan",
-					State:  checkOK,
-					Detail: fmt.Sprintf("will mask %d file(s)", len(masked)),
-				})
+				cl.ok("secret scan", fmt.Sprintf("will mask %d file(s)", len(masked)))
 			} else {
-				checks = append(checks, statusCheck{
-					Name:  "secret scan",
-					State: checkInfo,
-				})
+				cl.info("secret scan")
 			}
 		}
 	} else {
-		checks = append(checks, statusCheck{
-			Name:  "secret scan",
-			State: checkInfo,
-		})
+		cl.info("secret scan")
 	}
 
 	if jsonMode {
-		result := statusResult{Checks: checks, Ready: ready}
+		result := statusResult{Checks: cl.checks, Ready: cl.ready}
 		enc := json.NewEncoder(cmd.OutOrStdout())
 		enc.SetIndent("", "  ")
 		if encErr := enc.Encode(result); encErr != nil {
@@ -320,10 +252,10 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, jso
 		}
 	} else {
 		tty := ttyPred(stderr)
-		renderChecks(stderr, checks, ready, tty)
+		renderChecks(stderr, cl.checks, cl.ready, tty)
 	}
 
-	if !ready {
+	if !cl.ready {
 		return errSilent
 	}
 	return nil

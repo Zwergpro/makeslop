@@ -50,6 +50,22 @@ type dockerDeps struct {
 	image   imageChecker
 }
 
+// checkDaemonPreflight calls CheckDaemon with a preflight timeout. The caller
+// must not reuse ctx after this returns (it is cancelled internally).
+func (d dockerDeps) checkDaemonPreflight(ctx context.Context) error {
+	pfCtx, pfCancel := docker.WithPreflightTimeout(ctx)
+	defer pfCancel()
+	return d.daemon.CheckDaemon(pfCtx)
+}
+
+// imageExistsPreflight calls ImageExists with a preflight timeout. The caller
+// must not reuse ctx after this returns (it is cancelled internally).
+func (d dockerDeps) imageExistsPreflight(ctx context.Context, image string) (bool, error) {
+	pfCtx, pfCancel := docker.WithPreflightTimeout(ctx)
+	defer pfCancel()
+	return d.image.ImageExists(pfCtx, image)
+}
+
 // errSilent signals that a RunE already wrote a tailored message to stderr;
 // main() should exit non-zero without reprinting.
 var errSilent = errors.New("makeslop: silent error already reported")
@@ -129,6 +145,7 @@ func mergeUniqueSorted(a, b []string) []string {
 }
 
 func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfHome, dryRun, quiet bool, deps dockerDeps) error {
+	chrome := &quietWriter{w: cmd.ErrOrStderr(), quiet: quiet}
 	pwd, err := resolvePwd()
 	if err != nil {
 		return err
@@ -161,10 +178,7 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfH
 	// This avoids making the user wait through a potentially long scan when the
 	// daemon is simply not running.
 	if !dryRun {
-		pfCtx, pfCancel := docker.WithPreflightTimeout(cmd.Context())
-		daemonErr := deps.daemon.CheckDaemon(pfCtx)
-		pfCancel()
-		if daemonErr != nil {
+		if daemonErr := deps.checkDaemonPreflight(cmd.Context()); daemonErr != nil {
 			fmt.Fprintf(cmd.ErrOrStderr(),
 				"makeslop: %v — is docker running?\n", daemonErr)
 			return errSilent
@@ -187,49 +201,13 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfH
 	if err != nil {
 		return err
 	}
-	if len(masked) > 0 {
-		chrome := &quietWriter{w: cmd.ErrOrStderr(), quiet: quiet}
-		fmt.Fprintf(chrome, "makeslop: masked %d secret file(s)\n", len(masked))
-	}
-	// Print symlink warnings directly to stderr, bypassing --quiet.
-	for _, sym := range symlinkMatches {
-		rel, relErr := filepath.Rel(workspaceRoot, sym)
-		if relErr != nil {
-			rel = sym
-		}
-		fmt.Fprintf(cmd.ErrOrStderr(),
-			"makeslop: warning: symlink %s matches a secret pattern but is NOT masked\n", rel)
-	}
+	// "masked N" is chrome (quiet-gated); symlink warnings bypass --quiet.
+	reportScanResults(cmd.ErrOrStderr(), chrome, workspaceRoot, masked, symlinkMatches)
 	maskedFiles := mergeUniqueSorted(masked, yamlExcludes.Files)
 
 	// Gate sandbox-policy mounts on host filesystem state. BuildSpec is pure
 	// (no filesystem access), so the Lstat checks live here.
-	var protectProjectConfig, maskGitHooks bool
-	configPath := filepath.Join(workspaceRoot, projectconfig.Filename)
-	if fi, statErr := os.Lstat(configPath); statErr == nil {
-		// Only bind-mount when it is a regular file: a missing bind source fails
-		// container create, and masking an absent file would create an empty one
-		// through the rw bind (disabling scan patterns).
-		protectProjectConfig = fi.Mode().IsRegular()
-	}
-
-	// When ProtectProjectConfig is active, drop .makeslop.yaml from the /dev/null
-	// masked-file list if the scan or an explicit exclude.files entry found it.
-	// Docker applies mounts in order; last-write-wins, so a /dev/null bind appended
-	// after the read-only self-bind would silently override it (e.g. when the user
-	// adds a broad pattern like "*.yaml" to their exclude.scan.patterns).
-	// Note: no equivalent guard is needed for yamlExcludes.Dirs — reservedPaths in
-	// projectconfig rejects ".makeslop.yaml" from exclude.dirs at parse time, so it
-	// can never appear there.
-	if protectProjectConfig {
-		maskedFiles = filterOut(maskedFiles, configPath)
-	}
-	if fi, statErr := os.Lstat(filepath.Join(workspaceRoot, ".git")); statErr == nil {
-		// Only overlay hooks when .git is a directory. In git worktrees/submodules
-		// .git is a regular file (gitfile); the real hooks dir lives outside the
-		// workspace and is therefore not masked (documented residual risk).
-		maskGitHooks = fi.IsDir()
-	}
+	protectProjectConfig, maskGitHooks, maskedFiles := sandboxMountGates(workspaceRoot, maskedFiles)
 
 	opts := docker.Options{
 		ProjectRoot:          workspaceRoot,
@@ -259,13 +237,7 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfH
 	}
 
 	// Image existence: no auto-build, just a remedy.
-	var imageFound bool
-	var imageErr error
-	{
-		pfCtx, pfCancel := docker.WithPreflightTimeout(cmd.Context())
-		imageFound, imageErr = deps.image.ImageExists(pfCtx, s.Image)
-		pfCancel()
-	}
+	imageFound, imageErr := deps.imageExistsPreflight(cmd.Context(), s.Image)
 	if imageErr != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(),
 			"makeslop: check image %q: %v — is docker running?\n", s.Image, imageErr)
@@ -286,6 +258,67 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfH
 		return err
 	}
 	return nil
+}
+
+// sandboxMountGates inspects the filesystem state at workspaceRoot to decide
+// which sandbox-policy mounts BuildSpec should activate. The returned filtered
+// slice is maskedFiles with the .makeslop.yaml entry removed when protect is
+// true (prevents a /dev/null bind from overriding the read-only self-bind).
+//
+// protect — true iff .makeslop.yaml is a regular file (missing or non-regular
+//
+//	→ the bind source would be absent or wrong type, failing container create).
+//
+// maskHooks — true iff .git is a directory (gitfile/worktree/submodule → false;
+//
+//	the real hooks dir lives outside the workspace, documented residual risk).
+func sandboxMountGates(workspaceRoot string, maskedFiles []string) (protect, maskHooks bool, filtered []string) {
+	configPath := filepath.Join(workspaceRoot, projectconfig.Filename)
+	if fi, err := os.Lstat(configPath); err == nil {
+		// Only bind-mount when it is a regular file: a missing bind source fails
+		// container create, and masking an absent file would create an empty one
+		// through the rw bind (disabling scan patterns).
+		protect = fi.Mode().IsRegular()
+	}
+
+	// When ProtectProjectConfig is active, drop .makeslop.yaml from the /dev/null
+	// masked-file list if the scan or an explicit exclude.files entry found it.
+	// Docker applies mounts in order; last-write-wins, so a /dev/null bind appended
+	// after the read-only self-bind would silently override it (e.g. when the user
+	// adds a broad pattern like "*.yaml" to their exclude.scan.patterns).
+	// Note: no equivalent guard is needed for yamlExcludes.Dirs — reservedPaths in
+	// projectconfig rejects ".makeslop.yaml" from exclude.dirs at parse time, so it
+	// can never appear there.
+	filtered = maskedFiles
+	if protect {
+		filtered = filterOut(maskedFiles, configPath)
+	}
+
+	if fi, err := os.Lstat(filepath.Join(workspaceRoot, ".git")); err == nil {
+		// Only overlay hooks when .git is a directory. In git worktrees/submodules
+		// .git is a regular file (gitfile); the real hooks dir lives outside the
+		// workspace and is therefore not masked (documented residual risk).
+		maskHooks = fi.IsDir()
+	}
+	return protect, maskHooks, filtered
+}
+
+// reportScanResults prints the "masked N secret file(s)" chrome (gated by
+// --quiet via chrome) and symlink warnings (always to stderr, bypassing --quiet).
+// root is used to compute workspace-relative paths for the symlink messages;
+// on filepath.Rel failure the absolute path is printed.
+func reportScanResults(stderr, chrome io.Writer, root string, masked, symlinkMatches []string) {
+	if len(masked) > 0 {
+		fmt.Fprintf(chrome, "makeslop: masked %d secret file(s)\n", len(masked))
+	}
+	for _, sym := range symlinkMatches {
+		rel, relErr := filepath.Rel(root, sym)
+		if relErr != nil {
+			rel = sym
+		}
+		fmt.Fprintf(stderr,
+			"makeslop: warning: symlink %s matches a secret pattern but is NOT masked\n", rel)
+	}
 }
 
 // quietWriter discards writes when quiet is true; used to gate stderr chrome
@@ -334,6 +367,94 @@ func (s dockerNewErrStub) ImageExists(_ context.Context, _ string) (bool, error)
 	return false, s.err
 }
 
+// stampMigratedVersion atomically loads, stamps MigratedVersion = MigrationVersion,
+// and saves settings. Called only on a fresh seed (no prior settings.json). The
+// ws.Init lock is already released before this is called, so the separate
+// WithLock acquisition cannot deadlock.
+func stampMigratedVersion(baseDir string) error {
+	return config.WithLock(baseDir, func() error {
+		s, err := config.Load(baseDir)
+		if err != nil {
+			return err
+		}
+		s.MigratedVersion = config.MigrationVersion
+		return config.Save(baseDir, s)
+	})
+}
+
+// runInit implements the init command body. It is a named function so it can be
+// called from the initCmd RunE closure, keeping the closure thin.
+func runInit(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfHome, globalOnly, quiet bool) error {
+	chrome := &quietWriter{w: cmd.ErrOrStderr(), quiet: quiet}
+
+	pwd, err := resolvePwd()
+	if err != nil {
+		return err
+	}
+	if err := ensureWithinHome(cmd.ErrOrStderr(), pwd, outOfHome); err != nil {
+		return err
+	}
+
+	// Detect fresh vs existing BEFORE Bootstrap to decide whether to stamp
+	// MigratedVersion and whether to emit a stale-config nudge.
+	freshSeed, err := config.BaseConfigExists(baseDir)
+	if err != nil {
+		return err
+	}
+	freshSeed = !freshSeed
+
+	if err := config.Bootstrap(baseDir); err != nil {
+		return err
+	}
+	workspaceDir, err := ws.Init(pwd)
+	if err != nil {
+		return err
+	}
+
+	// Load settings once after ws.Init; reuse for both Lookup (to find the
+	// registered root for Scaffold) and the stale-nudge check below.
+	// ws.Init's lock is already released, so this Load does not deadlock.
+	initSettings, loadErr := config.Load(baseDir)
+	if loadErr != nil {
+		return loadErr
+	}
+
+	// Lookup gives the registered root for Scaffold.
+	workspaceRoot, _, err := ws.Lookup(initSettings, pwd)
+	if err != nil {
+		return err
+	}
+	if err := projectconfig.Scaffold(workspaceRoot, projectconfig.Cache{Content: !globalOnly, Agent: !globalOnly}); err != nil {
+		return err
+	}
+
+	// Fresh seed: stamp MigratedVersion so a newly-init'd dir is never
+	// reported stale. ws.Init's lock is already released, so this separate
+	// acquisition cannot deadlock.
+	if freshSeed {
+		if lockErr := stampMigratedVersion(baseDir); lockErr != nil {
+			return lockErr
+		}
+	} else {
+		// Existing base config: nudge (non-blocking) if behind. Never stamp
+		// MigratedVersion here — that would skip the actual migration.
+		// Reuse initSettings from the load above.
+		current, latest, stale := config.MigrationStatus(initSettings)
+		if stale {
+			fmt.Fprintf(chrome,
+				"note: your base config is v%d, latest is v%d — run 'makeslop migrate'\n",
+				current, latest)
+		}
+	}
+
+	// "registered" line is chrome (stderr, gated by --quiet); stdout keeps the bare path.
+	fmt.Fprintf(chrome,
+		"registered %s — run 'makeslop build' then 'makeslop run'\n",
+		filepath.Base(pwd))
+	fmt.Fprintln(cmd.OutOrStdout(), workspaceDir)
+	return nil
+}
+
 // newRootCmdWithDeps constructs the cobra tree with the given docker deps; used
 // by both newRootCmd and tests (which inject fakes).
 func newRootCmdWithDeps(baseDir string, deps dockerDeps) *cobra.Command {
@@ -363,81 +484,7 @@ func newRootCmdWithDeps(baseDir string, deps dockerDeps) *cobra.Command {
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			pwd, err := resolvePwd()
-			if err != nil {
-				return err
-			}
-			if err := ensureWithinHome(cmd.ErrOrStderr(), pwd, outOfHomeInit); err != nil {
-				return err
-			}
-
-			// Detect fresh vs existing BEFORE Bootstrap to decide whether to stamp
-			// MigratedVersion and whether to emit a stale-config nudge.
-			freshSeed, err := config.BaseConfigExists(baseDir)
-			if err != nil {
-				return err
-			}
-			freshSeed = !freshSeed
-
-			if err := config.Bootstrap(baseDir); err != nil {
-				return err
-			}
-			workspaceDir, err := ws.Init(pwd)
-			if err != nil {
-				return err
-			}
-
-			// Load settings once after ws.Init; reuse for both Lookup (to find the
-			// registered root for Scaffold) and the stale-nudge check below.
-			// ws.Init's lock is already released, so this Load does not deadlock.
-			initSettings, loadErr := config.Load(baseDir)
-			if loadErr != nil {
-				return loadErr
-			}
-
-			// Lookup gives the registered root for Scaffold.
-			workspaceRoot, _, err := ws.Lookup(initSettings, pwd)
-			if err != nil {
-				return err
-			}
-			if err := projectconfig.Scaffold(workspaceRoot, projectconfig.Cache{Content: !globalOnly, Agent: !globalOnly}); err != nil {
-				return err
-			}
-
-			// Fresh seed: stamp MigratedVersion so a newly-init'd dir is never
-			// reported stale. ws.Init's lock is already released, so this separate
-			// acquisition cannot deadlock.
-			if freshSeed {
-				if lockErr := config.WithLock(baseDir, func() error {
-					s, err := config.Load(baseDir)
-					if err != nil {
-						return err
-					}
-					s.MigratedVersion = config.MigrationVersion
-					return config.Save(baseDir, s)
-				}); lockErr != nil {
-					return lockErr
-				}
-			} else {
-				// Existing base config: nudge (non-blocking) if behind. Never stamp
-				// MigratedVersion here — that would skip the actual migration.
-				// Reuse initSettings from the load above.
-				current, latest, stale := config.MigrationStatus(initSettings)
-				if stale {
-					chrome := &quietWriter{w: cmd.ErrOrStderr(), quiet: quiet}
-					fmt.Fprintf(chrome,
-						"note: your base config is v%d, latest is v%d — run 'makeslop migrate'\n",
-						current, latest)
-				}
-			}
-
-			// "registered" line is chrome (stderr, gated by --quiet); stdout keeps the bare path.
-			chrome := &quietWriter{w: cmd.ErrOrStderr(), quiet: quiet}
-			fmt.Fprintf(chrome,
-				"registered %s — run 'makeslop build' then 'makeslop run'\n",
-				filepath.Base(pwd))
-			fmt.Fprintln(cmd.OutOrStdout(), workspaceDir)
-			return nil
+			return runInit(cmd, ws, baseDir, outOfHomeInit, globalOnly, quiet)
 		},
 	}
 	// --out-of-home and --global-only are scoped to init only (not root-persistent).

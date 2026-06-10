@@ -557,6 +557,83 @@ func TestStatus_CheckOrdering(t *testing.T) {
 	}
 }
 
+// ── checkList unit tests ──────────────────────────────────────────────────────
+
+// ok appends an ok check; ready stays true.
+func TestCheckList_Ok_AppendsAndStaysReady(t *testing.T) {
+	cl := &checkList{ready: true}
+	cl.ok("daemon", "")
+	if !cl.ready {
+		t.Errorf("ok() must not clear ready")
+	}
+	if len(cl.checks) != 1 {
+		t.Fatalf("want 1 check, got %d", len(cl.checks))
+	}
+	if cl.checks[0].State != checkOK {
+		t.Errorf("state = %q, want %q", cl.checks[0].State, checkOK)
+	}
+	if cl.checks[0].Name != "daemon" {
+		t.Errorf("name = %q, want %q", cl.checks[0].Name, "daemon")
+	}
+}
+
+// fail appends a fail check and clears ready.
+func TestCheckList_Fail_ClearsReady(t *testing.T) {
+	cl := &checkList{ready: true}
+	cl.ok("daemon", "")
+	cl.fail("image", "run 'makeslop build'")
+	if cl.ready {
+		t.Errorf("fail() must clear ready")
+	}
+	if len(cl.checks) != 2 {
+		t.Fatalf("want 2 checks, got %d", len(cl.checks))
+	}
+	if cl.checks[1].State != checkFail {
+		t.Errorf("state = %q, want %q", cl.checks[1].State, checkFail)
+	}
+	if cl.checks[1].Detail != "run 'makeslop build'" {
+		t.Errorf("detail = %q, want %q", cl.checks[1].Detail, "run 'makeslop build'")
+	}
+}
+
+// warn appends a warn check but does NOT clear ready.
+func TestCheckList_Warn_NonBlocking(t *testing.T) {
+	cl := &checkList{ready: true}
+	cl.warn("base config", "stale — run migrate")
+	if !cl.ready {
+		t.Errorf("warn() must not clear ready")
+	}
+	if cl.checks[0].State != checkWarn {
+		t.Errorf("state = %q, want %q", cl.checks[0].State, checkWarn)
+	}
+}
+
+// info appends an info check; ready unchanged.
+func TestCheckList_Info_NonBlocking(t *testing.T) {
+	cl := &checkList{ready: true}
+	cl.info("secret scan")
+	if !cl.ready {
+		t.Errorf("info() must not clear ready")
+	}
+	if cl.checks[0].State != checkInfo {
+		t.Errorf("state = %q, want %q", cl.checks[0].State, checkInfo)
+	}
+	if cl.checks[0].Detail != "" {
+		t.Errorf("info() must not set Detail, got %q", cl.checks[0].Detail)
+	}
+}
+
+// ready is cleared by the first fail and stays false across subsequent calls.
+func TestCheckList_ReadyClearedByFirstFail(t *testing.T) {
+	cl := &checkList{ready: true}
+	cl.fail("daemon", "down")
+	cl.ok("image", "")   // subsequent ok does not restore ready
+	cl.warn("scan", "x") // subsequent warn does not restore ready
+	if cl.ready {
+		t.Errorf("ready must stay false after fail()")
+	}
+}
+
 // The "not ready" verdict names the first failing check's remedy only.
 func TestStatus_RenderNotReadyVerdict(t *testing.T) {
 	var buf bytes.Buffer
