@@ -151,11 +151,11 @@ JSON output and rendering consume `checkList.checks` / `checkList.ready` exactly
 - [x] run `go build ./... && go vet ./... && gofmt -l . && go test ./...` — all green
 
 ### Task 4: Verify acceptance criteria
-- [ ] full suite green: `go test ./...`
-- [ ] `gofmt -l .` empty; `go vet ./...` clean
-- [ ] no behavior drift: `git diff` shows no changes to output strings, flag definitions, exit-code mapping, or `runRun` execution order
-- [ ] confirm `--quiet` still works on init/build/run (covered by existing tests, e.g. `TestBuild_Refresh_Quiet_SuppressesNotice`, `TestQuiet_*`)
-- [ ] size goals (approximate, non-blocking — byte-identical output is the hard gate, line counts are not): production files ≤ ~250 lines, `runStatus` ~110, `runRun` ~90
+- [x] full suite green: `go test ./...`
+- [x] `gofmt -l .` empty; `go vet ./...` clean
+- [x] no behavior drift: `git diff` shows no changes to output strings, flag definitions, exit-code mapping, or `runRun` execution order
+- [x] confirm `--quiet` still works on init/build/run (covered by existing tests, e.g. `TestBuild_Refresh_Quiet_SuppressesNotice`, `TestQuiet_*`)
+- [x] size goals (approximate, non-blocking — byte-identical output is the hard gate, line counts are not): production files ≤ ~250 lines, `runStatus` ~110, `runRun` ~90
 
 ### Task 5: [Final] Update documentation
 - [ ] update CLAUDE.md references: `dockerNewErrStub` "(in `main.go`)" → `deps.go`; "Both `runRun` (main.go) and `runStatus` (status.go) use it" (preflight section) → `runRun` is in `run.go`; the TTY-notions section's "(`status.go`, `main.go`)" → `runRun`'s usage now in `run.go`
