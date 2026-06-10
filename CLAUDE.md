@@ -63,12 +63,15 @@ even when the container auto-removes within milliseconds (fixes finding #2). The
 channel prevents tail-output truncation (fixes finding #1). The inline stdin-goroutine join (not a
 defer) ensures the goroutine finishes before the deferred `att.Conn.Close` fires (fixes finding #3).
 
-Stdin join uses a pollable dup of fd 0 (`newPollableStdin`): `SetNonblock(0, true)` + `Dup` +
-`os.NewFile` → Go runtime poller manages the fd → `Close()` unblocks the pending `Read`. Restore
-(`SetNonblock(0, false)`) runs in the same deferred cleanup as `term.Restore`. Injected test
-readers implementing `io.Closer` (e.g. `os.Pipe` read-end) take the same join path. If
-dup/fcntl fails, the goroutine is leaked — this is the documented fallback, matching what the
-docker CLI does.
+Stdin join uses a fresh open of `/dev/tty` with `O_NONBLOCK` (`newPollableStdin`) → Go runtime
+poller manages the fd → `Close()` unblocks the pending `Read`. **Never set `O_NONBLOCK` on fd 0
+itself**: `O_NONBLOCK` lives in the open file description, and a terminal's fd 0/1/2 are dups of
+one description — flipping fd 0 made `os.Stdout` non-blocking, so the stdout pump died on `EAGAIN`
+at the first TUI redraw burst and the session froze (regression fixed; guarded by
+`TestNewPollableStdin_DoesNotAlterFd0`). The fresh handle is used only when it is the same device
+as fd 0 and `SetReadDeadline` confirms the poller accepted it (kqueue on macOS can't poll
+`/dev/tty`). Injected test readers implementing `io.Closer` (e.g. `os.Pipe` read-end) take the
+same join path. On any fallback the goroutine is leaked — documented, matching the docker CLI.
 
 **Test fakes** live in two files (both `_test.go` — never compiled into the production binary):
 

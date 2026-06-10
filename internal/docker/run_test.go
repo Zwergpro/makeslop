@@ -6,7 +6,9 @@ import (
 	"errors"
 	"io"
 	"net"
+	"os"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -643,6 +645,34 @@ func TestRun_StdinJoin(t *testing.T) {
 	// The stdin reader must have been closed before Run returned.
 	if !tracker.closed {
 		t.Error("stdin reader Close() was not called — stdin goroutine was not joined")
+	}
+}
+
+// TestNewPollableStdin_DoesNotAlterFd0 is the regression test for the
+// frozen-TUI bug: the previous implementation set O_NONBLOCK on fd 0, which —
+// because a terminal's fd 0/1/2 share one open file description — silently
+// made os.Stdout non-blocking and killed the output pump with EAGAIN on the
+// first full-screen redraw. Whatever path newPollableStdin takes (fresh
+// /dev/tty handle, or any fallback), fd 0's flags must be untouched.
+func TestNewPollableStdin_DoesNotAlterFd0(t *testing.T) {
+	getFlags := func() int {
+		fl, _, errno := syscall.Syscall(syscall.SYS_FCNTL, 0, syscall.F_GETFL, 0)
+		if errno != 0 {
+			t.Skipf("fcntl(0, F_GETFL) failed: %v", errno)
+		}
+		return int(fl)
+	}
+
+	before := getFlags()
+	ps := newPollableStdin(os.Stdin)
+	if ps.closer != nil {
+		defer ps.closer.Close() //nolint:errcheck // test cleanup
+		if ps.handle == os.Stdin {
+			t.Error("pollable handle is os.Stdin itself — closing it would close fd 0")
+		}
+	}
+	if after := getFlags(); after != before {
+		t.Errorf("newPollableStdin changed fd 0 flags: before=%#x after=%#x", before, after)
 	}
 }
 

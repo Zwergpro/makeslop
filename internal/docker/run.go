@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"runtime"
 	"syscall"
+	"time"
 
 	"github.com/moby/moby/api/types/container"
 	moby "github.com/moby/moby/client"
@@ -34,25 +35,34 @@ func (e *ExitError) Error() string {
 }
 
 // pollableStdin holds a closeable handle to stdin that unblocks pending reads
-// when closed. If the handle is backed by a real O_NONBLOCK dup of fd 0, closing
-// it causes the Go runtime poller to unblock any pending Read on that fd.
+// when closed. If the handle is backed by a poller-managed fresh open of the
+// terminal, closing it causes the Go runtime poller to unblock a pending Read.
 type pollableStdin struct {
-	handle  io.Reader // read side; may be a *os.File (pollable dup) or the original reader
-	closer  io.Closer // handle's close method (nil if the reader is not closeable)
-	restore func()    // called in terminal cleanup to re-set fd 0 to blocking; may be nil
+	handle io.Reader // read side; may be a *os.File (fresh tty open) or the original reader
+	closer io.Closer // handle's close method (nil if the reader is not closeable)
 }
 
-// newPollableStdin tries to create a pollable, closeable handle backed by a dup
-// of fd 0 with O_NONBLOCK set. On success the Go runtime registers the fd with
-// the network poller, so Close() unblocks a pending Read; ps.closer is non-nil.
+// newPollableStdin tries to create a pollable, closeable handle for reading
+// stdin. For the real os.Stdin it opens /dev/tty with O_NONBLOCK. The fresh
+// open is the load-bearing detail: O_NONBLOCK lives in the open file
+// description, and a terminal session's fd 0/1/2 are dups of a single
+// description — so flipping the flag on fd 0 itself (a previous approach)
+// silently made os.Stdout non-blocking too. Go treats os.Stdout as a blocking
+// fd, so the first output burst that filled the pty buffer (any TUI redraw)
+// made the stdout pump die on EAGAIN and froze the session.
 //
-// Falls back gracefully: if any syscall fails, returns an unconverted reference
-// to stdinReader with ps.closer == nil. Callers check ps.closer != nil to
-// determine joinability. Callers must tolerate the fallback goroutine-leak path
+// The fresh handle is used only when it refers to the same character device as
+// fd 0 and the runtime poller accepted it (probed via SetReadDeadline — some
+// platforms cannot poll /dev/tty, e.g. kqueue on macOS, and os then reverts
+// the file to blocking mode, where Close would no longer unblock Read).
+//
+// Falls back gracefully: on any failure, returns an unconverted reference to
+// stdinReader with ps.closer == nil. Callers check ps.closer != nil to
+// determine joinability and must tolerate the fallback goroutine-leak path
 // (documented in runContainer).
 func newPollableStdin(stdinReader io.Reader) pollableStdin {
-	// Only attempt the dup if the injected reader is actually os.Stdin (fd 0).
-	// Injected test readers that implement io.Closer are handled by the caller directly.
+	// Only attempt the tty open if the injected reader is actually os.Stdin.
+	// Injected test readers that implement io.Closer are handled directly.
 	if stdinReader != os.Stdin {
 		if c, isCloser := stdinReader.(io.Closer); isCloser {
 			return pollableStdin{handle: stdinReader, closer: c}
@@ -60,32 +70,45 @@ func newPollableStdin(stdinReader io.Reader) pollableStdin {
 		return pollableStdin{handle: stdinReader}
 	}
 
-	fd := 0
-
-	// Set fd 0 to non-blocking so the Go runtime poller can manage it.
-	if err := syscall.SetNonblock(fd, true); err != nil {
-		return pollableStdin{handle: stdinReader}
-	}
-
-	// Dup the fd so we have an independent file description to close later.
-	dupFd, err := syscall.Dup(fd)
+	tty, err := os.OpenFile("/dev/tty", os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
-		// Restore blocking before giving up.
-		_ = syscall.SetNonblock(fd, false)
 		return pollableStdin{handle: stdinReader}
 	}
 
-	// Wrap in os.NewFile so Go registers it with the runtime network poller.
-	// This makes Close() on the *os.File unblock pending Read calls.
-	handle := os.NewFile(uintptr(dupFd), "stdin-dup")
-
-	restore := func() {
-		// Restore fd 0 to blocking mode (mirroring what we did above).
-		// The dup fd is already closed by the time this runs.
-		_ = syscall.SetNonblock(fd, false)
+	// stdin could be a terminal other than the controlling one (exotic
+	// redirection); reading /dev/tty would then consume the wrong input.
+	if !sameCharDevice(os.Stdin, tty) {
+		_ = tty.Close()
+		return pollableStdin{handle: stdinReader}
 	}
 
-	return pollableStdin{handle: handle, closer: handle, restore: restore}
+	// Deadlines are poller-backed: an ErrNoDeadline here means the runtime
+	// poller rejected the fd and Close would not unblock a pending Read.
+	if tty.SetReadDeadline(time.Time{}) != nil {
+		_ = tty.Close()
+		return pollableStdin{handle: stdinReader}
+	}
+
+	return pollableStdin{handle: tty, closer: tty}
+}
+
+// sameCharDevice reports whether a and b refer to the same device. b is
+// inspected via SyscallConn so a pollable fd is not switched back to blocking
+// mode (which (*os.File).Fd may do).
+func sameCharDevice(a, b *os.File) bool {
+	var sa, sb syscall.Stat_t
+	if syscall.Fstat(int(a.Fd()), &sa) != nil {
+		return false
+	}
+	rc, err := b.SyscallConn()
+	if err != nil {
+		return false
+	}
+	var ferr error
+	if rc.Control(func(fd uintptr) { ferr = syscall.Fstat(int(fd), &sb) }) != nil || ferr != nil {
+		return false
+	}
+	return sa.Rdev == sb.Rdev
 }
 
 // runContainer implements (*Docker).Run with injected apiClient, TTY predicate,
@@ -101,11 +124,11 @@ func newPollableStdin(stdinReader io.Reader) pollableStdin {
 // Registering the wait before start guarantees the daemon delivers the exit
 // status even when the container exits and is auto-removed within milliseconds.
 //
-// Stdin-goroutine join: production path creates a pollable dup of fd 0 with
-// O_NONBLOCK set. Closing the dup unblocks the pending Read via the Go runtime
-// poller. The blocking flag is restored in the same deferred cleanup as raw mode.
-// If dup/fcntl fails (newPollableStdin ok=false), the goroutine is leaked — this
-// is the documented fallback, matching what the docker CLI does.
+// Stdin-goroutine join: production path opens /dev/tty as a fresh O_NONBLOCK
+// file description (never altering fd 0's shared flags — see newPollableStdin).
+// Closing it unblocks the pending Read via the Go runtime poller. If the open
+// or poller registration fails, the goroutine is leaked — this is the
+// documented fallback, matching what the docker CLI does.
 // Injected test readers implementing io.Closer (e.g. os.Pipe read-end) are
 // treated identically to the pollable dup path and the goroutine is always joined.
 func runContainer(ctx context.Context, cli apiClient, isTTYFn func() bool, makeRawFn func(int) (*term.State, error), stdin io.Reader, stdout io.Writer, s Spec) error {
@@ -150,19 +173,14 @@ func runContainer(ctx context.Context, cli apiClient, isTTYFn func() bool, makeR
 		return fmt.Errorf("set terminal raw mode: %w", err)
 	}
 
-	// Build the pollable stdin handle here so its restore func can be bundled
-	// with the terminal-restore defer below.
 	ps := newPollableStdin(stdin)
 
-	// Deferred cleanup: restore raw mode AND the blocking flag on fd 0.
-	// The pollable dup is already closed by the time this runs (closed inline,
-	// before return, so the join goroutine exits before att.Conn.Close fires).
+	// Deferred cleanup: restore raw mode. The pollable handle is already closed
+	// by the time this runs (closed inline, before return, so the join goroutine
+	// exits before att.Conn.Close fires).
 	defer func() {
 		if oldState != nil {
 			_ = term.Restore(fd, oldState) //nolint:errcheck // teardown
-		}
-		if ps.restore != nil {
-			ps.restore()
 		}
 	}()
 
