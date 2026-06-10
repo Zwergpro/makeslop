@@ -168,11 +168,11 @@ updates only.
 - Modify: `cmd/makeslop/status.go` (caller signature update only)
 - Modify: `cmd/makeslop/main.go` (caller signature update only; warning printing comes in Task 4)
 
-- [ ] change `Scan` to return `(paths, symlinkMatches []string, err error)`: a symlink whose basename matches a pattern goes into `symlinkMatches` (sorted) instead of being silently skipped
-- [ ] update both callers (`runRun`, `runStatus`) for the new signature (`runStatus` ignores the slice)
-- [ ] write tests: matching symlink reported, non-matching symlink still silent, regular-file behavior unchanged, both slices sorted
-- [ ] update package doc comment (fail-loud now includes symlink visibility)
-- [ ] run `go test ./...` — must pass before task 3
+- [x] change `Scan` to return `(paths, symlinkMatches []string, err error)`: a symlink whose basename matches a pattern goes into `symlinkMatches` (sorted) instead of being silently skipped
+- [x] update both callers (`runRun`, `runStatus`) for the new signature (`runStatus` ignores the slice)
+- [x] write tests: matching symlink reported, non-matching symlink still silent, regular-file behavior unchanged, both slices sorted
+- [x] update package doc comment (fail-loud now includes symlink visibility)
+- [x] run `go test ./...` — must pass before task 3
 
 ### Task 3: projectconfig — reserved path, stub patterns, symlink warnings
 

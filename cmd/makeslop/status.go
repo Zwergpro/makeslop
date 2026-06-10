@@ -271,7 +271,7 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, jso
 				Detail: fmt.Sprintf("cannot read .makeslop.yaml: %v", pcErr),
 			})
 		} else {
-			masked, scanErr := security.Scan(ctx, workspaceRoot, yamlExcludes.Patterns, yamlExcludes.SkipDirs)
+			masked, _, scanErr := security.Scan(ctx, workspaceRoot, yamlExcludes.Patterns, yamlExcludes.SkipDirs)
 			if scanErr != nil {
 				checks = append(checks, statusCheck{
 					Name:   "secret scan",

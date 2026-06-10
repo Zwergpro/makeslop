@@ -5,6 +5,11 @@
 //
 // Walk errors are propagated immediately ("fail-loud"): if we cannot prove a
 // directory is secret-free, we must not proceed (no-.env-leak invariant).
+//
+// Symlink visibility: symlinks whose basename matches a secret pattern are NOT
+// masked (WalkDir does not follow them) but are returned in the second slice so
+// callers can surface a warning. Symlinks that do not match any pattern are
+// silently ignored (same as before).
 package security
 
 import (
@@ -14,15 +19,20 @@ import (
 	"sort"
 )
 
-// Scan returns the absolute, sorted paths of every file under root whose
-// basename matches a glob pattern; directories named in skipDirs (bare name)
-// are pruned. Empty patterns returns nil without walking.
+// Scan returns two sorted slices and an error:
+//   - paths: absolute paths of regular files whose basename matches a pattern.
+//   - symlinkMatches: absolute paths of symlinks whose basename matches a pattern
+//     (these are NOT masked — WalkDir does not follow symlinks — callers should
+//     warn the user that protection is incomplete).
+//
+// Directories named in skipDirs (bare name) are pruned. Empty patterns returns
+// (nil, nil, nil) without walking.
 //
 // Precondition: root absolute and EvalSymlinks-evaluated; patterns valid
 // filepath.Match patterns (validated by projectconfig.Load).
-func Scan(ctx context.Context, root string, patterns, skipDirs []string) ([]string, error) {
+func Scan(ctx context.Context, root string, patterns, skipDirs []string) (paths, symlinkMatches []string, err error) {
 	if len(patterns) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	skip := make(map[string]struct{}, len(skipDirs))
@@ -30,13 +40,12 @@ func Scan(ctx context.Context, root string, patterns, skipDirs []string) ([]stri
 		skip[d] = struct{}{}
 	}
 
-	var paths []string
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
-		if err := ctx.Err(); err != nil {
-			return err
+	walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, wErr error) error {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
 		}
-		if walkErr != nil {
-			return walkErr
+		if wErr != nil {
+			return wErr
 		}
 
 		if d.IsDir() {
@@ -48,13 +57,11 @@ func Scan(ctx context.Context, root string, patterns, skipDirs []string) ([]stri
 			return nil
 		}
 
-		// Drop symlinks; WalkDir does not follow them.
-		if d.Type()&fs.ModeSymlink != 0 {
-			return nil
-		}
+		isSymlink := d.Type()&fs.ModeSymlink != 0
 
-		// Skip sockets, pipes, device nodes, etc.
-		if !d.Type().IsRegular() {
+		// Skip sockets, pipes, device nodes, etc. (but not symlinks — we want to
+		// check their names against patterns before dropping them).
+		if !isSymlink && !d.Type().IsRegular() {
 			return nil
 		}
 
@@ -65,16 +72,21 @@ func Scan(ctx context.Context, root string, patterns, skipDirs []string) ([]stri
 				continue
 			}
 			if matched {
-				paths = append(paths, path)
+				if isSymlink {
+					symlinkMatches = append(symlinkMatches, path)
+				} else {
+					paths = append(paths, path)
+				}
 				break
 			}
 		}
 		return nil
 	})
-	if err != nil {
-		return nil, err
+	if walkErr != nil {
+		return nil, nil, walkErr
 	}
 
 	sort.Strings(paths)
-	return paths, nil
+	sort.Strings(symlinkMatches)
+	return paths, symlinkMatches, nil
 }

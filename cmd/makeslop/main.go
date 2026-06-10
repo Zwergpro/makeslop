@@ -137,7 +137,7 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfH
 	if err != nil {
 		return err
 	}
-	masked, err := security.Scan(cmd.Context(), workspaceRoot, yamlExcludes.Patterns, yamlExcludes.SkipDirs)
+	masked, _, err := security.Scan(cmd.Context(), workspaceRoot, yamlExcludes.Patterns, yamlExcludes.SkipDirs)
 	if err != nil {
 		return err
 	}
