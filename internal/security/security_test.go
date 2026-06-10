@@ -93,6 +93,15 @@ func TestScan_DefaultPatterns_PositiveCases(t *testing.T) {
 		".npmrc",
 		".netrc",
 		".git-credentials",
+		// 8 new patterns added in the security hardening pass
+		"cert.p12",
+		"key.pfx",
+		"terraform.tfstate",
+		".pypirc",
+		".htpasswd",
+		"service-account-prod.json",
+		"kubeconfig",
+		"cluster.kubeconfig",
 	}
 
 	for _, name := range positives {

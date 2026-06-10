@@ -56,8 +56,13 @@ The default `skip-dirs` are `.git`, `node_modules`, `vendor`, and `.venv`. See
 Patterns are basename globs (`filepath.Match`). Regular files matching a pattern are masked.
 Symlinks matching a pattern are **not masked** (WalkDir does not follow symlinks), but
 `makeslop run` prints a warning to stderr for each such symlink so the gap is visible — this warning
-is **not suppressed by `--quiet`** (degraded protection is not silent chrome). Directories named in
-`skip-dirs` are pruned entirely during the walk.
+is **not suppressed by `--quiet`** (degraded protection is not silent chrome):
+
+```
+makeslop: warning: symlink <rel-path> matches a secret pattern but is NOT masked
+```
+
+Directories named in `skip-dirs` are pruned entirely during the walk.
 
 Walk errors (e.g. unreadable subdirectories) are propagated immediately and abort the launch. This
 matches the no-secret-leak invariant: if a directory cannot be read, we cannot prove it is
@@ -74,6 +79,12 @@ not contain an `exclude.scan` block — secret masking will not run. Copy the co
 `exclude.scan` block (with both `patterns` and `skip-dirs`) from the generated template in
 [Project-local exclusions](#project-local-exclusions) below into your existing `.makeslop.yaml`
 to restore masking.
+
+**Updating scan patterns:** if your `.makeslop.yaml` has an `exclude.scan` block but was generated
+before the hardening pass (2026-06-10), it may be missing the 8 newer patterns (`*.p12`, `*.pfx`,
+`*.tfstate`, `.pypirc`, `.htpasswd`, `service-account*.json`, `kubeconfig`, `*.kubeconfig`). These
+are not added automatically (makeslop never rewrites a project-local config). Copy the missing
+entries from the template below into your `exclude.scan.patterns` list.
 
 ---
 
@@ -204,6 +215,26 @@ and resolving `GIT_DIR`). If you use worktrees or submodules, be aware that the 
 the real hooks directory.
 
 Both protections are reflected in `--dry-run` output.
+
+---
+
+## Embedded image hardening
+
+The container image built by `makeslop build` is derived from a pinned Debian base (`debian:trixie-slim`
+referenced by digest) and installs infrastructure tools (Go, Node.js) from official distribution
+tarballs with per-architecture sha256 checksum verification.
+
+**"Pin infra, float agents" policy:** infrastructure layers whose sha256 is verified at build time
+(base image digest, Go tarball, Node tarball, zsh-in-docker script) are pinned to exact versions
+with hardcoded checksums in the Dockerfile. Agent installers (`claude.ai/install.sh`,
+`@openai/codex`) are intentionally left floating — these are under active development and users
+benefit from receiving the latest agent version on each build. Pinning agent versions is an
+accepted residual risk (documented maintainer decision).
+
+**Maintaining pins:** when `GO_VERSION` or `NODE_VERSION` is bumped, the corresponding
+per-architecture sha256 values in the `RUN` commands must be updated to match the new release, and
+`MigrationVersion` must be incremented so existing installs pick up the refreshed Dockerfile via
+`makeslop migrate` + `makeslop build`.
 
 ---
 

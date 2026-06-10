@@ -40,7 +40,7 @@ func Scan(ctx context.Context, root string, patterns, skipDirs []string) (paths,
 		skip[d] = struct{}{}
 	}
 
-	walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, wErr error) error {
+	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, wErr error) error {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ctxErr
 		}
@@ -82,8 +82,8 @@ func Scan(ctx context.Context, root string, patterns, skipDirs []string) (paths,
 		}
 		return nil
 	})
-	if walkErr != nil {
-		return nil, nil, walkErr
+	if err != nil {
+		return nil, nil, err
 	}
 
 	sort.Strings(paths)

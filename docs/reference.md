@@ -323,6 +323,17 @@ Security flags applied inside the container:
 Mounts are emitted as `--mount type=bind,source=...,target=...` so paths containing `:` do not
 break parsing.
 
+**Sandbox-policy mounts** (applied when the host path exists):
+
+| Mount | Condition | Effect |
+|---|---|---|
+| `.makeslop.yaml` read-only bind | regular file at project root | agent cannot modify its own scan/exclusion policy |
+| `.git/hooks` tmpfs | `.git` is a directory at project root | agent cannot plant hooks that run on the host |
+
+These mounts are layered on top of the read-write project bind. See
+[security.md — Sandbox-policy protection](security.md#sandbox-policy-protection) for details and
+known residuals.
+
 For secret masking and the home-directory guard, see [security.md](security.md).
 
 ---

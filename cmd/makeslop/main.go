@@ -94,6 +94,20 @@ func ensureWithinHome(stderr io.Writer, pwd string, outOfHome bool) error {
 	return nil
 }
 
+// filterOut returns a copy of s with the element equal to exclude removed.
+// Returns s unmodified (no copy) when exclude is not present.
+func filterOut(s []string, exclude string) []string {
+	for i, v := range s {
+		if v == exclude {
+			out := make([]string, 0, len(s)-1)
+			out = append(out, s[:i]...)
+			out = append(out, s[i+1:]...)
+			return out
+		}
+	}
+	return s
+}
+
 // mergeUniqueSorted returns the sorted, deduplicated union of two slices.
 func mergeUniqueSorted(a, b []string) []string {
 	seen := make(map[string]struct{}, len(a)+len(b))
@@ -171,11 +185,24 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfH
 	// Gate sandbox-policy mounts on host filesystem state. BuildSpec is pure
 	// (no filesystem access), so the Lstat checks live here.
 	var protectProjectConfig, maskGitHooks bool
-	if fi, statErr := os.Lstat(filepath.Join(workspaceRoot, ".makeslop.yaml")); statErr == nil {
+	configPath := filepath.Join(workspaceRoot, projectconfig.Filename)
+	if fi, statErr := os.Lstat(configPath); statErr == nil {
 		// Only bind-mount when it is a regular file: a missing bind source fails
 		// container create, and masking an absent file would create an empty one
 		// through the rw bind (disabling scan patterns).
 		protectProjectConfig = fi.Mode().IsRegular()
+	}
+
+	// When ProtectProjectConfig is active, drop .makeslop.yaml from the /dev/null
+	// masked-file list if the scan or an explicit exclude.files entry found it.
+	// Docker applies mounts in order; last-write-wins, so a /dev/null bind appended
+	// after the read-only self-bind would silently override it (e.g. when the user
+	// adds a broad pattern like "*.yaml" to their exclude.scan.patterns).
+	// Note: no equivalent guard is needed for yamlExcludes.Dirs — reservedPaths in
+	// projectconfig rejects ".makeslop.yaml" from exclude.dirs at parse time, so it
+	// can never appear there.
+	if protectProjectConfig {
+		maskedFiles = filterOut(maskedFiles, configPath)
 	}
 	if fi, statErr := os.Lstat(filepath.Join(workspaceRoot, ".git")); statErr == nil {
 		// Only overlay hooks when .git is a directory. In git worktrees/submodules

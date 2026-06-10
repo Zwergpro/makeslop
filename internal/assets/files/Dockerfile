@@ -22,6 +22,11 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     && update-locale LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 \
     && rm -rf /tmp/* /var/tmp/*
 
+# Pin infra, float agents: GO_VERSION and NODE_VERSION are intentionally pinned
+# to specific releases whose sha256 checksums are hardcoded below. If you
+# override GO_VERSION or NODE_VERSION via --build-arg, you MUST also update the
+# corresponding sha256 values; mismatched checksums produce a sha256sum mismatch
+# error (not a version error). Bump MigrationVersion after any such change.
 ARG GO_VERSION=1.26.4
 RUN ARCH=$(dpkg --print-architecture) \
     && case "${ARCH}" in \
@@ -71,10 +76,8 @@ ENV SHELL=/bin/zsh \
     VISUAL=vim \
     POWERLEVEL9K_DISABLE_GITSTATUS=true
 
-ARG ZSH_IN_DOCKER_VERSION=1.2.1
-ARG ZSH_IN_DOCKER_SHA256=0cf15b6f9c63a8103eb33bad87dc4b43fed0e0ad5884dff90f943ee1e868796e
-RUN wget -O /tmp/zsh-in-docker.sh "https://github.com/deluan/zsh-in-docker/releases/download/v${ZSH_IN_DOCKER_VERSION}/zsh-in-docker.sh" \
-    && echo "${ZSH_IN_DOCKER_SHA256}  /tmp/zsh-in-docker.sh" | sha256sum -c - \
+RUN wget -O /tmp/zsh-in-docker.sh "https://github.com/deluan/zsh-in-docker/releases/download/v1.2.1/zsh-in-docker.sh" \
+    && echo "0cf15b6f9c63a8103eb33bad87dc4b43fed0e0ad5884dff90f943ee1e868796e  /tmp/zsh-in-docker.sh" | sha256sum -c - \
     && sh /tmp/zsh-in-docker.sh -- \
     -p git \
     -p fzf \

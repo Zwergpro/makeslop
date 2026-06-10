@@ -1342,14 +1342,41 @@ func TestBuildSpec_EnvDeterminism(t *testing.T) {
 
 // ---- ProtectProjectConfig and MaskGitHooks tests ----
 
-// Both flags off: mount list is identical to baseline (no extra mounts).
+// Both flags off: no sandbox-policy mounts appended. The baseline count is
+// pinned to an explicit expected value (4 base + 2 agent-cache + 2 content-cache
+// from sampleOptions) so that a silent change to sampleOptions defaults causes
+// this test to fail loudly rather than masking the regression.
 func TestBuildSpec_SandboxFlags_BothOff(t *testing.T) {
 	o := sampleOptions()
-	// flags default to false — just use sampleOptions unchanged
-	spec := BuildSpec(o)
-	baseline := BuildSpec(sampleOptions())
-	if !reflect.DeepEqual(spec.Mounts, baseline.Mounts) {
-		t.Errorf("flags=off should produce baseline mount list\n got: %+v\nwant: %+v", spec.Mounts, baseline.Mounts)
+	// flags default to false
+	specOff := BuildSpec(o)
+
+	// sampleOptions has MountAgentCache=true and MountContentCache=true:
+	//   4 base mounts + 2 agent-cache + 2 content-cache = 8.
+	const wantBaseline = 8
+	if got := len(specOff.Mounts); got != wantBaseline {
+		t.Fatalf("baseline mount count = %d, want %d (4 base + 2 agent-cache + 2 content-cache); sampleOptions may have changed", got, wantBaseline)
+	}
+
+	// Enabling each flag individually must increase the mount count by exactly 1.
+	oProtect := sampleOptions()
+	oProtect.ProtectProjectConfig = true
+	if got, want := len(BuildSpec(oProtect).Mounts), wantBaseline+1; got != want {
+		t.Errorf("ProtectProjectConfig=true: mount count = %d, want %d (baseline+1)", got, want)
+	}
+
+	oHooks := sampleOptions()
+	oHooks.MaskGitHooks = true
+	if got, want := len(BuildSpec(oHooks).Mounts), wantBaseline+1; got != want {
+		t.Errorf("MaskGitHooks=true: mount count = %d, want %d (baseline+1)", got, want)
+	}
+
+	// Both on: exactly two extra mounts.
+	oBoth := sampleOptions()
+	oBoth.ProtectProjectConfig = true
+	oBoth.MaskGitHooks = true
+	if got, want := len(BuildSpec(oBoth).Mounts), wantBaseline+2; got != want {
+		t.Errorf("both flags on: mount count = %d, want %d (baseline+2)", got, want)
 	}
 }
 
@@ -1428,7 +1455,14 @@ func TestBuildSpec_BothSandboxFlags_Order(t *testing.T) {
 
 	// Both appear before any cache-overlay mounts (mounts from sampleOptions cache are
 	// the agent/content overlays; with both sandbox flags they'd start at index 6).
-	// Verify the first cache mount is after index 5.
+	// Assert mounts[6] is a cache mount (host contains "workspaces/") and that no
+	// sandbox mount leaks into the cache range.
+	if len(spec.Mounts) < 7 {
+		t.Fatalf("expected at least 7 mounts (4 base + 2 sandbox + ≥1 cache), got %d", len(spec.Mounts))
+	}
+	if !strings.Contains(spec.Mounts[6].Host, "workspaces/") {
+		t.Errorf("mounts[6] expected to be first cache-overlay mount (host containing 'workspaces/'), got %+v", spec.Mounts[6])
+	}
 	for i := 6; i < len(spec.Mounts); i++ {
 		m := spec.Mounts[i]
 		if m.Host == "/home/me/code/myproj/.makeslop.yaml" || (m.Type == "tmpfs" && m.Container == "/workspace/myproj-abc123/.git/hooks") {
@@ -1505,9 +1539,9 @@ func TestBuildSpec_ProtectProjectConfig_PositionAfterBase_BeforeCache(t *testing
 	if sandboxIdx <= 3 {
 		t.Errorf("sandbox mount at index %d, want > 3 (after base mounts)", sandboxIdx)
 	}
-	// Must be before cache overlay mounts. The first cache overlay (MountAgentCache)
-	// starts at index 5 when ProtectProjectConfig is set (base[0-3] + sandbox[4] + cache[5+]).
-	// We find the first per-workspace overlay and verify sandbox comes first.
+	// Must be before cache overlay mounts. Rather than asserting a fixed index,
+	// we search for the first per-workspace cache overlay and verify the sandbox
+	// mount appears before it — tolerant of mount ordering changes.
 	firstCacheIdx := -1
 	for i, m := range spec.Mounts {
 		if strings.Contains(m.Host, "workspaces/") {

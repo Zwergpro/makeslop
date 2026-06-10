@@ -421,6 +421,10 @@ func TestLoad_DropsWrongType(t *testing.T) {
 	if len(excl.Files) != 0 || len(excl.Dirs) != 0 {
 		t.Errorf("expected empty result (wrong-type drops), got %+v", excl)
 	}
+	// Non-symlink wrong-type drops must be silent — no warnings.
+	if len(excl.Warnings) != 0 {
+		t.Errorf("expected no warnings for non-symlink wrong-type drops, got %v", excl.Warnings)
+	}
 }
 
 // TestLoad_DropsSymlinks verifies that symlinks in exclude.files and exclude.dirs
@@ -546,7 +550,6 @@ func TestLoad_SymlinkInDirs_Warning(t *testing.T) {
 // TestLoad_WrongTypeDrop_NoWarning verifies that a non-symlink wrong-type drop
 // (e.g. a directory listed in exclude.files) stays silent (no warning).
 func TestLoad_WrongTypeDrop_NoWarning(t *testing.T) {
-	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
 	if err := os.WriteFile(filepath.Join(root, "am-a-file"), []byte("data"), 0o644); err != nil {
@@ -577,7 +580,6 @@ func TestLoad_WrongTypeDrop_NoWarning(t *testing.T) {
 // TestLoad_NoWarnings_AbsentFile confirms no warnings for a missing file (zero
 // config returned, Warnings nil).
 func TestLoad_NoWarnings_AbsentFile(t *testing.T) {
-	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
 	excl, _, _, err := Load(root)

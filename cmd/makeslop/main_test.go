@@ -1178,6 +1178,47 @@ func TestMergeUniqueSorted(t *testing.T) {
 	}
 }
 
+func TestFilterOut(t *testing.T) {
+	cases := []struct {
+		name    string
+		s       []string
+		exclude string
+		want    []string
+	}{
+		{name: "nil slice", s: nil, exclude: "x", want: nil},
+		{name: "empty slice", s: []string{}, exclude: "x", want: []string{}},
+		{name: "element not present", s: []string{"a", "b", "c"}, exclude: "x", want: []string{"a", "b", "c"}},
+		{name: "element at start", s: []string{"a", "b", "c"}, exclude: "a", want: []string{"b", "c"}},
+		{name: "element in middle", s: []string{"a", "b", "c"}, exclude: "b", want: []string{"a", "c"}},
+		{name: "element at end", s: []string{"a", "b", "c"}, exclude: "c", want: []string{"a", "b"}},
+		{name: "single element removed", s: []string{"a"}, exclude: "a", want: []string{}},
+		{name: "only first occurrence removed", s: []string{"a", "b", "a"}, exclude: "a", want: []string{"b", "a"}},
+		{
+			// Critical interaction: scan pattern *.yaml matches .makeslop.yaml →
+			// filterOut removes it from maskedFiles before /dev/null bind list is
+			// built (so the read-only self-bind is not overridden by a /dev/null bind).
+			name:    "yaml config path removed from masked list",
+			s:       []string{"/proj/.env", "/proj/.makeslop.yaml", "/proj/config.yaml"},
+			exclude: "/proj/.makeslop.yaml",
+			want:    []string{"/proj/.env", "/proj/config.yaml"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := filterOut(tc.s, tc.exclude)
+			if len(got) != len(tc.want) {
+				t.Fatalf("filterOut(%v, %q) = %v, want %v", tc.s, tc.exclude, got, tc.want)
+			}
+			for i := range tc.want {
+				if got[i] != tc.want[i] {
+					t.Errorf("filterOut result[%d] = %q, want %q", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
+
 // --dry-run succeeds even when TTY is false (no docker exec).
 func TestRun_DryRun_SkipsDocker(t *testing.T) {
 	setHomeToTestParent(t)
@@ -1227,6 +1268,7 @@ func TestRun_DryRun_StdoutEqualsBuildSpecShellCommand(t *testing.T) {
 		t.Fatalf("load settings: %v", loadErr)
 	}
 	// init scaffolds .makeslop.yaml ⇒ ProtectProjectConfig true; both cache groups default to true.
+	// t.TempDir() has no .git directory — MaskGitHooks stays false.
 	want := docker.BuildSpec(docker.Options{
 		ProjectRoot:          resolvedPwd,
 		WorkspaceName:        filepath.Base(workspaceDir),
@@ -3747,7 +3789,7 @@ func hasMountWithContainer(mounts []docker.Mount, target string) bool {
 	return false
 }
 
-// helper: mount with matching container AND host
+// hasMountWithContainerAndHost returns true iff spec.Mounts contains a mount with container == container and host == host.
 func hasMountWithContainerAndHost(mounts []docker.Mount, container, host string) bool {
 	for _, m := range mounts {
 		if m.Container == container && m.Host == host {
@@ -3838,6 +3880,9 @@ func TestRun_NoGit_NoHooksMask(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run failed: %v; stderr=%q", err, stderr)
 	}
+	if !fc.Started {
+		t.Fatal("docker.Run must have been invoked (fc.Started must be true)")
+	}
 
 	workspacePath := "/workspace/" + workspaceName
 	wantHooksContainer := workspacePath + "/.git/hooks"
@@ -3848,7 +3893,6 @@ func TestRun_NoGit_NoHooksMask(t *testing.T) {
 
 // No .makeslop.yaml → ProtectProjectConfig mount absent.
 func TestRun_NoConfig_NoConfigMount(t *testing.T) {
-	skipNonPOSIX(t, "symlinks/Lstat behaviour is POSIX-specific")
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
@@ -3872,6 +3916,9 @@ func TestRun_NoConfig_NoConfigMount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run failed: %v; stderr=%q", err, stderr)
 	}
+	if !fc.Started {
+		t.Fatal("docker.Run must have been invoked (fc.Started must be true)")
+	}
 
 	workspacePath := "/workspace/" + workspaceName
 	wantConfigContainer := workspacePath + "/.makeslop.yaml"
@@ -3882,7 +3929,6 @@ func TestRun_NoConfig_NoConfigMount(t *testing.T) {
 
 // .git as a regular file (worktree/submodule gitfile) → MaskGitHooks mount absent.
 func TestRun_GitFile_NoHooksMask(t *testing.T) {
-	skipNonPOSIX(t, "symlinks/Lstat behaviour is POSIX-specific")
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
@@ -3905,6 +3951,9 @@ func TestRun_GitFile_NoHooksMask(t *testing.T) {
 	_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fc), "run")
 	if err != nil {
 		t.Fatalf("run failed: %v; stderr=%q", err, stderr)
+	}
+	if !fc.Started {
+		t.Fatal("docker.Run must have been invoked (fc.Started must be true)")
 	}
 
 	workspacePath := "/workspace/" + workspaceName
@@ -3949,8 +3998,9 @@ func TestRun_QuietContract_SuppressesMaskedButNotSymlinkWarnings(t *testing.T) {
 	if !strings.Contains(stderrNonQuiet, "masked 1 secret file") {
 		t.Errorf("non-quiet: stderr must contain 'masked 1 secret file'; got: %q", stderrNonQuiet)
 	}
-	if !strings.Contains(stderrNonQuiet, "symlink") {
-		t.Errorf("non-quiet: stderr must contain symlink warning; got: %q", stderrNonQuiet)
+	wantSymlinkWarning := "makeslop: warning: symlink symlink.env matches a secret pattern but is NOT masked"
+	if !strings.Contains(stderrNonQuiet, wantSymlinkWarning) {
+		t.Errorf("non-quiet: stderr must contain symlink warning %q; got: %q", wantSymlinkWarning, stderrNonQuiet)
 	}
 
 	// Quiet: "masked" chrome IS suppressed; symlink warning is NOT.
@@ -3961,8 +4011,8 @@ func TestRun_QuietContract_SuppressesMaskedButNotSymlinkWarnings(t *testing.T) {
 	if strings.Contains(stderrQuiet, "masked 1 secret file") {
 		t.Errorf("--quiet: 'masked N' chrome must be suppressed; stderr=%q", stderrQuiet)
 	}
-	if !strings.Contains(stderrQuiet, "symlink") {
-		t.Errorf("--quiet: symlink warning must NOT be suppressed; stderr=%q", stderrQuiet)
+	if !strings.Contains(stderrQuiet, wantSymlinkWarning) {
+		t.Errorf("--quiet: symlink warning must NOT be suppressed; got: %q", stderrQuiet)
 	}
 }
 
@@ -4008,6 +4058,103 @@ func TestRun_DryRun_SandboxMountsPresent(t *testing.T) {
 	if !strings.Contains(stdout, wantHooksMount) {
 		t.Errorf("--dry-run stdout missing MaskGitHooks mount\nwant substring: %q\nstdout:\n%s",
 			wantHooksMount, stdout)
+	}
+}
+
+// Combined test: both warning sources (security.Scan symlinkMatches AND
+// projectconfig Excludes.Warnings) fire together under --quiet. A regression
+// that gates one path under quietWriter would silence one but not the other.
+func TestRun_QuietContract_BothWarningSources(t *testing.T) {
+	skipNonPOSIX(t, "symlinks require POSIX")
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	resolvedPwd := evalSymlinks(t, pwd)
+
+	// Source 1 (security.Scan): a symlink whose basename matches a scan pattern.
+	if err := os.WriteFile(filepath.Join(resolvedPwd, "real.env"), []byte("S=1"), 0o644); err != nil {
+		t.Fatalf("write real.env: %v", err)
+	}
+	if err := os.Symlink("real.env", filepath.Join(resolvedPwd, "scan-link.env")); err != nil {
+		t.Fatalf("create scan symlink: %v", err)
+	}
+
+	// Source 2 (projectconfig): a symlink listed explicitly in exclude.files.
+	target := filepath.Join(resolvedPwd, "real.key")
+	if err := os.WriteFile(target, []byte("K=1"), 0o644); err != nil {
+		t.Fatalf("write real.key: %v", err)
+	}
+	if err := os.Symlink(target, filepath.Join(resolvedPwd, "config-link.key")); err != nil {
+		t.Fatalf("create config symlink: %v", err)
+	}
+
+	yamlContent := "exclude:\n  scan:\n    patterns:\n      - \"*.env\"\n  files: [config-link.key]\n  dirs: []\n"
+	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(yamlContent), 0o644); err != nil {
+		t.Fatalf("write yaml: %v", err)
+	}
+
+	wantScanWarn := "makeslop: warning: symlink scan-link.env matches a secret pattern but is NOT masked"
+	wantConfigWarn := `makeslop: warning: path "config-link.key" is a symlink and is NOT masked`
+
+	_, stderrQuiet, err := runCmd(t, baseDir, "--quiet", "run", "--dry-run")
+	if err != nil {
+		t.Fatalf("--quiet --dry-run failed: %v; stderr=%q", err, stderrQuiet)
+	}
+	if !strings.Contains(stderrQuiet, wantScanWarn) {
+		t.Errorf("--quiet: scan symlink warning must NOT be suppressed\nwant: %q\ngot:  %q", wantScanWarn, stderrQuiet)
+	}
+	if !strings.Contains(stderrQuiet, wantConfigWarn) {
+		t.Errorf("--quiet: projectconfig symlink warning must NOT be suppressed\nwant: %q\ngot:  %q", wantConfigWarn, stderrQuiet)
+	}
+}
+
+// .makeslop.yaml-as-symlink edge case: the ProtectProjectConfig gate stays off
+// (Lstat sees a symlink, not a regular file), so no read-only bind is added.
+func TestRun_ConfigAsSymlink_NoProtectMount(t *testing.T) {
+	skipNonPOSIX(t, "symlinks require POSIX")
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	initOut, _, err := runCmd(t, baseDir, "init")
+	if err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	workspaceDir := strings.TrimSpace(initOut)
+	workspaceName := filepath.Base(workspaceDir)
+	resolvedPwd := evalSymlinks(t, pwd)
+
+	// Replace .makeslop.yaml with a symlink pointing to a real file.
+	realConfig := filepath.Join(resolvedPwd, ".makeslop.yaml.real")
+	if err := os.Rename(filepath.Join(resolvedPwd, projectconfig.Filename), realConfig); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+	if err := os.Symlink(realConfig, filepath.Join(resolvedPwd, projectconfig.Filename)); err != nil {
+		t.Fatalf("create symlink: %v", err)
+	}
+
+	fc := newFakeDocker(0, true)
+	_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fc), "run")
+	if err != nil {
+		t.Fatalf("run failed: %v; stderr=%q", err, stderr)
+	}
+	if !fc.Started {
+		t.Fatal("docker.Run must have been invoked (fc.Started must be true)")
+	}
+
+	// Lstat of a symlink does NOT see IsRegular() → ProtectProjectConfig stays false.
+	// Assert that NO mount targets .makeslop.yaml in the container (not just the
+	// read-only variant — a non-readonly bind for that path would also be wrong).
+	workspacePath := "/workspace/" + workspaceName
+	wantConfigContainer := workspacePath + "/.makeslop.yaml"
+	if hasMountWithContainer(fc.LastSpec.Mounts, wantConfigContainer) {
+		t.Errorf("ProtectProjectConfig mount must be absent when .makeslop.yaml is a symlink; mounts: %+v", fc.LastSpec.Mounts)
 	}
 }
 

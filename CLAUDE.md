@@ -138,7 +138,7 @@ longer forks the docker binary.
 ### Scan filters are config-driven (no in-code denylist, no engine fallback)
 `internal/security.Scan` uses a native Go `filepath.WalkDir` walk — there is no `fd`/`fdfind`
 dependency. Patterns (basename globs) and skip-dirs are passed in at call time; the engine has no
-hardcoded defaults. If `patterns` is empty, `Scan` returns `nil` immediately (no walk).
+hardcoded defaults. If `patterns` is empty, `Scan` returns `(nil, nil, nil)` immediately (no walk).
 
 **`Scan` signature**: `Scan(ctx, root, patterns, skipDirs) (paths, symlinkMatches []string, err error)`.
 Regular files matching a pattern go into `paths`; symlinks matching a pattern go into `symlinkMatches`
@@ -324,6 +324,22 @@ projectconfig: path %q collides with a reserved agent path
 ```
 
 Reserved paths: `.claude`, `.codex`, `docs`, `CLAUDE.md`, `.makeslop.yaml`.
+
+### Dockerfile hardening: "pin infra, float agents" convention
+The embedded `internal/assets/files/Dockerfile` follows a deliberate split:
+
+- **Pinned with sha256:** base image digest (`debian:trixie-slim@sha256:…`), Go tarball (per-arch
+  sha256 in the `RUN` command, not an overridable `ARG`), Node.js tarball (per-arch sha256 in the
+  `RUN` command), zsh-in-docker script (version `v1.2.1` hardcoded in the URL — no `ARG`, so
+  `--build-arg` cannot substitute an attacker-controlled version or bypass the sha256 check).
+- **Intentionally floating:** `claude.ai/install.sh` and `@openai/codex` — these are active agent
+  code; users benefit from the latest version on each build. Pinning agent versions is an accepted
+  residual risk.
+
+**Maintenance rule:** whenever `GO_VERSION` or `NODE_VERSION` is bumped, update the per-arch
+sha256 values in the corresponding `RUN` commands AND bump `MigrationVersion` in
+`internal/config/config.go` so existing installs pick up the new Dockerfile via
+`makeslop migrate` + `makeslop build`. `CurrentVersion` is NOT bumped (no `Settings` struct change).
 
 ### Network model
 The app container always uses Docker bridge networking with full internet access. The socat-sidecar
