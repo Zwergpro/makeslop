@@ -12,11 +12,12 @@ import (
 // Docker holds the dependencies shared by Run, Build, CheckDaemon, and
 // ImageExists. Construct with New; call Close when done.
 type Docker struct {
-	client  apiClient
-	isTTYFn func() bool
-	makeRaw func(fd int) (*term.State, error)
-	stdin   io.Reader
-	stdout  io.Writer
+	client              apiClient
+	isTTYFn             func() bool
+	makeRaw             func(fd int) (*term.State, error)
+	stdin               io.Reader
+	stdout              io.Writer
+	resizeGoroutineHook func() // called at end of resize goroutine body; nil in production
 }
 
 // Option is a functional option for New.
@@ -86,7 +87,7 @@ func (d *Docker) Close() error {
 // Run launches s interactively. Returns ErrNoTTY unless both stdin and stdout
 // are TTYs, and *ExitError on non-zero container exit.
 func (d *Docker) Run(ctx context.Context, s Spec) error {
-	return runContainer(ctx, d.client, d.isTTYFn, d.makeRaw, d.stdin, d.stdout, s)
+	return runContainer(ctx, d.client, d.isTTYFn, d.makeRaw, d.stdin, d.stdout, d.resizeGoroutineHook, s)
 }
 
 // Build builds the image described by o, writing output to out and errw.

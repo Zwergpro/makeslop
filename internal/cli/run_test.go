@@ -2123,24 +2123,22 @@ func TestRun_QuietContract_BothWarningSources(t *testing.T) {
 	}
 }
 
-// .makeslop.yaml-as-symlink edge case: the ProtectProjectConfig gate stays off
-// (Lstat sees a symlink, not a regular file), so no read-only bind is added.
-func TestRun_ConfigAsSymlink_NoProtectMount(t *testing.T) {
+// .makeslop.yaml-as-symlink: Load now rejects symlinks fail-loud (finding #2),
+// so makeslop run must fail with a clear "is a symlink" error — docker.Run is
+// never invoked (the symlink is caught before the daemon is contacted).
+func TestRun_ConfigAsSymlink_FailsLoud(t *testing.T) {
 	skipNonPOSIX(t, "symlinks require POSIX")
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	initOut, _, err := runCmd(t, baseDir, "init")
-	if err != nil {
+	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
 		t.Fatalf("init failed: %v", err)
 	}
-	workspaceDir := strings.TrimSpace(initOut)
-	workspaceName := filepath.Base(workspaceDir)
 	resolvedPwd := evalSymlinks(t, pwd)
 
-	// Replace .makeslop.yaml with a symlink pointing to a real file.
+	// Replace .makeslop.yaml with a live symlink pointing to a valid config file.
 	realConfig := filepath.Join(resolvedPwd, ".makeslop.yaml.real")
 	if err := os.Rename(filepath.Join(resolvedPwd, projectconfig.Filename), realConfig); err != nil {
 		t.Fatalf("rename: %v", err)
@@ -2151,20 +2149,15 @@ func TestRun_ConfigAsSymlink_NoProtectMount(t *testing.T) {
 
 	fc := newFakeDocker(0, true)
 	_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fc), "run")
-	if err != nil {
-		t.Fatalf("run failed: %v; stderr=%q", err, stderr)
+	if err == nil {
+		t.Fatal("expected run to fail when .makeslop.yaml is a symlink, got nil error")
 	}
-	if !fc.Started {
-		t.Fatal("docker.Run must have been invoked (fc.Started must be true)")
+	if !strings.Contains(err.Error(), "symlink") && !strings.Contains(stderr, "symlink") {
+		t.Errorf("expected error/stderr to mention 'symlink'; err=%v stderr=%q", err, stderr)
 	}
-
-	// Lstat of a symlink does NOT see IsRegular() → ProtectProjectConfig stays false.
-	// Assert that NO mount targets .makeslop.yaml in the container (not just the
-	// read-only variant — a non-readonly bind for that path would also be wrong).
-	workspacePath := "/workspace/" + workspaceName
-	wantConfigContainer := workspacePath + "/.makeslop.yaml"
-	if hasMountWithContainer(fc.LastSpec.Mounts, wantConfigContainer) {
-		t.Errorf("ProtectProjectConfig mount must be absent when .makeslop.yaml is a symlink; mounts: %+v", fc.LastSpec.Mounts)
+	// docker.Run must NOT have been invoked — the symlink check fires before the daemon.
+	if fc.Started {
+		t.Error("docker.Run must NOT be invoked when .makeslop.yaml is a symlink")
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"runtime"
 	"testing"
 
 	"github.com/containerd/errdefs"
@@ -15,6 +16,14 @@ import (
 	moby "github.com/moby/moby/client"
 	"golang.org/x/term"
 )
+
+// skipNonPOSIX skips the test on non-POSIX hosts per the CLAUDE.md POSIX-only invariant.
+func skipNonPOSIX(t *testing.T, why string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skipf("skipping on %s: %s", runtime.GOOS, why)
+	}
+}
 
 // noopClient is a no-op apiClient. fakeRunClient and fakeBuildClient embed it
 // and override only the methods that carry test logic.
@@ -224,3 +233,12 @@ func noopMakeRaw(_ int) (*term.State, error) { return nil, nil }
 func alwaysTTY() bool { return true }
 
 func neverTTY() bool { return false }
+
+// WithResizeGoroutineHook injects a callback that is called at the end of the
+// SIGWINCH resize goroutine body (before closing resizeDone). Same-package
+// _test.go only — used to verify the goroutine is joined before Run returns.
+func WithResizeGoroutineHook(fn func()) Option {
+	return func(d *Docker) {
+		d.resizeGoroutineHook = fn
+	}
+}
