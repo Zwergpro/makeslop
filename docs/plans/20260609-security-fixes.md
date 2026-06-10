@@ -180,12 +180,12 @@ updates only.
 - Modify: `internal/projectconfig/projectconfig.go`
 - Modify: `internal/projectconfig/projectconfig_test.go`
 
-- [ ] add `".makeslop.yaml"` to `reservedPaths`
-- [ ] add the 8 new patterns to `renderStub` (and therefore `Stub`)
-- [ ] add `Warnings []string` to `Excludes`
-- [ ] change `statFilter` signature to `(result, warnings []string, err error)` with an explicit `os.ModeSymlink` check before the `keep` predicate; merge warnings from both the files and dirs calls into `Excludes.Warnings` (missing entries and non-symlink wrong-type drops stay silent — recorded decision)
-- [ ] write tests: `.makeslop.yaml` in `exclude.files`/`exclude.dirs` rejected with the reserved-path error; symlinked exclude entry (in each list) produces a warning and no mask; non-symlink wrong-type entry stays silent; stub renders the new patterns; absent-file behavior unchanged
-- [ ] run `go test ./internal/projectconfig/` — must pass before task 4
+- [x] add `".makeslop.yaml"` to `reservedPaths`
+- [x] add the 8 new patterns to `renderStub` (and therefore `Stub`)
+- [x] add `Warnings []string` to `Excludes`
+- [x] change `statFilter` signature to `(result, warnings []string, err error)` with an explicit `os.ModeSymlink` check before the `keep` predicate; merge warnings from both the files and dirs calls into `Excludes.Warnings` (missing entries and non-symlink wrong-type drops stay silent — recorded decision)
+- [x] write tests: `.makeslop.yaml` in `exclude.files`/`exclude.dirs` rejected with the reserved-path error; symlinked exclude entry (in each list) produces a warning and no mask; non-symlink wrong-type entry stays silent; stub renders the new patterns; absent-file behavior unchanged
+- [x] run `go test ./internal/projectconfig/` — must pass before task 4
 
 ### Task 4: runRun gating + warning output
 

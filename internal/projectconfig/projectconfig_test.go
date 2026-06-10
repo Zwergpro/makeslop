@@ -109,13 +109,21 @@ func TestLoad_DefaultStub_RoundTrips(t *testing.T) {
 	wantPatterns := []string{
 		"*.env",
 		"*.key",
+		"*.kubeconfig",
+		"*.p12",
 		"*.pem",
+		"*.pfx",
+		"*.tfstate",
 		".env.*",
 		".git-credentials",
+		".htpasswd",
 		".netrc",
 		".npmrc",
+		".pypirc",
 		"id_ed25519*",
 		"id_rsa*",
+		"kubeconfig",
+		"service-account*.json",
 	}
 	if !stringSlicesEqual(excl.Patterns, wantPatterns) {
 		t.Errorf("Patterns: got %v, want %v\n(if Stub changed, update wantPatterns to match)", excl.Patterns, wantPatterns)
@@ -301,7 +309,7 @@ func TestLoad_ValidationRules(t *testing.T) {
 func TestLoad_ReservedPaths(t *testing.T) {
 	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 
-	for _, reserved := range []string{".claude", ".codex", "docs", "CLAUDE.md"} {
+	for _, reserved := range []string{".claude", ".codex", "docs", "CLAUDE.md", ".makeslop.yaml"} {
 		t.Run("dirs/"+reserved, func(t *testing.T) {
 			root := evalSymlinks(t, t.TempDir())
 			content := "exclude:\n  dirs:\n    - " + reserved + "\n  files: []\n"
@@ -415,6 +423,8 @@ func TestLoad_DropsWrongType(t *testing.T) {
 	}
 }
 
+// TestLoad_DropsSymlinks verifies that symlinks in exclude.files and exclude.dirs
+// are dropped from masking and produce entries in Excludes.Warnings.
 func TestLoad_DropsSymlinks(t *testing.T) {
 	skipNonPOSIX(t, "symlinks and /‐paths required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
@@ -447,7 +457,155 @@ func TestLoad_DropsSymlinks(t *testing.T) {
 		t.Fatalf("Load returned error: %v", err)
 	}
 	if len(excl.Files) != 0 || len(excl.Dirs) != 0 {
-		t.Errorf("expected symlinks to be dropped, got %+v", excl)
+		t.Errorf("expected symlinks to be dropped from masking, got %+v", excl)
+	}
+	// Both symlinks must produce warnings.
+	if len(excl.Warnings) != 2 {
+		t.Fatalf("expected 2 warnings for symlinks, got %d: %v", len(excl.Warnings), excl.Warnings)
+	}
+	for _, w := range excl.Warnings {
+		if !strings.Contains(w, "is a symlink and is NOT masked") {
+			t.Errorf("warning %q does not mention 'is a symlink and is NOT masked'", w)
+		}
+	}
+}
+
+// TestLoad_SymlinkInFiles_Warning checks that a symlinked entry in exclude.files
+// produces a warning and is dropped (not masked).
+func TestLoad_SymlinkInFiles_Warning(t *testing.T) {
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	root := evalSymlinks(t, t.TempDir())
+
+	realFile := filepath.Join(root, "real.key")
+	if err := os.WriteFile(realFile, []byte("key data"), 0o600); err != nil {
+		t.Fatalf("write real file: %v", err)
+	}
+	linkName := filepath.Join(root, "link.key")
+	if err := os.Symlink(realFile, linkName); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	content := "exclude:\n  files:\n    - link.key\n  dirs: []\n"
+	if err := os.WriteFile(filepath.Join(root, Filename), []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	excl, _, _, err := Load(root)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if len(excl.Files) != 0 {
+		t.Errorf("expected symlink dropped from files mask, got %v", excl.Files)
+	}
+	if len(excl.Warnings) != 1 {
+		t.Fatalf("expected 1 warning, got %d: %v", len(excl.Warnings), excl.Warnings)
+	}
+	if !strings.Contains(excl.Warnings[0], "link.key") {
+		t.Errorf("warning %q does not mention the symlink path 'link.key'", excl.Warnings[0])
+	}
+	if !strings.Contains(excl.Warnings[0], "is NOT masked") {
+		t.Errorf("warning %q does not contain 'is NOT masked'", excl.Warnings[0])
+	}
+}
+
+// TestLoad_SymlinkInDirs_Warning checks that a symlinked entry in exclude.dirs
+// produces a warning and is dropped (not masked).
+func TestLoad_SymlinkInDirs_Warning(t *testing.T) {
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	root := evalSymlinks(t, t.TempDir())
+
+	realDir := filepath.Join(root, "real-secrets")
+	if err := os.Mkdir(realDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	linkName := filepath.Join(root, "link-secrets")
+	if err := os.Symlink(realDir, linkName); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	content := "exclude:\n  dirs:\n    - link-secrets\n  files: []\n"
+	if err := os.WriteFile(filepath.Join(root, Filename), []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	excl, _, _, err := Load(root)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if len(excl.Dirs) != 0 {
+		t.Errorf("expected symlink dropped from dirs mask, got %v", excl.Dirs)
+	}
+	if len(excl.Warnings) != 1 {
+		t.Fatalf("expected 1 warning, got %d: %v", len(excl.Warnings), excl.Warnings)
+	}
+	if !strings.Contains(excl.Warnings[0], "link-secrets") {
+		t.Errorf("warning %q does not mention the symlink path 'link-secrets'", excl.Warnings[0])
+	}
+}
+
+// TestLoad_WrongTypeDrop_NoWarning verifies that a non-symlink wrong-type drop
+// (e.g. a directory listed in exclude.files) stays silent (no warning).
+func TestLoad_WrongTypeDrop_NoWarning(t *testing.T) {
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	root := evalSymlinks(t, t.TempDir())
+
+	if err := os.WriteFile(filepath.Join(root, "am-a-file"), []byte("data"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "am-a-dir"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	// Cross-wired: file listed under dirs, dir listed under files — both drop silently.
+	content := "exclude:\n  dirs:\n    - am-a-file\n  files:\n    - am-a-dir\n"
+	if err := os.WriteFile(filepath.Join(root, Filename), []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	excl, _, _, err := Load(root)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if len(excl.Files) != 0 || len(excl.Dirs) != 0 {
+		t.Errorf("expected empty result (wrong-type drops), got %+v", excl)
+	}
+	if len(excl.Warnings) != 0 {
+		t.Errorf("expected no warnings for non-symlink wrong-type drops, got %v", excl.Warnings)
+	}
+}
+
+// TestLoad_NoWarnings_AbsentFile confirms no warnings for a missing file (zero
+// config returned, Warnings nil).
+func TestLoad_NoWarnings_AbsentFile(t *testing.T) {
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	root := evalSymlinks(t, t.TempDir())
+
+	excl, _, _, err := Load(root)
+	if err != nil {
+		t.Fatalf("Load on missing file: %v", err)
+	}
+	if len(excl.Warnings) != 0 {
+		t.Errorf("expected no warnings for absent file, got %v", excl.Warnings)
+	}
+}
+
+// TestStub_ContainsNewPatterns verifies the 8 new patterns are present in the stub.
+func TestStub_ContainsNewPatterns(t *testing.T) {
+	newPatterns := []string{
+		"*.p12",
+		"*.pfx",
+		"*.tfstate",
+		".pypirc",
+		".htpasswd",
+		"service-account*.json",
+		"kubeconfig",
+		"*.kubeconfig",
+	}
+	stubStr := string(Stub)
+	for _, p := range newPatterns {
+		if !strings.Contains(stubStr, p) {
+			t.Errorf("Stub does not contain new pattern %q", p)
+		}
 	}
 }
 
