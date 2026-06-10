@@ -22,15 +22,22 @@ and no test helpers in the production binary.
 
 **`Docker` struct and construction:**
 ```go
-type Docker struct { /* client, isTTYFn, makeRaw — all unexported */ }
+type Docker struct { /* client, isTTYFn, makeRaw, stdin, stdout — all unexported */ }
 
 func New(opts ...Option) (*Docker, error)          // real defaults from environment
 func WithClient(c apiClient) Option                // same-package _test.go only
 func WithTTYCheck(fn func() bool) Option
 func WithRawMode(fn func(int) (*term.State, error)) Option
+func WithStreams(in io.Reader, out io.Writer) Option // redirect container I/O (tests/CI)
 ```
-`New` builds a moby client via `moby.New(moby.FromEnv)`, sets real stdin+stdout TTY detection, and
-sets real `term.MakeRaw`. Options override the defaults.
+`New` builds a moby client via `moby.New(moby.FromEnv)`, sets real stdin+stdout TTY detection,
+sets real `term.MakeRaw`, and sets `stdin = os.Stdin` / `stdout = os.Stdout`. Options override
+the defaults.
+
+`WithStreams` redirects the data copies (`io.Copy` between container attach and host I/O) to
+injected streams. Fd-based terminal operations (raw mode, `term.GetSize`, SIGWINCH resize) always
+use the real `os.Stdin`; only the byte-stream copies are redirected. Used by tests via `bytes.Buffer`
+and pipe ends to assert output content without a PTY.
 
 **`apiClient` interface** (`client.go`) is the narrow unexported 11-method moby SDK adapter:
 `ContainerCreate`, `ContainerAttach`, `ContainerStart`, `ContainerWait`, `ContainerResize`,
@@ -43,17 +50,76 @@ The interface is not exported — `WithClient` is the only gateway, and only sam
 All four operation methods share a single `apiClient` for the struct's lifetime.
 `cmd` callers must `defer d.Close()` once after construction to release the client connection.
 
-**Test fakes** live in `internal/docker/fakes_test.go` (package `docker`, `_test.go` — never
-compiled into the production binary). The file provides:
-- `FakeRunClient` / `NewFakeRunClient(exitCode)` — scripts the `Run` container lifecycle; fields
-  `PingErr`, `ImageMissing`, `BlockPing`, `BlockImageInspect` cover error paths.
-- `FakeBuildClient` / `NewFakeBuildClient(exitCode)` — scripts `Build`; records
+**`Run` lifecycle (fixed in Tasks 1–6, bug-review round 2):**
+```
+Create → Attach → raw mode →
+  waitCtx, waitCancel = WithCancel(ctx); defer waitCancel()
+  ContainerWait(waitCtx, next-exit) → ContainerStart →
+  SIGWINCH goroutine (resizeDone channel, closed on exit) →
+  stdout goroutine + stdin goroutine →
+  select {
+    case res := <-waitResult:         → drain stdout → close stdin handle → join stdin goroutine
+                                        → att.CloseWrite() (in stdin goroutine before close(stdinDone))
+                                        → stop SIGWINCH signal; close(winchCh); <-resizeDone
+                                        → map StatusCode → ExitError
+    case err := <-wr.Error:           → inline ContainerRemove(Background, Force:true)
+                                        → drain stdout (now completes because remove killed container)
+                                        → close stdin handle → join stdin goroutine
+                                        → stop SIGWINCH signal; close(winchCh); <-resizeDone
+                                        → return wait error
+  }
+```
+Key invariants (original Tasks 1–2 plus bug-review round 2 Tasks 3–6):
+- `ContainerWait` registered before `ContainerStart` — daemon delivers exit status even on fast auto-remove.
+- `outputDone` channel — prevents tail-output truncation.
+- Inline stdin-goroutine join — goroutine finishes before deferred `att.Conn.Close` fires.
+- `att.CloseWrite()` — called in the stdin goroutine after `io.Copy` returns and before `close(stdinDone)`;
+  propagates EOF to the container so containers reading stdin to EOF terminate rather than hang.
+  No-ops on conns without `CloseWriter`.
+- `waitCtx`/`waitCancel` — derived cancellable context for `ContainerWait`; `defer waitCancel()` reaps the
+  SDK goroutine on start-failure paths so it is not leaked holding a connection.
+- `wr.Error` inline reap — force-removes the container at the top of the `wr.Error` case before draining
+  stdout; removal kills the container → attach stream EOFs → drain completes promptly; no running
+  container is left behind on a transient `/wait` drop.
+- `resizeDone` channel — closed by the SIGWINCH resize goroutine on exit; teardown defer does
+  `signal.Stop(winchCh); close(winchCh); <-resizeDone` so no in-flight `ContainerResize` is executing
+  after `runContainer` returns, eliminating the race with `d.Close()`.
+- `drainAndJoin` helper — unexported function that drains `outputDone` and then closes `ps.closer`
+  and waits for `stdinDone`. Called once per select branch instead of copy-pasting the drain+join
+  block 4 times. The helper accepts `*pollableStdin` and sets `ps.closer = nil` after closing, so
+  the outer deferred cleanup (`if ps.closer != nil { Close() }`) does not double-close. The defer
+  covers early-return paths (e.g. `ContainerStart` failure) that return before reaching the select.
+
+Stdin join uses a fresh open of `/dev/tty` with `O_NONBLOCK` (`newPollableStdin`) → Go runtime
+poller manages the fd → `Close()` unblocks the pending `Read`. **Never set `O_NONBLOCK` on fd 0
+itself**: `O_NONBLOCK` lives in the open file description, and a terminal's fd 0/1/2 are dups of
+one description — flipping fd 0 made `os.Stdout` non-blocking, so the stdout pump died on `EAGAIN`
+at the first TUI redraw burst and the session froze (regression fixed; guarded by
+`TestNewPollableStdin_DoesNotAlterFd0`). The fresh handle is used only when it is the same device
+as fd 0 and `SetReadDeadline` confirms the poller accepted it (kqueue on macOS can't poll
+`/dev/tty`). Injected test readers implementing `io.Closer` (e.g. `os.Pipe` read-end) take the
+same join path. On any fallback the goroutine is leaked — documented, matching the docker CLI.
+
+**Test fakes** live in two files (both `_test.go` — never compiled into the production binary):
+
+`internal/docker/fakes_test.go` — preflight and build fakes (package `docker`):
+- `fakeRunClient` / `newFakeRunClient(exitCode)` — scripts preflight lifecycle; fields
+  `PingErr`, `ImageMissing`, `BlockPing`, `BlockImageInspect` cover error paths. Used by
+  `preflight_test.go` and related tests. (CLAUDE.md previously used capitalized `FakeRunClient`;
+  actual code uses unexported `fakeRunClient`.)
+- `fakeBuildClient` / `newFakeBuildClient(exitCode)` — scripts `Build`; records
   the last build options in its unexported `lastBuildOptions` field.
 - `newDockerWithClient(t, c, opts...)` — constructs a `*Docker` with a fake client via
   `WithClient`; registers `d.Close` via `t.Cleanup`.
 - `noopMakeRaw`, `alwaysTTY`, `neverTTY` — stubs for option injection.
 
-**Consumer-side interfaces in `cmd/makeslop`** (package `main`):
+`internal/docker/run_test.go` — Run-lifecycle fake (package `docker`):
+- `fakeClient` — the Run-lifecycle fake used by `run_test.go`; distinct from `fakeRunClient`.
+  Has an `attachPayload` field to script delayed attach output, records call order (for the
+  wait-before-start test), and scripts attach reader EOF after scripted output delivery.
+- `noopMakeRaw`, `alwaysTTY`, `neverTTY` — defined in `fakes_test.go` (same package `docker`) and used by `run_test.go`.
+
+**Consumer-side interfaces in `internal/cli`** (package `cli`):
 ```go
 type containerRunner interface { Run(ctx context.Context, s docker.Spec) error }
 type imageBuilder    interface { Build(ctx context.Context, o docker.BuildOptions, out, errw io.Writer) error }
@@ -62,9 +128,22 @@ type imageChecker    interface { ImageExists(ctx context.Context, image string) 
 ```
 These are bundled in `dockerDeps`. `newRootCmd` constructs a `*docker.Docker`, calls `defer closeDocker()` via
 the returned cleanup func, and wraps the instance in `dockerDeps`; `newRootCmdWithDeps` accepts injected deps
-for tests (boundary fakes in `main_test.go`).
+for tests (boundary fakes in `internal/cli/main_test.go`). `runWithExitCodeAndDeps` (in
+`internal/cli/main_test.go`) is a test helper that calls `newRootCmdWithDeps` directly with injected deps,
+bypassing `docker.New()` — used by tests that need fine-grained control over deps without going through the
+production `newRootCmd` path.
 
-`dockerNewErrStub` (in `main.go`) is a fallback used when `docker.New()` fails: it implements all four
+The four interfaces, `dockerDeps` (with `checkDaemonPreflight`/`imageExistsPreflight` methods), and
+`dockerNewErrStub` live in `internal/cli/deps.go`. Each command gets its own file (`run.go`, `init.go`,
+`build.go`, `config.go`, `migrate.go`, `version.go`) under `internal/cli/`; shared guard helpers
+(`resolvePwd`, `ensureWithinHome`, `quietWriter`) live in `internal/cli/guard.go`;
+`newRootCmd`/`newRootCmdWithDeps`, `runWithExitCode`, and `var version` live in
+`internal/cli/root.go`; `errSilent` lives in `internal/cli/guard.go`. `cli.Main` (in `root.go`) is the
+single exported entry point. `cmd/makeslop/main.go` is ~10 lines: only `var version = "dev"` (ldflags
+target) + `func main() { os.Exit(cli.Main(version, os.Args[1:])) }`. The four-interface `dockerDeps`
+pattern is retained as documented above.
+
+`dockerNewErrStub` (in `deps.go`) is a fallback used when `docker.New()` fails: it implements all four
 interfaces and returns the construction error from every method call, so non-docker commands still work while
 docker-touching commands get a clear error instead of a panic.
 
@@ -75,8 +154,9 @@ observer to verify that `ExecuteContext` receives a cancellable (non-Background)
 There are no shell shims, no `dockerBinary` global, no `executableTempDir`, no
 `SetClientForTest`/`SetTTYCheckForTest`/`SetTermMakeRawForTest` globals.
 
-**Note:** `CurrentVersion` and `MigrationVersion` are NOT bumped for this struct-DI refactor —
-no `Settings` struct fields changed and the embedded Dockerfile is unchanged.
+**Note:** `CurrentVersion` and `MigrationVersion` were NOT bumped for the struct-DI and
+`internal/cli` extraction refactors — no `Settings` struct fields changed and the embedded
+Dockerfile was unchanged. Current values: `CurrentVersion = 1`, `MigrationVersion = 3`.
 
 ### Preflight methods (`internal/docker/preflight.go`)
 
@@ -90,11 +170,23 @@ misreported as "image absent").
 
 `WithPreflightTimeout(ctx context.Context) (context.Context, context.CancelFunc)` — wraps the
 given context with a `preflightTimeout` deadline (10 s) so that preflight checks never hang on a
-black-hole `DOCKER_HOST`. Both `runRun` (main.go) and `runStatus` (status.go) use it around each
-preflight call.
+black-hole `DOCKER_HOST`. Both `runRun` (run.go) and `runStatus` (status.go) use it around each
+preflight call (via the `checkDaemonPreflight`/`imageExistsPreflight` wrappers on `dockerDeps`).
 
 Both methods share the `*Docker`'s single long-lived client — no per-call client construction
 or close. `cmd` callers must `defer d.Close()` once after construction to release the connection.
+
+**`runRun` preflight execution order:**
+```
+pwd → home guard → config.Load → ws.Lookup →
+  [if !dryRun] CheckDaemon (with WithPreflightTimeout) →  ← skipped on --dry-run
+  projectconfig.Load → security.Scan → BuildSpec →
+  [if dryRun] print + return →
+  ImageExists (with WithPreflightTimeout) → Run
+```
+The daemon check is intentionally before the secret scan so a down daemon is reported
+immediately without waiting through a potentially long walk. It is skipped on `--dry-run`
+so `--dry-run` continues to work without a live daemon.
 
 ### Integration test for Build
 A gated integration test exercises the full `Build` flow against a live Docker daemon:
@@ -105,7 +197,7 @@ This test is skipped during normal `go test ./...` (requires a reachable daemon 
 
 ### docker.ExitError and the exit-code contract
 `docker.ExitError{Code int}` (in `run.go`) is the only exit-code error. `Run` returns it when
-`ContainerWait` reports a non-zero `StatusCode`. `runWithExitCode` in `main.go` does:
+`ContainerWait` reports a non-zero `StatusCode`. `runWithExitCode` in `internal/cli/root.go` does:
 
 ```go
 var ee *docker.ExitError
@@ -138,16 +230,33 @@ longer forks the docker binary.
 ### Scan filters are config-driven (no in-code denylist, no engine fallback)
 `internal/security.Scan` uses a native Go `filepath.WalkDir` walk — there is no `fd`/`fdfind`
 dependency. Patterns (basename globs) and skip-dirs are passed in at call time; the engine has no
-hardcoded defaults. If `patterns` is empty, `Scan` returns `nil` immediately (no walk).
+hardcoded defaults. If `patterns` is empty, `Scan` returns `(nil, nil, nil)` immediately (no walk).
+
+**`Scan` signature**: `Scan(ctx, root, patterns, skipDirs) (paths, symlinkMatches []string, err error)`.
+Regular files matching a pattern go into `paths`; symlinks matching a pattern go into `symlinkMatches`
+(not masked — WalkDir doesn't follow symlinks). Both slices are sorted. Callers: `runRun` (prints
+symlink warnings bypassing `--quiet`) and `runStatus` in `status.go` (ignores the slice).
 
 Walk errors (e.g. unreadable subdirectory) are **propagated immediately** and abort `runRun` before
 `docker.Run`. This "fail-loud" invariant ensures we never silently skip a directory we cannot prove
-is secret-free — consistent with the no-`.env`-leak contract.
+is secret-free — consistent with the no-`.env`-leak contract for **unskipped** paths.
+
+**Trust assumption for skip-dirs:** directories listed in `exclude.scan.skip-dirs` are bind-mounted
+into the container unscanned. The no-`.env`-leak guarantee applies only to walked (non-skipped)
+paths. Secrets inside `.git/`, `node_modules/`, etc. are the user's responsibility. Shrinking
+skip-dirs widens the guarantee at the cost of a longer pre-launch walk.
 
 The defaults live as active values in the `Scaffold` stub (seeded by `makeslop init`). Pre-existing
 project `.makeslop.yaml` files are **never** auto-migrated — `MigrationVersion` only refreshes
 `~/.makeslop/`, not project-local files. Users with an old stub must manually add an
 `exclude.scan` block to restore masking.
+
+**Basename-only contract (enforced at Load time):** `validatePatterns` in
+`internal/projectconfig/projectconfig.go` rejects any pattern containing `/` with a hard error:
+`projectconfig: scan pattern %q contains a path separator — patterns match basenames only`.
+This matches the sibling `validateSkipDirs` (which already rejects `/`) and prevents silently
+lost masking from path-style patterns (e.g. `secrets/*.pem`, `**/*.env`) that can never match
+`d.Name()` (the file basename) inside `Scan`. Patterns like `*.pem`, `.env.*` are correct.
 
 ### Per-workspace cache mount overlays (`cache:` block in `.makeslop.yaml`)
 `internal/projectconfig/projectconfig.go` parses an optional `cache:` block:
@@ -162,13 +271,28 @@ cache:
 value is the second return value (before the env slice and error). Absent block ⇒ `{true, true}` ⇒
 identical to pre-feature behavior (backward compatible).
 
+`Excludes` carries a `Warnings []string` field: human-readable notices for symlinked entries in
+`exclude.files` or `exclude.dirs` that are dropped from masking. The warning message is
+`"path %q is a symlink and is NOT masked"`. Missing entries and non-symlink wrong-type drops (e.g. a
+directory listed in `exclude.files`) stay silent. `runRun` prints these warnings to `cmd.ErrOrStderr()`
+directly — NOT through `quietWriter` — so `--quiet` does not suppress them.
+
 The values flow into `docker.Options.MountContentCache` and `docker.Options.MountAgentCache` in
 `runRun`. `BuildSpec` gates the two per-workspace mount groups on these booleans; global mounts
 (`~/.makeslop/.claude/`, `.claude.json`, `.codex/`) are always present.
 
 `Scaffold(root, Cache)` writes the stub with the `cache:` block; `Stub` is the default rendering
 (`{true, true}`). The `init --global-only` flag calls `Scaffold(root, Cache{false, false})`,
-scaffolding a file that disables both overlay groups. `Scaffold` is idempotent (EEXIST = success).
+scaffolding a file that disables both overlay groups. `Scaffold` is idempotent: EEXIST is success
+**only when the existing file is a regular file** — if the path is a symlink (dangling or live),
+`Scaffold` returns a hard error (`projectconfig: <path> is a symlink — the project config must be
+a regular file`) rather than silently treating the broken setup as success.
+
+`Load` applies the same check: `os.Lstat` before `os.ReadFile`; a symlink at the config path →
+hard error with the same message. `fs.ErrNotExist` still returns empty defaults (no-config is
+valid). This prevents a dangling symlink from being silently misread as "no config present",
+which would drop all scan patterns. Users who deliberately symlink `.makeslop.yaml` must replace
+the symlink with a regular file (`cp --remove-destination source .makeslop.yaml`).
 
 ### Static environment variables (`environments:` block in `.makeslop.yaml`)
 `internal/projectconfig/projectconfig.go` also parses an optional `environments:` block:
@@ -212,7 +336,7 @@ injected at construction time via `WithTTYCheck`; defaults to real stdin+stdout 
 **Two distinct TTY notions** — do not conflate:
 - `docker.Docker`'s `isTTYFn` checks stdin+stdout and gates `Run` (returns `ErrNoTTY` when false).
 - `cmd`'s `isTTYFunc` / `defaultIsTTY` is writer-based and gates status color/glyph output
-  (`status.go`, `main.go`). These stay separate.
+  (`status.go`, `run.go`). These stay separate.
 
 ### Home-directory guard exemptions
 `makeslop run` and `makeslop init` enforce the home-directory guard.
@@ -226,6 +350,9 @@ Dockerfile on the next `makeslop migrate`. `CurrentVersion` (settings schema ver
 and only changes when the `Settings` struct fields change. The two constants serve different
 purposes: `CurrentVersion` gates JSON schema compatibility; `MigrationVersion` gates the one-shot
 directory refresh.
+
+**Current values:** `MigrationVersion = 3` (bumped for Dockerfile hardening: sudo removal, base
+digest pin, Go/Node tarball sha256 verification, zsh-in-docker checksum). `CurrentVersion = 1`.
 
 **Note:** the configurable per-workspace cache mount overlays (`cache:` block in `.makeslop.yaml`,
 `init --global-only` flag, `MountContentCache`/`MountAgentCache` in `docker.Options`) do **not**
@@ -281,6 +408,85 @@ user edits), so on an already-init'd project `--global-only` is a no-op — docu
 ### --quiet flag
 `--quiet` is a persistent root flag. When set, stderr chrome (notices, nudges, progress lines such
 as `masked N`) is suppressed. Error messages still print to stderr.
+
+Symlink warnings (from `security.Scan` and `Excludes.Warnings`) bypass `--quiet` — degraded
+protection is never treated as cosmetic chrome.
+
+### Sandbox-policy mounts (`ProtectProjectConfig`, `MaskGitHooks`)
+Two new `docker.Options` booleans gate additional security mounts in `BuildSpec`:
+
+- `ProtectProjectConfig bool` — when true, mounts `<ProjectRoot>/.makeslop.yaml` read-only over
+  itself inside the container (prevents the agent from weakening its own sandbox policy). Set in
+  `runRun` iff `Lstat(<ProjectRoot>/.makeslop.yaml)` reports a regular file (missing file → skip;
+  a missing bind source fails container create and there is nothing to protect).
+- `MaskGitHooks bool` — when true, overlays `<workspacePath>/.git/hooks` with an empty tmpfs
+  (prevents the agent from planting hooks that execute on the host). Set in `runRun` iff
+  `Lstat(<ProjectRoot>/.git)` reports a directory (gitfile/worktree/submodule → leave off; the
+  real hooks dir is outside the workspace; documented residual).
+
+Both mounts are inserted in `BuildSpec` at a fixed point: after the 4 base mounts and before the
+cache overlays. The drift-guard test covers both. `--dry-run` reflects both automatically.
+
+**`filterOut` interaction for `ProtectProjectConfig`:** when `ProtectProjectConfig` is true,
+`runRun` calls `filterOut(maskedFiles, configPath)` to remove `.makeslop.yaml` from the
+`/dev/null` masked-file list *before* building `opts`. This is necessary because Docker applies
+mounts in argument order (last-write-wins): if a `/dev/null` bind for `.makeslop.yaml` appears
+after the read-only self-bind, it silently overrides the protection (e.g. when the user adds a
+broad pattern like `"*.yaml"` to `exclude.scan.patterns`). `filterOut` removes only the first
+occurrence and returns the input unmodified when the path is absent.
+
+### Decoupling: `workspace.Lookup` signature and `docker.Options.WorkspaceHost`
+
+`workspace.Lookup` does **not** call `config.Load` internally. Its signature is:
+
+```go
+func (w *Workspaces) Lookup(s *config.Settings, pwd string) (matchedRoot, cacheDir string, err error)
+```
+
+The caller is responsible for loading settings once and passing the result. A nil `s` is treated
+as empty settings (returns `ErrNotRegistered`). This means:
+- `runRun` loads settings once near the top of the function and passes the same `*config.Settings`
+  to both `ws.Lookup` and any subsequent settings-dependent logic (no double-load).
+- `status.go` reuses `loadedSettings` from check 2 for the workspace check. When settings are
+  absent, `loadedSettings` is nil → `ErrNotRegistered` → detail "not registered — run 'makeslop
+  init'". When settings are corrupt (parse failed), `loadedSettings` is also nil → same
+  `ErrNotRegistered` path → detail changed to `"cannot check — settings unreadable"` (the real
+  cause was already surfaced by the base-config check; a misleading "run makeslop init" would be
+  wrong). This behavioral distinction was introduced in Task 3.
+
+`docker.Options.WorkspaceHost string` replaces the old pattern of computing the workspace host path
+inside `spec.go` from `BaseDir + config.WorkspacesDir + WorkspaceName`. The caller (`runRun`)
+computes `workspaceHost` from the `cacheDir` returned by `ws.Lookup` and sets `Options.WorkspaceHost`
+directly. This removes the `internal/config` import from `spec.go` (keeping it pure).
+
+`--network` was removed from `ShellCommand`'s flag switch — `Args()` no longer emits it.
+
+### Reserved paths in projectconfig
+`reservedPaths` in `internal/projectconfig/projectconfig.go` lists paths that `docker.BuildSpec`
+may mount over the project root. User overlays in `exclude.dirs`/`exclude.files` that collide with
+these paths are rejected with a hard error:
+
+```
+projectconfig: path %q collides with a reserved agent path
+```
+
+Reserved paths: `.claude`, `.codex`, `docs`, `CLAUDE.md`, `.makeslop.yaml`.
+
+### Dockerfile hardening: "pin infra, float agents" convention
+The embedded `internal/assets/files/Dockerfile` follows a deliberate split:
+
+- **Pinned with sha256:** base image digest (`debian:trixie-slim@sha256:…`), Go tarball (per-arch
+  sha256 in the `RUN` command, not an overridable `ARG`), Node.js tarball (per-arch sha256 in the
+  `RUN` command), zsh-in-docker script (version `v1.2.1` hardcoded in the URL — no `ARG`, so
+  `--build-arg` cannot substitute an attacker-controlled version or bypass the sha256 check).
+- **Intentionally floating:** `claude.ai/install.sh` and `@openai/codex` — these are active agent
+  code; users benefit from the latest version on each build. Pinning agent versions is an accepted
+  residual risk.
+
+**Maintenance rule:** whenever `GO_VERSION` or `NODE_VERSION` is bumped, update the per-arch
+sha256 values in the corresponding `RUN` commands AND bump `MigrationVersion` in
+`internal/config/config.go` so existing installs pick up the new Dockerfile via
+`makeslop migrate` + `makeslop build`. `CurrentVersion` is NOT bumped (no `Settings` struct change).
 
 ### Network model
 The app container always uses Docker bridge networking with full internet access. The socat-sidecar

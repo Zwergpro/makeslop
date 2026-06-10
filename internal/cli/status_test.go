@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"bytes"
@@ -13,20 +13,20 @@ import (
 	"github.com/Zwergpro/makeslop/internal/projectconfig"
 )
 
-// runStatusCmd runs status via the production root. defaultIsTTY returns false
-// for the bytes.Buffer stderr sink, so tests get plain (no-glyph) output.
-func runStatusCmd(t *testing.T, baseDir string, deps dockerDeps, args ...string) (stdout, stderr string, err error) {
-	t.Helper()
-	return runCmdWithDeps(t, baseDir, deps, args...)
-}
 
-func newFakeStatusDeps(daemonDown bool, imageMissing bool) (dockerDeps, *fakeDocker) {
+func newFakeStatusDeps(daemonDown bool, imageMissing bool) dockerDeps {
 	fc := newFakeDocker(0, false) // TTY irrelevant for status
 	if daemonDown {
 		fc.PingErr = errors.New("connection refused")
 	}
 	fc.ImageMissing = imageMissing
-	return depsFrom(fc), fc
+	return depsFrom(fc)
+}
+
+func newFakeStatusDepsWithImageErr(imageErr error) dockerDeps {
+	fc := newFakeDocker(0, false)
+	fc.ImageErr = imageErr
+	return depsFrom(fc)
 }
 
 // All checks pass → exit 0, ready.
@@ -40,9 +40,9 @@ func TestStatus_AllGreen_ExitsZero(t *testing.T) {
 		t.Fatalf("init failed: %v", err)
 	}
 
-	deps, _ := newFakeStatusDeps(false, false)
+	deps := newFakeStatusDeps(false, false)
 
-	_, stderr, err := runStatusCmd(t, baseDir, deps, "status")
+	_, stderr, err := runCmdWithDeps(t, baseDir, deps, "status")
 	if err != nil {
 		t.Errorf("status should exit 0 when all checks pass; err=%v stderr=%q", err, stderr)
 	}
@@ -65,9 +65,9 @@ func TestStatus_DaemonDown_ExitsNonZero(t *testing.T) {
 		t.Fatalf("init failed: %v", err)
 	}
 
-	deps, _ := newFakeStatusDeps(true, false)
+	deps := newFakeStatusDeps(true, false)
 
-	_, stderr, err := runStatusCmd(t, baseDir, deps, "status")
+	_, stderr, err := runCmdWithDeps(t, baseDir, deps, "status")
 	if err == nil {
 		t.Fatalf("status should exit non-zero when daemon is down; stderr=%q", stderr)
 	}
@@ -93,9 +93,9 @@ func TestStatus_ImageMissing_ExitsNonZero(t *testing.T) {
 		t.Fatalf("init failed: %v", err)
 	}
 
-	deps, _ := newFakeStatusDeps(false, true)
+	deps := newFakeStatusDeps(false, true)
 
-	_, stderr, err := runStatusCmd(t, baseDir, deps, "status")
+	_, stderr, err := runCmdWithDeps(t, baseDir, deps, "status")
 	if err == nil {
 		t.Fatalf("status should exit non-zero when image is missing; stderr=%q", stderr)
 	}
@@ -110,6 +110,34 @@ func TestStatus_ImageMissing_ExitsNonZero(t *testing.T) {
 	}
 }
 
+// ImageExists returns an error (not just "missing") → exit non-zero, error detail shown.
+func TestStatus_ImageCheckError_ExitsNonZero(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	deps := newFakeStatusDepsWithImageErr(errors.New("transport error: dial tcp"))
+
+	_, stderr, err := runCmdWithDeps(t, baseDir, deps, "status")
+	if err == nil {
+		t.Fatalf("status should exit non-zero when image check errors; stderr=%q", stderr)
+	}
+	if !errors.Is(err, errSilent) {
+		t.Errorf("expected errSilent, got %v", err)
+	}
+	if !strings.Contains(stderr, "not ready") {
+		t.Errorf("stderr missing 'not ready': %q", stderr)
+	}
+	if !strings.Contains(stderr, "error checking image") {
+		t.Errorf("stderr missing 'error checking image' detail: %q", stderr)
+	}
+}
+
 // Unregistered workspace → exit non-zero, init hint.
 func TestStatus_WorkspaceNotRegistered_ExitsNonZero(t *testing.T) {
 	setHomeToTestParent(t)
@@ -117,9 +145,9 @@ func TestStatus_WorkspaceNotRegistered_ExitsNonZero(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd) // no init
 
-	deps, _ := newFakeStatusDeps(false, false)
+	deps := newFakeStatusDeps(false, false)
 
-	_, stderr, err := runStatusCmd(t, baseDir, deps, "status")
+	_, stderr, err := runCmdWithDeps(t, baseDir, deps, "status")
 	if err == nil {
 		t.Fatalf("status should exit non-zero when workspace not registered; stderr=%q", stderr)
 	}
@@ -158,9 +186,9 @@ func TestStatus_StaleConfig_ReportsWarnButStaysReady(t *testing.T) {
 		t.Fatalf("save stale settings: %v", err)
 	}
 
-	deps, _ := newFakeStatusDeps(false, false)
+	deps := newFakeStatusDeps(false, false)
 
-	_, stderr, statusErr := runStatusCmd(t, baseDir, deps, "status")
+	_, stderr, statusErr := runCmdWithDeps(t, baseDir, deps, "status")
 	if statusErr != nil {
 		t.Errorf("status must be ready despite stale config; err=%v stderr=%q", statusErr, stderr)
 	}
@@ -189,9 +217,12 @@ func TestStatus_JSON_Shape(t *testing.T) {
 		t.Fatalf("init failed: %v", err)
 	}
 
-	deps, _ := newFakeStatusDeps(false, false)
+	deps := newFakeStatusDeps(false, false)
 
-	stdout, _, _ := runStatusCmd(t, baseDir, deps, "status", "--json")
+	stdout, stderr, cmdErr := runCmdWithDeps(t, baseDir, deps, "status", "--json")
+	if cmdErr != nil {
+		t.Fatalf("status --json failed unexpectedly: %v; stderr=%q", cmdErr, stderr)
+	}
 
 	if stdout == "" {
 		t.Fatal("--json output is empty")
@@ -233,9 +264,10 @@ func TestStatus_JSON_ReadyField(t *testing.T) {
 		t.Fatalf("init failed: %v", err)
 	}
 
-	deps, _ := newFakeStatusDeps(true, false)
+	deps := newFakeStatusDeps(true, false)
 
-	stdout, _, _ := runStatusCmd(t, baseDir, deps, "status", "--json")
+	// status exits non-zero when a blocking check fails; JSON is still written to stdout.
+	stdout, _, _ := runCmdWithDeps(t, baseDir, deps, "status", "--json")
 
 	var result statusResult
 	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
@@ -331,9 +363,9 @@ func TestStatus_ExemptFromHomeGuard(t *testing.T) {
 
 	baseDir := t.TempDir()
 
-	deps, _ := newFakeStatusDeps(false, false)
+	deps := newFakeStatusDeps(false, false)
 
-	_, stderr, err := runStatusCmd(t, baseDir, deps, "status")
+	_, stderr, err := runCmdWithDeps(t, baseDir, deps, "status")
 	// May fail for daemon/image/workspace reasons, but never home-dir.
 	if err != nil && strings.Contains(stderr, "refusing to run from") {
 		t.Errorf("status must not apply the home-dir guard; stderr=%q", stderr)
@@ -350,9 +382,9 @@ func TestStatus_ExemptFromTTYRequirement(t *testing.T) {
 	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
 		t.Fatalf("init failed: %v", err)
 	}
-	deps, _ := newFakeStatusDeps(false, false)
+	deps := newFakeStatusDeps(false, false)
 
-	_, stderr, err := runStatusCmd(t, baseDir, deps, "status")
+	_, stderr, err := runCmdWithDeps(t, baseDir, deps, "status")
 	if err != nil {
 		// Any failure is fine except a TTY-related one.
 		if strings.Contains(stderr, "TTY") || strings.Contains(stderr, "tty") {
@@ -391,9 +423,9 @@ func TestStatus_Check5_PCErrShowsWarn(t *testing.T) {
 		t.Fatalf("write stale yaml: %v", err)
 	}
 
-	deps, _ := newFakeStatusDeps(false, false)
+	deps := newFakeStatusDeps(false, false)
 
-	_, stderr, err := runStatusCmd(t, baseDir, deps, "status")
+	_, stderr, err := runCmdWithDeps(t, baseDir, deps, "status")
 	if err != nil {
 		t.Errorf("status must remain ready despite pcErr (non-blocking); err=%v stderr=%q", err, stderr)
 	}
@@ -408,6 +440,10 @@ func TestStatus_Check5_PCErrShowsWarn(t *testing.T) {
 // A security.Scan error (check 5) is non-blocking: warn, status stays ready.
 // Induced by an unreadable subdir that fails WalkDir.
 func TestStatus_Check5_ScanErrShowsWarn(t *testing.T) {
+	skipNonPOSIX(t, "chmod 0000 requires POSIX")
+	if os.Getuid() == 0 {
+		t.Skip("root bypasses permission checks")
+	}
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
@@ -432,9 +468,9 @@ func TestStatus_Check5_ScanErrShowsWarn(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(unreadable, 0o755) })
 
-	deps, _ := newFakeStatusDeps(false, false)
+	deps := newFakeStatusDeps(false, false)
 
-	_, stderr, err := runStatusCmd(t, baseDir, deps, "status")
+	_, stderr, err := runCmdWithDeps(t, baseDir, deps, "status")
 	if err != nil {
 		t.Errorf("scan error must be non-blocking (warn), not blocking; err=%v stderr=%q", err, stderr)
 	}
@@ -463,9 +499,9 @@ func TestStatus_Check5_MaskedFilesShowsOKWithCount(t *testing.T) {
 		t.Fatalf("write secret file: %v", err)
 	}
 
-	deps, _ := newFakeStatusDeps(false, false)
+	deps := newFakeStatusDeps(false, false)
 
-	_, stderr, err := runStatusCmd(t, baseDir, deps, "status")
+	_, stderr, err := runCmdWithDeps(t, baseDir, deps, "status")
 	if err != nil {
 		t.Errorf("status must be ready when masked files found; err=%v stderr=%q", err, stderr)
 	}
@@ -491,6 +527,149 @@ func TestStatus_RenderReadyVerdict(t *testing.T) {
 	}
 	if strings.Contains(out, "not ready") {
 		t.Errorf("ready path must not contain 'not ready': %q", out)
+	}
+}
+
+// Corrupt settings → base-config check fails; workspace check shows
+// "cannot check — settings unreadable" rather than a redundant parse error.
+func TestStatus_CorruptSettings_WorkspaceShowsCannotCheck(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	// Write corrupt settings (no prior init).
+	if err := os.WriteFile(filepath.Join(baseDir, config.SettingsFile), []byte("{not json"), 0o644); err != nil {
+		t.Fatalf("write corrupt settings: %v", err)
+	}
+
+	deps := newFakeStatusDeps(false, false)
+
+	_, stderr, err := runCmdWithDeps(t, baseDir, deps, "status")
+	if err == nil {
+		t.Fatalf("status should exit non-zero with corrupt settings; stderr=%q", stderr)
+	}
+	if !strings.Contains(stderr, "cannot check") {
+		t.Errorf("workspace check must show 'cannot check' when settings are unreadable: %q", stderr)
+	}
+	// Ensure the base-config check (not workspace) shows the parse error.
+	if !strings.Contains(stderr, "base config") {
+		t.Errorf("stderr must mention 'base config' check: %q", stderr)
+	}
+}
+
+// TestStatus_CheckOrdering verifies that the five status checks appear in
+// the documented order: daemon → base config → image → workspace → secret scan.
+// Reordering the checks in runStatus would break the first-failing-check remedy
+// logic and CI integrations that parse the JSON by index.
+func TestStatus_CheckOrdering(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	deps := newFakeStatusDeps(false, false)
+
+	stdout, stderr, cmdErr := runCmdWithDeps(t, baseDir, deps, "status", "--json")
+	if cmdErr != nil {
+		t.Fatalf("status --json failed unexpectedly: %v; stderr=%q", cmdErr, stderr)
+	}
+
+	var result statusResult
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("--json output not valid JSON: %v\noutput: %s", err, stdout)
+	}
+
+	wantOrder := []string{"daemon", "base config", "image", "workspace", "secret scan"}
+	if len(result.Checks) != len(wantOrder) {
+		t.Fatalf("want %d checks, got %d: %v", len(wantOrder), len(result.Checks), result.Checks)
+	}
+	for i, want := range wantOrder {
+		if result.Checks[i].Name != want {
+			t.Errorf("check[%d].Name = %q, want %q (full order: %v)",
+				i, result.Checks[i].Name, want, result.Checks)
+		}
+	}
+}
+
+// ── checkList unit tests ──────────────────────────────────────────────────────
+
+// ok appends an ok check; ready stays true.
+func TestCheckList_Ok_AppendsAndStaysReady(t *testing.T) {
+	cl := newCheckList()
+	cl.ok("daemon", "")
+	if !cl.ready {
+		t.Errorf("ok() must not clear ready")
+	}
+	if len(cl.checks) != 1 {
+		t.Fatalf("want 1 check, got %d", len(cl.checks))
+	}
+	if cl.checks[0].State != checkOK {
+		t.Errorf("state = %q, want %q", cl.checks[0].State, checkOK)
+	}
+	if cl.checks[0].Name != "daemon" {
+		t.Errorf("name = %q, want %q", cl.checks[0].Name, "daemon")
+	}
+}
+
+// fail appends a fail check and clears ready.
+func TestCheckList_Fail_ClearsReady(t *testing.T) {
+	cl := newCheckList()
+	cl.ok("daemon", "")
+	cl.fail("image", "run 'makeslop build'")
+	if cl.ready {
+		t.Errorf("fail() must clear ready")
+	}
+	if len(cl.checks) != 2 {
+		t.Fatalf("want 2 checks, got %d", len(cl.checks))
+	}
+	if cl.checks[1].State != checkFail {
+		t.Errorf("state = %q, want %q", cl.checks[1].State, checkFail)
+	}
+	if cl.checks[1].Detail != "run 'makeslop build'" {
+		t.Errorf("detail = %q, want %q", cl.checks[1].Detail, "run 'makeslop build'")
+	}
+}
+
+// warn appends a warn check but does NOT clear ready.
+func TestCheckList_Warn_NonBlocking(t *testing.T) {
+	cl := newCheckList()
+	cl.warn("base config", "stale — run migrate")
+	if !cl.ready {
+		t.Errorf("warn() must not clear ready")
+	}
+	if cl.checks[0].State != checkWarn {
+		t.Errorf("state = %q, want %q", cl.checks[0].State, checkWarn)
+	}
+}
+
+// info appends an info check; ready unchanged.
+func TestCheckList_Info_NonBlocking(t *testing.T) {
+	cl := newCheckList()
+	cl.info("secret scan")
+	if !cl.ready {
+		t.Errorf("info() must not clear ready")
+	}
+	if cl.checks[0].State != checkInfo {
+		t.Errorf("state = %q, want %q", cl.checks[0].State, checkInfo)
+	}
+	if cl.checks[0].Detail != "" {
+		t.Errorf("info() must not set Detail, got %q", cl.checks[0].Detail)
+	}
+}
+
+// ready is cleared by the first fail and stays false across subsequent calls.
+func TestCheckList_ReadyClearedByFirstFail(t *testing.T) {
+	cl := newCheckList()
+	cl.fail("daemon", "down")
+	cl.ok("image", "")   // subsequent ok does not restore ready
+	cl.warn("scan", "x") // subsequent warn does not restore ready
+	if cl.ready {
+		t.Errorf("ready must stay false after fail()")
 	}
 }
 

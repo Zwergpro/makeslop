@@ -6,9 +6,10 @@
 // exclude.scan drives the WalkDir secret scan via basename globs (patterns) and
 // bare skip-dir names — these are names, not paths, so no IsLocal/path checks
 // apply. exclude.files/exclude.dirs are explicit host paths for /dev/null and
-// tmpfs overlays; symlinks are silently dropped (ambiguous: the link or its
-// target?) and reserved agent paths are a hard error (a user overlay would
-// shadow the agent mount).
+// tmpfs overlays; symlinks are warned about via Excludes.Warnings (ambiguous:
+// the link or its target?) and dropped from masking; missing entries and
+// non-symlink wrong-type drops stay silent; reserved agent paths are a hard
+// error (a user overlay would shadow the agent mount).
 package projectconfig
 
 import (
@@ -34,11 +35,19 @@ func renderStub(c Cache) []byte {
       - ".env.*"
       - "*.pem"
       - "*.key"
+      - "*.p12"
+      - "*.pfx"
+      - "*.tfstate"
       - "id_rsa*"
       - "id_ed25519*"
       - ".npmrc"
       - ".netrc"
       - ".git-credentials"
+      - ".pypirc"
+      - ".htpasswd"
+      - "service-account*.json"
+      - "kubeconfig"
+      - "*.kubeconfig"
     skip-dirs:
       - .git
       - node_modules
@@ -65,10 +74,11 @@ var Stub = renderStub(Cache{Content: true, Agent: true})
 // check fires regardless of cache config, so disabling a cache group and still
 // listing such a path errors even when the mount is inactive (conservative).
 var reservedPaths = map[string]struct{}{
-	".claude":   {},
-	".codex":    {},
-	"docs":      {},
-	"CLAUDE.md": {},
+	".claude":        {},
+	".codex":         {},
+	"docs":           {},
+	"CLAUDE.md":      {},
+	".makeslop.yaml": {},
 }
 
 // Excludes is the parsed, validated, host-resolved result of Load.
@@ -78,6 +88,7 @@ type Excludes struct {
 	Dirs     []string // absolute host paths; tmpfs overlay targets
 	Patterns []string // basename globs for the WalkDir secret scan; deduped and sorted
 	SkipDirs []string // bare directory names pruned during the WalkDir scan; deduped and sorted
+	Warnings []string // human-readable notices about dropped entries (e.g. symlinks); callers should surface these
 }
 
 // Cache is the parsed cache-overlay configuration. Both fields default to true
@@ -109,14 +120,25 @@ type yamlSchema struct {
 }
 
 // Scaffold creates <root>/.makeslop.yaml with the stub for the given Cache
-// defaults. Idempotent: EEXIST is success and user edits are never clobbered
-// (c is a no-op on an existing file). root must be absolute and
-// EvalSymlinks-evaluated.
+// defaults. Idempotent: EEXIST on a regular file is success and user edits are
+// never clobbered (c is a no-op on an existing file). A symlink at the path —
+// dangling or live — is rejected with a hard error: the project config must be
+// a regular file so ProtectProjectConfig and Load behave predictably. root must
+// be absolute and EvalSymlinks-evaluated.
 func Scaffold(root string, c Cache) error {
 	path := filepath.Join(root, Filename)
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
 	if err != nil {
 		if errors.Is(err, fs.ErrExist) {
+			// EEXIST could mean a regular file (idempotent success) or a symlink
+			// (which O_EXCL treats as existing). Lstat to distinguish.
+			info, lstErr := os.Lstat(path)
+			if lstErr != nil {
+				return fmt.Errorf("scaffold %s: %w", Filename, lstErr)
+			}
+			if info.Mode()&fs.ModeSymlink != 0 {
+				return fmt.Errorf("projectconfig: %s is a symlink — the project config must be a regular file", Filename)
+			}
 			return nil
 		}
 		return fmt.Errorf("scaffold %s: %w", Filename, err)
@@ -135,22 +157,39 @@ func Scaffold(root string, c Cache) error {
 }
 
 // Load parses <root>/.makeslop.yaml. The four-value return is:
-//   - Excludes: file/dir masks and scan patterns.
+//   - Excludes: file/dir masks and scan patterns. Excludes.Warnings carries
+//     human-readable notices for symlinked entries (dropped with a warning);
+//     missing entries and non-symlink wrong-type drops stay silent.
 //   - Cache: per-workspace overlay settings; defaults to {true,true} when the
 //     cache: block (or the whole file) is absent.
 //   - []string: sorted "KEY=VALUE" env pairs from environments:; nil when the
 //     block is absent (nil ≡ no env injection, backward-compatible).
 //   - error: any parse, validation, or filesystem error, wrapped "projectconfig: ".
 //
-// Symlinks and missing entries are silently dropped. root must be absolute and
-// EvalSymlinks-evaluated.
+// The file at root/.makeslop.yaml must be a regular file. A symlink — dangling
+// or live — is rejected with a hard error: masking and sandbox-policy behaviour
+// depend on the file being a real file on disk.
+//
+// root must be absolute and EvalSymlinks-evaluated.
 func Load(root string) (Excludes, Cache, []string, error) {
 	path := filepath.Join(root, Filename)
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
+
+	// Lstat before ReadFile to detect symlinks. ReadFile follows symlinks, which
+	// would silently succeed for a live symlink or give ENOENT for a dangling one
+	// (treating it as "no config" — the silent data-loss case this check closes).
+	linfo, lstErr := os.Lstat(path)
+	if lstErr != nil {
+		if errors.Is(lstErr, fs.ErrNotExist) {
 			return Excludes{}, Cache{Content: true, Agent: true}, nil, nil
 		}
+		return Excludes{}, Cache{}, nil, fmt.Errorf("projectconfig: read %s: %w", Filename, lstErr)
+	}
+	if linfo.Mode()&fs.ModeSymlink != 0 {
+		return Excludes{}, Cache{}, nil, fmt.Errorf("projectconfig: %s is a symlink — the project config must be a regular file", Filename)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
 		return Excludes{}, Cache{}, nil, fmt.Errorf("projectconfig: read %s: %w", Filename, err)
 	}
 
@@ -198,17 +237,20 @@ func Load(root string) (Excludes, Cache, []string, error) {
 		}
 	}
 
-	files, err := statFilter(root, cleanedFiles, func(info os.FileInfo) bool { return info.Mode().IsRegular() })
+	files, fileWarnings, err := statFilter(root, cleanedFiles, func(info os.FileInfo) bool { return info.Mode().IsRegular() })
 	if err != nil {
 		return Excludes{}, Cache{}, nil, err
 	}
-	dirs, err := statFilter(root, cleanedDirs, func(info os.FileInfo) bool { return info.IsDir() })
+	dirs, dirWarnings, err := statFilter(root, cleanedDirs, func(info os.FileInfo) bool { return info.IsDir() })
 	if err != nil {
 		return Excludes{}, Cache{}, nil, err
 	}
 
 	files = dedupSorted(files)
 	dirs = dedupSorted(dirs)
+
+	// Merge warnings from both lists; deduplicate and sort.
+	warnings := dedupSorted(append(fileWarnings, dirWarnings...))
 
 	// Absent pointer (nil) means the field was unset in YAML, defaulting to true
 	// (backward-compatible: absent block = both mounted).
@@ -222,7 +264,7 @@ func Load(root string) (Excludes, Cache, []string, error) {
 		return Excludes{}, Cache{}, nil, err
 	}
 
-	return Excludes{Files: files, Dirs: dirs, Patterns: patterns, SkipDirs: skipDirs}, cacheCfg, envVars, nil
+	return Excludes{Files: files, Dirs: dirs, Patterns: patterns, SkipDirs: skipDirs, Warnings: warnings}, cacheCfg, envVars, nil
 }
 
 // validateEntries cleans and validates relative paths, erroring on the first
@@ -253,11 +295,20 @@ func validateEntries(entries []string, listName string) ([]string, error) {
 }
 
 // validatePatterns validates exclude.scan.patterns basename globs, rejecting
-// empty entries and invalid glob syntax. Returns deduplicated, sorted patterns.
+// empty entries, path separators, and invalid glob syntax. Returns deduplicated,
+// sorted patterns. Patterns are matched against basenames only (security.Scan
+// calls filepath.Match(p, d.Name())), so path-style patterns like
+// "secrets/*.pem" or "**/*.env" can never match and are rejected fail-loud.
 func validatePatterns(entries []string) ([]string, error) {
 	for _, p := range entries {
 		if p == "" {
 			return nil, fmt.Errorf("projectconfig: empty pattern in exclude.scan.patterns")
+		}
+		// Patterns are basename globs: a '/' can never match any basename, so
+		// a path-style pattern silently masks nothing. Reject early so the user
+		// gets a clear error instead of silent data loss.
+		if strings.Contains(p, "/") {
+			return nil, fmt.Errorf("projectconfig: scan pattern %q contains a path separator — patterns match basenames only", p)
 		}
 		// Matching against "" validates glob syntax without matching anything.
 		if _, err := filepath.Match(p, ""); err != nil {
@@ -326,25 +377,33 @@ func validateEnvironments(env map[string]yaml.Node) ([]string, error) {
 	return result, nil
 }
 
-// statFilter Lstats each path under root, silently dropping missing and
-// wrong-type entries (symlinks included). keep decides the acceptable type.
-func statFilter(root string, cleaned []string, keep func(os.FileInfo) bool) ([]string, error) {
-	var result []string
+// statFilter Lstats each path under root. Symlinks are dropped with a warning
+// message in warnings (degraded protection is not silent). Missing entries and
+// non-symlink wrong-type drops are silently discarded. keep decides the
+// acceptable type (checked only after the symlink guard).
+func statFilter(root string, cleaned []string, keep func(os.FileInfo) bool) (result, warnings []string, err error) {
 	for _, rel := range cleaned {
 		abs := filepath.Join(root, rel)
-		info, err := os.Lstat(abs)
-		if err != nil {
-			if errors.Is(err, fs.ErrNotExist) {
+		info, statErr := os.Lstat(abs)
+		if statErr != nil {
+			if errors.Is(statErr, fs.ErrNotExist) {
 				continue
 			}
-			return nil, fmt.Errorf("projectconfig: stat %s: %w", rel, err)
+			return nil, nil, fmt.Errorf("projectconfig: stat %s: %w", rel, statErr)
+		}
+		// Symlinks are dropped with a visible warning: masking a symlink is
+		// ambiguous (the link or its target?), but silently skipping it could
+		// leave secrets unmasked. Callers must surface these warnings.
+		if info.Mode()&os.ModeSymlink != 0 {
+			warnings = append(warnings, fmt.Sprintf("path %q is a symlink and is NOT masked", rel))
+			continue
 		}
 		if !keep(info) {
-			continue // includes symlinks
+			continue // non-symlink wrong-type drop (e.g. dir listed in files): stay silent
 		}
 		result = append(result, abs)
 	}
-	return result, nil
+	return result, warnings, nil
 }
 
 // dedupSorted returns a deduplicated, sorted copy; input is not modified.

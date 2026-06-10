@@ -8,7 +8,6 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/Zwergpro/makeslop/internal/config"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/mount"
 )
@@ -19,6 +18,10 @@ type Options struct {
 	ProjectRoot   string // host path mounted at /workspace/<WorkspaceName>
 	WorkspaceName string // e.g. "makeslop-ab12cd"
 	BaseDir       string // ~/.makeslop
+	// WorkspaceHost is the per-workspace cache directory on the host
+	// (e.g. ~/.makeslop/workspaces/<WorkspaceName>). Caller computes this;
+	// BuildSpec uses it directly for cache overlay mounts.
+	WorkspaceHost string
 	Image         string
 	Command       string // shell to exec inside the container
 	// MaskedFiles: absolute host paths under ProjectRoot to shadow with /dev/null.
@@ -41,6 +44,18 @@ type Options struct {
 	// MountContentCache gates the per-workspace content cache overlays
 	// (workspaceHost/docs/, CLAUDE.md); false lets the project's own files show.
 	MountContentCache bool
+
+	// ProtectProjectConfig mounts <ProjectRoot>/.makeslop.yaml read-only over
+	// itself inside the container, preventing the agent from rewriting the sandbox
+	// policy. Only set when the file actually exists on the host (a missing bind
+	// source would fail container create).
+	ProtectProjectConfig bool
+
+	// MaskGitHooks overlays <workspacePath>/.git/hooks with a tmpfs, preventing
+	// the agent from planting hooks that execute on the host. Only set when
+	// <ProjectRoot>/.git is a directory (worktrees/submodule gitfiles are skipped
+	// — their hooks directory lives outside the workspace).
+	MaskGitHooks bool
 }
 
 // Mount is a single docker mount entry. Type "" or "bind" → bind; "tmpfs" →
@@ -68,7 +83,7 @@ type Spec struct {
 // disabled groups are omitted, never reordered.
 func BuildSpec(o Options) Spec {
 	workspacePath := "/workspace/" + o.WorkspaceName
-	workspaceHost := filepath.Join(o.BaseDir, config.WorkspacesDir, o.WorkspaceName)
+	workspaceHost := o.WorkspaceHost
 
 	// Trailing slashes on directory mounts are intentional — they match the
 	// reference claude.sh, and coax docker into failing fast if the host path
@@ -78,6 +93,23 @@ func BuildSpec(o Options) Spec {
 		{Host: filepath.Join(o.BaseDir, ".claude") + "/", Container: "/home/user/.claude/"},
 		{Host: filepath.Join(o.BaseDir, ".claude.json"), Container: "/home/user/.claude.json"},
 		{Host: filepath.Join(o.BaseDir, ".codex") + "/", Container: "/home/user/.codex/"},
+	}
+
+	// Sandbox-policy mounts: inserted at a fixed point after the 4 base mounts
+	// and before any cache overlays. This ensures the overlay wins over the rw
+	// project bind regardless of cache flag state.
+	if o.ProtectProjectConfig {
+		mounts = append(mounts, Mount{
+			Host:      filepath.Join(o.ProjectRoot, ".makeslop.yaml"),
+			Container: workspacePath + "/.makeslop.yaml",
+			ReadOnly:  true,
+		})
+	}
+	if o.MaskGitHooks {
+		mounts = append(mounts, Mount{
+			Type:      "tmpfs",
+			Container: workspacePath + "/.git/hooks",
+		})
 	}
 
 	if o.MountAgentCache {
@@ -187,7 +219,7 @@ func (s Spec) ShellCommand() string {
 	for i < len(args)-2 {
 		tok := args[i]
 		switch tok {
-		case "--network", "--workdir", "--tmpfs", "--cap-drop", "--security-opt", "--mount", "-e":
+		case "--workdir", "--tmpfs", "--cap-drop", "--security-opt", "--mount", "-e":
 			lines = append(lines, "  "+shellQuote(tok)+" "+shellQuote(args[i+1]))
 			i += 2
 		default:

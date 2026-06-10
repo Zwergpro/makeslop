@@ -170,12 +170,12 @@ func TestWorkspaceName_DifferentPathsDifferentHashes(t *testing.T) {
 	}
 }
 
-func TestLookup_MissingSettingsReturnsErrNotRegistered(t *testing.T) {
+func TestLookup_NilSettingsReturnsErrNotRegistered(t *testing.T) {
 	base := t.TempDir()
 	w := New(base)
 
 	before := snapshotDir(t, base)
-	_, _, err := w.Lookup("/some/pwd")
+	_, _, err := w.Lookup(nil, "/some/pwd")
 	if !errors.Is(err, ErrNotRegistered) {
 		t.Fatalf("Lookup err = %v, want ErrNotRegistered", err)
 	}
@@ -184,7 +184,7 @@ func TestLookup_MissingSettingsReturnsErrNotRegistered(t *testing.T) {
 		t.Errorf("Lookup mutated baseDir; before=%v after=%v", before, after)
 	}
 	if _, err := os.Stat(filepath.Join(base, config.SettingsFile)); !errors.Is(err, fs.ErrNotExist) {
-		t.Errorf("settings.json must not exist after Lookup: %v", err)
+		t.Errorf("settings.json must not exist after Lookup(nil,...): %v", err)
 	}
 }
 
@@ -207,7 +207,7 @@ func TestLookup_NoMatchingAncestor(t *testing.T) {
 		t.Fatalf("read before: %v", err)
 	}
 
-	_, _, err = w.Lookup("/totally/different/pwd")
+	_, _, err = w.Lookup(seed, "/totally/different/pwd")
 	if !errors.Is(err, ErrNotRegistered) {
 		t.Fatalf("Lookup err = %v, want ErrNotRegistered", err)
 	}
@@ -236,7 +236,7 @@ func TestLookup_ExactPwdMatch(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
-	matched, got, err := w.Lookup(pwd)
+	matched, got, err := w.Lookup(seed, pwd)
 	if err != nil {
 		t.Fatalf("Lookup: %v", err)
 	}
@@ -269,7 +269,7 @@ func TestLookup_ParentRegistered(t *testing.T) {
 		t.Fatalf("read before: %v", err)
 	}
 
-	matched, got, err := w.Lookup(filepath.Join(parent, "internal", "workspace"))
+	matched, got, err := w.Lookup(seed, filepath.Join(parent, "internal", "workspace"))
 	if err != nil {
 		t.Fatalf("Lookup: %v", err)
 	}
@@ -290,23 +290,16 @@ func TestLookup_ParentRegistered(t *testing.T) {
 	}
 }
 
-func TestLookup_CorruptSettingsReturnsWrappedError(t *testing.T) {
+// Lookup with a nil settings (as a caller would pass when config.Load failed)
+// returns ErrNotRegistered so the caller can distinguish "cannot check" from a
+// genuine lookup error.
+func TestLookup_NilSettingsIsErrNotRegistered(t *testing.T) {
 	base := t.TempDir()
 	w := New(base)
 
-	if err := os.WriteFile(filepath.Join(base, config.SettingsFile), []byte("{not json"), 0o644); err != nil {
-		t.Fatalf("seed bad settings: %v", err)
-	}
-
-	_, _, err := w.Lookup("/any/pwd")
-	if err == nil {
-		t.Fatal("expected error from corrupt settings, got nil")
-	}
-	if errors.Is(err, ErrNotRegistered) {
-		t.Errorf("error must NOT be ErrNotRegistered: %v", err)
-	}
-	if !strings.Contains(err.Error(), "settings") {
-		t.Errorf("error should mention settings context: %v", err)
+	_, _, err := w.Lookup(nil, "/any/pwd")
+	if !errors.Is(err, ErrNotRegistered) {
+		t.Fatalf("Lookup(nil,...) err = %v, want ErrNotRegistered", err)
 	}
 }
 

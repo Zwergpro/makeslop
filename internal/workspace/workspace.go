@@ -39,10 +39,13 @@ func (w *Workspaces) findAncestor(s *config.Settings, pwd string) (matchedPath s
 
 // Lookup returns the registered ancestor root (mount this, not pwd) and its
 // cache directory. pwd must be absolute and EvalSymlinks-evaluated.
-func (w *Workspaces) Lookup(pwd string) (matchedRoot, cacheDir string, err error) {
-	s, err := config.Load(w.baseDir)
-	if err != nil {
-		return "", "", err
+// The caller must supply a previously-loaded *config.Settings; Lookup does not
+// load settings itself, which lets callers load once and pass the result to
+// both Lookup and any subsequent settings-dependent logic.
+// A nil settings is treated as an empty settings (no workspaces registered).
+func (w *Workspaces) Lookup(s *config.Settings, pwd string) (matchedRoot, cacheDir string, err error) {
+	if s == nil {
+		return "", "", ErrNotRegistered
 	}
 	matched, ws, ok := w.findAncestor(s, pwd)
 	if !ok {

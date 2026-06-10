@@ -55,4 +55,3 @@ func imageExists(ctx context.Context, c apiClient, image string) (bool, error) {
 	}
 	return false, err
 }
-

@@ -37,7 +37,9 @@ A drift-guard test keeps both renderings honest. The "printed == executed" invar
 
 ## Mount groups and cache overlays
 
-`BuildSpec` in `internal/docker/spec.go` organises the 8 mounts into three logical groups:
+`BuildSpec` in `internal/docker/spec.go` organises mounts into logical groups. With both sandbox
+policy mounts active (`ProtectProjectConfig` and `MaskGitHooks`) and both cache overlays enabled,
+the spec can include up to 10 mounts. The three logical groups are:
 
 **Global** (always present — not configurable):
 - `~/.makeslop/.claude/` → `/home/user/.claude/`
@@ -71,43 +73,30 @@ must set them on their `sampleOptions()` or equivalent fixture.
 ## apiClient seam and fake clients
 
 `internal/docker/client.go` declares a narrow unexported `apiClient` interface covering all SDK
-methods used by `Run`, `Build`, `Ping`, and `ImageInspect`. A package-level `newClientFn`
-(defaulting to `newClient`, which calls `client.New(client.FromEnv)`) constructs the live client. A
-compile-time assertion `var _ apiClient = (*moby.Client)(nil)` guards against signature drift.
+methods used by `Run`, `Build`, `Ping`, and `ImageInspect`. A compile-time assertion
+`var _ apiClient = (*moby.Client)(nil)` guards against signature drift.
 
 The interface covers: `ContainerCreate`, `ContainerAttach`, `ContainerStart`, `ContainerWait`,
 `ContainerResize`, `ContainerRemove`, `ImageBuild`, `DialHijack`, `Ping`, `ImageInspect`, `Close`.
 
-`SetClientForTest(c apiClient) (restore func())` (in `internal/docker/testing.go`) replaces
-`newClientFn` for the duration of a test.
+`internal/docker` uses constructor dependency injection. `docker.New(opts ...Option)` builds a
+real moby client from the environment; `WithClient(c apiClient)` (same-package `_test.go` only)
+injects a fake. There is no `testing.go` production file, no `SetClientForTest`, no
+`newClientFn` package-level variable, and no exported `FakeRunClient`/`FakeBuildClient` type.
 
-**Note on testing.go in the production binary:** `internal/docker/testing.go` is compiled into the
-production binary — it is not a `_test.go` file. This is intentional: `cmd/makeslop/main_test.go`
-is in `package main`, not `package docker_test`, so it cannot reach unexported symbols via an
-`export_test.go` bridge. Shipping the test helpers into the production binary is the accepted
-trade-off for testability; the binary size impact is negligible.
+Test fakes live in `_test.go` files (compiled only during `go test`):
 
-Ready-made fakes live in `testing.go`:
+- **`fakeRunClient`** (`internal/docker/fakes_test.go`) — simulates the preflight/`Run` lifecycle
+  with a scripted exit code. Supports `PingErr`, `ImageMissing`, `BlockPing`,
+  `BlockImageInspect` fields.
+- **`fakeBuildClient`** (`internal/docker/fakes_test.go`) — simulates `Build`; records the last
+  build options in `lastBuildOptions`.
+- **`fakeClient`** (`internal/docker/run_test.go`) — the `Run`-lifecycle fake used by
+  `run_test.go`; distinct from `fakeRunClient`. Has `attachPayload` to script delayed output.
 
-- **`FakeRunClient`** — simulates the `Run` container lifecycle with a scripted exit code. Supports
-  `PingErr` (daemon-down) and `ImageMissing` (absent image) toggles.
+`internal/cli` boundary fakes live in `internal/cli/main_test.go` (package `cli`, `_test.go`).
 
-  ```go
-  t.Cleanup(docker.SetClientForTest(docker.NewFakeRunClient(0))) // exit 0
-  ```
-
-- **`FakeBuildClient`** — simulates the `Build` SDK call and records `ImageBuildOptions`. Also
-  supports `PingErr` and `ImageMissing` fields.
-
-  ```go
-  fbc := docker.NewFakeBuildClient(0)
-  t.Cleanup(docker.SetClientForTest(fbc))
-  // ... call Build ...
-  opts := fbc.LastBuildOptions
-  ```
-
-This replaces the old shell-shim machinery. There are no shell shims, no `dockerBinary` global, no
-`executableTempDir`.
+There are no shell shims, no `dockerBinary` global, no `executableTempDir`.
 
 ---
 
@@ -141,14 +130,15 @@ live Docker daemon. See [Contributing / Build](#contributing--build) for the com
 
 `internal/docker/preflight.go` provides two shared helpers used by both `run` and `status`:
 
-- **`CheckDaemon(ctx context.Context) error`** — pings the daemon via `newClientFn`; returns
-  `ErrDaemonUnreachable` on failure.
-- **`ImageExists(ctx context.Context, image string) (bool, error)`** — calls `ImageInspect`;
-  returns `(true, nil)` when found, `(false, nil)` only when `cerrdefs.IsNotFound(err)`, and
-  `(false, err)` for any other error (so a dead daemon is never misreported as "image absent").
+- **`CheckDaemon(ctx context.Context) error`** — pings the daemon via the shared `d.client`;
+  returns `*ErrDaemonUnreachable` on failure.
+- **`ImageExists(ctx context.Context, image string) (bool, error)`** — calls `ImageInspect` on
+  `d.client`; returns `(true, nil)` when found, `(false, nil)` only when
+  `cerrdefs.IsNotFound(err)`, and `(false, err)` for any other error (so a dead daemon is never
+  misreported as "image absent").
 
-Both helpers build and close their own client (two constructions per `status` run — accepted for
-simplicity).
+Both methods share the `*Docker`'s single long-lived client — no per-call client construction or
+close. `cmd` callers must `defer d.Close()` once after construction to release the connection.
 
 ---
 
@@ -156,7 +146,10 @@ simplicity).
 
 `internal/security.Scan` uses a native Go `filepath.WalkDir` walk — there is no `fd`/`fdfind`
 dependency. Patterns (basename globs) and skip-dirs are passed in at call time; the engine has no
-hardcoded defaults. If `patterns` is empty, `Scan` returns `nil` immediately (no walk).
+hardcoded defaults. If `patterns` is empty, `Scan` returns `(nil, nil, nil)` immediately (no walk). Symlinks whose
+basename matches a pattern are returned in the second slice (`symlinkMatches`) rather than the
+first — WalkDir does not follow symlinks, so they are not masked; callers should warn the user.
+These symlink warnings bypass `--quiet` (degraded protection is never treated as cosmetic).
 
 Walk errors (e.g. unreadable subdirectories) are propagated immediately and abort `runRun` before
 `docker.Run`. This "fail-loud" invariant ensures makeslop never silently skips a directory it
@@ -174,7 +167,7 @@ project `.makeslop.yaml` files are never auto-migrated; users with an old stub m
 
 ```go
 CurrentVersion   = 1  // settings schema version — increment when Settings fields change
-MigrationVersion = 2  // directory generation — increment when Dockerfile changes
+MigrationVersion = 3  // directory generation — increment when Dockerfile changes
 ```
 
 The `Settings` struct records both:
@@ -182,7 +175,7 @@ The `Settings` struct records both:
 ```json
 {
     "version": 1,
-    "migrated_version": 2,
+    "migrated_version": 3,
     ...
 }
 ```
@@ -202,15 +195,16 @@ The two constants serve different purposes and are bumped independently.
 
 ## POSIX-only invariant
 
-makeslop targets POSIX systems only. Tests that rely on TTY/signal behavior call `SkipNonPOSIX` at
-the top. Do not add Windows compatibility paths.
+makeslop targets POSIX systems only. Tests that rely on TTY/signal behavior call an inline
+`skipNonPOSIX` helper defined locally in each test package (unexported, not shared across
+packages). Do not add Windows compatibility paths.
 
 ---
 
 ## Exit-code contract
 
 `docker.ExitError{Code int}` (in `run.go`) is the only exit-code error. `Run` returns it when
-`ContainerWait` reports a non-zero `StatusCode`. `runWithExitCode` in `main.go` does:
+`ContainerWait` reports a non-zero `StatusCode`. `runWithExitCode` in `internal/cli/root.go` does:
 
 ```go
 var ee *docker.ExitError
@@ -226,6 +220,10 @@ does not fork the docker binary.
 ---
 
 ## Contributing / Build
+
+The CLI lives in `internal/cli` (package `cli`). `cli.Main(version string, args []string) int` is
+the single exported entry point. `cmd/makeslop/main.go` is ~10 lines: `var version = "dev"` (the
+ldflags landing pad) and `func main() { os.Exit(cli.Main(version, os.Args[1:])) }`.
 
 ```
 go build ./cmd/makeslop

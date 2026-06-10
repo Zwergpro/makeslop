@@ -59,12 +59,15 @@ func TestScan_EmptyPatterns_ReturnsNil(t *testing.T) {
 	root := evalSymlinks(t, t.TempDir())
 	mustWriteFile(t, filepath.Join(root, ".env"), "SECRET=1\n")
 
-	got, err := Scan(context.Background(), root, nil, nil)
+	got, symlinks, err := Scan(context.Background(), root, nil, nil)
 	if err != nil {
 		t.Fatalf("Scan with nil patterns returned error: %v", err)
 	}
 	if got != nil {
 		t.Errorf("Scan with nil patterns: got %v, want nil", got)
+	}
+	if symlinks != nil {
+		t.Errorf("Scan with nil patterns: symlinkMatches got %v, want nil", symlinks)
 	}
 }
 
@@ -90,13 +93,22 @@ func TestScan_DefaultPatterns_PositiveCases(t *testing.T) {
 		".npmrc",
 		".netrc",
 		".git-credentials",
+		// 8 new patterns added in the security hardening pass
+		"cert.p12",
+		"key.pfx",
+		"terraform.tfstate",
+		".pypirc",
+		".htpasswd",
+		"service-account-prod.json",
+		"kubeconfig",
+		"cluster.kubeconfig",
 	}
 
 	for _, name := range positives {
 		mustWriteFile(t, filepath.Join(root, name), "data\n")
 	}
 
-	got, err := Scan(context.Background(), root, patterns, nil)
+	got, _, err := Scan(context.Background(), root, patterns, nil)
 	if err != nil {
 		t.Fatalf("Scan returned error: %v", err)
 	}
@@ -128,7 +140,7 @@ func TestScan_DefaultPatterns_NegativeCases(t *testing.T) {
 		mustWriteFile(t, filepath.Join(root, name), "data\n")
 	}
 
-	got, err := Scan(context.Background(), root, patterns, nil)
+	got, _, err := Scan(context.Background(), root, patterns, nil)
 	if err != nil {
 		t.Fatalf("Scan returned error: %v", err)
 	}
@@ -158,7 +170,7 @@ func TestScan_SkipDirs_PrunesMatchingDirs(t *testing.T) {
 	// Secret outside skip-dirs MUST be returned.
 	mustWriteFile(t, filepath.Join(root, "app", ".env"), "SECRET=1\n")
 
-	got, err := Scan(context.Background(), root, patterns, skipDirs)
+	got, _, err := Scan(context.Background(), root, patterns, skipDirs)
 	if err != nil {
 		t.Fatalf("Scan returned error: %v", err)
 	}
@@ -180,7 +192,7 @@ func TestScan_ResultsSorted(t *testing.T) {
 	mustWriteFile(t, filepath.Join(root, "a.env"), "data\n")
 	mustWriteFile(t, filepath.Join(root, "m.env"), "data\n")
 
-	got, err := Scan(context.Background(), root, patterns, nil)
+	got, _, err := Scan(context.Background(), root, patterns, nil)
 	if err != nil {
 		t.Fatalf("Scan returned error: %v", err)
 	}
@@ -202,7 +214,7 @@ func TestScan_NestedAndHiddenFiles(t *testing.T) {
 	mustWriteFile(t, filepath.Join(root, "sub", "dir", ".env"), "SECRET=1\n")
 	mustWriteFile(t, filepath.Join(root, ".env"), "SECRET=2\n")
 
-	got, err := Scan(context.Background(), root, patterns, nil)
+	got, _, err := Scan(context.Background(), root, patterns, nil)
 	if err != nil {
 		t.Fatalf("Scan returned error: %v", err)
 	}
@@ -219,7 +231,7 @@ func TestScan_GitignoreFileStillFound(t *testing.T) {
 	mustWriteFile(t, filepath.Join(root, ".gitignore"), "ignored.env\n")
 	mustWriteFile(t, filepath.Join(root, "ignored.env"), "SECRET=1\n")
 
-	got, err := Scan(context.Background(), root, patterns, nil)
+	got, _, err := Scan(context.Background(), root, patterns, nil)
 	if err != nil {
 		t.Fatalf("Scan returned error: %v", err)
 	}
@@ -233,7 +245,9 @@ func TestScan_GitignoreFileStillFound(t *testing.T) {
 	}
 }
 
-// Symlinks to a secret file/dir must be dropped, not followed (no-leak invariant).
+// Symlinks to a secret file/dir must not appear in paths (no-follow invariant).
+// Symlinks whose basename matches a pattern must appear in symlinkMatches so the
+// caller can warn the user; non-matching symlinks are silently ignored.
 func TestScan_Symlink_Dropped(t *testing.T) {
 	skipNonPOSIX(t, "symlink tests require POSIX; makeslop is POSIX-only")
 	root := evalSymlinks(t, t.TempDir())
@@ -243,22 +257,30 @@ func TestScan_Symlink_Dropped(t *testing.T) {
 	secretFile := filepath.Join(other, ".env")
 	mustWriteFile(t, secretFile, "SECRET=1\n")
 
+	// link.env — basename matches "*.env" → should appear in symlinkMatches.
 	if err := os.Symlink(secretFile, filepath.Join(root, "link.env")); err != nil {
 		t.Fatalf("symlink file: %v", err)
 	}
 
 	secretDir := filepath.Join(other, "dir")
 	mustWriteFile(t, filepath.Join(secretDir, "secret.env"), "SECRET=2\n")
+	// linked-dir — basename "linked-dir" does NOT match any pattern → silently ignored.
 	if err := os.Symlink(secretDir, filepath.Join(root, "linked-dir")); err != nil {
 		t.Fatalf("symlink dir: %v", err)
 	}
 
-	got, err := Scan(context.Background(), root, patterns, nil)
+	got, symlinks, err := Scan(context.Background(), root, patterns, nil)
 	if err != nil {
 		t.Fatalf("Scan returned error: %v", err)
 	}
 	if len(got) != 0 {
-		t.Errorf("expected no results (only symlinks in root), got %v", got)
+		t.Errorf("paths: expected empty (no regular files), got %v", got)
+	}
+	if len(symlinks) != 1 {
+		t.Fatalf("symlinkMatches: expected 1 entry (link.env), got %v", symlinks)
+	}
+	if filepath.Base(symlinks[0]) != "link.env" {
+		t.Errorf("symlinkMatches[0] base: got %q, want %q", filepath.Base(symlinks[0]), "link.env")
 	}
 }
 
@@ -278,7 +300,7 @@ func TestScan_WalkError_Propagated(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
 
-	_, err := Scan(context.Background(), root, patterns, nil)
+	_, _, err := Scan(context.Background(), root, patterns, nil)
 	if err == nil {
 		t.Error("expected error from unreadable subdir, got nil")
 	}
@@ -295,7 +317,7 @@ func TestScan_ContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, err := Scan(ctx, root, patterns, nil)
+	_, _, err := Scan(ctx, root, patterns, nil)
 	if err == nil {
 		t.Error("expected error from cancelled context, got nil")
 	}
@@ -310,7 +332,7 @@ func TestScan_UnderRootInvariant(t *testing.T) {
 	mustWriteFile(t, filepath.Join(root, ".env"), "SECRET=1\n")
 	mustWriteFile(t, filepath.Join(root, "sub", ".env"), "SECRET=2\n")
 
-	got, err := Scan(context.Background(), root, patterns, nil)
+	got, _, err := Scan(context.Background(), root, patterns, nil)
 	if err != nil {
 		t.Fatalf("Scan returned error: %v", err)
 	}
@@ -324,5 +346,122 @@ func TestScan_UnderRootInvariant(t *testing.T) {
 		if !filepath.IsLocal(rel) {
 			t.Errorf("path %q is not local to root %q (rel=%q)", p, root, rel)
 		}
+	}
+}
+
+// Symlink whose basename matches a pattern goes into symlinkMatches (not paths).
+func TestScan_SymlinkMatch_ReportedInSecondSlice(t *testing.T) {
+	skipNonPOSIX(t, "symlink tests require POSIX; makeslop is POSIX-only")
+	root := evalSymlinks(t, t.TempDir())
+	patterns, _ := loadStubConfig(t)
+
+	other := evalSymlinks(t, t.TempDir())
+	target := filepath.Join(other, "real.env")
+	mustWriteFile(t, target, "SECRET=x\n")
+
+	linkPath := filepath.Join(root, "my.env")
+	if err := os.Symlink(target, linkPath); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	paths, symlinks, err := Scan(context.Background(), root, patterns, nil)
+	if err != nil {
+		t.Fatalf("Scan returned error: %v", err)
+	}
+	if len(paths) != 0 {
+		t.Errorf("paths: expected empty, got %v", paths)
+	}
+	if len(symlinks) != 1 || filepath.Base(symlinks[0]) != "my.env" {
+		t.Errorf("symlinkMatches: expected [my.env], got %v", symlinks)
+	}
+}
+
+// Symlink whose basename does NOT match any pattern is silently ignored.
+func TestScan_SymlinkNoMatch_SilentlyIgnored(t *testing.T) {
+	skipNonPOSIX(t, "symlink tests require POSIX; makeslop is POSIX-only")
+	root := evalSymlinks(t, t.TempDir())
+	patterns, _ := loadStubConfig(t)
+
+	other := evalSymlinks(t, t.TempDir())
+	target := filepath.Join(other, "readme.txt")
+	mustWriteFile(t, target, "not a secret\n")
+
+	if err := os.Symlink(target, filepath.Join(root, "readme.txt")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	paths, symlinks, err := Scan(context.Background(), root, patterns, nil)
+	if err != nil {
+		t.Fatalf("Scan returned error: %v", err)
+	}
+	if len(paths) != 0 {
+		t.Errorf("paths: expected empty, got %v", paths)
+	}
+	if len(symlinks) != 0 {
+		t.Errorf("symlinkMatches: expected empty (no-match symlink is silent), got %v", symlinks)
+	}
+}
+
+// symlinkMatches is sorted, independent of walk order.
+func TestScan_SymlinkMatches_Sorted(t *testing.T) {
+	skipNonPOSIX(t, "symlink tests require POSIX; makeslop is POSIX-only")
+	root := evalSymlinks(t, t.TempDir())
+	patterns, _ := loadStubConfig(t)
+
+	other := evalSymlinks(t, t.TempDir())
+	target := filepath.Join(other, "real.env")
+	mustWriteFile(t, target, "SECRET=x\n")
+
+	// Create symlinks whose names would sort differently from walk order.
+	for _, name := range []string{"z.env", "a.env", "m.env"} {
+		if err := os.Symlink(target, filepath.Join(root, name)); err != nil {
+			t.Fatalf("symlink %s: %v", name, err)
+		}
+	}
+
+	paths, symlinks, err := Scan(context.Background(), root, patterns, nil)
+	if err != nil {
+		t.Fatalf("Scan returned error: %v", err)
+	}
+	if len(paths) != 0 {
+		t.Errorf("paths: expected empty (all are symlinks), got %v", paths)
+	}
+	if len(symlinks) != 3 {
+		t.Fatalf("symlinkMatches: expected 3, got %v", symlinks)
+	}
+	for i := 1; i < len(symlinks); i++ {
+		if symlinks[i] < symlinks[i-1] {
+			t.Errorf("symlinkMatches not sorted: [%d]=%q < [%d]=%q", i, symlinks[i], i-1, symlinks[i-1])
+		}
+	}
+}
+
+// Regular-file behaviour is unchanged by the symlink-reporting addition.
+func TestScan_RegularFile_UnaffectedBySymlinkChange(t *testing.T) {
+	skipNonPOSIX(t, "symlink tests require POSIX; makeslop is POSIX-only")
+	root := evalSymlinks(t, t.TempDir())
+	patterns, _ := loadStubConfig(t)
+
+	mustWriteFile(t, filepath.Join(root, ".env"), "SECRET=1\n")
+	mustWriteFile(t, filepath.Join(root, "normal.txt"), "not a secret\n")
+
+	other := evalSymlinks(t, t.TempDir())
+	target := filepath.Join(other, "real.env")
+	mustWriteFile(t, target, "SECRET=2\n")
+	if err := os.Symlink(target, filepath.Join(root, "link.env")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	paths, symlinks, err := Scan(context.Background(), root, patterns, nil)
+	if err != nil {
+		t.Fatalf("Scan returned error: %v", err)
+	}
+	// Regular .env must be in paths.
+	if len(paths) != 1 || filepath.Base(paths[0]) != ".env" {
+		t.Errorf("paths: expected [.env], got %v", paths)
+	}
+	// link.env (symlink matching *.env) must be in symlinkMatches.
+	if len(symlinks) != 1 || filepath.Base(symlinks[0]) != "link.env" {
+		t.Errorf("symlinkMatches: expected [link.env], got %v", symlinks)
 	}
 }

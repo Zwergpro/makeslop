@@ -61,9 +61,11 @@ Registers the current working directory as a workspace and seeds `~/.makeslop/` 
 - `--out-of-home` — bypass the home-directory guard (see [security.md](security.md#home-directory-guard))
 - `--global-only` — scaffold `.makeslop.yaml` with both per-workspace cache overlay groups disabled
   (only the global `~/.makeslop` mounts remain). This only affects a **fresh** scaffold:
-  `Scaffold` is idempotent (EEXIST = success, never clobbers existing user edits), so on an
-  already-init'd project the flag is a no-op — a note is not printed in that case, but the
-  existing YAML is left unchanged.
+  `Scaffold` is idempotent (EEXIST is success when the existing file is a regular file, never
+  clobbers existing user edits), so on an already-init'd project the flag is a no-op — a note is
+  not printed in that case, but the existing YAML is left unchanged. If `.makeslop.yaml` is a
+  symlink, `init` exits with an error (see
+  [security.md — symlinked .makeslop.yaml](security.md#breaking-change-symlinked-makeslopya-ml-rejected)).
 
 ---
 
@@ -213,6 +215,29 @@ a `network:` block, remove it to upgrade:
 The app container now always uses standard Docker bridge networking with full internet access. No
 socat sidecar, no `--network none`, and no `--proxy` flag.
 
+### Breaking changes: `.makeslop.yaml` validation tightened
+
+Two additional hard errors were added for invalid `.makeslop.yaml` configurations that were
+previously silent (and silently lost secret masking). Full details and migration instructions are
+in [security.md](security.md#project-local-exclusions).
+
+**Path-style scan patterns now error.** Entries in `exclude.scan.patterns` that contain `/` are
+rejected at startup. These patterns could never match (Scan matches basenames). Move path-style
+patterns to `exclude.files` for specific paths, or rewrite them as basename globs:
+
+```
+# Error: projectconfig: scan pattern "secrets/*.pem" contains a path separator — patterns match basenames only
+```
+
+Fix: replace `secrets/*.pem` with `*.pem` (or add `secrets/my.pem` to `exclude.files`).
+
+**Symlinked `.makeslop.yaml` now errors.** If `.makeslop.yaml` is a symlink, both `makeslop init`
+and `makeslop run` exit with an error. Replace the symlink with a regular file:
+
+```sh
+cp --remove-destination "$(readlink .makeslop.yaml)" .makeslop.yaml
+```
+
 ---
 
 ## Cache layout
@@ -236,19 +261,24 @@ The per-workspace cache directory under `workspaces/` holds per-project agent st
 `makeslop run` runs with workdir `/workspace/<name>` (where `<name>` is the registered workspace's
 cache-dir basename):
 
-| Host                                                  | Container                          | Group         |
-| ----------------------------------------------------- | ---------------------------------- | ------------- |
-| `<projectRoot>`                                       | `/workspace/<name>`                | always        |
-| `~/.makeslop/.claude/`                                | `/home/user/.claude/`              | global        |
-| `~/.makeslop/.claude.json`                            | `/home/user/.claude.json`          | global        |
-| `~/.makeslop/.codex/`                                 | `/home/user/.codex/`               | global        |
-| `~/.makeslop/workspaces/<name>/.claude/`              | `/workspace/<name>/.claude/`       | agent-state   |
-| `~/.makeslop/workspaces/<name>/.codex/`               | `/workspace/<name>/.codex/`        | agent-state   |
-| `~/.makeslop/workspaces/<name>/docs/`                 | `/workspace/<name>/docs/`          | content       |
-| `~/.makeslop/workspaces/<name>/CLAUDE.md`             | `/workspace/<name>/CLAUDE.md`      | content       |
+| Host                                                  | Container                          | Group              |
+| ----------------------------------------------------- | ---------------------------------- | ------------------ |
+| `<projectRoot>`                                       | `/workspace/<name>`                | always             |
+| `~/.makeslop/.claude/`                                | `/home/user/.claude/`              | global             |
+| `~/.makeslop/.claude.json`                            | `/home/user/.claude.json`          | global             |
+| `~/.makeslop/.codex/`                                 | `/home/user/.codex/`               | global             |
+| `<projectRoot>/.makeslop.yaml`                        | `/workspace/<name>/.makeslop.yaml` | sandbox-policy (ro)|
+| tmpfs (empty)                                         | `/workspace/<name>/.git/hooks`     | git-hooks mask     |
+| `~/.makeslop/workspaces/<name>/.claude/`              | `/workspace/<name>/.claude/`       | agent-state        |
+| `~/.makeslop/workspaces/<name>/.codex/`               | `/workspace/<name>/.codex/`        | agent-state        |
+| `~/.makeslop/workspaces/<name>/docs/`                 | `/workspace/<name>/docs/`          | content            |
+| `~/.makeslop/workspaces/<name>/CLAUDE.md`             | `/workspace/<name>/CLAUDE.md`      | content            |
 
-The **global** mounts (rows 2–4) are always present. The **agent-state** and **content** overlay
-mounts (rows 5–8) can be disabled per-project via the `cache:` block in `.makeslop.yaml`:
+The **global** mounts (rows 2–4) are always present. The **sandbox-policy** read-only bind (row 5)
+is present only when `.makeslop.yaml` exists at the project root. The **git-hooks mask** tmpfs (row
+6) is present only when `.git` is a directory at the project root (not a gitfile). The
+**agent-state** and **content** overlay mounts (rows 7–10) can be disabled per-project via the
+`cache:` block in `.makeslop.yaml`:
 
 ```yaml
 cache:
@@ -318,6 +348,17 @@ Security flags applied inside the container:
 Mounts are emitted as `--mount type=bind,source=...,target=...` so paths containing `:` do not
 break parsing.
 
+**Sandbox-policy mounts** (applied when the host path exists):
+
+| Mount | Condition | Effect |
+|---|---|---|
+| `.makeslop.yaml` read-only bind | regular file at project root | agent cannot modify its own scan/exclusion policy |
+| `.git/hooks` tmpfs | `.git` is a directory at project root | agent cannot plant hooks that run on the host |
+
+These mounts are layered on top of the read-write project bind. See
+[security.md — Sandbox-policy protection](security.md#sandbox-policy-protection) for details and
+known residuals.
+
 For secret masking and the home-directory guard, see [security.md](security.md).
 
 ---
@@ -348,8 +389,9 @@ shells.
 Pass `--dry-run` (short: `-n`) to print the equivalent shell command for the container launch that
 `makeslop` would execute and then exit without launching the container. The output is a multi-line,
 backslash-continued, paste-ready shell command on stdout. All pre-launch checks still run
-(home-directory guard, workspace lookup, secret scan, settings load), so the printed command equals the
-real invocation byte-for-byte. Daemon and image pre-flight checks are skipped on `--dry-run`.
+(home-directory guard, settings load, workspace lookup, project config parse, secret scan), so the
+printed command equals the real invocation byte-for-byte. Daemon and image pre-flight checks are
+skipped on `--dry-run`.
 
 ```
 makeslop run --dry-run
@@ -411,7 +453,7 @@ The image, shell, and `/tmp` tmpfs size are configurable via `makeslop config se
     "shell": "/bin/zsh",
     "tmp_dir_size": "100m",
     "workspaces": {},
-    "migrated_version": 2
+    "migrated_version": 3
 }
 ```
 
@@ -420,7 +462,7 @@ The image, shell, and `/tmp` tmpfs size are configurable via `makeslop config se
   `Settings` struct fields change.
 - `migrated_version` — written by `makeslop migrate` (or stamped by `makeslop init` on a fresh
   seed) to record which migration generation `~/.makeslop/` is at. Absent means 0
-  (pre-migration). Currently `MigrationVersion = 2`. This field is **distinct** from `version`:
+  (pre-migration). Currently `MigrationVersion = 3`. This field is **distinct** from `version`:
   `version` gates JSON schema compatibility; `migrated_version` gates the one-shot directory
   refresh.
 - Omitted or empty `image`/`shell`/`tmp_dir_size` fields fall back to their defaults; existing

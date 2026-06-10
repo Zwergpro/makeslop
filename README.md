@@ -76,11 +76,19 @@ exclude:
       - ".env.*"
       - "*.pem"
       - "*.key"
+      - "*.p12"
+      - "*.pfx"
+      - "*.tfstate"
       - "id_rsa*"
       - "id_ed25519*"
       - ".npmrc"
       - ".netrc"
       - ".git-credentials"
+      - ".pypirc"
+      - ".htpasswd"
+      - "service-account*.json"
+      - "kubeconfig"
+      - "*.kubeconfig"
     skip-dirs:
       - .git
       - node_modules
@@ -112,6 +120,10 @@ Secret masking is config-driven: patterns in `exclude.scan.patterns` are basenam
 files are overlaid with `/dev/null` so the agent sees a zero-byte file instead of the real secret.
 Walk errors are fatal — if makeslop cannot prove a directory is secret-free it refuses to launch.
 See [docs/security.md](docs/security.md) for the full masking spec and home-directory guard.
+
+**Breaking changes (recent):** path-style patterns (e.g. `secrets/*.pem`) now hard-error at load
+time — patterns must be basename globs only (e.g. `*.pem`). A symlinked `.makeslop.yaml` is also
+now rejected by `run`, `init`, and `status` — replace the symlink with a regular file to migrate.
 
 ## Commands
 
