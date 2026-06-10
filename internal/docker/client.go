@@ -32,4 +32,3 @@ var _ apiClient = (*moby.Client)(nil)
 func newClient() (apiClient, error) {
 	return moby.New(moby.FromEnv)
 }
-

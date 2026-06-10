@@ -100,7 +100,14 @@ These are bundled in `dockerDeps`. `newRootCmd` constructs a `*docker.Docker`, c
 the returned cleanup func, and wraps the instance in `dockerDeps`; `newRootCmdWithDeps` accepts injected deps
 for tests (boundary fakes in `main_test.go`).
 
-`dockerNewErrStub` (in `main.go`) is a fallback used when `docker.New()` fails: it implements all four
+The four interfaces, `dockerDeps` (with `checkDaemonPreflight`/`imageExistsPreflight` methods), and
+`dockerNewErrStub` live in `deps.go`. Each command gets its own file (`run.go`, `init.go`, `build.go`,
+`config.go`, `migrate.go`, `version.go`); shared guard helpers (`resolvePwd`, `ensureWithinHome`,
+`quietWriter`) live in `guard.go`. `main.go` is reduced to `main()`, `runWithExitCode`,
+`newRootCmd`/`newRootCmdWithDeps`, and `version`; `errSilent` lives in `guard.go`. The four-interface `dockerDeps` pattern
+is retained as documented above.
+
+`dockerNewErrStub` (in `deps.go`) is a fallback used when `docker.New()` fails: it implements all four
 interfaces and returns the construction error from every method call, so non-docker commands still work while
 docker-touching commands get a clear error instead of a panic.
 

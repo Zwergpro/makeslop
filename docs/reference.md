@@ -364,7 +364,7 @@ shells.
 Pass `--dry-run` (short: `-n`) to print the equivalent shell command for the container launch that
 `makeslop` would execute and then exit without launching the container. The output is a multi-line,
 backslash-continued, paste-ready shell command on stdout. All pre-launch checks still run
-(home-directory guard, workspace lookup, settings load, project config parse, secret scan), so the
+(home-directory guard, settings load, workspace lookup, project config parse, secret scan), so the
 printed command equals the real invocation byte-for-byte. Daemon and image pre-flight checks are
 skipped on `--dry-run`.
 

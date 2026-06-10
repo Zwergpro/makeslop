@@ -29,6 +29,12 @@ func newFakeStatusDeps(daemonDown bool, imageMissing bool) (dockerDeps, *fakeDoc
 	return depsFrom(fc), fc
 }
 
+func newFakeStatusDepsWithImageErr(imageErr error) (dockerDeps, *fakeDocker) {
+	fc := newFakeDocker(0, false)
+	fc.ImageErr = imageErr
+	return depsFrom(fc), fc
+}
+
 // All checks pass → exit 0, ready.
 func TestStatus_AllGreen_ExitsZero(t *testing.T) {
 	setHomeToTestParent(t)
@@ -107,6 +113,34 @@ func TestStatus_ImageMissing_ExitsNonZero(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "makeslop build") {
 		t.Errorf("stderr missing 'makeslop build' hint: %q", stderr)
+	}
+}
+
+// ImageExists returns an error (not just "missing") → exit non-zero, error detail shown.
+func TestStatus_ImageCheckError_ExitsNonZero(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	deps, _ := newFakeStatusDepsWithImageErr(errors.New("transport error: dial tcp"))
+
+	_, stderr, err := runStatusCmd(t, baseDir, deps, "status")
+	if err == nil {
+		t.Fatalf("status should exit non-zero when image check errors; stderr=%q", stderr)
+	}
+	if !errors.Is(err, errSilent) {
+		t.Errorf("expected errSilent, got %v", err)
+	}
+	if !strings.Contains(stderr, "not ready") {
+		t.Errorf("stderr missing 'not ready': %q", stderr)
+	}
+	if !strings.Contains(stderr, "error checking image") {
+		t.Errorf("stderr missing 'error checking image' detail: %q", stderr)
 	}
 }
 
@@ -408,6 +442,10 @@ func TestStatus_Check5_PCErrShowsWarn(t *testing.T) {
 // A security.Scan error (check 5) is non-blocking: warn, status stays ready.
 // Induced by an unreadable subdir that fails WalkDir.
 func TestStatus_Check5_ScanErrShowsWarn(t *testing.T) {
+	skipNonPOSIX(t, "chmod 0000 requires POSIX")
+	if os.Getuid() == 0 {
+		t.Skip("root bypasses permission checks")
+	}
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()

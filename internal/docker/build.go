@@ -19,8 +19,8 @@ import (
 
 	controlapi "github.com/moby/buildkit/api/services/control"
 	bkclient "github.com/moby/buildkit/client"
-	"github.com/moby/buildkit/session"
 	"github.com/moby/buildkit/frontend/dockerui"
+	"github.com/moby/buildkit/session"
 	"github.com/moby/buildkit/session/auth/authprovider"
 	"github.com/moby/buildkit/session/filesync"
 	"github.com/moby/buildkit/util/progress/progressui"

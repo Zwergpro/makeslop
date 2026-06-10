@@ -32,16 +32,14 @@ type dockerDeps struct {
 	image   imageChecker
 }
 
-// checkDaemonPreflight calls CheckDaemon with a preflight timeout. The caller
-// must not reuse ctx after this returns (it is cancelled internally).
+// checkDaemonPreflight calls CheckDaemon with a preflight timeout.
 func (d dockerDeps) checkDaemonPreflight(ctx context.Context) error {
 	pfCtx, pfCancel := docker.WithPreflightTimeout(ctx)
 	defer pfCancel()
 	return d.daemon.CheckDaemon(pfCtx)
 }
 
-// imageExistsPreflight calls ImageExists with a preflight timeout. The caller
-// must not reuse ctx after this returns (it is cancelled internally).
+// imageExistsPreflight calls ImageExists with a preflight timeout.
 func (d dockerDeps) imageExistsPreflight(ctx context.Context, image string) (bool, error) {
 	pfCtx, pfCancel := docker.WithPreflightTimeout(ctx)
 	defer pfCancel()

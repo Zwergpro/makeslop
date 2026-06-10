@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 )
 
+// resolvePwd returns the current working directory with all symlinks resolved.
 func resolvePwd() (string, error) {
 	cwd, err := os.Getwd()
 	if err != nil {

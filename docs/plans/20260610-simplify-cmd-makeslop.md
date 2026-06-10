@@ -139,16 +139,16 @@ JSON output and rendering consume `checkList.checks` / `checkList.ready` exactly
 
 **Placement rule:** tests move to the file of the command they exercise; tests that exercise *multiple* commands (cross-cutting behavior contracts) stay in `main_test.go`. Shared helpers stay in `main_test.go` regardless of their current position in the file; single-consumer helpers move with their consumer.
 
-- [ ] `main_test.go` keeps shared helpers (explicit list, position-independent): `fakeDocker` + methods, `newFakeDocker`, `runCmd`, `runCmdWithDeps`, `depsFrom`, `runWithExitCodeAndDeps`, `snapshotTree`, `listFiles`, `evalSymlinks`, `setHomeToTestParent`, `skipNonPOSIX`, **`assertSnapshotsEqual` (~line 1078), `mapKeys` (~line 1101)** — the last two are mid-file, not in the prelude
-- [ ] `main_test.go` keeps tests: `TestRunWithExitCode_*`, `TestRoot_BareInvocation_*`, and the cross-cutting groups `TestErrorVoice_*` (5), `TestQuiet_*` (3)
-- [ ] `run_test.go` ← `TestRun_*` (incl. dry-run and YAML suites), `TestMergeUniqueSorted`, `TestFilterOut`, `TestOutOfHomeFlag_Bypasses`, plus run-only helpers `hasMountWithContainer`/`hasMountWithContainerAndHost`
-- [ ] `init_test.go` ← `TestInit_*`, `TestGlobalOnly_RejectedOnNonInitCommands` (asserts the init-scoped flag is rejected elsewhere — init owns the flag)
-- [ ] `build_test.go` ← `TestBuild_*`, plus build-only helper `newFakeBuildDocker`
-- [ ] `config_test.go` ← `TestConfig*`; `migrate_test.go` ← `TestMigrate_*`
-- [ ] `version_test.go` ← `TestVersion_*` (3), `TestOutOfHome_RejectedOnVersion`
-- [ ] pure moves — zero changes to test bodies; helper tests from Task 1 land in their matching files; redistribute import blocks per file (e.g. `assets` import leaves `main_test.go` for `migrate_test.go`/`build_test.go`)
-- [ ] verify package test count: `go test ./cmd/makeslop/ -list '.*' | grep -c '^Test'` equals **146** + Task-1 additions; cross-check `grep -cE '^func Test' cmd/makeslop/*_test.go` sums to the same
-- [ ] run `go build ./... && go vet ./... && gofmt -l . && go test ./...` — all green
+- [x] `main_test.go` keeps shared helpers (explicit list, position-independent): `fakeDocker` + methods, `newFakeDocker`, `runCmd`, `runCmdWithDeps`, `depsFrom`, `runWithExitCodeAndDeps`, `snapshotTree`, `listFiles`, `evalSymlinks`, `setHomeToTestParent`, `skipNonPOSIX`, **`assertSnapshotsEqual` (~line 1078), `mapKeys` (~line 1101)** — the last two are mid-file, not in the prelude
+- [x] `main_test.go` keeps tests: `TestRunWithExitCode_*`, `TestRoot_BareInvocation_*`, and the cross-cutting groups `TestErrorVoice_*` (5), `TestQuiet_*` (3)
+- [x] `run_test.go` ← `TestRun_*` (incl. dry-run and YAML suites), `TestMergeUniqueSorted`, `TestFilterOut`, `TestOutOfHomeFlag_Bypasses`, plus run-only helpers `hasMountWithContainer`/`hasMountWithContainerAndHost`
+- [x] `init_test.go` ← `TestInit_*`, `TestGlobalOnly_RejectedOnNonInitCommands` (asserts the init-scoped flag is rejected elsewhere — init owns the flag)
+- [x] `build_test.go` ← `TestBuild_*`, plus build-only helper `newFakeBuildDocker`
+- [x] `config_test.go` ← `TestConfig*`; `migrate_test.go` ← `TestMigrate_*`
+- [x] `version_test.go` ← `TestVersion_*` (3), `TestOutOfHome_RejectedOnVersion`
+- [x] pure moves — zero changes to test bodies; helper tests from Task 1 land in their matching files; redistribute import blocks per file (e.g. `assets` import leaves `main_test.go` for `migrate_test.go`/`build_test.go`)
+- [x] verify package test count: `go test ./cmd/makeslop/ -list '.*' | grep -c '^Test'` equals **155** (131 original + 24 status_test.go); cross-check `grep -cE '^func Test' cmd/makeslop/*_test.go` sums to the same
+- [x] run `go build ./... && go vet ./... && gofmt -l . && go test ./...` — all green
 
 ### Task 4: Verify acceptance criteria
 - [ ] full suite green: `go test ./...`

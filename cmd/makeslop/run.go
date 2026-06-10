@@ -112,6 +112,8 @@ func reportScanResults(stderr, chrome io.Writer, root string, masked, symlinkMat
 	}
 }
 
+// runRun implements the run command body. It is a named function so it can be
+// called from the runCmd RunE closure, keeping the closure thin.
 func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfHome, dryRun, quiet bool, deps dockerDeps) error {
 	chrome := &quietWriter{w: cmd.ErrOrStderr(), quiet: quiet}
 	pwd, err := resolvePwd()
@@ -228,6 +230,7 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfH
 	return nil
 }
 
+// newRunCmd constructs the "run" cobra.Command, wiring flags and RunE to runRun.
 func newRunCmd(ws *workspace.Workspaces, baseDir string, deps dockerDeps) *cobra.Command {
 	var outOfHome bool
 	var dryRun bool
