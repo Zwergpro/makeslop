@@ -50,18 +50,45 @@ The interface is not exported — `WithClient` is the only gateway, and only sam
 All four operation methods share a single `apiClient` for the struct's lifetime.
 `cmd` callers must `defer d.Close()` once after construction to release the client connection.
 
-**`Run` lifecycle (fixed in Tasks 1–2):**
+**`Run` lifecycle (fixed in Tasks 1–6, bug-review round 2):**
 ```
-Create → Attach → raw mode → ContainerWait(next-exit) → ContainerStart →
+Create → Attach → raw mode →
+  waitCtx, waitCancel = WithCancel(ctx); defer waitCancel()
+  ContainerWait(waitCtx, next-exit) → ContainerStart →
+  SIGWINCH goroutine (resizeDone channel, closed on exit) →
   stdout goroutine + stdin goroutine →
-  on wait result: drain stdout (select outputDone/ctx.Done) →
-  close stdin handle → join stdin goroutine (select stdinDone/ctx.Done) →
-  map StatusCode → ExitError
+  select {
+    case res := <-waitResult:         → drain stdout → close stdin handle → join stdin goroutine
+                                        → att.CloseWrite() (in stdin goroutine before close(stdinDone))
+                                        → stop SIGWINCH signal; close(winchCh); <-resizeDone
+                                        → map StatusCode → ExitError
+    case err := <-wr.Error:           → inline ContainerRemove(Background, Force:true)
+                                        → drain stdout (now completes because remove killed container)
+                                        → close stdin handle → join stdin goroutine
+                                        → stop SIGWINCH signal; close(winchCh); <-resizeDone
+                                        → return wait error
+  }
 ```
-Registering `ContainerWait` before `ContainerStart` guarantees the daemon delivers the exit status
-even when the container auto-removes within milliseconds (fixes finding #2). The `outputDone`
-channel prevents tail-output truncation (fixes finding #1). The inline stdin-goroutine join (not a
-defer) ensures the goroutine finishes before the deferred `att.Conn.Close` fires (fixes finding #3).
+Key invariants (original Tasks 1–2 plus bug-review round 2 Tasks 3–6):
+- `ContainerWait` registered before `ContainerStart` — daemon delivers exit status even on fast auto-remove.
+- `outputDone` channel — prevents tail-output truncation.
+- Inline stdin-goroutine join — goroutine finishes before deferred `att.Conn.Close` fires.
+- `att.CloseWrite()` — called in the stdin goroutine after `io.Copy` returns and before `close(stdinDone)`;
+  propagates EOF to the container so containers reading stdin to EOF terminate rather than hang.
+  No-ops on conns without `CloseWriter`.
+- `waitCtx`/`waitCancel` — derived cancellable context for `ContainerWait`; `defer waitCancel()` reaps the
+  SDK goroutine on start-failure paths so it is not leaked holding a connection.
+- `wr.Error` inline reap — force-removes the container at the top of the `wr.Error` case before draining
+  stdout; removal kills the container → attach stream EOFs → drain completes promptly; no running
+  container is left behind on a transient `/wait` drop.
+- `resizeDone` channel — closed by the SIGWINCH resize goroutine on exit; teardown defer does
+  `signal.Stop(winchCh); close(winchCh); <-resizeDone` so no in-flight `ContainerResize` is executing
+  after `runContainer` returns, eliminating the race with `d.Close()`.
+- `drainAndJoin` helper — unexported function that drains `outputDone` and then closes `ps.closer`
+  and waits for `stdinDone`. Called once per select branch instead of copy-pasting the drain+join
+  block 4 times. The helper accepts `*pollableStdin` and sets `ps.closer = nil` after closing, so
+  the outer deferred cleanup (`if ps.closer != nil { Close() }`) does not double-close. The defer
+  covers early-return paths (e.g. `ContainerStart` failure) that return before reaching the select.
 
 Stdin join uses a fresh open of `/dev/tty` with `O_NONBLOCK` (`newPollableStdin`) → Go runtime
 poller manages the fd → `Close()` unblocks the pending `Read`. **Never set `O_NONBLOCK` on fd 0
@@ -224,6 +251,13 @@ project `.makeslop.yaml` files are **never** auto-migrated — `MigrationVersion
 `~/.makeslop/`, not project-local files. Users with an old stub must manually add an
 `exclude.scan` block to restore masking.
 
+**Basename-only contract (enforced at Load time):** `validatePatterns` in
+`internal/projectconfig/projectconfig.go` rejects any pattern containing `/` with a hard error:
+`projectconfig: scan pattern %q contains a path separator — patterns match basenames only`.
+This matches the sibling `validateSkipDirs` (which already rejects `/`) and prevents silently
+lost masking from path-style patterns (e.g. `secrets/*.pem`, `**/*.env`) that can never match
+`d.Name()` (the file basename) inside `Scan`. Patterns like `*.pem`, `.env.*` are correct.
+
 ### Per-workspace cache mount overlays (`cache:` block in `.makeslop.yaml`)
 `internal/projectconfig/projectconfig.go` parses an optional `cache:` block:
 
@@ -249,7 +283,16 @@ The values flow into `docker.Options.MountContentCache` and `docker.Options.Moun
 
 `Scaffold(root, Cache)` writes the stub with the `cache:` block; `Stub` is the default rendering
 (`{true, true}`). The `init --global-only` flag calls `Scaffold(root, Cache{false, false})`,
-scaffolding a file that disables both overlay groups. `Scaffold` is idempotent (EEXIST = success).
+scaffolding a file that disables both overlay groups. `Scaffold` is idempotent: EEXIST is success
+**only when the existing file is a regular file** — if the path is a symlink (dangling or live),
+`Scaffold` returns a hard error (`projectconfig: <path> is a symlink — the project config must be
+a regular file`) rather than silently treating the broken setup as success.
+
+`Load` applies the same check: `os.Lstat` before `os.ReadFile`; a symlink at the config path →
+hard error with the same message. `fs.ErrNotExist` still returns empty defaults (no-config is
+valid). This prevents a dangling symlink from being silently misread as "no config present",
+which would drop all scan patterns. Users who deliberately symlink `.makeslop.yaml` must replace
+the symlink with a regular file (`cp --remove-destination source .makeslop.yaml`).
 
 ### Static environment variables (`environments:` block in `.makeslop.yaml`)
 `internal/projectconfig/projectconfig.go` also parses an optional `environments:` block:

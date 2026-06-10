@@ -9,6 +9,8 @@ control, and the home-directory guard. For in-container hardening flags (`--cap-
 
 - [Secret masking](#secret-masking)
 - [Project-local exclusions](#project-local-exclusions)
+  - [Breaking change: path-style patterns rejected](#breaking-change-path-style-patterns-rejected)
+  - [Breaking change: symlinked `.makeslop.yaml` rejected](#breaking-change-symlinked-makeslopya-ml-rejected)
 - [Sandbox-policy protection](#sandbox-policy-protection)
 - [Network egress](#network-egress)
 - [Home-directory guard](#home-directory-guard)
@@ -145,8 +147,13 @@ cache:
 Edit this file to control scanning and hide additional directories and files from the container on
 every `makeslop run` invocation:
 
-- Entries under `exclude.scan.patterns` are basename globs; files whose name matches are masked
-  with `/dev/null`. Remove all patterns to disable secret masking entirely.
+- Entries under `exclude.scan.patterns` are **basename globs only** — patterns must not contain a
+  `/` path separator. `makeslop` matches each pattern against the file's *name* (e.g. `secret.pem`),
+  not its full path (e.g. `secrets/secret.pem`). Path-style patterns such as `secrets/*.pem` or
+  `**/*.env` are now rejected with a hard error at startup (see
+  [Breaking change: path-style patterns rejected](#breaking-change-path-style-patterns-rejected)
+  below). Use basename forms: `*.pem`, `*.env`.
+  Remove all patterns to disable secret masking entirely.
 - Entries under `exclude.scan.skip-dirs` are bare directory names pruned during the walk.
 - Entries under `exclude.dirs` are mounted as an empty in-memory tmpfs, so the container sees an
   empty directory at that path instead of the real contents.
@@ -170,6 +177,79 @@ exclude:
 The scan results and the `exclude.files` entries are merged; if the same path is found by the scan
 and listed in `exclude.files`, only one overlay mount is emitted. A YAML parse error aborts the
 launch before docker is invoked.
+
+### Breaking change: path-style patterns rejected
+
+Starting with this release, `exclude.scan.patterns` entries that contain a `/` are **rejected with a
+hard error** at startup (`makeslop run`, `makeslop status`):
+
+```
+projectconfig: scan pattern "secrets/*.pem" contains a path separator — patterns match basenames only
+```
+
+**Why:** `Scan` matches patterns against the file's *basename* using `filepath.Match`. A pattern
+like `secrets/*.pem` could never match because the basename `secret.pem` does not contain a slash.
+Previously such patterns were silently accepted and silently dropped — masking appeared configured
+but nothing was masked.
+
+**Migration:** change any path-style pattern to its basename equivalent:
+
+```yaml
+# Before (silently broken — never matched anything):
+exclude:
+  scan:
+    patterns:
+      - "secrets/*.pem"
+      - "**/*.env"
+      - "config/credentials.json"
+
+# After (correct basename globs):
+exclude:
+  scan:
+    patterns:
+      - "*.pem"
+      - "*.env"
+      - "credentials.json"
+```
+
+If you need to mask a *specific file* at a specific path (not a pattern), add it to
+`exclude.files` instead:
+
+```yaml
+exclude:
+  files:
+    - secrets/prod.pem
+    - config/credentials.json
+```
+
+### Breaking change: symlinked `.makeslop.yaml` rejected
+
+`makeslop run`, `makeslop init`, and `makeslop status` now reject a `.makeslop.yaml` that is a
+symlink (dangling or live) with a hard error:
+
+```
+projectconfig: .makeslop.yaml is a symlink — the project config must be a regular file
+```
+
+**Why:** a dangling symlink was previously treated as "no config present" (the follow of a broken
+link returned `ENOENT`), which silently dropped all scan patterns. Even a live symlink to a valid
+file is rejected because `ProtectProjectConfig` already refuses to create the read-only bind mount
+for a symlinked config (a symlink bind-mount does not protect the file contents). Consistent
+rejection at load time prevents a split-brain state where the file is loaded but not protected.
+
+**Migration:** replace the symlink with a regular file:
+
+```sh
+cp --remove-destination "$(readlink .makeslop.yaml)" .makeslop.yaml
+```
+
+Or, on macOS (no `--remove-destination`):
+
+```sh
+cp "$(readlink .makeslop.yaml)" .makeslop.yaml.tmp && mv .makeslop.yaml.tmp .makeslop.yaml
+```
+
+---
 
 **YAML parse errors are hard failures.** Any unknown field in `.makeslop.yaml` — including the now-removed
 `network:` block from earlier makeslop versions — causes a strict-decode error that aborts `makeslop run`

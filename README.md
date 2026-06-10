@@ -121,6 +121,10 @@ files are overlaid with `/dev/null` so the agent sees a zero-byte file instead o
 Walk errors are fatal — if makeslop cannot prove a directory is secret-free it refuses to launch.
 See [docs/security.md](docs/security.md) for the full masking spec and home-directory guard.
 
+**Breaking changes (recent):** path-style patterns (e.g. `secrets/*.pem`) now hard-error at load
+time — patterns must be basename globs only (e.g. `*.pem`). A symlinked `.makeslop.yaml` is also
+now rejected by `run`, `init`, and `status` — replace the symlink with a regular file to migrate.
+
 ## Commands
 
 | Command | What it does |

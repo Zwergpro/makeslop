@@ -61,9 +61,11 @@ Registers the current working directory as a workspace and seeds `~/.makeslop/` 
 - `--out-of-home` — bypass the home-directory guard (see [security.md](security.md#home-directory-guard))
 - `--global-only` — scaffold `.makeslop.yaml` with both per-workspace cache overlay groups disabled
   (only the global `~/.makeslop` mounts remain). This only affects a **fresh** scaffold:
-  `Scaffold` is idempotent (EEXIST = success, never clobbers existing user edits), so on an
-  already-init'd project the flag is a no-op — a note is not printed in that case, but the
-  existing YAML is left unchanged.
+  `Scaffold` is idempotent (EEXIST is success when the existing file is a regular file, never
+  clobbers existing user edits), so on an already-init'd project the flag is a no-op — a note is
+  not printed in that case, but the existing YAML is left unchanged. If `.makeslop.yaml` is a
+  symlink, `init` exits with an error (see
+  [security.md — symlinked .makeslop.yaml](security.md#breaking-change-symlinked-makeslopya-ml-rejected)).
 
 ---
 
@@ -212,6 +214,29 @@ a `network:` block, remove it to upgrade:
 
 The app container now always uses standard Docker bridge networking with full internet access. No
 socat sidecar, no `--network none`, and no `--proxy` flag.
+
+### Breaking changes: `.makeslop.yaml` validation tightened
+
+Two additional hard errors were added for invalid `.makeslop.yaml` configurations that were
+previously silent (and silently lost secret masking). Full details and migration instructions are
+in [security.md](security.md#project-local-exclusions).
+
+**Path-style scan patterns now error.** Entries in `exclude.scan.patterns` that contain `/` are
+rejected at startup. These patterns could never match (Scan matches basenames). Move path-style
+patterns to `exclude.files` for specific paths, or rewrite them as basename globs:
+
+```
+# Error: projectconfig: scan pattern "secrets/*.pem" contains a path separator — patterns match basenames only
+```
+
+Fix: replace `secrets/*.pem` with `*.pem` (or add `secrets/my.pem` to `exclude.files`).
+
+**Symlinked `.makeslop.yaml` now errors.** If `.makeslop.yaml` is a symlink, both `makeslop init`
+and `makeslop run` exit with an error. Replace the symlink with a regular file:
+
+```sh
+cp --remove-destination "$(readlink .makeslop.yaml)" .makeslop.yaml
+```
 
 ---
 
