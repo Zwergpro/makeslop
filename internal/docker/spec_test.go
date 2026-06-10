@@ -1340,6 +1340,303 @@ func TestBuildSpec_EnvDeterminism(t *testing.T) {
 	}
 }
 
+// ---- ProtectProjectConfig and MaskGitHooks tests ----
+
+// Both flags off: mount list is identical to baseline (no extra mounts).
+func TestBuildSpec_SandboxFlags_BothOff(t *testing.T) {
+	o := sampleOptions()
+	// flags default to false — just use sampleOptions unchanged
+	spec := BuildSpec(o)
+	baseline := BuildSpec(sampleOptions())
+	if !reflect.DeepEqual(spec.Mounts, baseline.Mounts) {
+		t.Errorf("flags=off should produce baseline mount list\n got: %+v\nwant: %+v", spec.Mounts, baseline.Mounts)
+	}
+}
+
+// ProtectProjectConfig=true: .makeslop.yaml read-only bind is present at mounts[4]
+// (after the 4 base mounts and before any cache overlays).
+func TestBuildSpec_ProtectProjectConfig_MountPresent(t *testing.T) {
+	o := sampleOptions()
+	o.ProtectProjectConfig = true
+	spec := BuildSpec(o)
+
+	wantMount := Mount{
+		Host:      "/home/me/code/myproj/.makeslop.yaml",
+		Container: "/workspace/myproj-abc123/.makeslop.yaml",
+		ReadOnly:  true,
+	}
+
+	if len(spec.Mounts) < 5 {
+		t.Fatalf("expected at least 5 mounts, got %d", len(spec.Mounts))
+	}
+	// Must appear at index 4 — after the 4 base mounts, before cache overlays.
+	if spec.Mounts[4] != wantMount {
+		t.Errorf("mounts[4] = %+v, want %+v", spec.Mounts[4], wantMount)
+	}
+}
+
+// MaskGitHooks=true: .git/hooks tmpfs mount is present at a fixed position.
+func TestBuildSpec_MaskGitHooks_MountPresent(t *testing.T) {
+	o := sampleOptions()
+	o.MaskGitHooks = true
+	spec := BuildSpec(o)
+
+	wantMount := Mount{
+		Type:      "tmpfs",
+		Container: "/workspace/myproj-abc123/.git/hooks",
+	}
+
+	if len(spec.Mounts) < 5 {
+		t.Fatalf("expected at least 5 mounts, got %d", len(spec.Mounts))
+	}
+	// When only MaskGitHooks is set (ProtectProjectConfig=false), it appears at mounts[4].
+	if spec.Mounts[4] != wantMount {
+		t.Errorf("mounts[4] = %+v, want %+v", spec.Mounts[4], wantMount)
+	}
+}
+
+// Both flags on: .makeslop.yaml bind is at mounts[4], .git/hooks tmpfs at mounts[5],
+// both before cache overlays.
+func TestBuildSpec_BothSandboxFlags_Order(t *testing.T) {
+	o := sampleOptions()
+	o.ProtectProjectConfig = true
+	o.MaskGitHooks = true
+	spec := BuildSpec(o)
+
+	if len(spec.Mounts) < 6 {
+		t.Fatalf("expected at least 6 mounts, got %d", len(spec.Mounts))
+	}
+
+	wantConfig := Mount{
+		Host:      "/home/me/code/myproj/.makeslop.yaml",
+		Container: "/workspace/myproj-abc123/.makeslop.yaml",
+		ReadOnly:  true,
+	}
+	wantHooks := Mount{
+		Type:      "tmpfs",
+		Container: "/workspace/myproj-abc123/.git/hooks",
+	}
+
+	// mounts[4] = .makeslop.yaml bind
+	if spec.Mounts[4] != wantConfig {
+		t.Errorf("mounts[4] = %+v, want %+v", spec.Mounts[4], wantConfig)
+	}
+	// mounts[5] = .git/hooks tmpfs
+	if spec.Mounts[5] != wantHooks {
+		t.Errorf("mounts[5] = %+v, want %+v", spec.Mounts[5], wantHooks)
+	}
+
+	// Both appear before any cache-overlay mounts (mounts from sampleOptions cache are
+	// the agent/content overlays; with both sandbox flags they'd start at index 6).
+	// Verify the first cache mount is after index 5.
+	for i := 6; i < len(spec.Mounts); i++ {
+		m := spec.Mounts[i]
+		if m.Host == "/home/me/code/myproj/.makeslop.yaml" || (m.Type == "tmpfs" && m.Container == "/workspace/myproj-abc123/.git/hooks") {
+			t.Errorf("sandbox mount found at index %d (expected before index 6)", i)
+		}
+	}
+}
+
+// ProtectProjectConfig: readonly=true must render as ",readonly" in Args() output.
+func TestArgs_ProtectProjectConfig_ReadonlySuffix(t *testing.T) {
+	o := sampleOptions()
+	o.ProtectProjectConfig = true
+	spec := BuildSpec(o)
+	args := spec.Args()
+
+	mountArgs := collectMountArgs(args)
+	found := false
+	for _, raw := range mountArgs {
+		if strings.Contains(raw, ".makeslop.yaml") {
+			found = true
+			want := "type=bind,source=/home/me/code/myproj/.makeslop.yaml,target=/workspace/myproj-abc123/.makeslop.yaml,readonly"
+			if raw != want {
+				t.Errorf(".makeslop.yaml mount arg = %q, want %q", raw, want)
+			}
+		}
+	}
+	if !found {
+		t.Error(".makeslop.yaml mount not found in Args() output")
+	}
+}
+
+// MaskGitHooks: tmpfs mount for .git/hooks must render correctly in Args().
+func TestArgs_MaskGitHooks_TmpfsMountShape(t *testing.T) {
+	o := sampleOptions()
+	o.MaskGitHooks = true
+	spec := BuildSpec(o)
+	args := spec.Args()
+
+	mountArgs := collectMountArgs(args)
+	found := false
+	for _, raw := range mountArgs {
+		if strings.Contains(raw, ".git/hooks") {
+			found = true
+			want := "type=tmpfs,target=/workspace/myproj-abc123/.git/hooks"
+			if raw != want {
+				t.Errorf(".git/hooks mount arg = %q, want %q", raw, want)
+			}
+		}
+	}
+	if !found {
+		t.Error(".git/hooks mount not found in Args() output")
+	}
+}
+
+// ProtectProjectConfig mount must appear after the base mounts (mounts[0]) and
+// before the first cache overlay mount.
+func TestBuildSpec_ProtectProjectConfig_PositionAfterBase_BeforeCache(t *testing.T) {
+	o := sampleOptions() // both cache flags true
+	o.ProtectProjectConfig = true
+	spec := BuildSpec(o)
+
+	// Find the index of the .makeslop.yaml mount.
+	sandboxIdx := -1
+	for i, m := range spec.Mounts {
+		if m.Container == "/workspace/myproj-abc123/.makeslop.yaml" {
+			sandboxIdx = i
+			break
+		}
+	}
+	if sandboxIdx == -1 {
+		t.Fatal(".makeslop.yaml mount not found")
+	}
+	// Must be after index 3 (last of 4 base mounts).
+	if sandboxIdx <= 3 {
+		t.Errorf("sandbox mount at index %d, want > 3 (after base mounts)", sandboxIdx)
+	}
+	// Must be before cache overlay mounts. The first cache overlay (MountAgentCache)
+	// starts at index 5 when ProtectProjectConfig is set (base[0-3] + sandbox[4] + cache[5+]).
+	// We find the first per-workspace overlay and verify sandbox comes first.
+	firstCacheIdx := -1
+	for i, m := range spec.Mounts {
+		if strings.Contains(m.Host, "workspaces/") {
+			firstCacheIdx = i
+			break
+		}
+	}
+	if firstCacheIdx != -1 && sandboxIdx >= firstCacheIdx {
+		t.Errorf("sandbox mount at index %d is not before first cache mount at index %d", sandboxIdx, firstCacheIdx)
+	}
+}
+
+// MaskGitHooks: verify the HostConfig translation produces a proper tmpfs mount.
+func TestHostConfig_MaskGitHooks_TmpfsMount(t *testing.T) {
+	o := sampleOptions()
+	o.MaskGitHooks = true
+	spec := BuildSpec(o)
+	hc := spec.HostConfig()
+
+	found := false
+	for _, m := range hc.Mounts {
+		if m.Target == "/workspace/myproj-abc123/.git/hooks" {
+			found = true
+			if m.Type != "tmpfs" {
+				t.Errorf("Type = %q, want tmpfs", m.Type)
+			}
+			if m.Source != "" {
+				t.Errorf("Source = %q, want empty for tmpfs", m.Source)
+			}
+		}
+	}
+	if !found {
+		t.Error(".git/hooks mount not found in HostConfig().Mounts")
+	}
+}
+
+// ProtectProjectConfig: verify the HostConfig translation produces a read-only bind mount.
+func TestHostConfig_ProtectProjectConfig_ReadOnlyBind(t *testing.T) {
+	o := sampleOptions()
+	o.ProtectProjectConfig = true
+	spec := BuildSpec(o)
+	hc := spec.HostConfig()
+
+	found := false
+	for _, m := range hc.Mounts {
+		if m.Target == "/workspace/myproj-abc123/.makeslop.yaml" {
+			found = true
+			if m.Type != "bind" {
+				t.Errorf("Type = %q, want bind", m.Type)
+			}
+			if m.Source != "/home/me/code/myproj/.makeslop.yaml" {
+				t.Errorf("Source = %q, want /home/me/code/myproj/.makeslop.yaml", m.Source)
+			}
+			if !m.ReadOnly {
+				t.Error("ReadOnly must be true for .makeslop.yaml mount")
+			}
+		}
+	}
+	if !found {
+		t.Error(".makeslop.yaml mount not found in HostConfig().Mounts")
+	}
+}
+
+// Drift-guard: sandbox flags × cache combos — Args() and HostConfig() mount counts agree.
+func TestDriftGuard_SandboxFlags(t *testing.T) {
+	combos := []struct {
+		name                 string
+		protectProjectConfig bool
+		maskGitHooks         bool
+	}{
+		{"neither", false, false},
+		{"protect_only", true, false},
+		{"hooks_only", false, true},
+		{"both", true, true},
+	}
+
+	for _, c := range combos {
+		t.Run(c.name, func(t *testing.T) {
+			o := sampleOptions()
+			o.ProtectProjectConfig = c.protectProjectConfig
+			o.MaskGitHooks = c.maskGitHooks
+
+			spec := BuildSpec(o)
+			args := spec.Args()
+			hc := spec.HostConfig()
+
+			argsMounts := collectMountArgs(args)
+			if len(argsMounts) != len(hc.Mounts) {
+				t.Errorf("total mount count: Args=%d, HostConfig=%d (combo: %s)",
+					len(argsMounts), len(hc.Mounts), c.name)
+			}
+
+			// Bind count parity.
+			var argsBindCount int
+			for _, raw := range argsMounts {
+				if !strings.HasPrefix(raw, "type=tmpfs") && !strings.HasPrefix(raw, "type=volume") {
+					argsBindCount++
+				}
+			}
+			var hcBindCount int
+			for _, m := range hc.Mounts {
+				if m.Type == "bind" || m.Type == "" {
+					hcBindCount++
+				}
+			}
+			if argsBindCount != hcBindCount {
+				t.Errorf("bind count: Args=%d, HostConfig=%d (combo: %s)", argsBindCount, hcBindCount, c.name)
+			}
+
+			// Tmpfs count parity.
+			var argsTmpfsCount int
+			for _, raw := range argsMounts {
+				if strings.HasPrefix(raw, "type=tmpfs") {
+					argsTmpfsCount++
+				}
+			}
+			var hcTmpfsCount int
+			for _, m := range hc.Mounts {
+				if m.Type == "tmpfs" {
+					hcTmpfsCount++
+				}
+			}
+			if argsTmpfsCount != hcTmpfsCount {
+				t.Errorf("tmpfs count: Args=%d, HostConfig=%d (combo: %s)", argsTmpfsCount, hcTmpfsCount, c.name)
+			}
+		})
+	}
+}
+
 // Drift-guard across all 4 cache combos: Args() and HostConfig() mount counts must agree.
 func TestDriftGuard_CacheMountCombos(t *testing.T) {
 	combos := []struct {

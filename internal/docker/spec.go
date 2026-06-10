@@ -41,6 +41,18 @@ type Options struct {
 	// MountContentCache gates the per-workspace content cache overlays
 	// (workspaceHost/docs/, CLAUDE.md); false lets the project's own files show.
 	MountContentCache bool
+
+	// ProtectProjectConfig mounts <ProjectRoot>/.makeslop.yaml read-only over
+	// itself inside the container, preventing the agent from rewriting the sandbox
+	// policy. Only set when the file actually exists on the host (a missing bind
+	// source would fail container create).
+	ProtectProjectConfig bool
+
+	// MaskGitHooks overlays <workspacePath>/.git/hooks with a tmpfs, preventing
+	// the agent from planting hooks that execute on the host. Only set when
+	// <ProjectRoot>/.git is a directory (worktrees/submodule gitfiles are skipped
+	// — their hooks directory lives outside the workspace).
+	MaskGitHooks bool
 }
 
 // Mount is a single docker mount entry. Type "" or "bind" → bind; "tmpfs" →
@@ -78,6 +90,23 @@ func BuildSpec(o Options) Spec {
 		{Host: filepath.Join(o.BaseDir, ".claude") + "/", Container: "/home/user/.claude/"},
 		{Host: filepath.Join(o.BaseDir, ".claude.json"), Container: "/home/user/.claude.json"},
 		{Host: filepath.Join(o.BaseDir, ".codex") + "/", Container: "/home/user/.codex/"},
+	}
+
+	// Sandbox-policy mounts: inserted at a fixed point after the 4 base mounts
+	// and before any cache overlays. This ensures the overlay wins over the rw
+	// project bind regardless of cache flag state.
+	if o.ProtectProjectConfig {
+		mounts = append(mounts, Mount{
+			Host:      filepath.Join(o.ProjectRoot, ".makeslop.yaml"),
+			Container: workspacePath + "/.makeslop.yaml",
+			ReadOnly:  true,
+		})
+	}
+	if o.MaskGitHooks {
+		mounts = append(mounts, Mount{
+			Type:      "tmpfs",
+			Container: workspacePath + "/.git/hooks",
+		})
 	}
 
 	if o.MountAgentCache {

@@ -153,12 +153,12 @@ updates only.
 - Modify: `internal/docker/spec.go`
 - Modify: `internal/docker/spec_test.go`
 
-- [ ] add `ProtectProjectConfig bool` and `MaskGitHooks bool` to `docker.Options` with doc comments
-- [ ] in `BuildSpec`, when `ProtectProjectConfig`, insert the read-only `.makeslop.yaml` self-bind after the 4 base mounts, before the cache overlays
-- [ ] in `BuildSpec`, when `MaskGitHooks`, insert the `.git/hooks` tmpfs mount at the same fixed point (after `.makeslop.yaml` bind when both are on)
-- [ ] write table-driven tests: both flags off (mount lists unchanged), each flag on (mount present, correct shape, `ReadOnly: true` rendered as `,readonly` in `Args()`), exact position after `mounts[0]` and before cache overlays
-- [ ] verify the drift-guard test passes (Args ↔ ContainerConfig/HostConfig parity for the new mounts)
-- [ ] run `go test ./internal/docker/` — must pass before task 2
+- [x] add `ProtectProjectConfig bool` and `MaskGitHooks bool` to `docker.Options` with doc comments
+- [x] in `BuildSpec`, when `ProtectProjectConfig`, insert the read-only `.makeslop.yaml` self-bind after the 4 base mounts, before the cache overlays
+- [x] in `BuildSpec`, when `MaskGitHooks`, insert the `.git/hooks` tmpfs mount at the same fixed point (after `.makeslop.yaml` bind when both are on)
+- [x] write table-driven tests: both flags off (mount lists unchanged), each flag on (mount present, correct shape, `ReadOnly: true` rendered as `,readonly` in `Args()`), exact position after `mounts[0]` and before cache overlays
+- [x] verify the drift-guard test passes (Args ↔ ContainerConfig/HostConfig parity for the new mounts)
+- [x] run `go test ./internal/docker/` — must pass before task 2
 
 ### Task 2: Symlink reporting in security.Scan
 
