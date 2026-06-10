@@ -820,6 +820,24 @@ func TestLoad_Scan_InvalidPatterns(t *testing.T) {
 			yaml:        "exclude:\n  scan:\n    patterns:\n      - \"\"\n    skip-dirs: []\n  dirs: []\n  files: []\n",
 			wantErrFrag: "empty pattern",
 		},
+		// Path-separator patterns: security.Scan matches basenames only, so a
+		// pattern with '/' can never match anything — fail-loud instead of
+		// silently dropping all matches (finding #1).
+		{
+			name:        "path separator secrets/*.pem",
+			yaml:        "exclude:\n  scan:\n    patterns:\n      - \"secrets/*.pem\"\n    skip-dirs: []\n  dirs: []\n  files: []\n",
+			wantErrFrag: "contains a path separator",
+		},
+		{
+			name:        "path separator **/*.env",
+			yaml:        "exclude:\n  scan:\n    patterns:\n      - \"**/*.env\"\n    skip-dirs: []\n  dirs: []\n  files: []\n",
+			wantErrFrag: "contains a path separator",
+		},
+		{
+			name:        "path separator a/b",
+			yaml:        "exclude:\n  scan:\n    patterns:\n      - \"a/b\"\n    skip-dirs: []\n  dirs: []\n  files: []\n",
+			wantErrFrag: "contains a path separator",
+		},
 	}
 
 	for _, tc := range cases {
@@ -839,6 +857,33 @@ func TestLoad_Scan_InvalidPatterns(t *testing.T) {
 				t.Errorf("error missing 'projectconfig:' prefix: %q", err.Error())
 			}
 		})
+	}
+}
+
+// TestLoad_Scan_PathStylePattern_LoadLevel verifies that a .makeslop.yaml with a
+// path-style pattern fails Load with a clear error (finding #1: path-style
+// patterns can never match basenames, so they would silently lose masking).
+func TestLoad_Scan_PathStylePattern_LoadLevel(t *testing.T) {
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	root := evalSymlinks(t, t.TempDir())
+
+	content := "exclude:\n  scan:\n    patterns:\n      - \"secrets/*.pem\"\n    skip-dirs: []\n  dirs: []\n  files: []\n"
+	if err := os.WriteFile(filepath.Join(root, Filename), []byte(content), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	_, _, _, err := Load(root)
+	if err == nil {
+		t.Fatal("expected error for path-style scan pattern, got nil")
+	}
+	if !strings.Contains(err.Error(), "contains a path separator") {
+		t.Errorf("error %q does not contain 'contains a path separator'", err.Error())
+	}
+	if !strings.Contains(err.Error(), "basenames only") {
+		t.Errorf("error %q does not explain that patterns match basenames only", err.Error())
+	}
+	if !strings.HasPrefix(err.Error(), "projectconfig:") {
+		t.Errorf("error missing 'projectconfig:' prefix: %q", err.Error())
 	}
 }
 
@@ -1468,6 +1513,169 @@ func TestLoad_TypoInEnvironments_StrictModeRejects(t *testing.T) {
 	}
 	if !strings.HasPrefix(err.Error(), "projectconfig:") {
 		t.Errorf("error missing 'projectconfig:' prefix: %q", err.Error())
+	}
+}
+
+// TestScaffold_DanglingSymlink verifies that Scaffold rejects a dangling symlink
+// at the .makeslop.yaml path with a hard error (finding #2).
+func TestScaffold_DanglingSymlink(t *testing.T) {
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	root := evalSymlinks(t, t.TempDir())
+
+	path := filepath.Join(root, Filename)
+	// Create a dangling symlink: target does not exist.
+	if err := os.Symlink(filepath.Join(root, "nonexistent-target"), path); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	err := Scaffold(root, Cache{Content: true, Agent: true})
+	if err == nil {
+		t.Fatal("expected error for dangling symlink at config path, got nil")
+	}
+	if !strings.Contains(err.Error(), "is a symlink") {
+		t.Errorf("error %q does not contain 'is a symlink'", err.Error())
+	}
+	if !strings.Contains(err.Error(), "must be a regular file") {
+		t.Errorf("error %q does not contain 'must be a regular file'", err.Error())
+	}
+	if !strings.HasPrefix(err.Error(), "projectconfig:") {
+		t.Errorf("error missing 'projectconfig:' prefix: %q", err.Error())
+	}
+}
+
+// TestScaffold_LiveSymlink verifies that Scaffold rejects a live symlink pointing
+// to a valid config file (finding #2).
+func TestScaffold_LiveSymlink(t *testing.T) {
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	root := evalSymlinks(t, t.TempDir())
+
+	// Create a real config file elsewhere.
+	realConfig := filepath.Join(root, "real-config.yaml")
+	if err := os.WriteFile(realConfig, Stub, 0o644); err != nil {
+		t.Fatalf("write real config: %v", err)
+	}
+
+	path := filepath.Join(root, Filename)
+	if err := os.Symlink(realConfig, path); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	err := Scaffold(root, Cache{Content: true, Agent: true})
+	if err == nil {
+		t.Fatal("expected error for live symlink at config path, got nil")
+	}
+	if !strings.Contains(err.Error(), "is a symlink") {
+		t.Errorf("error %q does not contain 'is a symlink'", err.Error())
+	}
+	if !strings.Contains(err.Error(), "must be a regular file") {
+		t.Errorf("error %q does not contain 'must be a regular file'", err.Error())
+	}
+	if !strings.HasPrefix(err.Error(), "projectconfig:") {
+		t.Errorf("error missing 'projectconfig:' prefix: %q", err.Error())
+	}
+}
+
+// TestScaffold_RegularFile_Idempotent confirms that EEXIST on a regular file
+// (not a symlink) still returns nil — idempotency is preserved (finding #2:
+// only symlinks are rejected, regular-file EEXIST stays success).
+func TestScaffold_RegularFile_Idempotent_SymlinkCheck(t *testing.T) {
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	root := evalSymlinks(t, t.TempDir())
+
+	// Pre-create the file.
+	userContent := []byte("# my config\nexclude:\n  dirs: []\n  files: []\n")
+	if err := os.WriteFile(filepath.Join(root, Filename), userContent, 0o644); err != nil {
+		t.Fatalf("pre-write: %v", err)
+	}
+
+	if err := Scaffold(root, Cache{Content: true, Agent: true}); err != nil {
+		t.Fatalf("Scaffold on existing regular file returned error: %v", err)
+	}
+
+	// Content must not be modified.
+	got, err := os.ReadFile(filepath.Join(root, Filename))
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(got) != string(userContent) {
+		t.Errorf("user content was modified:\ngot:  %q\nwant: %q", got, userContent)
+	}
+}
+
+// TestLoad_DanglingSymlink verifies that Load rejects a dangling symlink at
+// the .makeslop.yaml path with a hard error instead of silently returning empty
+// defaults (finding #2).
+func TestLoad_DanglingSymlink(t *testing.T) {
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	root := evalSymlinks(t, t.TempDir())
+
+	path := filepath.Join(root, Filename)
+	if err := os.Symlink(filepath.Join(root, "nowhere"), path); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	_, _, _, err := Load(root)
+	if err == nil {
+		t.Fatal("expected error for dangling symlink, got nil (silently treats as missing — wrong)")
+	}
+	if !strings.Contains(err.Error(), "is a symlink") {
+		t.Errorf("error %q does not contain 'is a symlink'", err.Error())
+	}
+	if !strings.Contains(err.Error(), "must be a regular file") {
+		t.Errorf("error %q does not contain 'must be a regular file'", err.Error())
+	}
+	if !strings.HasPrefix(err.Error(), "projectconfig:") {
+		t.Errorf("error missing 'projectconfig:' prefix: %q", err.Error())
+	}
+}
+
+// TestLoad_LiveSymlink verifies that Load rejects a live symlink pointing to a
+// valid config file (finding #2).
+func TestLoad_LiveSymlink(t *testing.T) {
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+	root := evalSymlinks(t, t.TempDir())
+
+	// Create a real valid config elsewhere.
+	realConfig := filepath.Join(root, "real-config.yaml")
+	if err := os.WriteFile(realConfig, Stub, 0o644); err != nil {
+		t.Fatalf("write real config: %v", err)
+	}
+
+	path := filepath.Join(root, Filename)
+	if err := os.Symlink(realConfig, path); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	_, _, _, err := Load(root)
+	if err == nil {
+		t.Fatal("expected error for live symlink to valid config, got nil")
+	}
+	if !strings.Contains(err.Error(), "is a symlink") {
+		t.Errorf("error %q does not contain 'is a symlink'", err.Error())
+	}
+	if !strings.Contains(err.Error(), "must be a regular file") {
+		t.Errorf("error %q does not contain 'must be a regular file'", err.Error())
+	}
+	if !strings.HasPrefix(err.Error(), "projectconfig:") {
+		t.Errorf("error missing 'projectconfig:' prefix: %q", err.Error())
+	}
+}
+
+// TestLoad_MissingFile_ReturnsDefaultsNotError confirms that a truly absent
+// .makeslop.yaml (no symlink, no file) still returns empty defaults — regression
+// guard for the Lstat-before-ReadFile change (finding #2).
+func TestLoad_MissingFile_NoSymlink_ReturnsDefaults(t *testing.T) {
+	root := evalSymlinks(t, t.TempDir())
+
+	_, cacheCfg, envVars, err := Load(root)
+	if err != nil {
+		t.Fatalf("Load on truly missing file returned error: %v", err)
+	}
+	if !cacheCfg.Content || !cacheCfg.Agent {
+		t.Errorf("Cache defaults wrong: got {Content:%v Agent:%v}, want {true, true}", cacheCfg.Content, cacheCfg.Agent)
+	}
+	if envVars != nil {
+		t.Errorf("expected nil envVars for missing file, got %v", envVars)
 	}
 }
 

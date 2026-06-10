@@ -120,14 +120,25 @@ type yamlSchema struct {
 }
 
 // Scaffold creates <root>/.makeslop.yaml with the stub for the given Cache
-// defaults. Idempotent: EEXIST is success and user edits are never clobbered
-// (c is a no-op on an existing file). root must be absolute and
-// EvalSymlinks-evaluated.
+// defaults. Idempotent: EEXIST on a regular file is success and user edits are
+// never clobbered (c is a no-op on an existing file). A symlink at the path —
+// dangling or live — is rejected with a hard error: the project config must be
+// a regular file so ProtectProjectConfig and Load behave predictably. root must
+// be absolute and EvalSymlinks-evaluated.
 func Scaffold(root string, c Cache) error {
 	path := filepath.Join(root, Filename)
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
 	if err != nil {
 		if errors.Is(err, fs.ErrExist) {
+			// EEXIST could mean a regular file (idempotent success) or a symlink
+			// (which O_EXCL treats as existing). Lstat to distinguish.
+			info, lstErr := os.Lstat(path)
+			if lstErr != nil {
+				return fmt.Errorf("scaffold %s: %w", Filename, lstErr)
+			}
+			if info.Mode()&fs.ModeSymlink != 0 {
+				return fmt.Errorf("projectconfig: %s is a symlink — the project config must be a regular file", Filename)
+			}
 			return nil
 		}
 		return fmt.Errorf("scaffold %s: %w", Filename, err)
@@ -155,14 +166,30 @@ func Scaffold(root string, c Cache) error {
 //     block is absent (nil ≡ no env injection, backward-compatible).
 //   - error: any parse, validation, or filesystem error, wrapped "projectconfig: ".
 //
+// The file at root/.makeslop.yaml must be a regular file. A symlink — dangling
+// or live — is rejected with a hard error: masking and sandbox-policy behaviour
+// depend on the file being a real file on disk.
+//
 // root must be absolute and EvalSymlinks-evaluated.
 func Load(root string) (Excludes, Cache, []string, error) {
 	path := filepath.Join(root, Filename)
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
+
+	// Lstat before ReadFile to detect symlinks. ReadFile follows symlinks, which
+	// would silently succeed for a live symlink or give ENOENT for a dangling one
+	// (treating it as "no config" — the silent data-loss case this check closes).
+	linfo, lstErr := os.Lstat(path)
+	if lstErr != nil {
+		if errors.Is(lstErr, fs.ErrNotExist) {
 			return Excludes{}, Cache{Content: true, Agent: true}, nil, nil
 		}
+		return Excludes{}, Cache{}, nil, fmt.Errorf("projectconfig: read %s: %w", Filename, lstErr)
+	}
+	if linfo.Mode()&fs.ModeSymlink != 0 {
+		return Excludes{}, Cache{}, nil, fmt.Errorf("projectconfig: %s is a symlink — the project config must be a regular file", Filename)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
 		return Excludes{}, Cache{}, nil, fmt.Errorf("projectconfig: read %s: %w", Filename, err)
 	}
 
@@ -222,11 +249,8 @@ func Load(root string) (Excludes, Cache, []string, error) {
 	files = dedupSorted(files)
 	dirs = dedupSorted(dirs)
 
-	// Merge warnings from both lists; sort for deterministic output.
-	var warnings []string
-	warnings = append(warnings, fileWarnings...)
-	warnings = append(warnings, dirWarnings...)
-	sort.Strings(warnings)
+	// Merge warnings from both lists; deduplicate and sort.
+	warnings := dedupSorted(append(fileWarnings, dirWarnings...))
 
 	// Absent pointer (nil) means the field was unset in YAML, defaulting to true
 	// (backward-compatible: absent block = both mounted).
@@ -271,11 +295,20 @@ func validateEntries(entries []string, listName string) ([]string, error) {
 }
 
 // validatePatterns validates exclude.scan.patterns basename globs, rejecting
-// empty entries and invalid glob syntax. Returns deduplicated, sorted patterns.
+// empty entries, path separators, and invalid glob syntax. Returns deduplicated,
+// sorted patterns. Patterns are matched against basenames only (security.Scan
+// calls filepath.Match(p, d.Name())), so path-style patterns like
+// "secrets/*.pem" or "**/*.env" can never match and are rejected fail-loud.
 func validatePatterns(entries []string) ([]string, error) {
 	for _, p := range entries {
 		if p == "" {
 			return nil, fmt.Errorf("projectconfig: empty pattern in exclude.scan.patterns")
+		}
+		// Patterns are basename globs: a '/' can never match any basename, so
+		// a path-style pattern silently masks nothing. Reject early so the user
+		// gets a clear error instead of silent data loss.
+		if strings.Contains(p, "/") {
+			return nil, fmt.Errorf("projectconfig: scan pattern %q contains a path separator — patterns match basenames only", p)
 		}
 		// Matching against "" validates glob syntax without matching anything.
 		if _, err := filepath.Match(p, ""); err != nil {

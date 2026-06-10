@@ -655,3 +655,30 @@ func TestGlobalOnly_RejectedOnNonInitCommands(t *testing.T) {
 		})
 	}
 }
+
+// init must fail with a clear error when .makeslop.yaml is a symlink (dangling
+// or live). Scaffold detects the symlink on the EEXIST path and returns a hard
+// error instead of treating the symlink as an idempotent regular-file hit.
+func TestInit_SymlinkedProjectConfig_FailsLoud(t *testing.T) {
+	skipNonPOSIX(t, "symlinks are POSIX-only; makeslop is POSIX-only")
+	setHomeToTestParent(t)
+
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+	resolvedPwd := evalSymlinks(t, pwd)
+
+	// Place a dangling symlink at .makeslop.yaml — the target does not exist.
+	configPath := filepath.Join(resolvedPwd, projectconfig.Filename)
+	if err := os.Symlink("/nonexistent/target", configPath); err != nil {
+		t.Fatalf("create dangling symlink: %v", err)
+	}
+
+	_, stderr, err := runCmd(t, baseDir, "init")
+	if err == nil {
+		t.Fatalf("expected init to fail with symlinked .makeslop.yaml, got nil error; stderr=%q", stderr)
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Errorf("expected error to mention 'symlink', got: %v", err)
+	}
+}
