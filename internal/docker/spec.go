@@ -8,7 +8,6 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/Zwergpro/makeslop/internal/config"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/mount"
 )
@@ -19,6 +18,10 @@ type Options struct {
 	ProjectRoot   string // host path mounted at /workspace/<WorkspaceName>
 	WorkspaceName string // e.g. "makeslop-ab12cd"
 	BaseDir       string // ~/.makeslop
+	// WorkspaceHost is the per-workspace cache directory on the host
+	// (e.g. ~/.makeslop/workspaces/<WorkspaceName>). Caller computes this;
+	// BuildSpec uses it directly for cache overlay mounts.
+	WorkspaceHost string
 	Image         string
 	Command       string // shell to exec inside the container
 	// MaskedFiles: absolute host paths under ProjectRoot to shadow with /dev/null.
@@ -80,7 +83,7 @@ type Spec struct {
 // disabled groups are omitted, never reordered.
 func BuildSpec(o Options) Spec {
 	workspacePath := "/workspace/" + o.WorkspaceName
-	workspaceHost := filepath.Join(o.BaseDir, config.WorkspacesDir, o.WorkspaceName)
+	workspaceHost := o.WorkspaceHost
 
 	// Trailing slashes on directory mounts are intentional — they match the
 	// reference claude.sh, and coax docker into failing fast if the host path
@@ -216,7 +219,7 @@ func (s Spec) ShellCommand() string {
 	for i < len(args)-2 {
 		tok := args[i]
 		switch tok {
-		case "--network", "--workdir", "--tmpfs", "--cap-drop", "--security-opt", "--mount", "-e":
+		case "--workdir", "--tmpfs", "--cap-drop", "--security-opt", "--mount", "-e":
 			lines = append(lines, "  "+shellQuote(tok)+" "+shellQuote(args[i+1]))
 			i += 2
 		default:

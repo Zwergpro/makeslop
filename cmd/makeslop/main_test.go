@@ -311,8 +311,8 @@ func TestInit_FromScratch(t *testing.T) {
 	}
 }
 
-// installFakeBuildClient builds a fakeDocker whose Build fails for a non-zero exitCode.
-func installFakeBuildClient(t *testing.T, exitCode int) *fakeDocker {
+// newFakeBuildDocker builds a fakeDocker whose Build fails for a non-zero exitCode.
+func newFakeBuildDocker(t *testing.T, exitCode int) *fakeDocker {
 	t.Helper()
 	fd := &fakeDocker{}
 	if exitCode != 0 {
@@ -356,15 +356,31 @@ func TestRun_AfterInit_LaunchesDocker(t *testing.T) {
 	if loadErr != nil {
 		t.Fatalf("load settings: %v", loadErr)
 	}
-	want := docker.BuildSpec(docker.Options{
-		ProjectRoot:   resolvedPwd,
-		WorkspaceName: filepath.Base(workspaceDir),
-		BaseDir:       baseDir,
-		Image:         s.Image,
-		Command:       s.Shell,
-		TmpDirSize:    s.TmpDirSize,
-	})
-	_ = want // spec correctness is covered by spec_test.go drift-guard
+
+	// Verify fc.LastSpec carries the correct wiring from runRun → BuildSpec.
+	// Field-level assertions catch bugs where runRun passes the wrong value
+	// (e.g. wrong image, wrong project root) even when fc.Started is true.
+	got := fc.LastSpec
+	if got.Image != s.Image {
+		t.Errorf("fc.LastSpec.Image = %q, want %q", got.Image, s.Image)
+	}
+	if got.Command != s.Shell {
+		t.Errorf("fc.LastSpec.Command = %q, want %q", got.Command, s.Shell)
+	}
+	// The workspace mount must bind the registered project root (resolvedPwd).
+	wantMountSource := resolvedPwd
+	wantMountTarget := "/workspace/" + filepath.Base(workspaceDir)
+	var foundWorkspaceMount bool
+	for _, m := range got.Mounts {
+		if m.Host == wantMountSource && m.Container == wantMountTarget {
+			foundWorkspaceMount = true
+			break
+		}
+	}
+	if !foundWorkspaceMount {
+		t.Errorf("fc.LastSpec missing workspace mount source=%q target=%q; mounts=%v",
+			wantMountSource, wantMountTarget, got.Mounts)
+	}
 }
 
 func TestRun_FromSubdirectory_MountsRegisteredAncestor(t *testing.T) {
@@ -394,31 +410,22 @@ func TestRun_FromSubdirectory_MountsRegisteredAncestor(t *testing.T) {
 		t.Error("docker.Run must have been invoked for a registered workspace")
 	}
 
-	// Spec must mount the registered ancestor (parent), not the subdir.
+	// fc.LastSpec must mount the registered ancestor (parent), not the subdir.
+	// Inspecting fc.LastSpec directly catches wiring bugs in runRun that would
+	// not be visible from a locally-reconstructed spec.
 	resolvedParent := evalSymlinks(t, parent)
-	s, loadErr := config.Load(baseDir)
-	if loadErr != nil {
-		t.Fatalf("load settings: %v", loadErr)
-	}
-	spec := docker.BuildSpec(docker.Options{
-		ProjectRoot:   resolvedParent,
-		WorkspaceName: filepath.Base(workspaceDir),
-		BaseDir:       baseDir,
-		Image:         s.Image,
-		Command:       s.Shell,
-		TmpDirSize:    s.TmpDirSize,
-	})
-	argv := spec.Args()
-	wantSourceFragment := `type=bind,source=` + resolvedParent + `,target=/workspace/` + filepath.Base(workspaceDir)
-	var found bool
-	for _, a := range argv {
-		if a == wantSourceFragment {
-			found = true
+	wantMountSource := resolvedParent
+	wantMountTarget := "/workspace/" + filepath.Base(workspaceDir)
+	var foundWorkspaceMount bool
+	for _, m := range fc.LastSpec.Mounts {
+		if m.Host == wantMountSource && m.Container == wantMountTarget {
+			foundWorkspaceMount = true
 			break
 		}
 	}
-	if !found {
-		t.Errorf("project-root mount not found in spec argv\nwant: %q\nargv: %v", wantSourceFragment, argv)
+	if !foundWorkspaceMount {
+		t.Errorf("fc.LastSpec missing workspace mount source=%q target=%q; mounts=%v",
+			wantMountSource, wantMountTarget, fc.LastSpec.Mounts)
 	}
 }
 
@@ -1272,6 +1279,7 @@ func TestRun_DryRun_StdoutEqualsBuildSpecShellCommand(t *testing.T) {
 	want := docker.BuildSpec(docker.Options{
 		ProjectRoot:          resolvedPwd,
 		WorkspaceName:        filepath.Base(workspaceDir),
+		WorkspaceHost:        workspaceDir,
 		BaseDir:              baseDir,
 		Image:                s.Image,
 		Command:              s.Shell,
@@ -1795,6 +1803,7 @@ func TestRun_YamlAbsentIsBitIdenticalArgv(t *testing.T) {
 	want := docker.BuildSpec(docker.Options{
 		ProjectRoot:       resolvedPwd,
 		WorkspaceName:     filepath.Base(workspaceDir),
+		WorkspaceHost:     workspaceDir,
 		BaseDir:           baseDir,
 		Image:             s.Image,
 		Command:           s.Shell,
@@ -2045,6 +2054,7 @@ func TestRun_DryRun_DefaultIsBridge(t *testing.T) {
 	want := docker.BuildSpec(docker.Options{
 		ProjectRoot:       resolvedPwd,
 		WorkspaceName:     filepath.Base(workspaceDir),
+		WorkspaceHost:     workspaceDir,
 		BaseDir:           baseDir,
 		Image:             s.Image,
 		Command:           s.Shell,
@@ -2198,7 +2208,7 @@ func TestRun_DryRunIncludesMaskedDirs(t *testing.T) {
 // build on a fresh baseDir self-heals the Dockerfile then invokes Build.
 func TestBuild_SeedsSelfHealAndInvokesSDK(t *testing.T) {
 	baseDir := t.TempDir()
-	fbc := installFakeBuildClient(t, 0)
+	fbc := newFakeBuildDocker(t, 0)
 
 	stdout, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fbc), "build")
 	if err != nil {
@@ -2222,7 +2232,7 @@ func TestBuild_SeedsSelfHealAndInvokesSDK(t *testing.T) {
 
 func TestBuild_NoCacheAndBuildArg(t *testing.T) {
 	baseDir := t.TempDir()
-	fbc := installFakeBuildClient(t, 0)
+	fbc := newFakeBuildDocker(t, 0)
 
 	_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fbc), "build", "--no-cache", "--build-arg", "GO_VERSION=1.26.3")
 	if err != nil {
@@ -2246,7 +2256,7 @@ func TestBuild_NoCacheAndBuildArg(t *testing.T) {
 
 func TestBuild_NonZeroExit_PropagatesCode(t *testing.T) {
 	baseDir := t.TempDir()
-	fbc := installFakeBuildClient(t, 1)
+	fbc := newFakeBuildDocker(t, 1)
 
 	var stdout, stderr bytes.Buffer
 	code := runWithExitCodeAndDeps(baseDir, &stdout, &stderr, depsFrom(fbc), []string{"build"})
@@ -2258,7 +2268,7 @@ func TestBuild_NonZeroExit_PropagatesCode(t *testing.T) {
 // A custom image name in settings.json flows into the Build options.
 func TestBuild_CustomImage_FromSettings(t *testing.T) {
 	baseDir := t.TempDir()
-	fbc := installFakeBuildClient(t, 0)
+	fbc := newFakeBuildDocker(t, 0)
 
 	if err := config.Bootstrap(baseDir); err != nil {
 		t.Fatalf("bootstrap: %v", err)
@@ -2315,7 +2325,7 @@ func TestBuild_CorruptSettings_ReportsError(t *testing.T) {
 // --build-arg is repeatable; all values forwarded.
 func TestBuild_MultipleBuildArgs(t *testing.T) {
 	baseDir := t.TempDir()
-	fbc := installFakeBuildClient(t, 0)
+	fbc := newFakeBuildDocker(t, 0)
 
 	_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fbc), "build",
 		"--build-arg", "GO_VERSION=1.26.3",
@@ -2345,7 +2355,7 @@ func TestBuild_MultipleBuildArgs(t *testing.T) {
 // internal/docker build_test.go.
 func TestBuild_BuildKitVersion_IsSet(t *testing.T) {
 	baseDir := t.TempDir()
-	fbc := installFakeBuildClient(t, 0)
+	fbc := newFakeBuildDocker(t, 0)
 
 	_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fbc), "build")
 	if err != nil {
@@ -2360,7 +2370,7 @@ func TestBuild_BuildKitVersion_IsSet(t *testing.T) {
 // build --refresh overwrites a stale Dockerfile with the embedded assets version.
 func TestBuild_Refresh_OverwritesDockerfileAndBuilds(t *testing.T) {
 	baseDir := t.TempDir()
-	fbc := installFakeBuildClient(t, 0)
+	fbc := newFakeBuildDocker(t, 0)
 
 	// Bootstrap is no-overwrite, so the STALE marker survives without --refresh.
 	if err := config.Bootstrap(baseDir); err != nil {
@@ -2394,7 +2404,7 @@ func TestBuild_Refresh_OverwritesDockerfileAndBuilds(t *testing.T) {
 // Plain build (no --refresh) must not overwrite a hand-edited Dockerfile.
 func TestBuild_NoRefresh_LeavesDockerfileIntact(t *testing.T) {
 	baseDir := t.TempDir()
-	fbc := installFakeBuildClient(t, 0)
+	fbc := newFakeBuildDocker(t, 0)
 
 	if err := config.Bootstrap(baseDir); err != nil {
 		t.Fatalf("bootstrap: %v", err)
@@ -2423,7 +2433,7 @@ func TestBuild_NoRefresh_LeavesDockerfileIntact(t *testing.T) {
 func TestBuild_Refresh_Quiet_SuppressesNotice(t *testing.T) {
 	t.Run("quiet suppresses notice", func(t *testing.T) {
 		baseDir := t.TempDir()
-		fbc := installFakeBuildClient(t, 0)
+		fbc := newFakeBuildDocker(t, 0)
 
 		_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fbc), "build", "--refresh", "--quiet")
 		if err != nil {
@@ -2436,7 +2446,7 @@ func TestBuild_Refresh_Quiet_SuppressesNotice(t *testing.T) {
 
 	t.Run("non-quiet emits notice", func(t *testing.T) {
 		baseDir := t.TempDir()
-		fbc := installFakeBuildClient(t, 0)
+		fbc := newFakeBuildDocker(t, 0)
 
 		_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fbc), "build", "--refresh")
 		if err != nil {
@@ -3778,7 +3788,7 @@ func TestRun_NoEnvironmentsBlock_NoEnvFlags(t *testing.T) {
 
 // ── Task 4: runRun gating + warning output tests ──────────────────────────────
 
-// Helper: hasMountWithContainer returns true iff spec.Mounts contains a mount
+// hasMountWithContainer returns true iff spec.Mounts contains a mount
 // whose Container field equals target.
 func hasMountWithContainer(mounts []docker.Mount, target string) bool {
 	for _, m := range mounts {
@@ -3789,10 +3799,10 @@ func hasMountWithContainer(mounts []docker.Mount, target string) bool {
 	return false
 }
 
-// hasMountWithContainerAndHost returns true iff spec.Mounts contains a mount with container == container and host == host.
-func hasMountWithContainerAndHost(mounts []docker.Mount, container, host string) bool {
+// hasMountWithContainerAndHost returns true iff spec.Mounts contains a mount with containerTarget == m.Container and hostTarget == m.Host.
+func hasMountWithContainerAndHost(mounts []docker.Mount, containerTarget, hostTarget string) bool {
 	for _, m := range mounts {
-		if m.Container == container && m.Host == host {
+		if m.Container == containerTarget && m.Host == hostTarget {
 			return true
 		}
 	}
@@ -4202,5 +4212,82 @@ func TestRun_ProjectconfigSymlinkWarning(t *testing.T) {
 	}
 	if !strings.Contains(stderrQuiet, "symlink") {
 		t.Errorf("--quiet: projectconfig symlink warning must NOT be suppressed; got: %q", stderrQuiet)
+	}
+}
+
+// ── Task 4 (plan 20260609): daemon preflight before secret scan ───────────────
+
+// Ordering test: daemon down + invalid .makeslop.yaml → daemon error is reported,
+// not a YAML parse error. Proves that CheckDaemon fires before projectconfig.Load.
+func TestRun_DaemonCheckedBeforeYamlParse(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+	resolvedPwd := evalSymlinks(t, pwd)
+
+	// Plant an invalid .makeslop.yaml so that a YAML parse error would occur
+	// if projectconfig.Load were reached before CheckDaemon.
+	badYAML := []byte("exclude:\n  dirs: [unclosed\n")
+	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), badYAML, 0o644); err != nil {
+		t.Fatalf("write bad yaml: %v", err)
+	}
+
+	// Make the daemon unreachable.
+	fc := newFakeDocker(0, true)
+	fc.PingErr = errors.New("connection refused")
+
+	_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fc), "run")
+	if err == nil {
+		t.Fatalf("expected error when daemon is down, got nil; stderr=%q", stderr)
+	}
+	if !errors.Is(err, errSilent) {
+		t.Errorf("expected errSilent (tailored message written to stderr), got %v", err)
+	}
+	// The daemon error must be reported — not a YAML parse error.
+	if !strings.Contains(stderr, "is docker running") {
+		t.Errorf("daemon-down error must be reported before YAML parse; stderr=%q", stderr)
+	}
+	// Must not see a YAML-related error (which would prove the wrong order).
+	if strings.Contains(stderr, "yaml") || strings.Contains(stderr, "parse") || strings.Contains(stderr, "unmarshal") {
+		t.Errorf("YAML parse error must not appear; daemon error should have fired first; stderr=%q", stderr)
+	}
+	if fc.Started {
+		t.Errorf("docker container must not be started when daemon is unreachable")
+	}
+}
+
+// Dry-run test: daemon down + --dry-run → command prints the shell command and
+// exits 0 (daemon preflight is skipped on --dry-run).
+func TestRun_DryRun_DaemonDown_StillPrints(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	// Daemon unreachable AND TTY false (typical in CI / go test).
+	fc := newFakeDocker(0, false)
+	fc.PingErr = errors.New("connection refused")
+
+	stdout, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fc), "run", "--dry-run")
+	if err != nil {
+		t.Fatalf("--dry-run must succeed even when daemon is down; err=%v; stderr=%q", err, stderr)
+	}
+	if stdout == "" {
+		t.Errorf("--dry-run must print the docker run command to stdout; got empty")
+	}
+	if strings.Contains(stderr, "is docker running") {
+		t.Errorf("--dry-run must not invoke daemon preflight; stderr=%q", stderr)
+	}
+	if fc.Started {
+		t.Errorf("docker container must not be started on --dry-run")
 	}
 }

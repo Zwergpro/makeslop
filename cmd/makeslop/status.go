@@ -225,7 +225,9 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, jso
 		})
 	}
 
-	// 4. Workspace
+	// 4. Workspace — reuse loadedSettings from check 2; if settings are absent
+	// or corrupt, pass a nil settings so Lookup returns ErrNotRegistered rather
+	// than a redundant parse-error detail.
 	var pwd string
 	var workspaceRoot string
 	pwd, err = resolvePwd()
@@ -237,19 +239,30 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, jso
 		})
 		ready = false
 	} else {
-		workspaceRoot, _, err = ws.Lookup(pwd)
-		if err != nil {
-			if errors.Is(err, workspace.ErrNotRegistered) {
+		// When settings were unreadable (loadedSettings == nil) we pass nil;
+		// Lookup treats nil as "no workspaces registered" → ErrNotRegistered.
+		// This avoids a duplicate / misleading parse-error detail in the workspace
+		// check when the real cause was already surfaced by the base-config check.
+		var lookupErr error
+		workspaceRoot, _, lookupErr = ws.Lookup(loadedSettings, pwd)
+		if lookupErr != nil {
+			if errors.Is(lookupErr, workspace.ErrNotRegistered) {
+				detail := fmt.Sprintf("not registered — run 'makeslop init' in %s", pwd)
+				if loadedSettings == nil {
+					// Settings were unreadable; registering a workspace is not the
+					// real remedy — surface the constraint more precisely.
+					detail = "cannot check — settings unreadable"
+				}
 				checks = append(checks, statusCheck{
 					Name:   "workspace",
 					State:  checkFail,
-					Detail: fmt.Sprintf("not registered — run 'makeslop init' in %s", pwd),
+					Detail: detail,
 				})
 			} else {
 				checks = append(checks, statusCheck{
 					Name:   "workspace",
 					State:  checkFail,
-					Detail: fmt.Sprintf("lookup error: %v", err),
+					Detail: fmt.Sprintf("lookup error: %v", lookupErr),
 				})
 			}
 			ready = false

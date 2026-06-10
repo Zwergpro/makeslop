@@ -494,6 +494,69 @@ func TestStatus_RenderReadyVerdict(t *testing.T) {
 	}
 }
 
+// Corrupt settings → base-config check fails; workspace check shows
+// "cannot check — settings unreadable" rather than a redundant parse error.
+func TestStatus_CorruptSettings_WorkspaceShowsCannotCheck(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	// Write corrupt settings (no prior init).
+	if err := os.WriteFile(filepath.Join(baseDir, config.SettingsFile), []byte("{not json"), 0o644); err != nil {
+		t.Fatalf("write corrupt settings: %v", err)
+	}
+
+	deps, _ := newFakeStatusDeps(false, false)
+
+	_, stderr, err := runStatusCmd(t, baseDir, deps, "status")
+	if err == nil {
+		t.Fatalf("status should exit non-zero with corrupt settings; stderr=%q", stderr)
+	}
+	if !strings.Contains(stderr, "cannot check") {
+		t.Errorf("workspace check must show 'cannot check' when settings are unreadable: %q", stderr)
+	}
+	// Ensure the base-config check (not workspace) shows the parse error.
+	if !strings.Contains(stderr, "base config") {
+		t.Errorf("stderr must mention 'base config' check: %q", stderr)
+	}
+}
+
+// TestStatus_CheckOrdering verifies that the five status checks appear in
+// the documented order: daemon → base config → image → workspace → secret scan.
+// Reordering the checks in runStatus would break the first-failing-check remedy
+// logic and CI integrations that parse the JSON by index.
+func TestStatus_CheckOrdering(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	deps, _ := newFakeStatusDeps(false, false)
+
+	stdout, _, _ := runStatusCmd(t, baseDir, deps, "status", "--json")
+
+	var result statusResult
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("--json output not valid JSON: %v\noutput: %s", err, stdout)
+	}
+
+	wantOrder := []string{"daemon", "base config", "image", "workspace", "secret scan"}
+	if len(result.Checks) != len(wantOrder) {
+		t.Fatalf("want %d checks, got %d: %v", len(wantOrder), len(result.Checks), result.Checks)
+	}
+	for i, want := range wantOrder {
+		if result.Checks[i].Name != want {
+			t.Errorf("check[%d].Name = %q, want %q (full order: %v)",
+				i, result.Checks[i].Name, want, result.Checks)
+		}
+	}
+}
+
 // The "not ready" verdict names the first failing check's remedy only.
 func TestStatus_RenderNotReadyVerdict(t *testing.T) {
 	var buf bytes.Buffer

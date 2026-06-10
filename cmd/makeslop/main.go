@@ -136,7 +136,16 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfH
 	if err := ensureWithinHome(cmd.ErrOrStderr(), pwd, outOfHome); err != nil {
 		return err
 	}
-	workspaceRoot, workspaceDir, err := ws.Lookup(pwd)
+
+	// Load settings once at the top. ws.Lookup uses the already-loaded settings
+	// rather than loading a second copy — avoids a redundant read and any
+	// inconsistency between two independent loads.
+	s, err := config.Load(baseDir)
+	if err != nil {
+		return err
+	}
+
+	workspaceRoot, workspaceDir, err := ws.Lookup(s, pwd)
 	if errors.Is(err, workspace.ErrNotRegistered) {
 		fmt.Fprintf(cmd.ErrOrStderr(),
 			"makeslop: no workspace registered for %s — run 'makeslop init' to register it\n",
@@ -146,6 +155,22 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfH
 	if err != nil {
 		return err
 	}
+
+	// Daemon preflight directly after workspace lookup, before the secret scan.
+	// Skipped on --dry-run so dry-run continues to work without a live daemon.
+	// This avoids making the user wait through a potentially long scan when the
+	// daemon is simply not running.
+	if !dryRun {
+		pfCtx, pfCancel := docker.WithPreflightTimeout(cmd.Context())
+		daemonErr := deps.daemon.CheckDaemon(pfCtx)
+		pfCancel()
+		if daemonErr != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(),
+				"makeslop: %v — is docker running?\n", daemonErr)
+			return errSilent
+		}
+	}
+
 	// YAML parse error aborts before docker.Run — preserves the no-.env-leak invariant.
 	yamlExcludes, cacheCfg, envVars, err := projectconfig.Load(workspaceRoot)
 	if err != nil {
@@ -176,11 +201,6 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfH
 			"makeslop: warning: symlink %s matches a secret pattern but is NOT masked\n", rel)
 	}
 	maskedFiles := mergeUniqueSorted(masked, yamlExcludes.Files)
-
-	s, err := config.Load(baseDir)
-	if err != nil {
-		return err
-	}
 
 	// Gate sandbox-policy mounts on host filesystem state. BuildSpec is pure
 	// (no filesystem access), so the Lstat checks live here.
@@ -214,6 +234,7 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfH
 	opts := docker.Options{
 		ProjectRoot:          workspaceRoot,
 		WorkspaceName:        filepath.Base(workspaceDir),
+		WorkspaceHost:        workspaceDir,
 		BaseDir:              baseDir,
 		Image:                s.Image,
 		Command:              s.Shell,
@@ -231,22 +252,10 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfH
 	// still mounts the whole project.
 	spec := docker.BuildSpec(opts)
 
-	// Dry-run prints the argv and returns before pre-flight (printed == executed).
+	// Dry-run prints the argv and returns before image pre-flight (printed == executed).
 	if dryRun {
 		fmt.Fprintln(cmd.OutOrStdout(), spec.ShellCommand())
 		return nil
-	}
-
-	// Pre-flight bounded by preflightTimeout so a black-hole DOCKER_HOST cannot hang.
-	{
-		pfCtx, pfCancel := docker.WithPreflightTimeout(cmd.Context())
-		daemonErr := deps.daemon.CheckDaemon(pfCtx)
-		pfCancel()
-		if daemonErr != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(),
-				"makeslop: %v — is docker running?\n", daemonErr)
-			return errSilent
-		}
 	}
 
 	// Image existence: no auto-build, just a remedy.
@@ -377,8 +386,17 @@ func newRootCmdWithDeps(baseDir string, deps dockerDeps) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			// Init returns the cache dir; Lookup gives the registered root for Scaffold.
-			workspaceRoot, _, err := ws.Lookup(pwd)
+
+			// Load settings once after ws.Init; reuse for both Lookup (to find the
+			// registered root for Scaffold) and the stale-nudge check below.
+			// ws.Init's lock is already released, so this Load does not deadlock.
+			initSettings, loadErr := config.Load(baseDir)
+			if loadErr != nil {
+				return loadErr
+			}
+
+			// Lookup gives the registered root for Scaffold.
+			workspaceRoot, _, err := ws.Lookup(initSettings, pwd)
 			if err != nil {
 				return err
 			}
@@ -391,9 +409,9 @@ func newRootCmdWithDeps(baseDir string, deps dockerDeps) *cobra.Command {
 			// acquisition cannot deadlock.
 			if freshSeed {
 				if lockErr := config.WithLock(baseDir, func() error {
-					s, loadErr := config.Load(baseDir)
-					if loadErr != nil {
-						return loadErr
+					s, err := config.Load(baseDir)
+					if err != nil {
+						return err
 					}
 					s.MigratedVersion = config.MigrationVersion
 					return config.Save(baseDir, s)
@@ -403,11 +421,8 @@ func newRootCmdWithDeps(baseDir string, deps dockerDeps) *cobra.Command {
 			} else {
 				// Existing base config: nudge (non-blocking) if behind. Never stamp
 				// MigratedVersion here — that would skip the actual migration.
-				s, loadErr := config.Load(baseDir)
-				if loadErr != nil {
-					return loadErr
-				}
-				current, latest, stale := config.MigrationStatus(s)
+				// Reuse initSettings from the load above.
+				current, latest, stale := config.MigrationStatus(initSettings)
 				if stale {
 					chrome := &quietWriter{w: cmd.ErrOrStderr(), quiet: quiet}
 					fmt.Fprintf(chrome,
