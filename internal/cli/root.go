@@ -18,11 +18,11 @@ import (
 	"github.com/Zwergpro/makeslop/internal/workspace"
 )
 
-// version is set by Main before executing; "dev" otherwise.
+// version is set by Main; "dev" otherwise.
 var version = "dev"
 
-// Main is the single exported entry point for the CLI. It sets the package
-// version, resolves the base directory, and delegates to runWithExitCode.
+// Main is the single exported entry point: sets version, resolves baseDir,
+// delegates to runWithExitCode.
 func Main(v string, args []string) int {
 	version = v
 	baseDir, err := config.DefaultBaseDir()
@@ -30,8 +30,7 @@ func Main(v string, args []string) int {
 		fmt.Fprintf(os.Stderr, "makeslop: %v\n", err)
 		return 1
 	}
-	// Resolve symlinks so docker.Options invariants hold. Missing-dir is fine on
-	// first run; other errors (loop, permission) must surface.
+	// Missing dir is fine on first run; loop/permission errors must surface.
 	if resolved, err := filepath.EvalSymlinks(baseDir); err == nil {
 		baseDir = resolved
 	} else if !errors.Is(err, fs.ErrNotExist) {
@@ -41,10 +40,8 @@ func Main(v string, args []string) int {
 	return runWithExitCode(baseDir, os.Stdout, os.Stderr, args, nil)
 }
 
-// newRootCmd constructs the production cobra tree and a cleanup func that closes
-// the Docker client (call via defer). docker.New() only parses env vars and
-// essentially never fails; if it does, the error is deferred to the first
-// docker-touching command via dockerNewErrStub so other commands still work.
+// newRootCmd builds the cobra tree; docker.New() failure is deferred via
+// dockerNewErrStub so non-docker commands still work.
 func newRootCmd(baseDir string) (*cobra.Command, func()) {
 	d, newErr := docker.New()
 	if newErr != nil {
@@ -60,8 +57,7 @@ func newRootCmd(baseDir string) (*cobra.Command, func()) {
 	return newRootCmdWithDeps(baseDir, deps), func() { _ = d.Close() }
 }
 
-// newRootCmdWithDeps constructs the cobra tree with the given docker deps; used
-// by both newRootCmd and tests (which inject fakes).
+// newRootCmdWithDeps is the injection point for production and tests.
 func newRootCmdWithDeps(baseDir string, deps dockerDeps) *cobra.Command {
 	ws := workspace.New(baseDir)
 
@@ -87,13 +83,10 @@ func newRootCmdWithDeps(baseDir string, deps dockerDeps) *cobra.Command {
 	return rootCmd
 }
 
-// runWithExitCode maps an ExecuteContext() error to a host exit code:
-// *docker.ExitError passes through its Code (daemon-reported, e.g. 137 for
-// SIGKILL); errSilent -> 1 with no reprint; other errors -> 1 prefixed "makeslop: ".
-//
-// A SIGINT/SIGTERM-cancellable context is wired into ExecuteContext so every
-// subcommand's cmd.Context() is cancellable. contextObserver, when non-nil, is
-// called with that context so tests can assert it is not context.Background().
+// runWithExitCode maps ExecuteContext errors to exit codes: docker.ExitError
+// passes Code through; errSilent → 1 no reprint; others → 1 with "makeslop: ".
+// contextObserver, when non-nil, is called with the signal-cancellable context
+// so tests can assert it is not context.Background().
 func runWithExitCode(baseDir string, stdout, stderr io.Writer, args []string, contextObserver func(context.Context)) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

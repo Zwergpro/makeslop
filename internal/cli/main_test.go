@@ -376,30 +376,6 @@ func TestRunWithExitCode_NonExitErrorPrintsPrefix(t *testing.T) {
 	}
 }
 
-// runWithExitCode must hand the observer a cancellable context, not context.Background().
-func TestRunWithExitCode_ContextObserver(t *testing.T) {
-	setHomeToTestParent(t)
-	baseDir := t.TempDir()
-
-	var observedCtx context.Context
-	observer := func(ctx context.Context) {
-		observedCtx = ctx
-	}
-
-	var stdout, stderr bytes.Buffer
-	runWithExitCode(baseDir, &stdout, &stderr, []string{"version"}, observer)
-
-	if observedCtx == nil {
-		t.Fatal("contextObserver was not called")
-	}
-	if observedCtx == context.Background() {
-		t.Error("contextObserver received context.Background(); expected a signal-cancellable child context")
-	}
-	if observedCtx.Done() == nil {
-		t.Error("observed context has no Done channel; expected a cancellable context")
-	}
-}
-
 func TestRunWithExitCode_ContextIsCancellable(t *testing.T) {
 	baseDir := t.TempDir()
 

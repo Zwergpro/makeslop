@@ -1800,7 +1800,6 @@ func TestRun_NoEnvironmentsBlock_NoEnvFlags(t *testing.T) {
 	if err != nil {
 		t.Fatalf("--dry-run failed: %v; stderr=%q", err, stderr)
 	}
-	_ = stderr
 
 	for _, tok := range strings.Fields(stdout) {
 		if tok == "-e" {

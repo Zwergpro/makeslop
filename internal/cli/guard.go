@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 )
 
-// resolvePwd returns the current working directory with all symlinks resolved.
 func resolvePwd() (string, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -21,9 +20,8 @@ func resolvePwd() (string, error) {
 	return resolved, nil
 }
 
-// ensureWithinHome returns errSilent when pwd is outside the user's home and
-// outOfHome is false. pwd must be EvalSymlinks-resolved; $HOME is resolved here
-// for a symlink-symmetric comparison.
+// ensureWithinHome returns errSilent when pwd is outside home and outOfHome is
+// false. Both pwd and $HOME are EvalSymlinks-resolved for a symmetric comparison.
 func ensureWithinHome(stderr io.Writer, pwd string, outOfHome bool) error {
 	if outOfHome {
 		return nil
@@ -49,8 +47,8 @@ func ensureWithinHome(stderr io.Writer, pwd string, outOfHome bool) error {
 	return nil
 }
 
-// quietWriter discards writes when quiet is true; used to gate stderr chrome
-// (notices, nudges, progress) while real errors go to the underlying writer.
+// quietWriter gates stderr chrome (notices, nudges, progress); errors still flow
+// to the underlying writer.
 type quietWriter struct {
 	w     io.Writer
 	quiet bool
@@ -63,6 +61,6 @@ func (q *quietWriter) Write(p []byte) (int, error) {
 	return q.w.Write(p)
 }
 
-// errSilent signals that a RunE already wrote a tailored message to stderr;
-// main() should exit non-zero without reprinting.
+// errSilent signals that RunE already printed a tailored message; exit non-zero
+// without reprinting.
 var errSilent = errors.New("makeslop: silent error already reported")

@@ -2,7 +2,7 @@ package cli
 
 import (
 	"bytes"
-	"fmt"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,11 +12,11 @@ import (
 	"github.com/Zwergpro/makeslop/internal/config"
 )
 
-// newFakeBuildDocker builds a fakeDocker whose Build fails for a non-zero exitCode.
-func newFakeBuildDocker(exitCode int) *fakeDocker {
+// newFakeBuildDocker builds a fakeDocker whose Build fails when fail is true.
+func newFakeBuildDocker(fail bool) *fakeDocker {
 	fd := &fakeDocker{}
-	if exitCode != 0 {
-		fd.BuildErr = fmt.Errorf("build exited with code %d", exitCode)
+	if fail {
+		fd.BuildErr = errors.New("build failed")
 	}
 	return fd
 }
@@ -24,7 +24,7 @@ func newFakeBuildDocker(exitCode int) *fakeDocker {
 // build on a fresh baseDir self-heals the Dockerfile then invokes Build.
 func TestBuild_SeedsSelfHealAndInvokesSDK(t *testing.T) {
 	baseDir := t.TempDir()
-	fbc := newFakeBuildDocker(0)
+	fbc := newFakeBuildDocker(false)
 
 	stdout, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fbc), "build")
 	if err != nil {
@@ -48,7 +48,7 @@ func TestBuild_SeedsSelfHealAndInvokesSDK(t *testing.T) {
 
 func TestBuild_NoCacheAndBuildArg(t *testing.T) {
 	baseDir := t.TempDir()
-	fbc := newFakeBuildDocker(0)
+	fbc := newFakeBuildDocker(false)
 
 	_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fbc), "build", "--no-cache", "--build-arg", "GO_VERSION=1.26.3")
 	if err != nil {
@@ -72,7 +72,7 @@ func TestBuild_NoCacheAndBuildArg(t *testing.T) {
 
 func TestBuild_NonZeroExit_PropagatesCode(t *testing.T) {
 	baseDir := t.TempDir()
-	fbc := newFakeBuildDocker(1)
+	fbc := newFakeBuildDocker(true)
 
 	var stdout, stderr bytes.Buffer
 	code := runWithExitCodeAndDeps(baseDir, &stdout, &stderr, depsFrom(fbc), []string{"build"})
@@ -84,7 +84,7 @@ func TestBuild_NonZeroExit_PropagatesCode(t *testing.T) {
 // A custom image name in settings.json flows into the Build options.
 func TestBuild_CustomImage_FromSettings(t *testing.T) {
 	baseDir := t.TempDir()
-	fbc := newFakeBuildDocker(0)
+	fbc := newFakeBuildDocker(false)
 
 	if err := config.Bootstrap(baseDir); err != nil {
 		t.Fatalf("bootstrap: %v", err)
@@ -126,7 +126,7 @@ func TestBuild_CorruptSettings_ReportsError(t *testing.T) {
 // --build-arg is repeatable; all values forwarded.
 func TestBuild_MultipleBuildArgs(t *testing.T) {
 	baseDir := t.TempDir()
-	fbc := newFakeBuildDocker(0)
+	fbc := newFakeBuildDocker(false)
 
 	_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fbc), "build",
 		"--build-arg", "GO_VERSION=1.26.3",
@@ -155,7 +155,7 @@ func TestBuild_MultipleBuildArgs(t *testing.T) {
 // build --refresh overwrites a stale Dockerfile with the embedded assets version.
 func TestBuild_Refresh_OverwritesDockerfileAndBuilds(t *testing.T) {
 	baseDir := t.TempDir()
-	fbc := newFakeBuildDocker(0)
+	fbc := newFakeBuildDocker(false)
 
 	// Bootstrap is no-overwrite, so the STALE marker survives without --refresh.
 	if err := config.Bootstrap(baseDir); err != nil {
@@ -189,7 +189,7 @@ func TestBuild_Refresh_OverwritesDockerfileAndBuilds(t *testing.T) {
 // Plain build (no --refresh) must not overwrite a hand-edited Dockerfile.
 func TestBuild_NoRefresh_LeavesDockerfileIntact(t *testing.T) {
 	baseDir := t.TempDir()
-	fbc := newFakeBuildDocker(0)
+	fbc := newFakeBuildDocker(false)
 
 	if err := config.Bootstrap(baseDir); err != nil {
 		t.Fatalf("bootstrap: %v", err)
@@ -218,7 +218,7 @@ func TestBuild_NoRefresh_LeavesDockerfileIntact(t *testing.T) {
 func TestBuild_Refresh_Quiet_SuppressesNotice(t *testing.T) {
 	t.Run("quiet suppresses notice", func(t *testing.T) {
 		baseDir := t.TempDir()
-		fbc := newFakeBuildDocker(0)
+		fbc := newFakeBuildDocker(false)
 
 		_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fbc), "build", "--refresh", "--quiet")
 		if err != nil {
@@ -231,7 +231,7 @@ func TestBuild_Refresh_Quiet_SuppressesNotice(t *testing.T) {
 
 	t.Run("non-quiet emits notice", func(t *testing.T) {
 		baseDir := t.TempDir()
-		fbc := newFakeBuildDocker(0)
+		fbc := newFakeBuildDocker(false)
 
 		_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fbc), "build", "--refresh")
 		if err != nil {

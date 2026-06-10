@@ -7,8 +7,8 @@ import (
 	"github.com/Zwergpro/makeslop/internal/docker"
 )
 
-// The four consumer-side docker interfaces. *docker.Docker satisfies all four in
-// production; tests inject a fake via newRootCmdWithDeps.
+// Consumer-side docker interfaces. *docker.Docker satisfies all four; tests
+// inject fakes via newRootCmdWithDeps.
 type containerRunner interface {
 	Run(ctx context.Context, s docker.Spec) error
 }
@@ -32,22 +32,20 @@ type dockerDeps struct {
 	image   imageChecker
 }
 
-// checkDaemonPreflight calls CheckDaemon with a preflight timeout.
 func (d dockerDeps) checkDaemonPreflight(ctx context.Context) error {
 	pfCtx, pfCancel := docker.WithPreflightTimeout(ctx)
 	defer pfCancel()
 	return d.daemon.CheckDaemon(pfCtx)
 }
 
-// imageExistsPreflight calls ImageExists with a preflight timeout.
 func (d dockerDeps) imageExistsPreflight(ctx context.Context, image string) (bool, error) {
 	pfCtx, pfCancel := docker.WithPreflightTimeout(ctx)
 	defer pfCancel()
 	return d.image.ImageExists(pfCtx, image)
 }
 
-// dockerNewErrStub returns the docker.New() construction error from every
-// operation, so docker-touching commands fail clearly instead of panicking.
+// dockerNewErrStub surfaces the docker.New() error from every method so
+// non-docker commands still work while docker commands fail clearly.
 type dockerNewErrStub struct{ err error }
 
 func (s dockerNewErrStub) Run(_ context.Context, _ docker.Spec) error { return s.err }

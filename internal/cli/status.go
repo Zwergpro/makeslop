@@ -26,13 +26,13 @@ const (
 	checkInfo checkState = "info"
 )
 
-// checkList collects status checks in order. ready starts true and is cleared
-// by the first call to fail(). JSON output and renderChecks consume .checks /
-// .ready directly — byte-identical output to the previous inline append pattern.
+// checkList accumulates status checks; ready is cleared by the first fail().
 type checkList struct {
 	checks []statusCheck
 	ready  bool // starts true; fail() clears it
 }
+
+func newCheckList() *checkList { return &checkList{ready: true} }
 
 func (c *checkList) ok(name, detail string) {
 	c.checks = append(c.checks, statusCheck{Name: name, State: checkOK, Detail: detail})
@@ -51,7 +51,6 @@ func (c *checkList) info(name string) {
 	c.checks = append(c.checks, statusCheck{Name: name, State: checkInfo})
 }
 
-// statusGlyphs maps each state to its TTY glyph and plain-text fallback.
 var statusGlyphs = map[checkState]struct{ tty, plain string }{
 	checkOK:   {"✓", "[ok]"},
 	checkFail: {"✗", "[fail]"},
@@ -70,11 +69,9 @@ type statusResult struct {
 	Ready  bool          `json:"ready"`
 }
 
-// isTTYFunc decides whether to emit color/glyphs; tests inject one returning
-// false to get plain output without a real PTY.
+// isTTYFunc gates color/glyph output; tests inject a stub returning false.
 type isTTYFunc func(w io.Writer) bool
 
-// defaultIsTTY reports whether w is a TTY *os.File and NO_COLOR is unset.
 func defaultIsTTY(w io.Writer) bool {
 	if os.Getenv("NO_COLOR") != "" {
 		return false
@@ -86,8 +83,6 @@ func defaultIsTTY(w io.Writer) bool {
 	return term.IsTerminal(int(f.Fd()))
 }
 
-// renderChecks writes the aligned check lines and verdict to w; tty selects
-// Unicode glyphs over plain ASCII.
 func renderChecks(w io.Writer, checks []statusCheck, ready bool, tty bool) {
 	type row struct {
 		glyph  string
@@ -112,11 +107,11 @@ func renderChecks(w io.Writer, checks []statusCheck, ready bool, tty bool) {
 	maxGlyph := 0
 	maxName := 0
 	for _, r := range rows {
-		if w := utf8.RuneCountInString(r.glyph); w > maxGlyph {
-			maxGlyph = w
+		if gw := utf8.RuneCountInString(r.glyph); gw > maxGlyph {
+			maxGlyph = gw
 		}
-		if w := utf8.RuneCountInString(r.name); w > maxName {
-			maxName = w
+		if nw := utf8.RuneCountInString(r.name); nw > maxName {
+			maxName = nw
 		}
 	}
 
@@ -147,16 +142,16 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, jso
 	ctx := cmd.Context()
 	stderr := cmd.ErrOrStderr()
 
-	cl := &checkList{ready: true}
+	cl := newCheckList()
 
-	// 1. Daemon — bounded by preflightTimeout so a black-hole DOCKER_HOST cannot hang.
+	// 1. Daemon.
 	if daemonErr := deps.checkDaemonPreflight(ctx); daemonErr != nil {
 		cl.fail("daemon", "is docker running? — run 'docker info'")
 	} else {
 		cl.ok("daemon", "")
 	}
 
-	// 2. Base config. loadedSettings is reused by the image check to avoid a second Load.
+	// 2. Base config. loadedSettings is reused by checks 3 and 4.
 	var loadedSettings *config.Settings
 	exists, err := config.BaseConfigExists(baseDir)
 	if err != nil {
@@ -179,7 +174,7 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, jso
 		}
 	}
 
-	// 3. Image — bounded by preflightTimeout.
+	// 3. Image.
 	imageName := config.DefaultImage
 	if loadedSettings != nil {
 		imageName = loadedSettings.Image
@@ -193,26 +188,19 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, jso
 		cl.ok("image", "")
 	}
 
-	// 4. Workspace — reuse loadedSettings from check 2; if settings are absent
-	// or corrupt, pass a nil settings so Lookup returns ErrNotRegistered rather
-	// than a redundant parse-error detail.
+	// 4. Workspace — nil loadedSettings when settings unreadable; Lookup treats nil
+	// as ErrNotRegistered, avoiding a duplicate parse-error detail here.
 	var workspaceRoot string
 	pwd, pwdErr := resolvePwd()
 	if pwdErr != nil {
 		cl.fail("workspace", fmt.Sprintf("cannot resolve cwd: %v", pwdErr))
 	} else {
-		// When settings were unreadable (loadedSettings == nil) we pass nil;
-		// Lookup treats nil as "no workspaces registered" → ErrNotRegistered.
-		// This avoids a duplicate / misleading parse-error detail in the workspace
-		// check when the real cause was already surfaced by the base-config check.
 		var lookupErr error
 		workspaceRoot, _, lookupErr = ws.Lookup(loadedSettings, pwd)
 		if lookupErr != nil {
 			if errors.Is(lookupErr, workspace.ErrNotRegistered) {
 				detail := fmt.Sprintf("not registered — run 'makeslop init' in %s", pwd)
 				if loadedSettings == nil {
-					// Settings were unreadable; registering a workspace is not the
-					// real remedy — surface the constraint more precisely.
 					detail = "cannot check — settings unreadable"
 				}
 				cl.fail("workspace", detail)

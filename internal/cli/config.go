@@ -43,9 +43,7 @@ func newConfigCmd(baseDir string) *cobra.Command {
 		Args:         cobra.ExactArgs(2),
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Pre-validate before locking so a bad input doesn't create the lock
-			// file as a side effect. On pre-load failure (corrupt JSON), skip and
-			// let the locked path surface the error.
+			// Pre-validate outside the lock: bad input won't create the lock file.
 			if scratch, err := config.Load(baseDir); err == nil {
 				if err := config.ConfigSet(scratch, args[0], args[1]); err != nil {
 					return err

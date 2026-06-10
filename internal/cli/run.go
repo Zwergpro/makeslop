@@ -17,8 +17,7 @@ import (
 	"github.com/Zwergpro/makeslop/internal/workspace"
 )
 
-// filterOut returns a copy of s with the element equal to exclude removed.
-// Returns s unmodified (no copy) when exclude is not present.
+// removes only the first occurrence; noop when exclude is absent
 func filterOut(s []string, exclude string) []string {
 	for i, v := range s {
 		if v == exclude {
@@ -31,7 +30,7 @@ func filterOut(s []string, exclude string) []string {
 	return s
 }
 
-// mergeUniqueSorted returns the sorted, deduplicated union of two slices.
+// returns nil (not empty slice) when both inputs are empty
 func mergeUniqueSorted(a, b []string) []string {
 	seen := make(map[string]struct{}, len(a)+len(b))
 	for _, s := range a {
@@ -51,53 +50,31 @@ func mergeUniqueSorted(a, b []string) []string {
 	return out
 }
 
-// sandboxMountGates inspects the filesystem state at workspaceRoot to decide
-// which sandbox-policy mounts BuildSpec should activate. The returned filtered
-// slice is maskedFiles with the .makeslop.yaml entry removed when protect is
-// true (prevents a /dev/null bind from overriding the read-only self-bind).
-//
-// protect — true iff .makeslop.yaml is a regular file (missing or non-regular
-//
-//	→ the bind source would be absent or wrong type, failing container create).
-//
-// maskHooks — true iff .git is a directory (gitfile/worktree/submodule → false;
-//
-//	the real hooks dir lives outside the workspace, documented residual risk).
+// sandboxMountGates resolves filesystem state at workspaceRoot and returns
+// the two sandbox-policy flags plus the filtered masked-files list.
 func sandboxMountGates(workspaceRoot string, maskedFiles []string) (protect, maskHooks bool, filtered []string) {
 	configPath := filepath.Join(workspaceRoot, projectconfig.Filename)
 	if fi, err := os.Lstat(configPath); err == nil {
-		// Only bind-mount when it is a regular file: a missing bind source fails
-		// container create, and masking an absent file would create an empty one
-		// through the rw bind (disabling scan patterns).
+		// Regular file only: a missing bind source fails container create.
 		protect = fi.Mode().IsRegular()
 	}
 
-	// When ProtectProjectConfig is active, drop .makeslop.yaml from the /dev/null
-	// masked-file list if the scan or an explicit exclude.files entry found it.
-	// Docker applies mounts in order; last-write-wins, so a /dev/null bind appended
-	// after the read-only self-bind would silently override it (e.g. when the user
-	// adds a broad pattern like "*.yaml" to their exclude.scan.patterns).
-	// Note: no equivalent guard is needed for yamlExcludes.Dirs — reservedPaths in
-	// projectconfig rejects ".makeslop.yaml" from exclude.dirs at parse time, so it
-	// can never appear there.
+	// Drop .makeslop.yaml from the /dev/null masked list when protect is active.
+	// Docker applies mounts last-write-wins, so a /dev/null bind after the
+	// read-only self-bind would silently override it.
 	filtered = maskedFiles
 	if protect {
 		filtered = filterOut(maskedFiles, configPath)
 	}
 
 	if fi, err := os.Lstat(filepath.Join(workspaceRoot, ".git")); err == nil {
-		// Only overlay hooks when .git is a directory. In git worktrees/submodules
-		// .git is a regular file (gitfile); the real hooks dir lives outside the
-		// workspace and is therefore not masked (documented residual risk).
+		// Gitfile/worktree/submodule: .git is a regular file; real hooks dir is
+		// outside workspace (documented residual risk) — only overlay on a dir.
 		maskHooks = fi.IsDir()
 	}
 	return protect, maskHooks, filtered
 }
 
-// reportScanResults prints the "masked N secret file(s)" chrome (gated by
-// --quiet via chrome) and symlink warnings (always to stderr, bypassing --quiet).
-// root is used to compute workspace-relative paths for the symlink messages;
-// on filepath.Rel failure the absolute path is printed.
 func reportScanResults(stderr, chrome io.Writer, root string, masked, symlinkMatches []string) {
 	if len(masked) > 0 {
 		fmt.Fprintf(chrome, "makeslop: masked %d secret file(s)\n", len(masked))
@@ -112,8 +89,6 @@ func reportScanResults(stderr, chrome io.Writer, root string, masked, symlinkMat
 	}
 }
 
-// runRun implements the run command body. It is a named function so it can be
-// called from the runCmd RunE closure, keeping the closure thin.
 func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfHome, dryRun, quiet bool, deps dockerDeps) error {
 	chrome := &quietWriter{w: cmd.ErrOrStderr(), quiet: quiet}
 	pwd, err := resolvePwd()
@@ -124,9 +99,7 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfH
 		return err
 	}
 
-	// Load settings once at the top. ws.Lookup uses the already-loaded settings
-	// rather than loading a second copy — avoids a redundant read and any
-	// inconsistency between two independent loads.
+	// Load once; pass the same *Settings to ws.Lookup to avoid a redundant read.
 	s, err := config.Load(baseDir)
 	if err != nil {
 		return err
@@ -143,10 +116,7 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfH
 		return err
 	}
 
-	// Daemon preflight directly after workspace lookup, before the secret scan.
-	// Skipped on --dry-run so dry-run continues to work without a live daemon.
-	// This avoids making the user wait through a potentially long scan when the
-	// daemon is simply not running.
+	// Before the scan: a down daemon is reported immediately. Skipped on --dry-run.
 	if !dryRun {
 		if daemonErr := deps.checkDaemonPreflight(cmd.Context()); daemonErr != nil {
 			fmt.Fprintf(cmd.ErrOrStderr(),
@@ -155,14 +125,12 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfH
 		}
 	}
 
-	// YAML parse error aborts before docker.Run — preserves the no-.env-leak invariant.
 	yamlExcludes, cacheCfg, envVars, err := projectconfig.Load(workspaceRoot)
 	if err != nil {
 		return err
 	}
 
-	// Print projectconfig symlink warnings directly to stderr, bypassing --quiet.
-	// Degraded protection is always surfaced regardless of verbosity.
+	// Symlink warnings bypass --quiet: degraded protection is never treated as chrome.
 	for _, w := range yamlExcludes.Warnings {
 		fmt.Fprintf(cmd.ErrOrStderr(), "makeslop: warning: %s\n", w)
 	}
@@ -171,12 +139,10 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfH
 	if err != nil {
 		return err
 	}
-	// "masked N" is chrome (quiet-gated); symlink warnings bypass --quiet.
 	reportScanResults(cmd.ErrOrStderr(), chrome, workspaceRoot, masked, symlinkMatches)
 	maskedFiles := mergeUniqueSorted(masked, yamlExcludes.Files)
 
-	// Gate sandbox-policy mounts on host filesystem state. BuildSpec is pure
-	// (no filesystem access), so the Lstat checks live here.
+	// BuildSpec is pure (no fs access); Lstat checks live here.
 	protectProjectConfig, maskGitHooks, maskedFiles := sandboxMountGates(workspaceRoot, maskedFiles)
 
 	opts := docker.Options{
@@ -196,17 +162,13 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfH
 		MaskGitHooks:         maskGitHooks,
 	}
 
-	// ProjectRoot is the registered ancestor, not pwd, so running from a subdir
-	// still mounts the whole project.
 	spec := docker.BuildSpec(opts)
 
-	// Dry-run prints the argv and returns before image pre-flight (printed == executed).
 	if dryRun {
 		fmt.Fprintln(cmd.OutOrStdout(), spec.ShellCommand())
 		return nil
 	}
 
-	// Image existence: no auto-build, just a remedy.
 	imageFound, imageErr := deps.imageExistsPreflight(cmd.Context(), s.Image)
 	if imageErr != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(),
@@ -230,7 +192,6 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfH
 	return nil
 }
 
-// newRunCmd constructs the "run" cobra.Command, wiring flags and RunE to runRun.
 func newRunCmd(ws *workspace.Workspaces, baseDir string, deps dockerDeps) *cobra.Command {
 	var outOfHome bool
 	var dryRun bool

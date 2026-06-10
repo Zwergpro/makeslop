@@ -154,33 +154,33 @@
   `internal/cli/guard.go`, `internal/cli/deps.go`, `internal/cli/root.go`, and
   other moved files as warranted
 
-- [ ] Delete what-restating doc comments where the signature already says it:
+- [x] Delete what-restating doc comments where the signature already says it:
       `mergeUniqueSorted`, `filterOut`, `quietWriter`, `resolvePwd`, similar
-- [ ] Tighten why-comments to 1–2 lines (keep rationale, drop prose):
+- [x] Tighten why-comments to 1–2 lines (keep rationale, drop prose):
       `sandboxMountGates` last-write-wins / `filterOut` ordering; daemon-preflight-
       before-scan; `ContainerWait`-before-`Start`
-- [ ] Drop the repeated "named function so it can be called from the RunE closure,
+- [x] Drop the repeated "named function so it can be called from the RunE closure,
       keeping the closure thin" comment on `runRun`/`runInit`/`runStatus`
-- [ ] run `go build ./... && go vet ./... && go test ./...` — must pass
-- [ ] **Commit 2**: "refactor: trim comments in internal/cli (why-not-what)"
+- [x] run `go build ./... && go vet ./... && go test ./...` — must pass
+- [x] **Commit 2**: "refactor: trim comments in internal/cli (why-not-what)"
 
 ### Task 4: Verify acceptance criteria
-- [ ] `cmd/makeslop/main.go` is ~10 lines: only `var version` + `main()`
-- [ ] `cli.Main` is the only exported symbol in `internal/cli`
+- [x] `cmd/makeslop/main.go` is ~10 lines: only `var version` + `main()`
+- [x] `cli.Main` is the only exported symbol in `internal/cli`
       (`grep -nE "^func [A-Z]|^var [A-Z]|^type [A-Z]" internal/cli/*.go` excluding
       `_test.go` → only `Main`)
-- [ ] ldflags untouched: `grep -n "main.version" Makefile .goreleaser.yaml` → 3 hits
-- [ ] version injection works end-to-end:
+- [x] ldflags untouched: `grep -n "main.version" Makefile .goreleaser.yaml` → 3 hits
+- [x] version injection works end-to-end:
       `go build -ldflags "-X main.version=smoke" -o /tmp/makeslop ./cmd/makeslop &&
       /tmp/makeslop version` → prints `smoke`
-- [ ] `/tmp/makeslop --help` lists all subcommands unchanged (run, init, build,
+- [x] `/tmp/makeslop --help` lists all subcommands unchanged (run, init, build,
       config, migrate, status, version)
-- [ ] `CurrentVersion`/`MigrationVersion` unchanged in `internal/config/config.go`
-- [ ] full suite: `go test ./...`
-- [ ] CLAUDE.md has no stale layout claims (the line-92/104/106/163 set corrected)
+- [x] `CurrentVersion`/`MigrationVersion` unchanged in `internal/config/config.go`
+- [x] full suite: `go test ./...`
+- [x] CLAUDE.md has no stale layout claims (the line-92/104/106/163 set corrected)
 
 ### Task 5: [Final] Plan housekeeping
-- [ ] Move this plan to `docs/plans/completed/`
+- [x] Move this plan to `docs/plans/completed/`
 
 ## Post-Completion
 *Informational only — no checkboxes.*

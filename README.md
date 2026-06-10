@@ -76,11 +76,19 @@ exclude:
       - ".env.*"
       - "*.pem"
       - "*.key"
+      - "*.p12"
+      - "*.pfx"
+      - "*.tfstate"
       - "id_rsa*"
       - "id_ed25519*"
       - ".npmrc"
       - ".netrc"
       - ".git-credentials"
+      - ".pypirc"
+      - ".htpasswd"
+      - "service-account*.json"
+      - "kubeconfig"
+      - "*.kubeconfig"
     skip-dirs:
       - .git
       - node_modules

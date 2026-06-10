@@ -98,7 +98,10 @@ type imageChecker    interface { ImageExists(ctx context.Context, image string) 
 ```
 These are bundled in `dockerDeps`. `newRootCmd` constructs a `*docker.Docker`, calls `defer closeDocker()` via
 the returned cleanup func, and wraps the instance in `dockerDeps`; `newRootCmdWithDeps` accepts injected deps
-for tests (boundary fakes in `internal/cli/main_test.go`).
+for tests (boundary fakes in `internal/cli/main_test.go`). `runWithExitCodeAndDeps` (in
+`internal/cli/main_test.go`) is a test helper that calls `newRootCmdWithDeps` directly with injected deps,
+bypassing `docker.New()` — used by tests that need fine-grained control over deps without going through the
+production `newRootCmd` path.
 
 The four interfaces, `dockerDeps` (with `checkDaemonPreflight`/`imageExistsPreflight` methods), and
 `dockerNewErrStub` live in `internal/cli/deps.go`. Each command gets its own file (`run.go`, `init.go`,
@@ -121,8 +124,9 @@ observer to verify that `ExecuteContext` receives a cancellable (non-Background)
 There are no shell shims, no `dockerBinary` global, no `executableTempDir`, no
 `SetClientForTest`/`SetTTYCheckForTest`/`SetTermMakeRawForTest` globals.
 
-**Note:** `CurrentVersion` and `MigrationVersion` are NOT bumped for this struct-DI refactor —
-no `Settings` struct fields changed and the embedded Dockerfile is unchanged.
+**Note:** `CurrentVersion` and `MigrationVersion` were NOT bumped for the struct-DI and
+`internal/cli` extraction refactors — no `Settings` struct fields changed and the embedded
+Dockerfile was unchanged. Current values: `CurrentVersion = 1`, `MigrationVersion = 3`.
 
 ### Preflight methods (`internal/docker/preflight.go`)
 
