@@ -140,6 +140,11 @@ longer forks the docker binary.
 dependency. Patterns (basename globs) and skip-dirs are passed in at call time; the engine has no
 hardcoded defaults. If `patterns` is empty, `Scan` returns `nil` immediately (no walk).
 
+**`Scan` signature**: `Scan(ctx, root, patterns, skipDirs) (paths, symlinkMatches []string, err error)`.
+Regular files matching a pattern go into `paths`; symlinks matching a pattern go into `symlinkMatches`
+(not masked — WalkDir doesn't follow symlinks). Both slices are sorted. Callers: `runRun` (prints
+symlink warnings bypassing `--quiet`) and `runStatus` in `status.go` (ignores the slice).
+
 Walk errors (e.g. unreadable subdirectory) are **propagated immediately** and abort `runRun` before
 `docker.Run`. This "fail-loud" invariant ensures we never silently skip a directory we cannot prove
 is secret-free — consistent with the no-`.env`-leak contract.
@@ -161,6 +166,12 @@ cache:
 `projectconfig.Load` returns `(Excludes, Cache, []string, error)` — a 4-value return. The `Cache`
 value is the second return value (before the env slice and error). Absent block ⇒ `{true, true}` ⇒
 identical to pre-feature behavior (backward compatible).
+
+`Excludes` carries a `Warnings []string` field: human-readable notices for symlinked entries in
+`exclude.files` or `exclude.dirs` that are dropped from masking. The warning message is
+`"path %q is a symlink and is NOT masked"`. Missing entries and non-symlink wrong-type drops (e.g. a
+directory listed in `exclude.files`) stay silent. `runRun` prints these warnings to `cmd.ErrOrStderr()`
+directly — NOT through `quietWriter` — so `--quiet` does not suppress them.
 
 The values flow into `docker.Options.MountContentCache` and `docker.Options.MountAgentCache` in
 `runRun`. `BuildSpec` gates the two per-workspace mount groups on these booleans; global mounts
@@ -227,6 +238,9 @@ and only changes when the `Settings` struct fields change. The two constants ser
 purposes: `CurrentVersion` gates JSON schema compatibility; `MigrationVersion` gates the one-shot
 directory refresh.
 
+**Current values:** `MigrationVersion = 3` (bumped for Dockerfile hardening: sudo removal, base
+digest pin, Go/Node tarball sha256 verification, zsh-in-docker checksum). `CurrentVersion = 1`.
+
 **Note:** the configurable per-workspace cache mount overlays (`cache:` block in `.makeslop.yaml`,
 `init --global-only` flag, `MountContentCache`/`MountAgentCache` in `docker.Options`) do **not**
 bump either `CurrentVersion` or `MigrationVersion` — the `Settings` struct fields are unchanged
@@ -281,6 +295,35 @@ user edits), so on an already-init'd project `--global-only` is a no-op — docu
 ### --quiet flag
 `--quiet` is a persistent root flag. When set, stderr chrome (notices, nudges, progress lines such
 as `masked N`) is suppressed. Error messages still print to stderr.
+
+Symlink warnings (from `security.Scan` and `Excludes.Warnings`) bypass `--quiet` — degraded
+protection is never treated as cosmetic chrome.
+
+### Sandbox-policy mounts (`ProtectProjectConfig`, `MaskGitHooks`)
+Two new `docker.Options` booleans gate additional security mounts in `BuildSpec`:
+
+- `ProtectProjectConfig bool` — when true, mounts `<ProjectRoot>/.makeslop.yaml` read-only over
+  itself inside the container (prevents the agent from weakening its own sandbox policy). Set in
+  `runRun` iff `Lstat(<ProjectRoot>/.makeslop.yaml)` reports a regular file (missing file → skip;
+  a missing bind source fails container create and there is nothing to protect).
+- `MaskGitHooks bool` — when true, overlays `<workspacePath>/.git/hooks` with an empty tmpfs
+  (prevents the agent from planting hooks that execute on the host). Set in `runRun` iff
+  `Lstat(<ProjectRoot>/.git)` reports a directory (gitfile/worktree/submodule → leave off; the
+  real hooks dir is outside the workspace; documented residual).
+
+Both mounts are inserted in `BuildSpec` at a fixed point: after the 4 base mounts and before the
+cache overlays. The drift-guard test covers both. `--dry-run` reflects both automatically.
+
+### Reserved paths in projectconfig
+`reservedPaths` in `internal/projectconfig/projectconfig.go` lists paths that `docker.BuildSpec`
+may mount over the project root. User overlays in `exclude.dirs`/`exclude.files` that collide with
+these paths are rejected with a hard error:
+
+```
+projectconfig: path %q collides with a reserved agent path
+```
+
+Reserved paths: `.claude`, `.codex`, `docs`, `CLAUDE.md`, `.makeslop.yaml`.
 
 ### Network model
 The app container always uses Docker bridge networking with full internet access. The socat-sidecar

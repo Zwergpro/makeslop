@@ -218,10 +218,10 @@ updates only.
 
 ### Task 6: Verify acceptance criteria
 
-- [ ] verify all SECURITY_ANALYSIS.md code-fix items are implemented (mounts, reserved path, patterns, symlink warnings, sudo removal, pinning, version bump)
-- [ ] verify edge cases: project without `.git`; project without `.makeslop.yaml`; symlinked `.env`; `--quiet` + warnings; `--dry-run` rendering
-- [ ] run full suite: `go test ./...` and `go vet ./...`
-- [ ] `go build ./...` clean
+- [x] verify all SECURITY_ANALYSIS.md code-fix items are implemented (mounts, reserved path, patterns, symlink warnings, sudo removal, pinning, version bump)
+- [x] verify edge cases: project without `.git`; project without `.makeslop.yaml`; symlinked `.env`; `--quiet` + warnings; `--dry-run` rendering
+- [x] run full suite: `go test ./...` and `go vet ./...`
+- [x] `go build ./...` clean
 
 ### Task 7: [Final] Documentation consistency
 
@@ -230,11 +230,11 @@ updates only.
 - Modify: `docs/reference.md` (if it lists mounts/flags affected)
 - Modify: `CLAUDE.md`
 
-- [ ] update the quoted stub pattern list in `docs/security.md` to match the new stub
-- [ ] document in `docs/security.md`: `.makeslop.yaml` is mounted read-only in the container and is a reserved path; `.git/hooks` is tmpfs-masked in git projects; symlink warnings and their `--quiet` bypass
-- [ ] document the worktree/submodule residual in `docs/security.md`: when `.git` is a gitfile, the real hooks directory is outside the workspace and is NOT masked
-- [ ] update `CLAUDE.md`: new `Options` fields, new `Scan` signature, `Excludes.Warnings`, MigrationVersion=3 note, reserved-paths addition
-- [ ] move this plan to `docs/plans/completed/`
+- [x] update the quoted stub pattern list in `docs/security.md` to match the new stub
+- [x] document in `docs/security.md`: `.makeslop.yaml` is mounted read-only in the container and is a reserved path; `.git/hooks` is tmpfs-masked in git projects; symlink warnings and their `--quiet` bypass
+- [x] document the worktree/submodule residual in `docs/security.md`: when `.git` is a gitfile, the real hooks directory is outside the workspace and is NOT masked
+- [x] update `CLAUDE.md`: new `Options` fields, new `Scan` signature, `Excludes.Warnings`, MigrationVersion=3 note, reserved-paths addition
+- [x] move this plan to `docs/plans/completed/`
 
 ## Post-Completion
 

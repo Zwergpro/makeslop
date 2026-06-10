@@ -236,19 +236,24 @@ The per-workspace cache directory under `workspaces/` holds per-project agent st
 `makeslop run` runs with workdir `/workspace/<name>` (where `<name>` is the registered workspace's
 cache-dir basename):
 
-| Host                                                  | Container                          | Group         |
-| ----------------------------------------------------- | ---------------------------------- | ------------- |
-| `<projectRoot>`                                       | `/workspace/<name>`                | always        |
-| `~/.makeslop/.claude/`                                | `/home/user/.claude/`              | global        |
-| `~/.makeslop/.claude.json`                            | `/home/user/.claude.json`          | global        |
-| `~/.makeslop/.codex/`                                 | `/home/user/.codex/`               | global        |
-| `~/.makeslop/workspaces/<name>/.claude/`              | `/workspace/<name>/.claude/`       | agent-state   |
-| `~/.makeslop/workspaces/<name>/.codex/`               | `/workspace/<name>/.codex/`        | agent-state   |
-| `~/.makeslop/workspaces/<name>/docs/`                 | `/workspace/<name>/docs/`          | content       |
-| `~/.makeslop/workspaces/<name>/CLAUDE.md`             | `/workspace/<name>/CLAUDE.md`      | content       |
+| Host                                                  | Container                          | Group              |
+| ----------------------------------------------------- | ---------------------------------- | ------------------ |
+| `<projectRoot>`                                       | `/workspace/<name>`                | always             |
+| `~/.makeslop/.claude/`                                | `/home/user/.claude/`              | global             |
+| `~/.makeslop/.claude.json`                            | `/home/user/.claude.json`          | global             |
+| `~/.makeslop/.codex/`                                 | `/home/user/.codex/`               | global             |
+| `<projectRoot>/.makeslop.yaml`                        | `/workspace/<name>/.makeslop.yaml` | sandbox-policy (ro)|
+| tmpfs (empty)                                         | `/workspace/<name>/.git/hooks`     | git-hooks mask     |
+| `~/.makeslop/workspaces/<name>/.claude/`              | `/workspace/<name>/.claude/`       | agent-state        |
+| `~/.makeslop/workspaces/<name>/.codex/`               | `/workspace/<name>/.codex/`        | agent-state        |
+| `~/.makeslop/workspaces/<name>/docs/`                 | `/workspace/<name>/docs/`          | content            |
+| `~/.makeslop/workspaces/<name>/CLAUDE.md`             | `/workspace/<name>/CLAUDE.md`      | content            |
 
-The **global** mounts (rows 2–4) are always present. The **agent-state** and **content** overlay
-mounts (rows 5–8) can be disabled per-project via the `cache:` block in `.makeslop.yaml`:
+The **global** mounts (rows 2–4) are always present. The **sandbox-policy** read-only bind (row 5)
+is present only when `.makeslop.yaml` exists at the project root. The **git-hooks mask** tmpfs (row
+6) is present only when `.git` is a directory at the project root (not a gitfile). The
+**agent-state** and **content** overlay mounts (rows 7–10) can be disabled per-project via the
+`cache:` block in `.makeslop.yaml`:
 
 ```yaml
 cache:
@@ -411,7 +416,7 @@ The image, shell, and `/tmp` tmpfs size are configurable via `makeslop config se
     "shell": "/bin/zsh",
     "tmp_dir_size": "100m",
     "workspaces": {},
-    "migrated_version": 2
+    "migrated_version": 3
 }
 ```
 
@@ -420,7 +425,7 @@ The image, shell, and `/tmp` tmpfs size are configurable via `makeslop config se
   `Settings` struct fields change.
 - `migrated_version` — written by `makeslop migrate` (or stamped by `makeslop init` on a fresh
   seed) to record which migration generation `~/.makeslop/` is at. Absent means 0
-  (pre-migration). Currently `MigrationVersion = 2`. This field is **distinct** from `version`:
+  (pre-migration). Currently `MigrationVersion = 3`. This field is **distinct** from `version`:
   `version` gates JSON schema compatibility; `migrated_version` gates the one-shot directory
   refresh.
 - Omitted or empty `image`/`shell`/`tmp_dir_size` fields fall back to their defaults; existing

@@ -9,6 +9,7 @@ control, and the home-directory guard. For in-container hardening flags (`--cap-
 
 - [Secret masking](#secret-masking)
 - [Project-local exclusions](#project-local-exclusions)
+- [Sandbox-policy protection](#sandbox-policy-protection)
 - [Network egress](#network-egress)
 - [Home-directory guard](#home-directory-guard)
 
@@ -34,19 +35,29 @@ patterns:
   - ".env.*"
   - "*.pem"
   - "*.key"
+  - "*.p12"
+  - "*.pfx"
+  - "*.tfstate"
   - "id_rsa*"
   - "id_ed25519*"
   - ".npmrc"
   - ".netrc"
   - ".git-credentials"
+  - ".pypirc"
+  - ".htpasswd"
+  - "service-account*.json"
+  - "kubeconfig"
+  - "*.kubeconfig"
 ```
 
 The default `skip-dirs` are `.git`, `node_modules`, `vendor`, and `.venv`. See
 [Project-local exclusions](#project-local-exclusions) for the full generated `.makeslop.yaml`.
 
-Patterns are basename globs (`filepath.Match`). Files matching a pattern are masked; symlinks are
-silently dropped (not followed). Directories named in `skip-dirs` are pruned entirely during the
-walk.
+Patterns are basename globs (`filepath.Match`). Regular files matching a pattern are masked.
+Symlinks matching a pattern are **not masked** (WalkDir does not follow symlinks), but
+`makeslop run` prints a warning to stderr for each such symlink so the gap is visible — this warning
+is **not suppressed by `--quiet`** (degraded protection is not silent chrome). Directories named in
+`skip-dirs` are pruned entirely during the walk.
 
 Walk errors (e.g. unreadable subdirectories) are propagated immediately and abort the launch. This
 matches the no-secret-leak invariant: if a directory cannot be read, we cannot prove it is
@@ -80,11 +91,19 @@ exclude:
       - ".env.*"
       - "*.pem"
       - "*.key"
+      - "*.p12"
+      - "*.pfx"
+      - "*.tfstate"
       - "id_rsa*"
       - "id_ed25519*"
       - ".npmrc"
       - ".netrc"
       - ".git-credentials"
+      - ".pypirc"
+      - ".htpasswd"
+      - "service-account*.json"
+      - "kubeconfig"
+      - "*.kubeconfig"
     skip-dirs:
       - .git
       - node_modules
@@ -138,9 +157,53 @@ contains a `network:` block, remove it:
 #     address: 10.0.0.5:3128
 ```
 
-**Reserved paths.** The paths `.claude`, `.codex`, `docs`, and `CLAUDE.md` are already mounted by
-`makeslop run` for agent state. Listing them in `.makeslop.yaml` is rejected with an error
+**Reserved paths.** The paths `.claude`, `.codex`, `docs`, `CLAUDE.md`, and `.makeslop.yaml` are
+already mounted by `makeslop run` (agent state or sandbox-policy mounts). Listing them in
+`.makeslop.yaml` is rejected with an error
 (`projectconfig: path %q collides with a reserved agent path`).
+
+**Symlink warnings.** If an entry in `exclude.files` or `exclude.dirs` is a symlink on the host,
+it is dropped from masking and a warning is printed to stderr:
+
+```
+makeslop: warning: path "<rel>" is a symlink and is NOT masked
+```
+
+This warning bypasses `--quiet` — degraded protection is never silent.
+
+---
+
+## Sandbox-policy protection
+
+`makeslop run` applies two additional mount-level protections to prevent an agent running inside the
+container from escaping its sandbox:
+
+### Config file read-only bind
+
+When `.makeslop.yaml` exists at the project root, `makeslop run` re-mounts it **read-only** over
+itself inside the container (a bind mount layered on top of the read-write project bind). This
+prevents the agent from modifying the file that controls scan patterns, reserved paths, and secret
+masking — it cannot relax its own sandbox policy.
+
+When `.makeslop.yaml` is absent, the read-only bind is skipped (a missing bind source would fail
+container create, and there is nothing to protect).
+
+### Git hooks tmpfs mask
+
+When the project root contains a `.git` directory (not a gitfile), `makeslop run` overlays
+`.git/hooks` inside the container with an empty tmpfs. This prevents the agent from planting git
+hooks (e.g. `post-commit`, `pre-push`) that would execute on the host when the user runs git
+operations after the session.
+
+**Worktrees and submodules (residual risk).** In git worktrees and submodules, `.git` is a regular
+*file* (a gitfile pointing at the real gitdir elsewhere). The directory gate correctly leaves the
+hooks tmpfs off in that case — the daemon would otherwise create an empty `.git/hooks/` directory
+in the project root. However, the real hooks directory lives outside the workspace and is **not
+masked**. Makeslop does not chase the gitfile target (that would require parsing `.git` file contents
+and resolving `GIT_DIR`). If you use worktrees or submodules, be aware that the agent can write to
+the real hooks directory.
+
+Both protections are reflected in `--dry-run` output.
 
 ---
 
