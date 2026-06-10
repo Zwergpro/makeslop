@@ -15,6 +15,8 @@ type Docker struct {
 	client  apiClient
 	isTTYFn func() bool
 	makeRaw func(fd int) (*term.State, error)
+	stdin   io.Reader
+	stdout  io.Writer
 }
 
 // Option is a functional option for New.
@@ -42,6 +44,16 @@ func WithRawMode(fn func(int) (*term.State, error)) Option {
 	}
 }
 
+// WithStreams overrides the stdin reader and stdout writer used by Run for
+// container I/O. Fd-based terminal operations (raw mode, GetSize, resize) always
+// use the real os.Stdin; only the data copies are redirected.
+func WithStreams(in io.Reader, out io.Writer) Option {
+	return func(d *Docker) {
+		d.stdin = in
+		d.stdout = out
+	}
+}
+
 // New constructs a Docker with real defaults: an environment-built moby client,
 // stdin+stdout TTY detection, and term.MakeRaw. Options apply before client
 // construction so WithClient can suppress the real newClient() call (avoiding an
@@ -50,6 +62,8 @@ func New(opts ...Option) (*Docker, error) {
 	d := &Docker{
 		isTTYFn: func() bool { return isTTY(os.Stdin) && isTTY(os.Stdout) },
 		makeRaw: func(fd int) (*term.State, error) { return term.MakeRaw(fd) },
+		stdin:   os.Stdin,
+		stdout:  os.Stdout,
 	}
 	for _, o := range opts {
 		o(d)
@@ -72,7 +86,7 @@ func (d *Docker) Close() error {
 // Run launches s interactively. Returns ErrNoTTY unless both stdin and stdout
 // are TTYs, and *ExitError on non-zero container exit.
 func (d *Docker) Run(ctx context.Context, s Spec) error {
-	return runContainer(ctx, d.client, d.isTTYFn, d.makeRaw, s)
+	return runContainer(ctx, d.client, d.isTTYFn, d.makeRaw, d.stdin, d.stdout, s)
 }
 
 // Build builds the image described by o, writing output to out and errw.
