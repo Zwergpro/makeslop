@@ -122,14 +122,14 @@ JSON output and rendering consume `checkList.checks` / `checkList.ready` exactly
 - Modify: `cmd/makeslop/main.go` (shrinks to wiring)
 - Create: `cmd/makeslop/deps.go`, `cmd/makeslop/guard.go`, `cmd/makeslop/init.go`, `cmd/makeslop/run.go`, `cmd/makeslop/build.go`, `cmd/makeslop/config.go`, `cmd/makeslop/migrate.go`, `cmd/makeslop/version.go`
 
-- [ ] create `deps.go`: move the 4 interfaces, `dockerDeps` (+ preflight methods), `dockerNewErrStub`
-- [ ] create `guard.go`: move `resolvePwd`, `ensureWithinHome`, `quietWriter`
-- [ ] create per-command files with `newInitCmd(ws, baseDir)`, `newRunCmd(ws, baseDir, deps)`, `newBuildCmd(baseDir, deps)`, `newConfigCmd(baseDir)`, `newMigrateCmd(baseDir)`, `newVersionCmd()`; each defines its own local flags; `--quiet` read via `cmd.Flags().GetBool("quiet")` in each RunE that needs it
-- [ ] move `filterOut` + `mergeUniqueSorted` into `run.go` (run-only helpers)
-- [ ] shrink `newRootCmdWithDeps` in `main.go` to root-cmd construction + persistent `--quiet` + `AddCommand` wiring (~20 lines); `main.go` keeps `main()`, `runWithExitCode`, `newRootCmd`, `errSilent`, `version`
-- [ ] pure moves of function bodies — no logic changes in this task; no new tests needed (compilation + existing suite is the check)
-- [ ] redistribute import blocks per file (each new file gets only what it needs; `main.go` sheds e.g. `security`/`projectconfig`/`sort`); run `goimports`/`gofmt` after each move
-- [ ] run `go build ./... && go vet ./... && gofmt -l . && go test ./...` — all green
+- [x] create `deps.go`: move the 4 interfaces, `dockerDeps` (+ preflight methods), `dockerNewErrStub`
+- [x] create `guard.go`: move `resolvePwd`, `ensureWithinHome`, `quietWriter`
+- [x] create per-command files with `newInitCmd(ws, baseDir)`, `newRunCmd(ws, baseDir, deps)`, `newBuildCmd(baseDir, deps)`, `newConfigCmd(baseDir)`, `newMigrateCmd(baseDir)`, `newVersionCmd()`; each defines its own local flags; `--quiet` read via `cmd.Flags().GetBool("quiet")` in each RunE that needs it
+- [x] move `filterOut` + `mergeUniqueSorted` into `run.go` (run-only helpers)
+- [x] shrink `newRootCmdWithDeps` in `main.go` to root-cmd construction + persistent `--quiet` + `AddCommand` wiring (~20 lines); `main.go` keeps `main()`, `runWithExitCode`, `newRootCmd`, `errSilent`, `version`
+- [x] pure moves of function bodies — no logic changes in this task; no new tests needed (compilation + existing suite is the check)
+- [x] redistribute import blocks per file (each new file gets only what it needs; `main.go` sheds e.g. `security`/`projectconfig`/`sort`); run `goimports`/`gofmt` after each move
+- [x] run `go build ./... && go vet ./... && gofmt -l . && go test ./...` — all green
 
 ### Task 3: Split main_test.go per command (commit c)
 
