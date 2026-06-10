@@ -22,15 +22,22 @@ and no test helpers in the production binary.
 
 **`Docker` struct and construction:**
 ```go
-type Docker struct { /* client, isTTYFn, makeRaw — all unexported */ }
+type Docker struct { /* client, isTTYFn, makeRaw, stdin, stdout — all unexported */ }
 
 func New(opts ...Option) (*Docker, error)          // real defaults from environment
 func WithClient(c apiClient) Option                // same-package _test.go only
 func WithTTYCheck(fn func() bool) Option
 func WithRawMode(fn func(int) (*term.State, error)) Option
+func WithStreams(in io.Reader, out io.Writer) Option // redirect container I/O (tests/CI)
 ```
-`New` builds a moby client via `moby.New(moby.FromEnv)`, sets real stdin+stdout TTY detection, and
-sets real `term.MakeRaw`. Options override the defaults.
+`New` builds a moby client via `moby.New(moby.FromEnv)`, sets real stdin+stdout TTY detection,
+sets real `term.MakeRaw`, and sets `stdin = os.Stdin` / `stdout = os.Stdout`. Options override
+the defaults.
+
+`WithStreams` redirects the data copies (`io.Copy` between container attach and host I/O) to
+injected streams. Fd-based terminal operations (raw mode, `term.GetSize`, SIGWINCH resize) always
+use the real `os.Stdin`; only the byte-stream copies are redirected. Used by tests via `bytes.Buffer`
+and pipe ends to assert output content without a PTY.
 
 **`apiClient` interface** (`client.go`) is the narrow unexported 11-method moby SDK adapter:
 `ContainerCreate`, `ContainerAttach`, `ContainerStart`, `ContainerWait`, `ContainerResize`,
@@ -43,15 +50,44 @@ The interface is not exported — `WithClient` is the only gateway, and only sam
 All four operation methods share a single `apiClient` for the struct's lifetime.
 `cmd` callers must `defer d.Close()` once after construction to release the client connection.
 
-**Test fakes** live in `internal/docker/fakes_test.go` (package `docker`, `_test.go` — never
-compiled into the production binary). The file provides:
-- `FakeRunClient` / `NewFakeRunClient(exitCode)` — scripts the `Run` container lifecycle; fields
-  `PingErr`, `ImageMissing`, `BlockPing`, `BlockImageInspect` cover error paths.
-- `FakeBuildClient` / `NewFakeBuildClient(exitCode)` — scripts `Build`; records
+**`Run` lifecycle (fixed in Tasks 1–2):**
+```
+Create → Attach → raw mode → ContainerWait(next-exit) → ContainerStart →
+  stdout goroutine + stdin goroutine →
+  on wait result: drain stdout (select outputDone/ctx.Done) →
+  close stdin handle → join stdin goroutine (select stdinDone/ctx.Done) →
+  map StatusCode → ExitError
+```
+Registering `ContainerWait` before `ContainerStart` guarantees the daemon delivers the exit status
+even when the container auto-removes within milliseconds (fixes finding #2). The `outputDone`
+channel prevents tail-output truncation (fixes finding #1). The inline stdin-goroutine join (not a
+defer) ensures the goroutine finishes before the deferred `att.Conn.Close` fires (fixes finding #3).
+
+Stdin join uses a pollable dup of fd 0 (`newPollableStdin`): `SetNonblock(0, true)` + `Dup` +
+`os.NewFile` → Go runtime poller manages the fd → `Close()` unblocks the pending `Read`. Restore
+(`SetNonblock(0, false)`) runs in the same deferred cleanup as `term.Restore`. Injected test
+readers implementing `io.Closer` (e.g. `os.Pipe` read-end) take the same join path. If
+dup/fcntl fails, the goroutine is leaked — this is the documented fallback, matching what the
+docker CLI does.
+
+**Test fakes** live in two files (both `_test.go` — never compiled into the production binary):
+
+`internal/docker/fakes_test.go` — preflight and build fakes (package `docker`):
+- `fakeRunClient` / `newFakeRunClient(exitCode)` — scripts preflight lifecycle; fields
+  `PingErr`, `ImageMissing`, `BlockPing`, `BlockImageInspect` cover error paths. Used by
+  `preflight_test.go` and related tests. (CLAUDE.md previously used capitalized `FakeRunClient`;
+  actual code uses unexported `fakeRunClient`.)
+- `fakeBuildClient` / `newFakeBuildClient(exitCode)` — scripts `Build`; records
   the last build options in its unexported `lastBuildOptions` field.
 - `newDockerWithClient(t, c, opts...)` — constructs a `*Docker` with a fake client via
   `WithClient`; registers `d.Close` via `t.Cleanup`.
 - `noopMakeRaw`, `alwaysTTY`, `neverTTY` — stubs for option injection.
+
+`internal/docker/run_test.go` — Run-lifecycle fake (package `docker`):
+- `fakeClient` — the Run-lifecycle fake used by `run_test.go`; distinct from `fakeRunClient`.
+  Has an `attachPayload` field to script delayed attach output, records call order (for the
+  wait-before-start test), and scripts attach reader EOF after scripted output delivery.
+- `noopMakeRaw`, `alwaysTTY`, `neverTTY` — defined in `fakes_test.go` (same package `docker`) and used by `run_test.go`.
 
 **Consumer-side interfaces in `cmd/makeslop`** (package `main`):
 ```go
@@ -95,6 +131,18 @@ preflight call.
 
 Both methods share the `*Docker`'s single long-lived client — no per-call client construction
 or close. `cmd` callers must `defer d.Close()` once after construction to release the connection.
+
+**`runRun` preflight execution order:**
+```
+pwd → home guard → config.Load → ws.Lookup →
+  [if !dryRun] CheckDaemon (with WithPreflightTimeout) →  ← skipped on --dry-run
+  projectconfig.Load → security.Scan → BuildSpec →
+  [if dryRun] print + return →
+  ImageExists (with WithPreflightTimeout) → Run
+```
+The daemon check is intentionally before the secret scan so a down daemon is reported
+immediately without waiting through a potentially long walk. It is skipped on `--dry-run`
+so `--dry-run` continues to work without a live daemon.
 
 ### Integration test for Build
 A gated integration test exercises the full `Build` flow against a live Docker daemon:
@@ -147,7 +195,12 @@ symlink warnings bypassing `--quiet`) and `runStatus` in `status.go` (ignores th
 
 Walk errors (e.g. unreadable subdirectory) are **propagated immediately** and abort `runRun` before
 `docker.Run`. This "fail-loud" invariant ensures we never silently skip a directory we cannot prove
-is secret-free — consistent with the no-`.env`-leak contract.
+is secret-free — consistent with the no-`.env`-leak contract for **unskipped** paths.
+
+**Trust assumption for skip-dirs:** directories listed in `exclude.scan.skip-dirs` are bind-mounted
+into the container unscanned. The no-`.env`-leak guarantee applies only to walked (non-skipped)
+paths. Secrets inside `.git/`, `node_modules/`, etc. are the user's responsibility. Shrinking
+skip-dirs widens the guarantee at the cost of a longer pre-launch walk.
 
 The defaults live as active values in the `Scaffold` stub (seeded by `makeslop init`). Pre-existing
 project `.makeslop.yaml` files are **never** auto-migrated — `MigrationVersion` only refreshes
@@ -313,6 +366,40 @@ Two new `docker.Options` booleans gate additional security mounts in `BuildSpec`
 
 Both mounts are inserted in `BuildSpec` at a fixed point: after the 4 base mounts and before the
 cache overlays. The drift-guard test covers both. `--dry-run` reflects both automatically.
+
+**`filterOut` interaction for `ProtectProjectConfig`:** when `ProtectProjectConfig` is true,
+`runRun` calls `filterOut(maskedFiles, configPath)` to remove `.makeslop.yaml` from the
+`/dev/null` masked-file list *before* building `opts`. This is necessary because Docker applies
+mounts in argument order (last-write-wins): if a `/dev/null` bind for `.makeslop.yaml` appears
+after the read-only self-bind, it silently overrides the protection (e.g. when the user adds a
+broad pattern like `"*.yaml"` to `exclude.scan.patterns`). `filterOut` removes only the first
+occurrence and returns the input unmodified when the path is absent.
+
+### Decoupling: `workspace.Lookup` signature and `docker.Options.WorkspaceHost`
+
+`workspace.Lookup` does **not** call `config.Load` internally. Its signature is:
+
+```go
+func (w *Workspaces) Lookup(s *config.Settings, pwd string) (matchedRoot, cacheDir string, err error)
+```
+
+The caller is responsible for loading settings once and passing the result. A nil `s` is treated
+as empty settings (returns `ErrNotRegistered`). This means:
+- `runRun` loads settings once near the top of the function and passes the same `*config.Settings`
+  to both `ws.Lookup` and any subsequent settings-dependent logic (no double-load).
+- `status.go` reuses `loadedSettings` from check 2 for the workspace check. When settings are
+  absent, `loadedSettings` is nil → `ErrNotRegistered` → detail "not registered — run 'makeslop
+  init'". When settings are corrupt (parse failed), `loadedSettings` is also nil → same
+  `ErrNotRegistered` path → detail changed to `"cannot check — settings unreadable"` (the real
+  cause was already surfaced by the base-config check; a misleading "run makeslop init" would be
+  wrong). This behavioral distinction was introduced in Task 3.
+
+`docker.Options.WorkspaceHost string` replaces the old pattern of computing the workspace host path
+inside `spec.go` from `BaseDir + config.WorkspacesDir + WorkspaceName`. The caller (`runRun`)
+computes `workspaceHost` from the `cacheDir` returned by `ws.Lookup` and sets `Options.WorkspaceHost`
+directly. This removes the `internal/config` import from `spec.go` (keeping it pure).
+
+`--network` was removed from `ShellCommand`'s flag switch — `Args()` no longer emits it.
 
 ### Reserved paths in projectconfig
 `reservedPaths` in `internal/projectconfig/projectconfig.go` lists paths that `docker.BuildSpec`

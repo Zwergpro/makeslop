@@ -68,6 +68,21 @@ Walk errors (e.g. unreadable subdirectories) are propagated immediately and abor
 matches the no-secret-leak invariant: if a directory cannot be read, we cannot prove it is
 secret-free.
 
+### Trust assumptions
+
+`skip-dirs` directories are **bind-mounted into the container unscanned**. The scan guarantee
+("no secret-pattern file will be visible to the agent") applies only to the paths that are actually
+walked. Secrets inside skipped directories — for example, credentials embedded in
+`.git/config` (e.g. HTTPS URLs with tokens), OAuth tokens cached by package managers under
+`node_modules/`, or private keys accidentally committed and reachable via `vendor/` — are the
+user's responsibility.
+
+To widen the scan guarantee, remove entries from `exclude.scan.skip-dirs` in `.makeslop.yaml`. The
+trade-off is a longer pre-launch walk on large trees. The default skip list (`.git`, `node_modules`,
+`vendor`, `.venv`) is chosen to balance performance against the most common secret locations; `.git`
+in particular is skipped because it is almost always benign and scanning it would be very slow on
+repos with long histories.
+
 `.gitignore` is intentionally ignored because most `.env` files are gitignored — that is precisely
 why the scan is necessary.
 
