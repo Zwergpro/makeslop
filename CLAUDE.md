@@ -89,7 +89,7 @@ docker CLI does.
   wait-before-start test), and scripts attach reader EOF after scripted output delivery.
 - `noopMakeRaw`, `alwaysTTY`, `neverTTY` — defined in `fakes_test.go` (same package `docker`) and used by `run_test.go`.
 
-**Consumer-side interfaces in `cmd/makeslop`** (package `main`):
+**Consumer-side interfaces in `internal/cli`** (package `cli`):
 ```go
 type containerRunner interface { Run(ctx context.Context, s docker.Spec) error }
 type imageBuilder    interface { Build(ctx context.Context, o docker.BuildOptions, out, errw io.Writer) error }
@@ -98,14 +98,17 @@ type imageChecker    interface { ImageExists(ctx context.Context, image string) 
 ```
 These are bundled in `dockerDeps`. `newRootCmd` constructs a `*docker.Docker`, calls `defer closeDocker()` via
 the returned cleanup func, and wraps the instance in `dockerDeps`; `newRootCmdWithDeps` accepts injected deps
-for tests (boundary fakes in `main_test.go`).
+for tests (boundary fakes in `internal/cli/main_test.go`).
 
 The four interfaces, `dockerDeps` (with `checkDaemonPreflight`/`imageExistsPreflight` methods), and
-`dockerNewErrStub` live in `deps.go`. Each command gets its own file (`run.go`, `init.go`, `build.go`,
-`config.go`, `migrate.go`, `version.go`); shared guard helpers (`resolvePwd`, `ensureWithinHome`,
-`quietWriter`) live in `guard.go`. `main.go` is reduced to `main()`, `runWithExitCode`,
-`newRootCmd`/`newRootCmdWithDeps`, and `version`; `errSilent` lives in `guard.go`. The four-interface `dockerDeps` pattern
-is retained as documented above.
+`dockerNewErrStub` live in `internal/cli/deps.go`. Each command gets its own file (`run.go`, `init.go`,
+`build.go`, `config.go`, `migrate.go`, `version.go`) under `internal/cli/`; shared guard helpers
+(`resolvePwd`, `ensureWithinHome`, `quietWriter`) live in `internal/cli/guard.go`;
+`newRootCmd`/`newRootCmdWithDeps`, `runWithExitCode`, and `var version` live in
+`internal/cli/root.go`; `errSilent` lives in `internal/cli/guard.go`. `cli.Main` (in `root.go`) is the
+single exported entry point. `cmd/makeslop/main.go` is ~10 lines: only `var version = "dev"` (ldflags
+target) + `func main() { os.Exit(cli.Main(version, os.Args[1:])) }`. The four-interface `dockerDeps`
+pattern is retained as documented above.
 
 `dockerNewErrStub` (in `deps.go`) is a fallback used when `docker.New()` fails: it implements all four
 interfaces and returns the construction error from every method call, so non-docker commands still work while
@@ -160,7 +163,7 @@ This test is skipped during normal `go test ./...` (requires a reachable daemon 
 
 ### docker.ExitError and the exit-code contract
 `docker.ExitError{Code int}` (in `run.go`) is the only exit-code error. `Run` returns it when
-`ContainerWait` reports a non-zero `StatusCode`. `runWithExitCode` in `main.go` does:
+`ContainerWait` reports a non-zero `StatusCode`. `runWithExitCode` in `internal/cli/root.go` does:
 
 ```go
 var ee *docker.ExitError
