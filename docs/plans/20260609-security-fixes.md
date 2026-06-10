@@ -207,14 +207,14 @@ updates only.
 - Modify: `internal/config/config.go`
 - Modify: `internal/config/migrate_test.go` (if it asserts the version constant)
 
-- [ ] remove `sudo` from the apt list; delete the `chpasswd` and `usermod -aG sudo` lines
-- [ ] pin base: `FROM debian:trixie-slim@sha256:<digest>` (resolve via `docker buildx imagetools inspect`; if no daemon/network available at implementation time, note it as a ⚠️ blocker and leave a clearly-marked placeholder that MUST be resolved before merge)
-- [ ] add per-arch sha256 verification to the Go tarball download (checksums from go.dev/dl for GO_VERSION)
-- [ ] replace the nodesource `curl | bash` with a pinned Node LTS tarball install + per-arch sha256 (amd64→x64 mapping), removing the apt nodejs package; verify `node`/`npm` on PATH
-- [ ] checksum-verify the zsh-in-docker v1.2.1 script before executing it
-- [ ] bump `MigrationVersion` to 3 in `internal/config/config.go`
-- [ ] verify `migrate_test.go` assertions reference the `MigrationVersion` constant rather than a hardcoded `2` (review confirmed: they do — no test changes expected); run `go test ./internal/config/ ./internal/assets/`
-- [ ] run `go test ./...` — must pass before task 6
+- [x] remove `sudo` from the apt list; delete the `chpasswd` and `usermod -aG sudo` lines
+- [x] pin base: `FROM debian:trixie-slim@sha256:b6e2a152f22a40ff69d92cb397223c906017e1391a73c952b588e51af8883bf8` (resolved via Docker Hub registry API; digest is the manifest list sha256 as of 2026-06-10)
+- [x] add per-arch sha256 verification to the Go tarball download (amd64: 1153d3d…, arm64: ef758ae… from go.dev/dl for go1.26.4)
+- [x] replace the nodesource `curl | bash` with a pinned Node LTS tarball install + per-arch sha256 (amd64→x64 mapping), removing the apt nodejs package; verify `node`/`npm` on PATH (Node v24.16.0 LTS; x64: 2faf6a3…, arm64: 589f5b6…)
+- [x] checksum-verify the zsh-in-docker v1.2.1 script before executing it (sha256: 0cf15b6…; downloaded to temp file, verified, then executed, then removed)
+- [x] bump `MigrationVersion` to 3 in `internal/config/config.go`
+- [x] verify `migrate_test.go` assertions reference the `MigrationVersion` constant rather than a hardcoded `2` (review confirmed: they do — no test changes expected); run `go test ./internal/config/ ./internal/assets/`
+- [x] run `go test ./...` — must pass before task 6
 
 ### Task 6: Verify acceptance criteria
 
