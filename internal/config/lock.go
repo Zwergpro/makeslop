@@ -25,6 +25,22 @@ var inProcessMu sync.Mutex
 // NO-NESTING INVARIANT: WithLock MUST NOT be nested — a nested call in the same
 // goroutine self-deadlocks on inProcessMu. Each Load→mutate→Save site acquires
 // its own short-lived lock sequentially.
+// Update runs a locked Load→mutate→Save read-modify-write on settings.json.
+// When mutate returns an error the save is skipped and the error is returned
+// verbatim. The WithLock no-nesting invariant applies to mutate too.
+func Update(baseDir string, mutate func(*Settings) error) error {
+	return WithLock(baseDir, func() error {
+		s, err := Load(baseDir)
+		if err != nil {
+			return err
+		}
+		if err := mutate(s); err != nil {
+			return err
+		}
+		return Save(baseDir, s)
+	})
+}
+
 func WithLock(baseDir string, fn func() error) error {
 	if err := os.MkdirAll(baseDir, 0o755); err != nil {
 		return fmt.Errorf("create base dir %s: %w", baseDir, err)

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -52,7 +51,7 @@ func (f *fakeDocker) Run(_ context.Context, s docker.Spec) error {
 	return nil
 }
 
-func (f *fakeDocker) Build(_ context.Context, o docker.BuildOptions, _, _ io.Writer) error {
+func (f *fakeDocker) Build(_ context.Context, o docker.BuildOptions, _ io.Writer) error {
 	f.LastBuildOpts = o
 	if f.BuildErr != nil {
 		return f.BuildErr
@@ -113,18 +112,7 @@ func runWithExitCodeAndDeps(baseDir string, stdout, stderr io.Writer, deps docke
 	cmd.SetArgs(args)
 	cmd.SetOut(stdout)
 	cmd.SetErr(stderr)
-	err := cmd.ExecuteContext(context.Background())
-	if err == nil {
-		return 0
-	}
-	var de *docker.ExitError
-	if errors.As(err, &de) {
-		return de.Code
-	}
-	if !errors.Is(err, errSilent) {
-		fmt.Fprintf(stderr, "makeslop: %v\n", err)
-	}
-	return 1
+	return exitCodeFromError(cmd.ExecuteContext(context.Background()), stderr)
 }
 
 func snapshotTree(t *testing.T, root string) map[string][]byte {
@@ -163,33 +151,7 @@ func snapshotTree(t *testing.T, root string) map[string][]byte {
 
 func listFiles(t *testing.T, root string) []string {
 	t.Helper()
-	var paths []string
-	_, err := os.Stat(root)
-	if errors.Is(err, os.ErrNotExist) {
-		return paths
-	}
-	if err != nil {
-		t.Fatalf("stat %s: %v", root, err)
-	}
-	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			return nil
-		}
-		rel, err := filepath.Rel(root, path)
-		if err != nil {
-			return err
-		}
-		paths = append(paths, rel)
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("walk %s: %v", root, err)
-	}
-	sort.Strings(paths)
-	return paths
+	return mapKeys(snapshotTree(t, root))
 }
 
 func evalSymlinks(t *testing.T, dir string) string {

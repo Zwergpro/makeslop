@@ -40,7 +40,7 @@ func TestBuild_Integration_BuildKit(t *testing.T) {
 		t.Fatalf("New() returned error: %v", err)
 	}
 	defer d.Close() //nolint:errcheck
-	if err := d.Build(ctx, o, io.Discard, io.Discard); err != nil {
+	if err := d.Build(ctx, o, io.Discard); err != nil {
 		t.Fatalf("Build returned unexpected error: %v", err)
 	}
 }

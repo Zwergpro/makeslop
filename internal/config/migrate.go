@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -99,25 +100,24 @@ func Migrate(baseDir string) (applied bool, err error) {
 		}
 	}
 
-	var stamped bool
-	lockErr := WithLock(baseDir, func() error {
-		// Re-load under the lock so we don't clobber concurrent workspace edits.
-		fresh, loadErr := Load(baseDir)
-		if loadErr != nil {
-			return fmt.Errorf("migrate load settings: %w", loadErr)
-		}
+	// Re-check under the lock so we don't clobber concurrent workspace edits;
+	// errAlreadyStamped skips the save when another process won the race.
+	lockErr := Update(baseDir, func(fresh *Settings) error {
 		if fresh.MigratedVersion >= MigrationVersion {
-			return nil
+			return errAlreadyStamped
 		}
 		fresh.MigratedVersion = MigrationVersion
-		if saveErr := Save(baseDir, fresh); saveErr != nil {
-			return fmt.Errorf("migrate save settings: %w", saveErr)
-		}
-		stamped = true
 		return nil
 	})
-	if lockErr != nil {
-		return false, lockErr
+	if errors.Is(lockErr, errAlreadyStamped) {
+		return false, nil
 	}
-	return stamped, nil
+	if lockErr != nil {
+		return false, fmt.Errorf("migrate update settings: %w", lockErr)
+	}
+	return true, nil
 }
+
+// errAlreadyStamped aborts the Update save when a concurrent migrate already
+// stamped MigratedVersion.
+var errAlreadyStamped = errors.New("settings already at MigrationVersion")

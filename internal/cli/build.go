@@ -22,6 +22,7 @@ func newBuildCmd(baseDir string, deps dockerDeps) *cobra.Command {
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			quiet, _ := cmd.Flags().GetBool("quiet")
+			chrome := &quietWriter{w: cmd.ErrOrStderr(), quiet: quiet}
 			if err := config.Bootstrap(baseDir); err != nil {
 				return err
 			}
@@ -29,10 +30,8 @@ func newBuildCmd(baseDir string, deps dockerDeps) *cobra.Command {
 				if err := config.WriteDockerfile(baseDir); err != nil {
 					return err
 				}
-				if !quiet {
-					fmt.Fprintln(cmd.ErrOrStderr(),
-						"makeslop: refreshed ~/.makeslop/Dockerfile from embedded assets")
-				}
+				fmt.Fprintln(chrome,
+					"makeslop: refreshed ~/.makeslop/Dockerfile from embedded assets")
 			}
 			s, err := config.Load(baseDir)
 			if err != nil {
@@ -45,7 +44,7 @@ func newBuildCmd(baseDir string, deps dockerDeps) *cobra.Command {
 				BuildArgs:      buildArgs,
 				Quiet:          quiet,
 			}
-			return deps.builder.Build(cmd.Context(), o, cmd.OutOrStdout(), cmd.ErrOrStderr())
+			return deps.builder.Build(cmd.Context(), o, cmd.OutOrStdout())
 		},
 	}
 	cmd.Flags().BoolVar(&noCache, "no-cache", false,

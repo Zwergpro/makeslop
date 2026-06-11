@@ -43,8 +43,9 @@ func (c *closeWriteConn) CloseWrite() error {
 
 // fakeClient scripts the ContainerWait result and can fail ContainerCreate,
 // ContainerAttach, or ContainerStart, recording which calls were made and their
-// order.
+// order. Methods without test logic come from the embedded noopClient.
 type fakeClient struct {
+	noopClient
 	createErr        error // if non-nil, ContainerCreate returns this
 	attachErr        error // if non-nil, ContainerAttach returns this
 	startErr         error // if non-nil, ContainerStart returns this
@@ -234,20 +235,8 @@ func (f *fakeClient) ContainerRemove(_ context.Context, _ string, opts moby.Cont
 	return moby.ContainerRemoveResult{}, nil
 }
 
-func (f *fakeClient) ImageBuild(_ context.Context, _ io.Reader, _ moby.ImageBuildOptions) (moby.ImageBuildResult, error) {
-	return moby.ImageBuildResult{Body: io.NopCloser(bytes.NewReader(nil))}, nil
-}
-
 func (f *fakeClient) DialHijack(_ context.Context, _, _ string, _ map[string][]string) (net.Conn, error) {
 	return nil, errors.New("DialHijack not implemented in fakeClient")
-}
-
-func (f *fakeClient) Ping(_ context.Context, _ moby.PingOptions) (moby.PingResult, error) {
-	return moby.PingResult{}, nil
-}
-
-func (f *fakeClient) ImageInspect(_ context.Context, _ string, _ ...moby.ImageInspectOption) (moby.ImageInspectResult, error) {
-	return moby.ImageInspectResult{}, nil
 }
 
 func (f *fakeClient) Close() error {
@@ -669,13 +658,13 @@ func (t *trackingReadCloser) Close() error {
 //
 // pw (the write end) is kept open for the duration of the test so that the read
 // side blocks on a real read rather than returning io.EOF immediately. Closing it
-// only after Run returns ensures the only unblock path is runContainer's
+// only after Run returns ensures the only unblock path is Run's
 // ps.closer.Close() call, not a coincidental write-error from an already-closed pw.
 func TestRun_StdinJoin(t *testing.T) {
 	fc := &fakeClient{waitResult: container.WaitResponse{StatusCode: 0}}
 
 	// pipe: pr blocks on Read until closed. Keep pw open so stdinDone can only
-	// be closed by runContainer closing ps.closer, not by pw going away.
+	// be closed by Run closing ps.closer, not by pw going away.
 	pr, pw := io.Pipe()
 	t.Cleanup(func() { _ = pw.Close() }) // release pw after the test
 	tracker := newTrackingReadCloser(pr)
@@ -866,14 +855,14 @@ func TestRun_WaitCtx_HappyPath(t *testing.T) {
 }
 
 // TestRun_StdinCloseWrite_JoinPath verifies the closer-based join path: a
-// blocking pipe stdin is closed by runContainer to unblock the stdin goroutine;
+// blocking pipe stdin is closed by Run to unblock the stdin goroutine;
 // CloseWrite is still called before stdinDone closes, and Run returns cleanly
 // without panic (CloseWrite fires before att.Conn.Close from the deferred close).
 func TestRun_StdinCloseWrite_JoinPath(t *testing.T) {
 	fc := &fakeClient{waitResult: container.WaitResponse{StatusCode: 0}}
 
-	// pr blocks until runContainer calls ps.closer.Close(). pw kept open so
-	// only runContainer's closer.Close() unblocks the read.
+	// pr blocks until Run calls ps.closer.Close(). pw kept open so
+	// only Run's closer.Close() unblocks the read.
 	pr, pw := io.Pipe()
 	t.Cleanup(func() { _ = pw.Close() })
 
@@ -904,7 +893,7 @@ func TestRun_StdinCloseWrite_JoinPath(t *testing.T) {
 
 // TestRun_WaitError_ForceRemoveAndReturn verifies finding #5 fix: when
 // ContainerWait delivers an error while the attach stream is still open (i.e.
-// the container is still running), runContainer must:
+// the container is still running), Run must:
 //   - call ContainerRemove with Force: true (kills the container)
 //   - have that removal cause the attach stream to EOF (simulated by
 //     fakeClient.ContainerRemove closing attachPW)
@@ -1089,7 +1078,7 @@ func TestRun_WaitError_StdinJoined(t *testing.T) {
 }
 
 // TestRun_SIGWINCHGoroutineJoined verifies that the SIGWINCH resize goroutine is
-// joined before runContainer returns (finding #6 fix). The test sends SIGWINCH
+// joined before Run returns (finding #6 fix). The test sends SIGWINCH
 // signals in a tight loop while Run is executing and checks:
 //  1. Run returns cleanly (no race-detected concurrent access).
 //  2. The resize goroutine completed before Run returned, even in CI where

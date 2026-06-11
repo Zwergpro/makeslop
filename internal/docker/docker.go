@@ -1,7 +1,6 @@
 package docker
 
 import (
-	"context"
 	"fmt"
 	"io"
 	"os"
@@ -82,27 +81,4 @@ func New(opts ...Option) (*Docker, error) {
 // Close releases the underlying Docker client connection.
 func (d *Docker) Close() error {
 	return d.client.Close()
-}
-
-// Run launches s interactively. Returns ErrNoTTY unless both stdin and stdout
-// are TTYs, and *ExitError on non-zero container exit.
-func (d *Docker) Run(ctx context.Context, s Spec) error {
-	return runContainer(ctx, d.client, d.isTTYFn, d.makeRaw, d.stdin, d.stdout, d.resizeGoroutineHook, s)
-}
-
-// Build builds the image described by o, writing output to out and errw.
-// CI/pipe-safe; never checks for a TTY.
-func (d *Docker) Build(ctx context.Context, o BuildOptions, out, errw io.Writer) error {
-	return buildImage(ctx, d.client, o, out, errw)
-}
-
-// CheckDaemon pings the daemon, returning *ErrDaemonUnreachable on failure.
-func (d *Docker) CheckDaemon(ctx context.Context) error {
-	return checkDaemon(ctx, d.client)
-}
-
-// ImageExists reports whether the named image tag exists locally. (false, nil)
-// only for a classified not-found; other errors return (false, err).
-func (d *Docker) ImageExists(ctx context.Context, image string) (bool, error) {
-	return imageExists(ctx, d.client, image)
 }

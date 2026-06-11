@@ -94,9 +94,11 @@ func stageDockerfile(path string) (dir string, cleanup func(), err error) {
 	return tmp, func() { _ = os.RemoveAll(tmp) }, nil
 }
 
-// buildImage implements (*Docker).Build with an injected apiClient. The caller
-// owns the client lifetime; buildImage does NOT close it.
-func buildImage(ctx context.Context, cli apiClient, o BuildOptions, stdout, stderr io.Writer) error {
+// Build builds the image described by o, writing progress output to stdout.
+// CI/pipe-safe; never checks for a TTY. The struct's client is shared, not
+// closed here.
+func (d *Docker) Build(ctx context.Context, o BuildOptions, stdout io.Writer) error {
+	cli := d.client
 	if o.ContextDir == "" {
 		dir, err := os.MkdirTemp("", "makeslop-build-*")
 		if err != nil {

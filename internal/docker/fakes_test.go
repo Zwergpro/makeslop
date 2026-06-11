@@ -75,15 +75,40 @@ func (noopClient) ImageInspect(_ context.Context, _ string, _ ...moby.ImageInspe
 
 func (noopClient) Close() error { return nil }
 
-// fakeRunClient scripts the Run container lifecycle with a given exit code and
-// records calls. Set PingErr for daemon-down, ImageMissing/ImageErr for image errors.
-type fakeRunClient struct {
+// preflightStub scripts the preflight Ping/ImageInspect pair on top of
+// noopClient defaults. Embedded by fakeRunClient and fakeBuildClient so the
+// error shaping — in particular the errdefs.ErrNotFound wrapping that
+// ImageExists classification depends on — lives in one place.
+type preflightStub struct {
 	noopClient
-	ExitCode     int
-	wasStarted   bool
 	PingErr      error // if non-nil, Ping returns this
 	ImageMissing bool  // if true, ImageInspect returns not-found
 	ImageErr     error // if non-nil (and ImageMissing false), ImageInspect returns this
+}
+
+func (p *preflightStub) Ping(_ context.Context, _ moby.PingOptions) (moby.PingResult, error) {
+	if p.PingErr != nil {
+		return moby.PingResult{}, p.PingErr
+	}
+	return moby.PingResult{}, nil
+}
+
+func (p *preflightStub) ImageInspect(_ context.Context, imageID string, _ ...moby.ImageInspectOption) (moby.ImageInspectResult, error) {
+	if p.ImageMissing {
+		return moby.ImageInspectResult{}, fmt.Errorf("image %q: %w", imageID, errdefs.ErrNotFound)
+	}
+	if p.ImageErr != nil {
+		return moby.ImageInspectResult{}, p.ImageErr
+	}
+	return moby.ImageInspectResult{}, nil
+}
+
+// fakeRunClient scripts the Run container lifecycle with a given exit code and
+// records calls. Set PingErr for daemon-down, ImageMissing/ImageErr for image errors.
+type fakeRunClient struct {
+	preflightStub
+	ExitCode   int
+	wasStarted bool
 
 	RemovedContainers       []string
 	LastContainerCreateOpts moby.ContainerCreateOptions
@@ -101,29 +126,20 @@ func newFakeRunClient(exitCode int) *fakeRunClient {
 	return &fakeRunClient{ExitCode: exitCode}
 }
 
-func (f *fakeRunClient) Ping(ctx context.Context, _ moby.PingOptions) (moby.PingResult, error) {
+func (f *fakeRunClient) Ping(ctx context.Context, opts moby.PingOptions) (moby.PingResult, error) {
 	if f.BlockPing {
 		<-ctx.Done()
 		return moby.PingResult{}, ctx.Err()
 	}
-	if f.PingErr != nil {
-		return moby.PingResult{}, f.PingErr
-	}
-	return moby.PingResult{}, nil
+	return f.preflightStub.Ping(ctx, opts)
 }
 
-func (f *fakeRunClient) ImageInspect(ctx context.Context, imageID string, _ ...moby.ImageInspectOption) (moby.ImageInspectResult, error) {
+func (f *fakeRunClient) ImageInspect(ctx context.Context, imageID string, opts ...moby.ImageInspectOption) (moby.ImageInspectResult, error) {
 	if f.BlockImageInspect {
 		<-ctx.Done()
 		return moby.ImageInspectResult{}, ctx.Err()
 	}
-	if f.ImageMissing {
-		return moby.ImageInspectResult{}, fmt.Errorf("image %q: %w", imageID, errdefs.ErrNotFound)
-	}
-	if f.ImageErr != nil {
-		return moby.ImageInspectResult{}, f.ImageErr
-	}
-	return moby.ImageInspectResult{}, nil
+	return f.preflightStub.ImageInspect(ctx, imageID, opts...)
 }
 
 func (f *fakeRunClient) ContainerRemove(_ context.Context, id string, _ moby.ContainerRemoveOptions) (moby.ContainerRemoveResult, error) {
@@ -164,36 +180,16 @@ func (f *fakeRunClient) ContainerWait(_ context.Context, _ string, _ moby.Contai
 // fakeBuildClient scripts Build, recording the ImageBuildOptions. Set PingErr
 // for daemon-down, ImageMissing/ImageErr for image errors.
 type fakeBuildClient struct {
-	noopClient
+	preflightStub
 	ExitCode int   // non-zero → ImageBuild returns an error
 	Err      error // if non-nil, overrides ExitCode: ImageBuild returns this directly
 	// lastBuildOptions records the options from the most recent ImageBuild call.
 	lastBuildOptions moby.ImageBuildOptions
-	PingErr          error // if non-nil, Ping returns this
-	ImageMissing     bool  // if true, ImageInspect returns not-found
-	ImageErr         error // if non-nil (and ImageMissing false), ImageInspect returns this
 }
 
 // newFakeBuildClient returns a fakeBuildClient; exitCode 0 means success.
 func newFakeBuildClient(exitCode int) *fakeBuildClient {
 	return &fakeBuildClient{ExitCode: exitCode}
-}
-
-func (f *fakeBuildClient) Ping(_ context.Context, _ moby.PingOptions) (moby.PingResult, error) {
-	if f.PingErr != nil {
-		return moby.PingResult{}, f.PingErr
-	}
-	return moby.PingResult{}, nil
-}
-
-func (f *fakeBuildClient) ImageInspect(_ context.Context, imageID string, _ ...moby.ImageInspectOption) (moby.ImageInspectResult, error) {
-	if f.ImageMissing {
-		return moby.ImageInspectResult{}, fmt.Errorf("image %q: %w", imageID, errdefs.ErrNotFound)
-	}
-	if f.ImageErr != nil {
-		return moby.ImageInspectResult{}, f.ImageErr
-	}
-	return moby.ImageInspectResult{}, nil
 }
 
 func (f *fakeBuildClient) ImageBuild(_ context.Context, _ io.Reader, opts moby.ImageBuildOptions) (moby.ImageBuildResult, error) {

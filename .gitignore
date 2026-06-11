@@ -1,6 +1,7 @@
 .idea/
 .gocache/
 .claude/
+.agents/
 .codex/
 .makeslop.yaml
 .gotmp/

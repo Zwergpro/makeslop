@@ -21,32 +21,28 @@ func WithPreflightTimeout(parent context.Context) (context.Context, context.Canc
 
 // ErrDaemonUnreachable is returned by CheckDaemon when the daemon cannot be reached.
 type ErrDaemonUnreachable struct {
-	Endpoint string
-	Cause    error
+	Cause error
 }
 
 func (e *ErrDaemonUnreachable) Error() string {
-	if e.Endpoint != "" {
-		return fmt.Sprintf("docker daemon unreachable at %s: %v", e.Endpoint, e.Cause)
-	}
 	return fmt.Sprintf("docker daemon unreachable: %v", e.Cause)
 }
 
 func (e *ErrDaemonUnreachable) Unwrap() error { return e.Cause }
 
-// checkDaemon implements CheckDaemon with an injected apiClient.
-func checkDaemon(ctx context.Context, c apiClient) error {
-	_, err := c.Ping(ctx, moby.PingOptions{})
+// CheckDaemon pings the daemon, returning *ErrDaemonUnreachable on failure.
+func (d *Docker) CheckDaemon(ctx context.Context) error {
+	_, err := d.client.Ping(ctx, moby.PingOptions{})
 	if err != nil {
-		// The narrow interface lacks DaemonHost(), so Endpoint is left empty.
 		return &ErrDaemonUnreachable{Cause: err}
 	}
 	return nil
 }
 
-// imageExists implements ImageExists with an injected apiClient.
-func imageExists(ctx context.Context, c apiClient, image string) (bool, error) {
-	_, err := c.ImageInspect(ctx, image)
+// ImageExists reports whether the named image tag exists locally. (false, nil)
+// only for a classified not-found; other errors return (false, err).
+func (d *Docker) ImageExists(ctx context.Context, image string) (bool, error) {
+	_, err := d.client.ImageInspect(ctx, image)
 	if err == nil {
 		return true, nil
 	}

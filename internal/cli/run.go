@@ -17,19 +17,6 @@ import (
 	"github.com/Zwergpro/makeslop/internal/workspace"
 )
 
-// removes only the first occurrence; noop when exclude is absent
-func filterOut(s []string, exclude string) []string {
-	for i, v := range s {
-		if v == exclude {
-			out := make([]string, 0, len(s)-1)
-			out = append(out, s[:i]...)
-			out = append(out, s[i+1:]...)
-			return out
-		}
-	}
-	return s
-}
-
 // returns nil (not empty slice) when both inputs are empty
 func mergeUniqueSorted(a, b []string) []string {
 	seen := make(map[string]struct{}, len(a)+len(b))
@@ -50,21 +37,14 @@ func mergeUniqueSorted(a, b []string) []string {
 	return out
 }
 
-// sandboxMountGates resolves filesystem state at workspaceRoot and returns
-// the two sandbox-policy flags plus the filtered masked-files list.
-func sandboxMountGates(workspaceRoot string, maskedFiles []string) (protect, maskHooks bool, filtered []string) {
+// sandboxMountGates resolves filesystem state at workspaceRoot and returns the
+// two sandbox-policy flags. BuildSpec owns the mount-ordering consequences
+// (dropping the /dev/null mask that would shadow the read-only config bind).
+func sandboxMountGates(workspaceRoot string) (protect, maskHooks bool) {
 	configPath := filepath.Join(workspaceRoot, projectconfig.Filename)
 	if fi, err := os.Lstat(configPath); err == nil {
 		// Regular file only: a missing bind source fails container create.
 		protect = fi.Mode().IsRegular()
-	}
-
-	// Drop .makeslop.yaml from the /dev/null masked list when protect is active.
-	// Docker applies mounts last-write-wins, so a /dev/null bind after the
-	// read-only self-bind would silently override it.
-	filtered = maskedFiles
-	if protect {
-		filtered = filterOut(maskedFiles, configPath)
 	}
 
 	if fi, err := os.Lstat(filepath.Join(workspaceRoot, ".git")); err == nil {
@@ -72,7 +52,7 @@ func sandboxMountGates(workspaceRoot string, maskedFiles []string) (protect, mas
 		// outside workspace (documented residual risk) — only overlay on a dir.
 		maskHooks = fi.IsDir()
 	}
-	return protect, maskHooks, filtered
+	return protect, maskHooks
 }
 
 func reportScanResults(stderr, chrome io.Writer, root string, masked, symlinkMatches []string) {
@@ -143,7 +123,7 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfH
 	maskedFiles := mergeUniqueSorted(masked, yamlExcludes.Files)
 
 	// BuildSpec is pure (no fs access); Lstat checks live here.
-	protectProjectConfig, maskGitHooks, maskedFiles := sandboxMountGates(workspaceRoot, maskedFiles)
+	protectProjectConfig, maskGitHooks := sandboxMountGates(workspaceRoot)
 
 	opts := docker.Options{
 		ProjectRoot:          workspaceRoot,

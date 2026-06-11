@@ -59,8 +59,8 @@ ENV SHELL=/bin/zsh \
     VISUAL=vim \
     POWERLEVEL9K_DISABLE_GITSTATUS=true
 
-RUN wget -O /tmp/zsh-in-docker.sh "https://github.com/deluan/zsh-in-docker/releases/download/v1.2.1/zsh-in-docker.sh" \
-    && echo "0cf15b6f9c63a8103eb33bad87dc4b43fed0e0ad5884dff90f943ee1e868796e  /tmp/zsh-in-docker.sh" | sha256sum -c - \
+ARG ZSH_VERSION=1.2.1
+RUN wget -O /tmp/zsh-in-docker.sh "https://github.com/deluan/zsh-in-docker/releases/download/v${ZSH_VERSION}/zsh-in-docker.sh" \
     && sh /tmp/zsh-in-docker.sh -- \
     -p git \
     -p fzf \

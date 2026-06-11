@@ -1405,6 +1405,57 @@ func TestBuildSpec_ProtectProjectConfig_MountPresent(t *testing.T) {
 	}
 }
 
+// ProtectProjectConfig=true with .makeslop.yaml in MaskedFiles (e.g. a broad
+// scan pattern like "*.yaml"): the /dev/null mask for the config file must be
+// dropped — docker applies mounts last-write-wins, so a mask emitted after the
+// read-only self-bind would silently override the protection. Other masked
+// files are unaffected, and with the flag off the mask is emitted normally.
+func TestBuildSpec_ProtectProjectConfig_DropsConfigMask(t *testing.T) {
+	configHost := "/home/me/code/myproj/.makeslop.yaml"
+	configTarget := "/workspace/myproj-abc123/.makeslop.yaml"
+	otherHost := "/home/me/code/myproj/.env"
+
+	o := sampleOptions()
+	o.ProtectProjectConfig = true
+	o.MaskedFiles = []string{otherHost, configHost}
+	spec := BuildSpec(o)
+
+	var sawConfigMask, sawOtherMask, sawReadOnlyBind bool
+	for _, m := range spec.Mounts {
+		switch {
+		case m.Host == "/dev/null" && m.Container == configTarget:
+			sawConfigMask = true
+		case m.Host == "/dev/null" && m.Container == "/workspace/myproj-abc123/.env":
+			sawOtherMask = true
+		case m.Host == configHost && m.ReadOnly:
+			sawReadOnlyBind = true
+		}
+	}
+	if sawConfigMask {
+		t.Errorf("/dev/null mask for .makeslop.yaml must be dropped when ProtectProjectConfig is set; mounts: %+v", spec.Mounts)
+	}
+	if !sawOtherMask {
+		t.Errorf("other masked files must still be emitted; mounts: %+v", spec.Mounts)
+	}
+	if !sawReadOnlyBind {
+		t.Errorf("read-only config self-bind missing; mounts: %+v", spec.Mounts)
+	}
+
+	// Flag off: the mask is emitted as usual.
+	o = sampleOptions()
+	o.MaskedFiles = []string{configHost}
+	spec = BuildSpec(o)
+	found := false
+	for _, m := range spec.Mounts {
+		if m.Host == "/dev/null" && m.Container == configTarget {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("config mask must be emitted when ProtectProjectConfig is off; mounts: %+v", spec.Mounts)
+	}
+}
+
 // MaskGitHooks=true: .git/hooks tmpfs mount is present at a fixed position.
 func TestBuildSpec_MaskGitHooks_MountPresent(t *testing.T) {
 	o := sampleOptions()

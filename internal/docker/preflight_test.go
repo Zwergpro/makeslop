@@ -232,30 +232,12 @@ func TestWithPreflightTimeout_BlockingInspect(t *testing.T) {
 }
 
 func TestErrDaemonUnreachableMessage(t *testing.T) {
-	cause := errors.New("connection refused")
-
-	t.Run("with endpoint", func(t *testing.T) {
-		e := &ErrDaemonUnreachable{Endpoint: "unix:///var/run/docker.sock", Cause: cause}
-		msg := e.Error()
-		if msg == "" {
-			t.Fatal("expected non-empty error message")
-		}
-		if !strings.Contains(msg, "unix:///var/run/docker.sock") {
-			t.Errorf("endpoint not in message: %q", msg)
-		}
-		if !strings.Contains(msg, "connection refused") {
-			t.Errorf("cause not in message: %q", msg)
-		}
-	})
-
-	t.Run("without endpoint", func(t *testing.T) {
-		e := &ErrDaemonUnreachable{Cause: cause}
-		msg := e.Error()
-		if msg == "" {
-			t.Fatal("expected non-empty error message")
-		}
-		if !strings.Contains(msg, "connection refused") {
-			t.Errorf("cause not in message: %q", msg)
-		}
-	})
+	e := &ErrDaemonUnreachable{Cause: errors.New("connection refused")}
+	msg := e.Error()
+	if msg == "" {
+		t.Fatal("expected non-empty error message")
+	}
+	if !strings.Contains(msg, "connection refused") {
+		t.Errorf("cause not in message: %q", msg)
+	}
 }

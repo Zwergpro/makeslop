@@ -172,7 +172,7 @@ func TestBuild_FakeSelf_ImageBuildOptions(t *testing.T) {
 		ContextDir:     t.TempDir(),
 	}
 	// Error expected (DialHijack fails the session); only the recorded options matter.
-	_ = d.Build(context.Background(), o, io.Discard, io.Discard)
+	_ = d.Build(context.Background(), o, io.Discard)
 
 	if !rc.buildCalled {
 		t.Fatal("ImageBuild was not called; ensure DialHijack error does not race past ImageBuild")
@@ -591,7 +591,7 @@ func TestBuild_StagedDockerfileIsolation(t *testing.T) {
 		DockerfilePath: dockerfilePath,
 		ContextDir:     t.TempDir(),
 	}
-	_ = d.Build(context.Background(), o, io.Discard, io.Discard)
+	_ = d.Build(context.Background(), o, io.Discard)
 
 	if !rc.buildCalled {
 		t.Fatal("ImageBuild was not called; stageDockerfile may have failed or the session did not reach ImageBuild")
