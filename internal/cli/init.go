@@ -11,18 +11,6 @@ import (
 	"github.com/Zwergpro/makeslop/internal/workspace"
 )
 
-// stampMigratedVersion stamps MigratedVersion = MigrationVersion on a fresh seed.
-func stampMigratedVersion(baseDir string) error {
-	return config.WithLock(baseDir, func() error {
-		s, err := config.Load(baseDir)
-		if err != nil {
-			return err
-		}
-		s.MigratedVersion = config.MigrationVersion
-		return config.Save(baseDir, s)
-	})
-}
-
 func runInit(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfHome, globalOnly, quiet bool) error {
 	chrome := &quietWriter{w: cmd.ErrOrStderr(), quiet: quiet}
 
@@ -35,11 +23,11 @@ func runInit(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOf
 	}
 
 	// Check before Bootstrap: determines stamp vs nudge path.
-	freshSeed, err := config.BaseConfigExists(baseDir)
+	exists, err := config.BaseConfigExists(baseDir)
 	if err != nil {
 		return err
 	}
-	freshSeed = !freshSeed
+	freshSeed := !exists
 
 	if err := config.Bootstrap(baseDir); err != nil {
 		return err
@@ -65,7 +53,10 @@ func runInit(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOf
 	// Fresh seed: stamp so the new dir is never reported stale.
 	// Existing: nudge only — stamping would skip the actual migration.
 	if freshSeed {
-		if lockErr := stampMigratedVersion(baseDir); lockErr != nil {
+		if lockErr := config.Update(baseDir, func(s *config.Settings) error {
+			s.MigratedVersion = config.MigrationVersion
+			return nil
+		}); lockErr != nil {
 			return lockErr
 		}
 	} else {

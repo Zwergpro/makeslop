@@ -58,6 +58,20 @@ type Options struct {
 	MaskGitHooks bool
 }
 
+// filterOut returns s without the first occurrence of exclude; the input is
+// returned unmodified when exclude is absent.
+func filterOut(s []string, exclude string) []string {
+	for i, v := range s {
+		if v == exclude {
+			out := make([]string, 0, len(s)-1)
+			out = append(out, s[:i]...)
+			out = append(out, s[i+1:]...)
+			return out
+		}
+	}
+	return s
+}
+
 // Mount is a single docker mount entry. Type "" or "bind" → bind; "tmpfs" →
 // tmpfs (Host ignored); "volume" → volume (Host is the volume name).
 type Mount struct {
@@ -83,7 +97,6 @@ type Spec struct {
 // disabled groups are omitted, never reordered.
 func BuildSpec(o Options) Spec {
 	workspacePath := "/workspace/" + o.WorkspaceName
-	workspaceHost := o.WorkspaceHost
 
 	// Trailing slashes on directory mounts are intentional — they match the
 	// reference claude.sh, and coax docker into failing fast if the host path
@@ -98,12 +111,18 @@ func BuildSpec(o Options) Spec {
 	// Sandbox-policy mounts: inserted at a fixed point after the 4 base mounts
 	// and before any cache overlays. This ensures the overlay wins over the rw
 	// project bind regardless of cache flag state.
+	maskedFiles := o.MaskedFiles
 	if o.ProtectProjectConfig {
+		configHost := filepath.Join(o.ProjectRoot, ".makeslop.yaml")
 		mounts = append(mounts, Mount{
-			Host:      filepath.Join(o.ProjectRoot, ".makeslop.yaml"),
+			Host:      configHost,
 			Container: workspacePath + "/.makeslop.yaml",
 			ReadOnly:  true,
 		})
+		// Docker applies mounts last-write-wins: a /dev/null mask emitted below
+		// for the config file (e.g. a broad scan pattern like "*.yaml") would
+		// silently override the read-only self-bind, so drop it here.
+		maskedFiles = filterOut(maskedFiles, configHost)
 	}
 	if o.MaskGitHooks {
 		mounts = append(mounts, Mount{
@@ -114,19 +133,19 @@ func BuildSpec(o Options) Spec {
 
 	if o.MountAgentCache {
 		mounts = append(mounts,
-			Mount{Host: filepath.Join(workspaceHost, ".claude") + "/", Container: workspacePath + "/.claude/"},
-			Mount{Host: filepath.Join(workspaceHost, ".codex") + "/", Container: workspacePath + "/.codex/"},
+			Mount{Host: filepath.Join(o.WorkspaceHost, ".claude") + "/", Container: workspacePath + "/.claude/"},
+			Mount{Host: filepath.Join(o.WorkspaceHost, ".codex") + "/", Container: workspacePath + "/.codex/"},
 		)
 	}
 
 	if o.MountContentCache {
 		mounts = append(mounts,
-			Mount{Host: filepath.Join(workspaceHost, "docs") + "/", Container: workspacePath + "/docs/"},
-			Mount{Host: filepath.Join(workspaceHost, "CLAUDE.md"), Container: workspacePath + "/CLAUDE.md"},
+			Mount{Host: filepath.Join(o.WorkspaceHost, "docs") + "/", Container: workspacePath + "/docs/"},
+			Mount{Host: filepath.Join(o.WorkspaceHost, "CLAUDE.md"), Container: workspacePath + "/CLAUDE.md"},
 		)
 	}
 
-	for _, host := range o.MaskedFiles {
+	for _, host := range maskedFiles {
 		// Caller guarantees host is under ProjectRoot; Rel never errors on POSIX.
 		rel, _ := filepath.Rel(o.ProjectRoot, host)
 		mounts = append(mounts, Mount{

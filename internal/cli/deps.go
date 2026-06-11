@@ -14,7 +14,7 @@ type containerRunner interface {
 }
 
 type imageBuilder interface {
-	Build(ctx context.Context, o docker.BuildOptions, out, errw io.Writer) error
+	Build(ctx context.Context, o docker.BuildOptions, out io.Writer) error
 }
 
 type daemonChecker interface {
@@ -49,7 +49,7 @@ func (d dockerDeps) imageExistsPreflight(ctx context.Context, image string) (boo
 type dockerNewErrStub struct{ err error }
 
 func (s dockerNewErrStub) Run(_ context.Context, _ docker.Spec) error { return s.err }
-func (s dockerNewErrStub) Build(_ context.Context, _ docker.BuildOptions, _, _ io.Writer) error {
+func (s dockerNewErrStub) Build(_ context.Context, _ docker.BuildOptions, _ io.Writer) error {
 	return s.err
 }
 func (s dockerNewErrStub) CheckDaemon(_ context.Context) error { return s.err }

@@ -26,13 +26,20 @@ const (
 	checkInfo checkState = "info"
 )
 
-// checkList accumulates status checks; ready is cleared by the first fail().
+// checkList accumulates status checks.
 type checkList struct {
 	checks []statusCheck
-	ready  bool // starts true; fail() clears it
 }
 
-func newCheckList() *checkList { return &checkList{ready: true} }
+// ready reports whether no blocking (fail) check has been recorded.
+func (c *checkList) ready() bool {
+	for _, ch := range c.checks {
+		if ch.State == checkFail {
+			return false
+		}
+	}
+	return true
+}
 
 func (c *checkList) ok(name, detail string) {
 	c.checks = append(c.checks, statusCheck{Name: name, State: checkOK, Detail: detail})
@@ -40,7 +47,6 @@ func (c *checkList) ok(name, detail string) {
 
 func (c *checkList) fail(name, detail string) {
 	c.checks = append(c.checks, statusCheck{Name: name, State: checkFail, Detail: detail})
-	c.ready = false
 }
 
 func (c *checkList) warn(name, detail string) {
@@ -84,13 +90,10 @@ func defaultIsTTY(w io.Writer) bool {
 }
 
 func renderChecks(w io.Writer, checks []statusCheck, ready bool, tty bool) {
-	type row struct {
-		glyph  string
-		name   string
-		detail string
-	}
-
-	rows := make([]row, len(checks))
+	// Rune-count widths so multi-byte Unicode glyphs align with ASCII bracket glyphs.
+	glyphs := make([]string, len(checks))
+	maxGlyph := 0
+	maxName := 0
 	for i, c := range checks {
 		g := "?"
 		if gl, ok := statusGlyphs[c.State]; ok {
@@ -100,26 +103,20 @@ func renderChecks(w io.Writer, checks []statusCheck, ready bool, tty bool) {
 				g = gl.plain
 			}
 		}
-		rows[i] = row{glyph: g, name: c.Name, detail: c.Detail}
-	}
-
-	// Rune-count widths so multi-byte Unicode glyphs align with ASCII bracket glyphs.
-	maxGlyph := 0
-	maxName := 0
-	for _, r := range rows {
-		if gw := utf8.RuneCountInString(r.glyph); gw > maxGlyph {
+		glyphs[i] = g
+		if gw := utf8.RuneCountInString(g); gw > maxGlyph {
 			maxGlyph = gw
 		}
-		if nw := utf8.RuneCountInString(r.name); nw > maxName {
+		if nw := utf8.RuneCountInString(c.Name); nw > maxName {
 			maxName = nw
 		}
 	}
 
-	for _, r := range rows {
-		if r.detail != "" {
-			fmt.Fprintf(w, "  %-*s  %-*s  %s\n", maxGlyph, r.glyph, maxName, r.name, r.detail)
+	for i, c := range checks {
+		if c.Detail != "" {
+			fmt.Fprintf(w, "  %-*s  %-*s  %s\n", maxGlyph, glyphs[i], maxName, c.Name, c.Detail)
 		} else {
-			fmt.Fprintf(w, "  %-*s  %s\n", maxGlyph, r.glyph, r.name)
+			fmt.Fprintf(w, "  %-*s  %s\n", maxGlyph, glyphs[i], c.Name)
 		}
 	}
 
@@ -142,17 +139,20 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, jso
 	ctx := cmd.Context()
 	stderr := cmd.ErrOrStderr()
 
-	cl := newCheckList()
+	cl := &checkList{}
 
 	// 1. Daemon.
-	if daemonErr := deps.checkDaemonPreflight(ctx); daemonErr != nil {
-		cl.fail("daemon", "is docker running? — run 'docker info'")
-	} else {
+	daemonUp := deps.checkDaemonPreflight(ctx) == nil
+	if daemonUp {
 		cl.ok("daemon", "")
+	} else {
+		cl.fail("daemon", "is docker running? — run 'docker info'")
 	}
 
-	// 2. Base config. loadedSettings is reused by checks 3 and 4.
+	// 2. Base config. loadedSettings is reused by checks 3 and 4;
+	// settingsCorrupt distinguishes an unreadable file from an absent one.
 	var loadedSettings *config.Settings
+	var settingsCorrupt bool
 	exists, err := config.BaseConfigExists(baseDir)
 	if err != nil {
 		cl.fail("base config", fmt.Sprintf("cannot read settings: %v", err))
@@ -161,6 +161,7 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, jso
 	} else {
 		s, loadErr := config.Load(baseDir)
 		if loadErr != nil {
+			settingsCorrupt = true
 			cl.fail("base config", fmt.Sprintf("corrupt settings: %v", loadErr))
 		} else {
 			loadedSettings = s
@@ -174,18 +175,27 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, jso
 		}
 	}
 
-	// 3. Image.
-	imageName := config.DefaultImage
-	if loadedSettings != nil {
-		imageName = loadedSettings.Image
-	}
-	imageFound, imageErr := deps.imageExistsPreflight(ctx, imageName)
-	if imageErr != nil {
-		cl.fail("image", fmt.Sprintf("error checking image %q: %v — is docker running?", imageName, imageErr))
-	} else if !imageFound {
-		cl.fail("image", fmt.Sprintf("image %q not built — run 'makeslop build'", imageName))
-	} else {
-		cl.ok("image", "")
+	// 3. Image. Skipped when the daemon is down (the inspect would hit the same
+	// dead daemon and burn a second preflight timeout) or when settings are
+	// corrupt (the configured image name is unknown — don't guess a default).
+	switch {
+	case !daemonUp:
+		cl.fail("image", "cannot check — daemon unreachable")
+	case settingsCorrupt:
+		cl.fail("image", "cannot check — settings unreadable")
+	default:
+		imageName := config.DefaultImage
+		if loadedSettings != nil {
+			imageName = loadedSettings.Image
+		}
+		imageFound, imageErr := deps.imageExistsPreflight(ctx, imageName)
+		if imageErr != nil {
+			cl.fail("image", fmt.Sprintf("error checking image %q: %v — is docker running?", imageName, imageErr))
+		} else if !imageFound {
+			cl.fail("image", fmt.Sprintf("image %q not built — run 'makeslop build'", imageName))
+		} else {
+			cl.ok("image", "")
+		}
 	}
 
 	// 4. Workspace — nil loadedSettings when settings unreadable; Lookup treats nil
@@ -232,7 +242,7 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, jso
 	}
 
 	if jsonMode {
-		result := statusResult{Checks: cl.checks, Ready: cl.ready}
+		result := statusResult{Checks: cl.checks, Ready: cl.ready()}
 		enc := json.NewEncoder(cmd.OutOrStdout())
 		enc.SetIndent("", "  ")
 		if encErr := enc.Encode(result); encErr != nil {
@@ -240,10 +250,10 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, jso
 		}
 	} else {
 		tty := ttyPred(stderr)
-		renderChecks(stderr, cl.checks, cl.ready, tty)
+		renderChecks(stderr, cl.checks, cl.ready(), tty)
 	}
 
-	if !cl.ready {
+	if !cl.ready() {
 		return errSilent
 	}
 	return nil

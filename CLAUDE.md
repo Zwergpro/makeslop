@@ -83,7 +83,7 @@ Key invariants (original Tasks 1–2 plus bug-review round 2 Tasks 3–6):
   container is left behind on a transient `/wait` drop.
 - `resizeDone` channel — closed by the SIGWINCH resize goroutine on exit; teardown defer does
   `signal.Stop(winchCh); close(winchCh); <-resizeDone` so no in-flight `ContainerResize` is executing
-  after `runContainer` returns, eliminating the race with `d.Close()`.
+  after `Run` returns, eliminating the race with `d.Close()`.
 - `drainAndJoin` helper — unexported function that drains `outputDone` and then closes `ps.closer`
   and waits for `stdinDone`. Called once per select branch instead of copy-pasting the drain+join
   block 4 times. The helper accepts `*pollableStdin` and sets `ps.closer = nil` after closing, so
@@ -103,10 +103,12 @@ same join path. On any fallback the goroutine is leaked — documented, matching
 **Test fakes** live in two files (both `_test.go` — never compiled into the production binary):
 
 `internal/docker/fakes_test.go` — preflight and build fakes (package `docker`):
-- `fakeRunClient` / `newFakeRunClient(exitCode)` — scripts preflight lifecycle; fields
-  `PingErr`, `ImageMissing`, `BlockPing`, `BlockImageInspect` cover error paths. Used by
-  `preflight_test.go` and related tests. (CLAUDE.md previously used capitalized `FakeRunClient`;
-  actual code uses unexported `fakeRunClient`.)
+- `preflightStub` — embeds `noopClient` and scripts the `Ping`/`ImageInspect` pair via
+  `PingErr`/`ImageMissing`/`ImageErr`; the single owner of the `errdefs.ErrNotFound` wrapping
+  that `ImageExists` classification depends on. Embedded by both fakes below.
+- `fakeRunClient` / `newFakeRunClient(exitCode)` — scripts preflight lifecycle; adds
+  `BlockPing`/`BlockImageInspect` (block until ctx cancel) on top of `preflightStub`.
+  Used by `preflight_test.go` and related tests.
 - `fakeBuildClient` / `newFakeBuildClient(exitCode)` — scripts `Build`; records
   the last build options in its unexported `lastBuildOptions` field.
 - `newDockerWithClient(t, c, opts...)` — constructs a `*Docker` with a fake client via
@@ -115,14 +117,15 @@ same join path. On any fallback the goroutine is leaked — documented, matching
 
 `internal/docker/run_test.go` — Run-lifecycle fake (package `docker`):
 - `fakeClient` — the Run-lifecycle fake used by `run_test.go`; distinct from `fakeRunClient`.
-  Has an `attachPayload` field to script delayed attach output, records call order (for the
-  wait-before-start test), and scripts attach reader EOF after scripted output delivery.
+  Embeds `noopClient` for the methods without test logic. Has an `attachPayload` field to script
+  delayed attach output, records call order (for the wait-before-start test), and scripts attach
+  reader EOF after scripted output delivery.
 - `noopMakeRaw`, `alwaysTTY`, `neverTTY` — defined in `fakes_test.go` (same package `docker`) and used by `run_test.go`.
 
 **Consumer-side interfaces in `internal/cli`** (package `cli`):
 ```go
 type containerRunner interface { Run(ctx context.Context, s docker.Spec) error }
-type imageBuilder    interface { Build(ctx context.Context, o docker.BuildOptions, out, errw io.Writer) error }
+type imageBuilder    interface { Build(ctx context.Context, o docker.BuildOptions, out io.Writer) error }
 type daemonChecker   interface { CheckDaemon(ctx context.Context) error }
 type imageChecker    interface { ImageExists(ctx context.Context, image string) (bool, error) }
 ```
@@ -156,7 +159,7 @@ There are no shell shims, no `dockerBinary` global, no `executableTempDir`, no
 
 **Note:** `CurrentVersion` and `MigrationVersion` were NOT bumped for the struct-DI and
 `internal/cli` extraction refactors — no `Settings` struct fields changed and the embedded
-Dockerfile was unchanged. Current values: `CurrentVersion = 1`, `MigrationVersion = 3`.
+Dockerfile was unchanged. Current values: `CurrentVersion = 1`, `MigrationVersion = 4`.
 
 ### Preflight methods (`internal/docker/preflight.go`)
 
@@ -351,8 +354,9 @@ and only changes when the `Settings` struct fields change. The two constants ser
 purposes: `CurrentVersion` gates JSON schema compatibility; `MigrationVersion` gates the one-shot
 directory refresh.
 
-**Current values:** `MigrationVersion = 3` (bumped for Dockerfile hardening: sudo removal, base
-digest pin, Go/Node tarball sha256 verification, zsh-in-docker checksum). `CurrentVersion = 1`.
+**Current values:** `MigrationVersion = 4` (v3: Dockerfile hardening — sudo removal, base digest
+pin, zsh-in-docker checksum; v4: per-arch sha256 verification for the Go and Node tarballs).
+`CurrentVersion = 1`.
 
 **Note:** the configurable per-workspace cache mount overlays (`cache:` block in `.makeslop.yaml`,
 `init --global-only` flag, `MountContentCache`/`MountAgentCache` in `docker.Options`) do **not**
@@ -381,14 +385,24 @@ Config helpers added in `internal/config/config.go`:
 - `BaseConfigExists(baseDir string) (bool, error)` — reports presence of `settings.json`.
 - `MigrationStatus(s *Settings) (current, latest int, stale bool)` — compares `s.MigratedVersion`
   to `MigrationVersion`.
+- `Update(baseDir string, mutate func(*Settings) error) error` (in `lock.go`) — the locked
+  Load→mutate→Save read-modify-write. The single mechanism behind `Migrate`'s stamp, `config set`,
+  and `init`'s fresh-seed stamp; mutate error skips the save. WithLock's no-nesting invariant
+  applies to the mutate callback.
 
 ### status command
 `makeslop status` is an ordered dependency health check:
 1. Daemon (`CheckDaemon`) — blocking
 2. Base config (`BaseConfigExists`/`MigrationStatus`) — absent/corrupt = blocking (`✗`), stale = non-blocking (`!`)
-3. Image (`ImageExists`) — blocking
+3. Image (`ImageExists`) — blocking. Short-circuited to `cannot check — daemon unreachable` when
+   check 1 failed (the inspect would burn a second preflight timeout against the same dead daemon)
+   and to `cannot check — settings unreadable` when settings exist but are corrupt (the configured
+   image name is unknown — no guessed default). Absent settings still check `config.DefaultImage`
+   (what `init` would seed).
 4. Workspace (`ws.Lookup`) — blocking
 5. Secret scan summary (`security.Scan` count) — non-blocking (`–`/`✓`)
+
+`ready` in the JSON/verdict is derived (`checkList.ready()`: no `fail` entry), not stored state.
 
 Output: aligned lines with glyphs `✓/✗/–/!`; final verdict line + single next action. `--json`
 emits `{checks:[{name,state,detail}], ready:bool}`. Exits non-zero when any blocking check fails.
@@ -427,13 +441,14 @@ Two new `docker.Options` booleans gate additional security mounts in `BuildSpec`
 Both mounts are inserted in `BuildSpec` at a fixed point: after the 4 base mounts and before the
 cache overlays. The drift-guard test covers both. `--dry-run` reflects both automatically.
 
-**`filterOut` interaction for `ProtectProjectConfig`:** when `ProtectProjectConfig` is true,
-`runRun` calls `filterOut(maskedFiles, configPath)` to remove `.makeslop.yaml` from the
-`/dev/null` masked-file list *before* building `opts`. This is necessary because Docker applies
-mounts in argument order (last-write-wins): if a `/dev/null` bind for `.makeslop.yaml` appears
-after the read-only self-bind, it silently overrides the protection (e.g. when the user adds a
-broad pattern like `"*.yaml"` to `exclude.scan.patterns`). `filterOut` removes only the first
-occurrence and returns the input unmodified when the path is absent.
+**Mask-collision filtering for `ProtectProjectConfig`:** when `ProtectProjectConfig` is true,
+`BuildSpec` itself drops `<ProjectRoot>/.makeslop.yaml` from `MaskedFiles` before emitting the
+`/dev/null` mask mounts (unexported `filterOut` in `spec.go`). This is necessary because Docker
+applies mounts in argument order (last-write-wins): if a `/dev/null` bind for `.makeslop.yaml`
+appears after the read-only self-bind, it silently overrides the protection (e.g. when the user
+adds a broad pattern like `"*.yaml"` to `exclude.scan.patterns`). The invariant lives in
+`BuildSpec` — not the CLI caller — so every caller setting `ProtectProjectConfig` gets it; pure
+and covered by `TestBuildSpec_ProtectProjectConfig_DropsConfigMask`.
 
 ### Decoupling: `workspace.Lookup` signature and `docker.Options.WorkspaceHost`
 

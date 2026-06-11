@@ -119,14 +119,7 @@ func TestRun_AfterInit_LaunchesDocker(t *testing.T) {
 	// The workspace mount must bind the registered project root (resolvedPwd).
 	wantMountSource := resolvedPwd
 	wantMountTarget := "/workspace/" + filepath.Base(workspaceDir)
-	var foundWorkspaceMount bool
-	for _, m := range got.Mounts {
-		if m.Host == wantMountSource && m.Container == wantMountTarget {
-			foundWorkspaceMount = true
-			break
-		}
-	}
-	if !foundWorkspaceMount {
+	if !hasMountWithContainerAndHost(got.Mounts, wantMountTarget, wantMountSource) {
 		t.Errorf("fc.LastSpec missing workspace mount source=%q target=%q; mounts=%v",
 			wantMountSource, wantMountTarget, got.Mounts)
 	}
@@ -480,7 +473,7 @@ func TestRun_NoEnvFiles_PrintsNothingExtraOnStderr(t *testing.T) {
 	}
 }
 
-// ── Helper unit tests (mergeUniqueSorted, filterOut) ──────────────────────────
+// ── Helper unit tests (mergeUniqueSorted) ─────────────────────────────────────
 
 func TestMergeUniqueSorted(t *testing.T) {
 	cases := []struct {
@@ -552,47 +545,6 @@ func TestMergeUniqueSorted(t *testing.T) {
 			for i := range tc.want {
 				if got[i] != tc.want[i] {
 					t.Errorf("mergeUniqueSorted result[%d] = %q, want %q", i, got[i], tc.want[i])
-				}
-			}
-		})
-	}
-}
-
-func TestFilterOut(t *testing.T) {
-	cases := []struct {
-		name    string
-		s       []string
-		exclude string
-		want    []string
-	}{
-		{name: "nil slice", s: nil, exclude: "x", want: nil},
-		{name: "empty slice", s: []string{}, exclude: "x", want: []string{}},
-		{name: "element not present", s: []string{"a", "b", "c"}, exclude: "x", want: []string{"a", "b", "c"}},
-		{name: "element at start", s: []string{"a", "b", "c"}, exclude: "a", want: []string{"b", "c"}},
-		{name: "element in middle", s: []string{"a", "b", "c"}, exclude: "b", want: []string{"a", "c"}},
-		{name: "element at end", s: []string{"a", "b", "c"}, exclude: "c", want: []string{"a", "b"}},
-		{name: "single element removed", s: []string{"a"}, exclude: "a", want: []string{}},
-		{name: "only first occurrence removed", s: []string{"a", "b", "a"}, exclude: "a", want: []string{"b", "a"}},
-		{
-			// Critical interaction: scan pattern *.yaml matches .makeslop.yaml →
-			// filterOut removes it from maskedFiles before /dev/null bind list is
-			// built (so the read-only self-bind is not overridden by a /dev/null bind).
-			name:    "yaml config path removed from masked list",
-			s:       []string{"/proj/.env", "/proj/.makeslop.yaml", "/proj/config.yaml"},
-			exclude: "/proj/.makeslop.yaml",
-			want:    []string{"/proj/.env", "/proj/config.yaml"},
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := filterOut(tc.s, tc.exclude)
-			if len(got) != len(tc.want) {
-				t.Fatalf("filterOut(%v, %q) = %v, want %v", tc.s, tc.exclude, got, tc.want)
-			}
-			for i := range tc.want {
-				if got[i] != tc.want[i] {
-					t.Errorf("filterOut result[%d] = %q, want %q", i, got[i], tc.want[i])
 				}
 			}
 		})
@@ -2252,34 +2204,18 @@ func TestRun_DaemonCheckedBeforeYamlParse(t *testing.T) {
 	}
 }
 
-// Regular .makeslop.yaml → protect=true; .makeslop.yaml removed from maskedFiles.
-func TestSandboxMountGates_RegularConfigFile_ProtectAndFilter(t *testing.T) {
+// Regular .makeslop.yaml → protect=true.
+func TestSandboxMountGates_RegularConfigFile_Protect(t *testing.T) {
 	root := t.TempDir()
 	cfgPath := filepath.Join(root, projectconfig.Filename)
 	if err := os.WriteFile(cfgPath, []byte("# yaml"), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
-	maskedFiles := []string{cfgPath, filepath.Join(root, "other.env")}
 
-	protect, maskHooks, filtered := sandboxMountGates(root, maskedFiles)
+	protect, maskHooks := sandboxMountGates(root)
 
 	if !protect {
 		t.Errorf("protect = false, want true (regular file)")
-	}
-	for _, f := range filtered {
-		if f == cfgPath {
-			t.Errorf("filtered must not contain configPath %q", cfgPath)
-		}
-	}
-	// other.env must still be present
-	found := false
-	for _, f := range filtered {
-		if f == filepath.Join(root, "other.env") {
-			found = true
-		}
-	}
-	if !found {
-		t.Errorf("filtered must still contain other.env; got %v", filtered)
 	}
 	// .git absent → maskHooks = false
 	if maskHooks {
@@ -2287,18 +2223,14 @@ func TestSandboxMountGates_RegularConfigFile_ProtectAndFilter(t *testing.T) {
 	}
 }
 
-// Missing .makeslop.yaml → protect=false; maskedFiles unchanged.
+// Missing .makeslop.yaml → protect=false.
 func TestSandboxMountGates_MissingConfig_NoProtect(t *testing.T) {
 	root := t.TempDir()
-	maskedFiles := []string{filepath.Join(root, ".env")}
 
-	protect, _, filtered := sandboxMountGates(root, maskedFiles)
+	protect, _ := sandboxMountGates(root)
 
 	if protect {
 		t.Errorf("protect = true, want false (config absent)")
-	}
-	if len(filtered) != len(maskedFiles) || (len(maskedFiles) > 0 && filtered[0] != maskedFiles[0]) {
-		t.Errorf("filtered must equal maskedFiles unchanged; got %v, want %v", filtered, maskedFiles)
 	}
 }
 
@@ -2310,7 +2242,7 @@ func TestSandboxMountGates_GitDir_MaskHooks(t *testing.T) {
 		t.Fatalf("mkdir .git: %v", err)
 	}
 
-	_, maskHooks, _ := sandboxMountGates(root, nil)
+	_, maskHooks := sandboxMountGates(root)
 
 	if !maskHooks {
 		t.Errorf("maskHooks = false, want true (.git is a directory)")
@@ -2324,7 +2256,7 @@ func TestSandboxMountGates_GitFile_NoMaskHooks(t *testing.T) {
 		t.Fatalf("write gitfile: %v", err)
 	}
 
-	_, maskHooks, _ := sandboxMountGates(root, nil)
+	_, maskHooks := sandboxMountGates(root)
 
 	if maskHooks {
 		t.Errorf("maskHooks = true, want false (.git is a regular file / gitfile)")

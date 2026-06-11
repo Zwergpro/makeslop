@@ -59,7 +59,7 @@ type pollableStdin struct {
 // Falls back gracefully: on any failure, returns an unconverted reference to
 // stdinReader with ps.closer == nil. Callers check ps.closer != nil to
 // determine joinability and must tolerate the fallback goroutine-leak path
-// (documented in runContainer).
+// (documented on Run).
 func newPollableStdin(stdinReader io.Reader) pollableStdin {
 	// Only attempt the tty open if the injected reader is actually os.Stdin.
 	// Injected test readers that implement io.Closer are handled directly.
@@ -116,8 +116,9 @@ func sameCharDevice(a, b *os.File) bool {
 	return sa.Rdev == sb.Rdev
 }
 
-// runContainer implements (*Docker).Run with injected apiClient, TTY predicate,
-// raw-mode function, and I/O streams. The caller owns the client lifetime.
+// Run launches s interactively using the struct's injected apiClient, TTY
+// predicate, raw-mode function, and I/O streams. Returns ErrNoTTY unless both
+// stdin and stdout are TTYs, and *ExitError on non-zero container exit.
 //
 // Lifecycle order (fixes AutoRemove + wait-before-start race, output truncation,
 // and stdin goroutine leak — findings #1, #2, #3):
@@ -137,11 +138,12 @@ func sameCharDevice(a, b *os.File) bool {
 // Injected test readers implementing io.Closer (e.g. os.Pipe read-end) are
 // treated identically to the pollable dup path and the goroutine is always joined.
 //
-// resizeHook, when non-nil, is called at the end of the resize goroutine body
-// (before closing resizeDone). Tests inject a hook to verify the goroutine was
-// joined before Run returned; nil in production.
-func runContainer(ctx context.Context, cli apiClient, isTTYFn func() bool, makeRawFn func(int) (*term.State, error), stdin io.Reader, stdout io.Writer, resizeHook func(), s Spec) error {
-	if !isTTYFn() {
+// d.resizeGoroutineHook, when non-nil, is called at the end of the resize
+// goroutine body (before closing resizeDone). Tests inject a hook to verify the
+// goroutine was joined before Run returned; nil in production.
+func (d *Docker) Run(ctx context.Context, s Spec) error {
+	cli := d.client
+	if !d.isTTYFn() {
 		return ErrNoTTY
 	}
 
@@ -177,12 +179,12 @@ func runContainer(ctx context.Context, cli apiClient, isTTYFn func() bool, makeR
 
 	// Raw mode so the container gets unmodified input.
 	fd := int(os.Stdin.Fd())
-	oldState, err := makeRawFn(fd)
+	oldState, err := d.makeRaw(fd)
 	if err != nil {
 		return fmt.Errorf("set terminal raw mode: %w", err)
 	}
 
-	ps := newPollableStdin(stdin)
+	ps := newPollableStdin(d.stdin)
 
 	// Deferred cleanup: restore raw mode. The pollable handle is already closed
 	// by the time this runs (closed inline, before return, so the join goroutine
@@ -239,8 +241,8 @@ func runContainer(ctx context.Context, cli apiClient, isTTYFn func() bool, makeR
 					})
 				}
 			}
-			if resizeHook != nil {
-				resizeHook()
+			if d.resizeGoroutineHook != nil {
+				d.resizeGoroutineHook()
 			}
 		}()
 		// signal.Stop guarantees no further sends to winchCh, so close is race-free.
@@ -257,7 +259,7 @@ func runContainer(ctx context.Context, cli apiClient, isTTYFn func() bool, makeR
 	// mapping the exit status (fixes output truncation race — finding #1).
 	outputDone := make(chan struct{})
 	go func() {
-		_, _ = io.Copy(stdout, att.Reader) //nolint:errcheck
+		_, _ = io.Copy(d.stdout, att.Reader) //nolint:errcheck
 		close(outputDone)
 	}()
 
@@ -286,7 +288,7 @@ func runContainer(ctx context.Context, cli apiClient, isTTYFn func() bool, makeR
 		// the container → the attach stream EOFs → io.Copy in the output goroutine
 		// returns → outputDone is closed. Without this the drain blocks until the
 		// container exits on its own, and the deferred force-remove at the top of
-		// runContainer never fires (startedCleanly is true and ctx.Err() is nil),
+		// Run never fires (startedCleanly is true and ctx.Err() is nil),
 		// leaving a running container behind (finding #5).
 		// Use context.Background() because the parent ctx may already be cancelled.
 		_, _ = cli.ContainerRemove(context.Background(), id, moby.ContainerRemoveOptions{Force: true})

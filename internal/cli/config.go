@@ -51,15 +51,8 @@ func newConfigCmd(baseDir string) *cobra.Command {
 			}
 
 			var storedVal string
-			if err := config.WithLock(baseDir, func() error {
-				s, err := config.Load(baseDir)
-				if err != nil {
-					return err
-				}
+			if err := config.Update(baseDir, func(s *config.Settings) error {
 				if err := config.ConfigSet(s, args[0], args[1]); err != nil {
-					return err
-				}
-				if err := config.Save(baseDir, s); err != nil {
 					return err
 				}
 				// Echo the stored (normalized) value, not the raw argument.

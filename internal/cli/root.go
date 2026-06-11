@@ -99,7 +99,12 @@ func runWithExitCode(baseDir string, stdout, stderr io.Writer, args []string, co
 	cmd.SetArgs(args)
 	cmd.SetOut(stdout)
 	cmd.SetErr(stderr)
-	err := cmd.ExecuteContext(ctx)
+	return exitCodeFromError(cmd.ExecuteContext(ctx), stderr)
+}
+
+// exitCodeFromError is the exit-code contract: docker.ExitError passes Code
+// through; errSilent → 1 with no reprint; other errors → 1 with "makeslop: ".
+func exitCodeFromError(err error, stderr io.Writer) int {
 	if err == nil {
 		return 0
 	}

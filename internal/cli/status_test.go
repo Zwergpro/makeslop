@@ -13,7 +13,6 @@ import (
 	"github.com/Zwergpro/makeslop/internal/projectconfig"
 )
 
-
 func newFakeStatusDeps(daemonDown bool, imageMissing bool) dockerDeps {
 	fc := newFakeDocker(0, false) // TTY irrelevant for status
 	if daemonDown {
@@ -600,9 +599,9 @@ func TestStatus_CheckOrdering(t *testing.T) {
 
 // ok appends an ok check; ready stays true.
 func TestCheckList_Ok_AppendsAndStaysReady(t *testing.T) {
-	cl := newCheckList()
+	cl := &checkList{}
 	cl.ok("daemon", "")
-	if !cl.ready {
+	if !cl.ready() {
 		t.Errorf("ok() must not clear ready")
 	}
 	if len(cl.checks) != 1 {
@@ -618,10 +617,10 @@ func TestCheckList_Ok_AppendsAndStaysReady(t *testing.T) {
 
 // fail appends a fail check and clears ready.
 func TestCheckList_Fail_ClearsReady(t *testing.T) {
-	cl := newCheckList()
+	cl := &checkList{}
 	cl.ok("daemon", "")
 	cl.fail("image", "run 'makeslop build'")
-	if cl.ready {
+	if cl.ready() {
 		t.Errorf("fail() must clear ready")
 	}
 	if len(cl.checks) != 2 {
@@ -637,9 +636,9 @@ func TestCheckList_Fail_ClearsReady(t *testing.T) {
 
 // warn appends a warn check but does NOT clear ready.
 func TestCheckList_Warn_NonBlocking(t *testing.T) {
-	cl := newCheckList()
+	cl := &checkList{}
 	cl.warn("base config", "stale — run migrate")
-	if !cl.ready {
+	if !cl.ready() {
 		t.Errorf("warn() must not clear ready")
 	}
 	if cl.checks[0].State != checkWarn {
@@ -649,9 +648,9 @@ func TestCheckList_Warn_NonBlocking(t *testing.T) {
 
 // info appends an info check; ready unchanged.
 func TestCheckList_Info_NonBlocking(t *testing.T) {
-	cl := newCheckList()
+	cl := &checkList{}
 	cl.info("secret scan")
-	if !cl.ready {
+	if !cl.ready() {
 		t.Errorf("info() must not clear ready")
 	}
 	if cl.checks[0].State != checkInfo {
@@ -664,11 +663,11 @@ func TestCheckList_Info_NonBlocking(t *testing.T) {
 
 // ready is cleared by the first fail and stays false across subsequent calls.
 func TestCheckList_ReadyClearedByFirstFail(t *testing.T) {
-	cl := newCheckList()
+	cl := &checkList{}
 	cl.fail("daemon", "down")
 	cl.ok("image", "")   // subsequent ok does not restore ready
 	cl.warn("scan", "x") // subsequent warn does not restore ready
-	if cl.ready {
+	if cl.ready() {
 		t.Errorf("ready must stay false after fail()")
 	}
 }
