@@ -328,7 +328,7 @@ accepted residual risk (documented maintainer decision).
 
 **Maintaining pins:** when `GO_VERSION` or `NODE_VERSION` is bumped, the corresponding
 per-architecture sha256 values in the `RUN` commands must be updated to match the new release, and
-`MigrationVersion` must be incremented so existing installs pick up the refreshed Dockerfile via
+`ConfigVersion` must be incremented so existing installs pick up the refreshed Dockerfile via
 `makeslop migrate` + `makeslop build`.
 
 ---

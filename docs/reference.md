@@ -43,7 +43,7 @@ Complete reference for all `makeslop` commands, flags, runtime behavior, and con
 Registers the current working directory as a workspace and seeds `~/.makeslop/` with initial files
 (including `Dockerfile` and `settings.json`).
 
-- On a fresh `~/.makeslop/` the directory is stamped at the current `MigrationVersion`
+- On a fresh `~/.makeslop/` the directory is stamped at the current `ConfigVersion`
   (never stale after a fresh seed).
 - On an existing but stale directory a non-blocking nudge is printed to stderr and `init`
   continues without modifying the existing files:
@@ -90,7 +90,7 @@ Builds (or rebuilds) the base Docker image from `~/.makeslop/Dockerfile` via the
   (use for proxy settings, version pins, etc.)
 - `--refresh` — overwrite `~/.makeslop/Dockerfile` from the embedded assets before building.
   Use this to reset a hand-edited base Dockerfile to the shipped version without running a
-  separate `migrate` step. Does **not** touch `migrated_version` or any migration state —
+  separate `migrate` step. Does **not** touch the `version` field or any migration state —
   `migrate` remains the sole owner of version tracking.
 
 ---
@@ -142,7 +142,7 @@ action. Exit code is 0 when all blocking checks pass.
 
 Brings `~/.makeslop/` up to date with the current binary.
 
-- Compares the binary's `MigrationVersion` constant against the `migrated_version` stored in
+- Compares the binary's `ConfigVersion` constant against the `version` stored in
   `settings.json`. When they differ, runs all migration steps (force-overwrites
   `~/.makeslop/Dockerfile` from the embedded asset) and stamps the new version.
 - On success prints `makeslop: ~/.makeslop updated` to stdout and exits 0.
@@ -188,7 +188,7 @@ Normal first-run order: `init` → `build` → `run`. After a binary update that
 Dockerfile: `migrate` → `build`.
 
 `init` registers the workspace **and** seeds `~/.makeslop/` atomically, so a freshly initialized
-directory is always stamped at the current `MigrationVersion` — never reported stale on first run.
+directory is always stamped at the current `ConfigVersion` — never reported stale on first run.
 
 `migrate` is the explicit upgrade path for existing installs. `build` self-heals `~/.makeslop/`
 (seeds if absent), but does not register a workspace.
@@ -452,19 +452,16 @@ The image, shell, and `/tmp` tmpfs size are configurable via `makeslop config se
     "image": "claudebox",
     "shell": "/bin/zsh",
     "tmp_dir_size": "100m",
-    "workspaces": {},
-    "migrated_version": 3
+    "workspaces": {}
 }
 ```
 
 **Field notes:**
-- `version` — settings schema version (`CurrentVersion`); currently `1`. Increment only when the
-  `Settings` struct fields change.
-- `migrated_version` — written by `makeslop migrate` (or stamped by `makeslop init` on a fresh
-  seed) to record which migration generation `~/.makeslop/` is at. Absent means 0
-  (pre-migration). Currently `MigrationVersion = 3`. This field is **distinct** from `version`:
-  `version` gates JSON schema compatibility; `migrated_version` gates the one-shot directory
-  refresh.
+- `version` — single version field (`ConfigVersion`); currently `1`. Written by `makeslop migrate`
+  (or stamped by `makeslop init` on a fresh seed) to record which generation `~/.makeslop/` is at.
+  Absent or `0` means the directory has not been migrated yet — `makeslop migrate` will bootstrap
+  it. Increment `ConfigVersion` whenever `Settings` struct fields change **or** the embedded
+  Dockerfile changes.
 - Omitted or empty `image`/`shell`/`tmp_dir_size` fields fall back to their defaults; existing
   `settings.json` files predating these keys keep working unchanged.
 
