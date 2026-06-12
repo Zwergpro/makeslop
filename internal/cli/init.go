@@ -54,7 +54,7 @@ func runInit(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOf
 	// Existing: nudge only — stamping would skip the actual migration.
 	if freshSeed {
 		if lockErr := config.Update(baseDir, func(s *config.Settings) error {
-			s.MigratedVersion = config.MigrationVersion
+			s.Version = config.ConfigVersion
 			return nil
 		}); lockErr != nil {
 			return lockErr

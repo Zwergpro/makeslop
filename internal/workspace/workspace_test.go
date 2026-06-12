@@ -193,7 +193,7 @@ func TestLookup_NoMatchingAncestor(t *testing.T) {
 	w := New(base)
 
 	seed := &config.Settings{
-		Version: config.CurrentVersion,
+		Version: config.ConfigVersion,
 		Workspaces: map[string]config.Workspace{
 			"/some/other/project": {Name: "project-abcdef", CreatedAt: time.Now().UTC()},
 		},
@@ -227,7 +227,7 @@ func TestLookup_ExactPwdMatch(t *testing.T) {
 
 	pwd := "/workspace/makeslop"
 	seed := &config.Settings{
-		Version: config.CurrentVersion,
+		Version: config.ConfigVersion,
 		Workspaces: map[string]config.Workspace{
 			pwd: {Name: "makeslop-abcdef", CreatedAt: time.Now().UTC()},
 		},
@@ -255,7 +255,7 @@ func TestLookup_ParentRegistered(t *testing.T) {
 
 	parent := "/workspace/makeslop"
 	seed := &config.Settings{
-		Version: config.CurrentVersion,
+		Version: config.ConfigVersion,
 		Workspaces: map[string]config.Workspace{
 			parent: {Name: "makeslop-abcdef", CreatedAt: time.Now().UTC()},
 		},
@@ -562,7 +562,7 @@ func TestInit_CorruptSettingsReturnsWrappedError(t *testing.T) {
 func TestFindAncestor_StopsAtRoot(t *testing.T) {
 	base := t.TempDir()
 	w := New(base)
-	s := &config.Settings{Version: config.CurrentVersion, Workspaces: map[string]config.Workspace{}}
+	s := &config.Settings{Version: config.ConfigVersion, Workspaces: map[string]config.Workspace{}}
 
 	// Deep path with no matches must terminate at the filesystem root.
 	_, _, ok := w.findAncestor(s, "/a/b/c/d/e/f")
@@ -623,7 +623,7 @@ func TestFindAncestor_RootRegistered(t *testing.T) {
 	w := New(base)
 	rootKey := string(filepath.Separator)
 	s := &config.Settings{
-		Version: config.CurrentVersion,
+		Version: config.ConfigVersion,
 		Workspaces: map[string]config.Workspace{
 			rootKey: {Name: "root-aabbcc", CreatedAt: time.Now().UTC()},
 		},

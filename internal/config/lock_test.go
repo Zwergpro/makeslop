@@ -13,7 +13,6 @@ func TestWithLock_SerializesLoadSave(t *testing.T) {
 	base := t.TempDir()
 
 	seed := &Settings{
-		Version:    CurrentVersion,
 		Image:      DefaultImage,
 		Shell:      DefaultShell,
 		TmpDirSize: DefaultTmpDirSize,
@@ -37,8 +36,8 @@ func TestWithLock_SerializesLoadSave(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				// MigratedVersion doubles as a monotone counter here.
-				s.MigratedVersion++
+				// Version doubles as a monotone counter here.
+				s.Version++
 				return Save(base, s)
 			})
 		}()
@@ -55,9 +54,9 @@ func TestWithLock_SerializesLoadSave(t *testing.T) {
 	if err != nil {
 		t.Fatalf("final Load: %v", err)
 	}
-	if final.MigratedVersion != goroutines {
-		t.Errorf("MigratedVersion = %d, want %d (lost update detected)",
-			final.MigratedVersion, goroutines)
+	if final.Version != goroutines {
+		t.Errorf("Version = %d, want %d (lost update detected)",
+			final.Version, goroutines)
 	}
 }
 
