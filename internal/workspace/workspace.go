@@ -51,7 +51,12 @@ func (w *Workspaces) Lookup(s *config.Settings, pwd string) (matchedRoot, cacheD
 	if !ok {
 		return "", "", ErrNotRegistered
 	}
-	return matched, filepath.Join(w.baseDir, config.WorkspacesDir, ws.Name), nil
+	return matched, w.cacheDir(ws.Name), nil
+}
+
+// cacheDir is the per-workspace cache directory under the base dir.
+func (w *Workspaces) cacheDir(name string) string {
+	return filepath.Join(w.baseDir, config.WorkspacesDir, name)
 }
 
 // Init registers pwd (absolute, EvalSymlinks-evaluated); registering an
@@ -66,12 +71,12 @@ func (w *Workspaces) Init(pwd string) (string, error) {
 			return err
 		}
 		if _, ws, ok := w.findAncestor(s, pwd); ok {
-			workspaceDir = filepath.Join(w.baseDir, config.WorkspacesDir, ws.Name)
+			workspaceDir = w.cacheDir(ws.Name)
 			return nil
 		}
 		ws := config.Workspace{Name: workspaceName(pwd), CreatedAt: time.Now().UTC()}
 		s.Workspaces[pwd] = ws
-		workspaceDir = filepath.Join(w.baseDir, config.WorkspacesDir, ws.Name)
+		workspaceDir = w.cacheDir(ws.Name)
 		if err := os.MkdirAll(workspaceDir, 0o755); err != nil {
 			return fmt.Errorf("create workspace dir %s: %w", workspaceDir, err)
 		}
