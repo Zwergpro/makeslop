@@ -384,16 +384,13 @@ func TestQuiet_SuppressesInitNudge(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	if config.MigrationVersion == 0 {
-		t.Skip("MigrationVersion is 0; nothing would be stale")
-	}
+	// Version: 0 forces staleness since 0 < ConfigVersion(1).
 	s := &config.Settings{
-		Version:         config.CurrentVersion,
-		Image:           config.DefaultImage,
-		Shell:           config.DefaultShell,
-		TmpDirSize:      config.DefaultTmpDirSize,
-		Workspaces:      map[string]config.Workspace{},
-		MigratedVersion: 0, // stale
+		Version:    0, // stale
+		Image:      config.DefaultImage,
+		Shell:      config.DefaultShell,
+		TmpDirSize: config.DefaultTmpDirSize,
+		Workspaces: map[string]config.Workspace{},
 	}
 	if err := config.Save(baseDir, s); err != nil {
 		t.Fatalf("seed stale settings: %v", err)
@@ -407,7 +404,7 @@ func TestQuiet_SuppressesInitNudge(t *testing.T) {
 		t.Errorf("expected nudge on stderr without --quiet; got: %q", stderrNoQuiet)
 	}
 
-	s.MigratedVersion = 0 // re-seed stale for the next call
+	s.Version = 0 // re-seed stale for the next call
 	if err := config.Save(baseDir, s); err != nil {
 		t.Fatalf("re-seed stale settings: %v", err)
 	}

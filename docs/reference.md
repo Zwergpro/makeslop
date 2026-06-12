@@ -25,6 +25,7 @@ Complete reference for all `makeslop` commands, flags, runtime behavior, and con
 - [Output conventions](#output-conventions)
 - [Path resolution](#path-resolution)
 - [Docker container settings (settings.json)](#docker-container-settings-settingsjson)
+- [Using a custom Docker image](#using-a-custom-docker-image)
 
 ---
 
@@ -43,7 +44,7 @@ Complete reference for all `makeslop` commands, flags, runtime behavior, and con
 Registers the current working directory as a workspace and seeds `~/.makeslop/` with initial files
 (including `Dockerfile` and `settings.json`).
 
-- On a fresh `~/.makeslop/` the directory is stamped at the current `MigrationVersion`
+- On a fresh `~/.makeslop/` the directory is stamped at the current `ConfigVersion`
   (never stale after a fresh seed).
 - On an existing but stale directory a non-blocking nudge is printed to stderr and `init`
   continues without modifying the existing files:
@@ -90,7 +91,7 @@ Builds (or rebuilds) the base Docker image from `~/.makeslop/Dockerfile` via the
   (use for proxy settings, version pins, etc.)
 - `--refresh` — overwrite `~/.makeslop/Dockerfile` from the embedded assets before building.
   Use this to reset a hand-edited base Dockerfile to the shipped version without running a
-  separate `migrate` step. Does **not** touch `migrated_version` or any migration state —
+  separate `migrate` step. Does **not** touch the `version` field or any migration state —
   `migrate` remains the sole owner of version tracking.
 
 ---
@@ -142,7 +143,7 @@ action. Exit code is 0 when all blocking checks pass.
 
 Brings `~/.makeslop/` up to date with the current binary.
 
-- Compares the binary's `MigrationVersion` constant against the `migrated_version` stored in
+- Compares the binary's `ConfigVersion` constant against the `version` stored in
   `settings.json`. When they differ, runs all migration steps (force-overwrites
   `~/.makeslop/Dockerfile` from the embedded asset) and stamps the new version.
 - On success prints `makeslop: ~/.makeslop updated` to stdout and exits 0.
@@ -188,7 +189,7 @@ Normal first-run order: `init` → `build` → `run`. After a binary update that
 Dockerfile: `migrate` → `build`.
 
 `init` registers the workspace **and** seeds `~/.makeslop/` atomically, so a freshly initialized
-directory is always stamped at the current `MigrationVersion` — never reported stale on first run.
+directory is always stamped at the current `ConfigVersion` — never reported stale on first run.
 
 `migrate` is the explicit upgrade path for existing installs. `build` self-heals `~/.makeslop/`
 (seeds if absent), but does not register a workspace.
@@ -452,19 +453,16 @@ The image, shell, and `/tmp` tmpfs size are configurable via `makeslop config se
     "image": "claudebox",
     "shell": "/bin/zsh",
     "tmp_dir_size": "100m",
-    "workspaces": {},
-    "migrated_version": 3
+    "workspaces": {}
 }
 ```
 
 **Field notes:**
-- `version` — settings schema version (`CurrentVersion`); currently `1`. Increment only when the
-  `Settings` struct fields change.
-- `migrated_version` — written by `makeslop migrate` (or stamped by `makeslop init` on a fresh
-  seed) to record which migration generation `~/.makeslop/` is at. Absent means 0
-  (pre-migration). Currently `MigrationVersion = 3`. This field is **distinct** from `version`:
-  `version` gates JSON schema compatibility; `migrated_version` gates the one-shot directory
-  refresh.
+- `version` — single version field (`ConfigVersion`); currently `1`. Written by `makeslop migrate`
+  (or stamped by `makeslop init` on a fresh seed) to record which generation `~/.makeslop/` is at.
+  Absent or `0` means the directory has not been migrated yet — `makeslop migrate` will bootstrap
+  it. Increment `ConfigVersion` whenever `Settings` struct fields change **or** the embedded
+  Dockerfile changes.
 - Omitted or empty `image`/`shell`/`tmp_dir_size` fields fall back to their defaults; existing
   `settings.json` files predating these keys keep working unchanged.
 
@@ -472,3 +470,66 @@ The image, shell, and `/tmp` tmpfs size are configurable via `makeslop config se
 (mebibytes), `g`/`G` (gibibytes), or no suffix (bytes). Example: `100m`, `2g`, `512k`, `1048576`.
 A bare number without a suffix is interpreted by Docker as **bytes** — `512` means 512 bytes, not
 512 MB.
+
+---
+
+## Using a custom Docker image
+
+makeslop ships an embedded `Dockerfile` and builds it into the `claudebox` image, but you are not
+locked into either. The image that `makeslop run` launches is whatever the `image` setting points
+to (see [Docker container settings](#docker-container-settings-settingsjson)). There are two ways to
+substitute your own.
+
+### Option A — customize the embedded Dockerfile
+
+Edit `~/.makeslop/Dockerfile` (add packages, tools, language runtimes, etc.) and rebuild:
+
+```sh
+makeslop build
+```
+
+`build` reads `~/.makeslop/Dockerfile` and tags the result with the configured `image` name, so no
+config change is needed.
+
+> **Caveat:** `~/.makeslop/Dockerfile` is owned by the migration system. `makeslop migrate` and
+> `makeslop build --refresh` both **overwrite** it from the embedded assets, discarding hand edits.
+> Keep your changes in version control (or a patch) so you can reapply them after an upgrade.
+
+### Option B — bring your own pre-built image
+
+Point makeslop at an image you build or pull yourself, bypassing `~/.makeslop/Dockerfile` entirely:
+
+```sh
+makeslop config set image my-org/my-agent:latest
+docker pull my-org/my-agent:latest     # or: docker build -t my-org/my-agent:latest .
+makeslop run
+```
+
+`makeslop run` performs an **image-existence preflight** (a local `docker inspect`) and launches the
+image directly — it never pulls and never builds. Make sure the image is present in the local
+daemon before running. **Do not run `makeslop build` with a bring-your-own image**: `build` would
+rebuild from the embedded `Dockerfile` and re-tag it under your configured `image` name, clobbering
+the image you pulled.
+
+### Image contract
+
+A custom image (either option) must satisfy the assumptions makeslop and the bind mounts rely on:
+
+- **User:** runs as **uid 1000** with home `/home/user` (the container is launched as uid 1000; the
+  agent-config mounts target `/home/user/.claude`, `/home/user/.codex`, etc.). See
+  [Host UID](#host-uid).
+- **Workdir:** a writable `/workspace` directory (the project tree is bind-mounted at
+  `/workspace/<name>`). See the [mount table](#container-layout-and-mount-table).
+- **Shell:** the configured `shell` must exist at its path inside the image. The container is exec'd
+  with this shell as its command (default `/bin/zsh`). Either install that shell in your image, or
+  point makeslop at one your image already has:
+  ```sh
+  makeslop config set shell /bin/bash
+  ```
+- **Agents (optional):** the `claude` / `codex` CLIs are not required by makeslop itself — include
+  them only if you want them available in the container. Their per-workspace and global state
+  directories are mounted regardless.
+
+The in-container security flags (`--cap-drop ALL`, `--security-opt no-new-privileges`, the `/tmp`
+tmpfs) and all bind mounts are applied by makeslop at launch time and are independent of which image
+you use. Verify the exact launch with `makeslop run --dry-run`.

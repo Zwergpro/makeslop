@@ -168,10 +168,6 @@ func TestStatus_StaleConfig_ReportsWarnButStaysReady(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	if config.MigrationVersion == 0 {
-		t.Skip("MigrationVersion is 0; cannot test stale config")
-	}
-
 	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
 		t.Fatalf("init failed: %v", err)
 	}
@@ -180,7 +176,8 @@ func TestStatus_StaleConfig_ReportsWarnButStaysReady(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load settings: %v", err)
 	}
-	s.MigratedVersion = 0
+	// Force staleness: Version 0 < ConfigVersion(1).
+	s.Version = 0
 	if err := config.Save(baseDir, s); err != nil {
 		t.Fatalf("save stale settings: %v", err)
 	}

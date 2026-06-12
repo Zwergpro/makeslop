@@ -1,6 +1,3 @@
-// Package docker assembles and executes the `docker run` invocation. Argv
-// assembly and SDK-struct projections are pure (spec.go); side-effecting exec
-// lives in run.go and build.go.
 package docker
 
 import (

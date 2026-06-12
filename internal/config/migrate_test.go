@@ -11,8 +11,14 @@ import (
 	"github.com/Zwergpro/makeslop/internal/assets"
 )
 
+// TestMigrate_FreshDir verifies that Migrate on a clean machine (neither the
+// directory nor settings.json exists) bootstraps the directory, returns
+// applied == true, writes the Dockerfile, and stamps Version == ConfigVersion.
+// The no-file default is Version = 0 < ConfigVersion, so the migration always
+// runs on a clean machine.
 func TestMigrate_FreshDir(t *testing.T) {
 	base := filepath.Join(t.TempDir(), ".makeslop")
+	// Neither the dir nor settings.json exists — bare machine.
 
 	applied, err := Migrate(base)
 	if err != nil {
@@ -34,8 +40,8 @@ func TestMigrate_FreshDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load after Migrate: %v", err)
 	}
-	if s.MigratedVersion != MigrationVersion {
-		t.Errorf("MigratedVersion = %d, want %d", s.MigratedVersion, MigrationVersion)
+	if s.Version != ConfigVersion {
+		t.Errorf("Version = %d, want %d", s.Version, ConfigVersion)
 	}
 }
 
@@ -79,11 +85,10 @@ func TestMigrate_OverwritesEditedDockerfile(t *testing.T) {
 		t.Fatalf("seed Dockerfile: %v", err)
 	}
 	s := &Settings{
-		Version:         CurrentVersion,
-		Image:           DefaultImage,
-		Shell:           DefaultShell,
-		Workspaces:      map[string]Workspace{},
-		MigratedVersion: 0,
+		Image:      DefaultImage,
+		Shell:      DefaultShell,
+		Workspaces: map[string]Workspace{},
+		Version:    0,
 	}
 	if err := Save(base, s); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -115,11 +120,10 @@ func TestMigrate_VersionBehindReRuns(t *testing.T) {
 		t.Fatalf("mkdir: %v", err)
 	}
 	s := &Settings{
-		Version:         CurrentVersion,
-		Image:           DefaultImage,
-		Shell:           DefaultShell,
-		Workspaces:      map[string]Workspace{},
-		MigratedVersion: 0,
+		Image:      DefaultImage,
+		Shell:      DefaultShell,
+		Workspaces: map[string]Workspace{},
+		Version:    0,
 	}
 	if err := Save(base, s); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -130,7 +134,7 @@ func TestMigrate_VersionBehindReRuns(t *testing.T) {
 		t.Fatalf("Migrate: %v", err)
 	}
 	if !applied {
-		t.Errorf("Migrate should return applied == true when MigratedVersion=0 < MigrationVersion=%d", MigrationVersion)
+		t.Errorf("Migrate should return applied == true when Version=0 < ConfigVersion=%d", ConfigVersion)
 	}
 
 	got, err := os.ReadFile(filepath.Join(base, "Dockerfile"))
@@ -145,24 +149,23 @@ func TestMigrate_VersionBehindReRuns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if loaded.MigratedVersion != MigrationVersion {
-		t.Errorf("MigratedVersion = %d, want %d", loaded.MigratedVersion, MigrationVersion)
+	if loaded.Version != ConfigVersion {
+		t.Errorf("Version = %d, want %d", loaded.Version, ConfigVersion)
 	}
 }
 
-// Downgrade guard: when MigratedVersion is ahead of MigrationVersion (older
-// binary), Migrate must be a no-op rather than re-run unknown migrations.
+// Downgrade guard: when Version is ahead of ConfigVersion (older binary),
+// Migrate must be a no-op rather than re-run unknown migrations.
 func TestMigrate_VersionAheadSkips(t *testing.T) {
 	base := filepath.Join(t.TempDir(), ".makeslop")
 	if err := os.MkdirAll(base, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
 	s := &Settings{
-		Version:         CurrentVersion,
-		Image:           DefaultImage,
-		Shell:           DefaultShell,
-		Workspaces:      map[string]Workspace{},
-		MigratedVersion: 999,
+		Image:      DefaultImage,
+		Shell:      DefaultShell,
+		Workspaces: map[string]Workspace{},
+		Version:    999,
 	}
 	if err := Save(base, s); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -173,15 +176,15 @@ func TestMigrate_VersionAheadSkips(t *testing.T) {
 		t.Fatalf("Migrate: %v", err)
 	}
 	if applied {
-		t.Errorf("Migrate should return applied == false when MigratedVersion=999 > MigrationVersion=%d (downgrade guard)", MigrationVersion)
+		t.Errorf("Migrate should return applied == false when Version=999 > ConfigVersion=%d (downgrade guard)", ConfigVersion)
 	}
 
 	loaded, err := Load(base)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if loaded.MigratedVersion != 999 {
-		t.Errorf("MigratedVersion = %d, want 999 (downgrade must not re-stamp)", loaded.MigratedVersion)
+	if loaded.Version != 999 {
+		t.Errorf("Version = %d, want 999 (downgrade must not re-stamp)", loaded.Version)
 	}
 }
 
@@ -270,7 +273,7 @@ func TestMigrate_NonExistentBaseDirSucceeds(t *testing.T) {
 	}
 }
 
-// Migrate must not clobber user-set Image/Shell/Workspaces while stamping migrated_version.
+// Migrate must not clobber user-set Image/Shell/Workspaces while stamping version.
 func TestMigrate_PreservesOtherSettings(t *testing.T) {
 	base := filepath.Join(t.TempDir(), ".makeslop")
 	if err := os.MkdirAll(base, 0o755); err != nil {
@@ -287,11 +290,10 @@ func TestMigrate_PreservesOtherSettings(t *testing.T) {
 	}
 
 	s := &Settings{
-		Version:         CurrentVersion,
-		Image:           wantImage,
-		Shell:           wantShell,
-		Workspaces:      wantWorkspaces,
-		MigratedVersion: 0,
+		Image:      wantImage,
+		Shell:      wantShell,
+		Workspaces: wantWorkspaces,
+		Version:    0,
 	}
 	if err := Save(base, s); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -331,20 +333,20 @@ func TestMigrate_PreservesOtherSettings(t *testing.T) {
 			t.Errorf("workspace %q CreatedAt = %v, want %v", k, g.CreatedAt, w.CreatedAt)
 		}
 	}
-	if got.MigratedVersion != MigrationVersion {
-		t.Errorf("MigratedVersion = %d, want %d", got.MigratedVersion, MigrationVersion)
+	if got.Version != ConfigVersion {
+		t.Errorf("Version = %d, want %d", got.Version, ConfigVersion)
 	}
 }
 
-// Concrete upgrade path for existing installs: a dir stamped at migrated_version 1
-// must migrate, overwrite its Dockerfile, re-stamp to MigrationVersion, and a
+// Concrete upgrade path for existing installs: a dir stamped at version 1
+// must migrate, overwrite its Dockerfile, re-stamp to ConfigVersion, and a
 // following call must be a no-op.
 func TestMigrate_UpgradeFromVersion1(t *testing.T) {
 	const previousVersion = 1
 
-	// Test is vacuous unless MigrationVersion > 1.
-	if MigrationVersion <= previousVersion {
-		t.Skipf("MigrationVersion=%d is not > 1; test is vacuous", MigrationVersion)
+	// Test is vacuous unless ConfigVersion > 1.
+	if ConfigVersion <= previousVersion {
+		t.Skipf("ConfigVersion=%d is not > 1; test is vacuous", ConfigVersion)
 	}
 
 	base := filepath.Join(t.TempDir(), ".makeslop")
@@ -357,11 +359,10 @@ func TestMigrate_UpgradeFromVersion1(t *testing.T) {
 		t.Fatalf("seed Dockerfile: %v", err)
 	}
 	s := &Settings{
-		Version:         CurrentVersion,
-		Image:           DefaultImage,
-		Shell:           DefaultShell,
-		Workspaces:      map[string]Workspace{},
-		MigratedVersion: previousVersion,
+		Image:      DefaultImage,
+		Shell:      DefaultShell,
+		Workspaces: map[string]Workspace{},
+		Version:    previousVersion,
 	}
 	if err := Save(base, s); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -390,8 +391,8 @@ func TestMigrate_UpgradeFromVersion1(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load after upgrade: %v", err)
 	}
-	if loaded.MigratedVersion != MigrationVersion {
-		t.Errorf("MigratedVersion = %d, want %d", loaded.MigratedVersion, MigrationVersion)
+	if loaded.Version != ConfigVersion {
+		t.Errorf("Version = %d, want %d", loaded.Version, ConfigVersion)
 	}
 
 	applied2, err := Migrate(base)
@@ -399,76 +400,75 @@ func TestMigrate_UpgradeFromVersion1(t *testing.T) {
 		t.Fatalf("second Migrate: %v", err)
 	}
 	if applied2 {
-		t.Error("second Migrate should return applied == false when already at MigrationVersion")
+		t.Error("second Migrate should return applied == false when already at ConfigVersion")
 	}
 }
 
 func TestMigrationStatus_Fresh(t *testing.T) {
-	s := &Settings{MigratedVersion: 0}
+	s := &Settings{Version: 0}
 	current, latest, stale := MigrationStatus(s)
 	if current != 0 {
 		t.Errorf("current = %d, want 0", current)
 	}
-	if latest != MigrationVersion {
-		t.Errorf("latest = %d, want MigrationVersion (%d)", latest, MigrationVersion)
+	if latest != ConfigVersion {
+		t.Errorf("latest = %d, want ConfigVersion (%d)", latest, ConfigVersion)
 	}
 	if !stale {
-		t.Errorf("stale = false, want true when MigratedVersion=0 < MigrationVersion=%d", MigrationVersion)
+		t.Errorf("stale = false, want true when Version=0 < ConfigVersion=%d", ConfigVersion)
 	}
 }
 
 func TestMigrationStatus_Equal(t *testing.T) {
-	s := &Settings{MigratedVersion: MigrationVersion}
+	s := &Settings{Version: ConfigVersion}
 	current, latest, stale := MigrationStatus(s)
-	if current != MigrationVersion {
-		t.Errorf("current = %d, want %d", current, MigrationVersion)
+	if current != ConfigVersion {
+		t.Errorf("current = %d, want %d", current, ConfigVersion)
 	}
-	if latest != MigrationVersion {
-		t.Errorf("latest = %d, want %d", latest, MigrationVersion)
+	if latest != ConfigVersion {
+		t.Errorf("latest = %d, want %d", latest, ConfigVersion)
 	}
 	if stale {
-		t.Errorf("stale = true, want false when MigratedVersion == MigrationVersion")
+		t.Errorf("stale = true, want false when Version == ConfigVersion")
 	}
 }
 
 func TestMigrationStatus_Behind(t *testing.T) {
-	// Vacuous unless MigrationVersion > 1.
-	if MigrationVersion <= 1 {
-		t.Skipf("MigrationVersion=%d is not > 1; stale-behind-1 path is vacuous", MigrationVersion)
+	// Vacuous unless ConfigVersion > 1.
+	if ConfigVersion <= 1 {
+		t.Skipf("ConfigVersion=%d is not > 1; stale-behind-1 path is vacuous", ConfigVersion)
 	}
-	s := &Settings{MigratedVersion: MigrationVersion - 1}
+	s := &Settings{Version: ConfigVersion - 1}
 	current, latest, stale := MigrationStatus(s)
-	if current != MigrationVersion-1 {
-		t.Errorf("current = %d, want %d", current, MigrationVersion-1)
+	if current != ConfigVersion-1 {
+		t.Errorf("current = %d, want %d", current, ConfigVersion-1)
 	}
-	if latest != MigrationVersion {
-		t.Errorf("latest = %d, want %d", latest, MigrationVersion)
+	if latest != ConfigVersion {
+		t.Errorf("latest = %d, want %d", latest, ConfigVersion)
 	}
 	if !stale {
-		t.Errorf("stale = false, want true when MigratedVersion=%d < MigrationVersion=%d", MigrationVersion-1, MigrationVersion)
+		t.Errorf("stale = false, want true when Version=%d < ConfigVersion=%d", ConfigVersion-1, ConfigVersion)
 	}
 }
 
-// Downgrade scenario: a version above MigrationVersion reports stale = false.
+// Downgrade scenario: a version above ConfigVersion reports stale = false.
 func TestMigrationStatus_Ahead(t *testing.T) {
-	s := &Settings{MigratedVersion: MigrationVersion + 10}
+	s := &Settings{Version: ConfigVersion + 10}
 	_, _, stale := MigrationStatus(s)
 	if stale {
-		t.Errorf("stale = true, want false when MigratedVersion=%d > MigrationVersion=%d (downgrade scenario)", MigrationVersion+10, MigrationVersion)
+		t.Errorf("stale = true, want false when Version=%d > ConfigVersion=%d (downgrade scenario)", ConfigVersion+10, ConfigVersion)
 	}
 }
 
-// Byte-identical save invariant must still hold when MigratedVersion is set.
-func TestSaveLoadByteIdenticalForSameSettings_WithMigratedVersion(t *testing.T) {
+// Byte-identical save invariant must still hold when Version is set.
+func TestSaveLoadByteIdenticalForSameSettings_WithVersion(t *testing.T) {
 	base := t.TempDir()
 
 	s := &Settings{
-		Version:         CurrentVersion,
-		Image:           DefaultImage,
-		Shell:           DefaultShell,
-		TmpDirSize:      DefaultTmpDirSize,
-		Workspaces:      map[string]Workspace{},
-		MigratedVersion: MigrationVersion,
+		Version:    ConfigVersion,
+		Image:      DefaultImage,
+		Shell:      DefaultShell,
+		TmpDirSize: DefaultTmpDirSize,
+		Workspaces: map[string]Workspace{},
 	}
 
 	if err := Save(base, s); err != nil {

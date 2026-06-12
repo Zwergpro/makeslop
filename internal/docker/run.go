@@ -218,7 +218,8 @@ func (d *Docker) Run(ctx context.Context, s Spec) error {
 	}
 	startedCleanly = true
 
-	// Send initial terminal size.
+	// Seed the container's TTY with the host size; it otherwise defaults to
+	// 80x24 and full-screen TUIs render wrong until the first SIGWINCH.
 	if w, h, sizeErr := term.GetSize(fd); sizeErr == nil {
 		_, _ = cli.ContainerResize(ctx, id, moby.ContainerResizeOptions{
 			Height: uint(h),

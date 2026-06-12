@@ -13,6 +13,8 @@ Why use it:
 - **Isolation** — each project runs in its own container; no credential leakage between projects.
 - **Secret masking** — `.env`, PEM keys, and SSH keys are overlaid with `/dev/null` before launch.
 - **Reproducible** — one shared `claudebox` image, one Dockerfile, one `makeslop build`.
+- **Customizable** — edit the embedded Dockerfile or bring your own pre-built image. See
+  [Using a custom Docker image](docs/reference.md#using-a-custom-docker-image).
 
 ## Requirements
 
@@ -48,17 +50,18 @@ That's the normal flow. `migrate` is an explicit upgrade step, not part of first
 ## How it works
 
 ```
-┌─ your terminal ──────────────────────────────────────────────────────────┐
-│  makeslop run                                                             │
-│    │  scans for secrets (masks with /dev/null)                           │
-│    │  mounts project root + per-project agent state                      │
-│    ▼                                                                      │
-│  ┌── claudebox container (--cap-drop ALL, --security-opt no-new-privileges) ─ │
-│  │  /workspace/<name>   ← your project root (bind-mounted)               │
-│  │  /home/user/.claude/ ← global agent config                            │
-│  │  /tmp                ← tmpfs (default 100m, not on disk)              │
-│  └──────────────────────────────────────────────────────────────────────  │
-└───────────────────────────────────────────────────────────────────────── ┘
+┌─ your terminal ──────────────────────────────────────────────────────────────┐
+│  makeslop run                                                                │
+│    │  scans for secrets (masks with /dev/null)                               │
+│    │  mounts project root + per-project agent state                          │
+│    ▼                                                                         │
+│  ──────────────────────────────────────────────────────────────────────────  │
+│  claudebox container  --cap-drop ALL  --security-opt no-new-privileges       │
+│                                                                              │
+│    /workspace/<name>    ← your project root (bind-mounted)                   │
+│    /home/user/.claude/  ← global agent config                                │
+│    /tmp                 ← tmpfs (default 100m, not on disk)                  │
+└──────────────────────────────────────────────────────────────────────────────┘
 ```
 
 The container has normal Docker bridge networking and full internet access.
@@ -105,7 +108,7 @@ environments:
   HTTP_PROXY: "http://192.168.1.1:11111"
 ```
 
-Values must be scalars; numbers and booleans are coerced to strings. Absent block = no `-e` flags (backward-compatible). See [docs/reference.md](docs/reference.md#environment-variables-environments-block-in-makeslopya-ml) for the full spec.
+Values must be scalars; numbers and booleans are coerced to strings. Absent block = no `-e` flags (backward-compatible). See [docs/reference.md](docs/reference.md#environment-variables-environments-block-in-makeslopyaml) for the full spec.
 
 Global settings (`~/.makeslop/settings.json`) control the image tag, shell, and `/tmp` size:
 ```

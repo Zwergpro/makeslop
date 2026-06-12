@@ -157,9 +157,9 @@ observer to verify that `ExecuteContext` receives a cancellable (non-Background)
 There are no shell shims, no `dockerBinary` global, no `executableTempDir`, no
 `SetClientForTest`/`SetTTYCheckForTest`/`SetTermMakeRawForTest` globals.
 
-**Note:** `CurrentVersion` and `MigrationVersion` were NOT bumped for the struct-DI and
-`internal/cli` extraction refactors — no `Settings` struct fields changed and the embedded
-Dockerfile was unchanged. Current values: `CurrentVersion = 1`, `MigrationVersion = 4`.
+**Note:** `ConfigVersion` was NOT bumped for the struct-DI and `internal/cli` extraction refactors —
+no `Settings` struct fields changed and the embedded Dockerfile was unchanged. Current value:
+`ConfigVersion = 1`.
 
 ### Preflight methods (`internal/docker/preflight.go`)
 
@@ -250,7 +250,7 @@ paths. Secrets inside `.git/`, `node_modules/`, etc. are the user's responsibili
 skip-dirs widens the guarantee at the cost of a longer pre-launch walk.
 
 The defaults live as active values in the `Scaffold` stub (seeded by `makeslop init`). Pre-existing
-project `.makeslop.yaml` files are **never** auto-migrated — `MigrationVersion` only refreshes
+project `.makeslop.yaml` files are **never** auto-migrated — `ConfigVersion` only refreshes
 `~/.makeslop/`, not project-local files. Users with an old stub must manually add an
 `exclude.scan` block to restore masking.
 
@@ -324,7 +324,7 @@ The env slice flows into `docker.Options.Env []string` in `runRun`, then into `S
 - `ContainerConfig()` sets `Env: s.Env`.
 - `ShellCommand()` already handles `-e` (value-taking flag already listed in its switch).
 
-`MigrationVersion` and `CurrentVersion` are NOT bumped — `environments:` lives in per-project
+`ConfigVersion` is NOT bumped — `environments:` lives in per-project
 `.makeslop.yaml`, not in `~/.makeslop/settings.json` or the embedded Dockerfile.
 
 ### POSIX-only invariant
@@ -346,36 +346,32 @@ injected at construction time via `WithTTYCheck`; defaults to real stdin+stdout 
 `makeslop build`, `makeslop migrate`, `makeslop config`, `makeslop status`, and `makeslop version` are exempt — they operate on `~/.makeslop/` directly
 and do not care about the current working directory.
 
-### MigrationVersion-on-Dockerfile-change rule
-Whenever `internal/assets/files/Dockerfile` is modified (e.g. multi-arch support), bump
-`MigrationVersion` in `internal/config/config.go` so that existing installs pick up the new
-Dockerfile on the next `makeslop migrate`. `CurrentVersion` (settings schema version) is separate
-and only changes when the `Settings` struct fields change. The two constants serve different
-purposes: `CurrentVersion` gates JSON schema compatibility; `MigrationVersion` gates the one-shot
-directory refresh.
+### ConfigVersion-on-change rule
+Whenever `internal/assets/files/Dockerfile` is modified (e.g. multi-arch support) **or** the
+`Settings` struct fields change, bump `ConfigVersion` in `internal/config/config.go` so that
+existing installs pick up the new Dockerfile on the next `makeslop migrate`. A single constant
+governs both schema compatibility and the one-shot directory refresh.
 
-**Current values:** `MigrationVersion = 4` (v3: Dockerfile hardening — sudo removal, base digest
-pin, zsh-in-docker checksum; v4: per-arch sha256 verification for the Go and Node tarballs).
-`CurrentVersion = 1`.
+**Current value:** `ConfigVersion = 1`.
 
 **Note:** the configurable per-workspace cache mount overlays (`cache:` block in `.makeslop.yaml`,
 `init --global-only` flag, `MountContentCache`/`MountAgentCache` in `docker.Options`) do **not**
-bump either `CurrentVersion` or `MigrationVersion` — the `Settings` struct fields are unchanged
-and the embedded Dockerfile is unchanged. The `cache:` block lives in the per-project
-`.makeslop.yaml`, not in `~/.makeslop/settings.json`.
+bump `ConfigVersion` — the `Settings` struct fields are unchanged and the embedded Dockerfile is
+unchanged. The `cache:` block lives in the per-project `.makeslop.yaml`, not in
+`~/.makeslop/settings.json`.
 
 ### init seed-at-latest and stale-nudge behavior
 `makeslop init` detects whether `~/.makeslop/settings.json` already exists **before** calling
 `Bootstrap`. On a **fresh seed** (no `settings.json`), after `Bootstrap`, it stamps
-`s.MigratedVersion = MigrationVersion` and saves — so a freshly-initialised directory is never
-reported as stale. On an **existing-but-stale** directory (`s.MigratedVersion < MigrationVersion`),
+`s.Version = ConfigVersion` and saves — so a freshly-initialised directory is never
+reported as stale. On an **existing-but-stale** directory (`s.Version < ConfigVersion`),
 it prints a non-blocking nudge to stderr:
 
 ```
 note: your base config is v<current>, latest is v<latest> — run 'makeslop migrate'
 ```
 
-and continues without failing. `init` does NOT stamp `MigratedVersion` for existing installs — that
+and continues without failing. `init` does NOT stamp `Version` for existing installs — that
 would skip the actual migration. The success message changed to:
 
 - stderr: `registered <name> — run 'makeslop build' then 'makeslop run'`
@@ -383,8 +379,8 @@ would skip the actual migration. The success message changed to:
 
 Config helpers added in `internal/config/config.go`:
 - `BaseConfigExists(baseDir string) (bool, error)` — reports presence of `settings.json`.
-- `MigrationStatus(s *Settings) (current, latest int, stale bool)` — compares `s.MigratedVersion`
-  to `MigrationVersion`.
+- `MigrationStatus(s *Settings) (current, latest int, stale bool)` — compares `s.Version`
+  to `ConfigVersion`.
 - `Update(baseDir string, mutate func(*Settings) error) error` (in `lock.go`) — the locked
   Load→mutate→Save read-modify-write. The single mechanism behind `Migrate`'s stamp, `config set`,
   and `init`'s fresh-seed stamp; mutate error skips the save. WithLock's no-nesting invariant
@@ -499,9 +495,9 @@ The embedded `internal/assets/files/Dockerfile` follows a deliberate split:
   residual risk.
 
 **Maintenance rule:** whenever `GO_VERSION` or `NODE_VERSION` is bumped, update the per-arch
-sha256 values in the corresponding `RUN` commands AND bump `MigrationVersion` in
+sha256 values in the corresponding `RUN` commands AND bump `ConfigVersion` in
 `internal/config/config.go` so existing installs pick up the new Dockerfile via
-`makeslop migrate` + `makeslop build`. `CurrentVersion` is NOT bumped (no `Settings` struct change).
+`makeslop migrate` + `makeslop build`.
 
 ### Network model
 The app container always uses Docker bridge networking with full internet access. The socat-sidecar

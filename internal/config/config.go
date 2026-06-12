@@ -1,5 +1,3 @@
-// Package config manages global settings (settings.json) and one-shot agent
-// directory bootstrap under ~/.makeslop.
 package config
 
 import (
@@ -18,12 +16,11 @@ const (
 	SettingsFile   = "settings.json"
 	WorkspacesDir  = "workspaces"
 	DockerfileFile = "Dockerfile"
-	CurrentVersion = 1 // settings schema version — bump when Settings fields change
 
-	// MigrationVersion gates the one-shot directory migration run by Migrate
-	// (distinct from CurrentVersion). Bump when a migration step changes;
-	// Migrate re-runs all idempotent steps and re-stamps.
-	MigrationVersion = 4
+	// ConfigVersion is the single version governing both the settings schema and the
+	// one-shot ~/.makeslop asset refresh. Bump when the embedded assets OR the Settings
+	// shape change; `migrate` re-runs all idempotent steps and re-stamps.
+	ConfigVersion = 1
 )
 
 // omitempty + Load-time defaulting keeps pre-existing files byte-stable until a user overrides.
@@ -41,12 +38,11 @@ type Workspace struct {
 // Settings is the persisted shape of <baseDir>/settings.json. Workspaces is
 // keyed by absolute, symlink-evaluated workspace root paths.
 type Settings struct {
-	Version         int                  `json:"version"`
-	Image           string               `json:"image,omitempty"`
-	Shell           string               `json:"shell,omitempty"`
-	TmpDirSize      string               `json:"tmp_dir_size,omitempty"`
-	Workspaces      map[string]Workspace `json:"workspaces"`
-	MigratedVersion int                  `json:"migrated_version,omitempty"`
+	Version    int                  `json:"version"`
+	Image      string               `json:"image,omitempty"`
+	Shell      string               `json:"shell,omitempty"`
+	TmpDirSize string               `json:"tmp_dir_size,omitempty"`
+	Workspaces map[string]Workspace `json:"workspaces"`
 }
 
 func DefaultBaseDir() (string, error) {
@@ -66,7 +62,6 @@ func Load(baseDir string) (*Settings, error) {
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return &Settings{
-				Version:    CurrentVersion,
 				Image:      DefaultImage,
 				Shell:      DefaultShell,
 				TmpDirSize: DefaultTmpDirSize,

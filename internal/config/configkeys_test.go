@@ -202,10 +202,12 @@ func TestConfigSet_NoMutationOnValidationError(t *testing.T) {
 	}
 }
 
-// defaultSettings mirrors what Load returns for a missing file.
+// defaultSettings returns a fully-populated Settings with all defaults applied.
+// Note: Load for a missing file returns Version=0 (no version field in JSON),
+// not ConfigVersion. This helper is used by ConfigSet/ConfigGet tests, not Load tests.
 func defaultSettings() *Settings {
 	return &Settings{
-		Version:    CurrentVersion,
+		Version:    ConfigVersion,
 		Image:      DefaultImage,
 		Shell:      DefaultShell,
 		TmpDirSize: DefaultTmpDirSize,

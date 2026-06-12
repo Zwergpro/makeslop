@@ -163,33 +163,28 @@ project `.makeslop.yaml` files are never auto-migrated; users with an old stub m
 
 ## Version constants
 
-`internal/config/config.go` defines two distinct constants:
+`internal/config/config.go` defines a single constant:
 
 ```go
-CurrentVersion   = 1  // settings schema version — increment when Settings fields change
-MigrationVersion = 3  // directory generation — increment when Dockerfile changes
+ConfigVersion = 1  // increment when Settings fields change OR when the Dockerfile changes
 ```
 
-The `Settings` struct records both:
+The `Settings` struct records it as:
 
 ```json
 {
     "version": 1,
-    "migrated_version": 3,
     ...
 }
 ```
 
-- **`version` / `CurrentVersion`** — gates JSON schema compatibility. Increment when the
-  `Settings` struct fields change.
-- **`migrated_version` / `MigrationVersion`** — gates the one-shot directory refresh. Increment
-  whenever `internal/assets/files/Dockerfile` is modified so that existing installs pick up the
-  new Dockerfile on the next `makeslop migrate`.
+- **`version` / `ConfigVersion`** — governs both JSON schema compatibility and the one-shot
+  directory refresh. `makeslop migrate` compares `settings.json`'s `version` field against
+  `ConfigVersion`; when they differ, it runs all idempotent migration steps (force-overwrites
+  `~/.makeslop/Dockerfile` from the embedded asset) and stamps `version` to `ConfigVersion`.
 
-The two constants serve different purposes and are bumped independently.
-
-**When to bump:** if `internal/assets/files/Dockerfile` changes, bump `MigrationVersion`. If
-`Settings` struct fields change, bump `CurrentVersion`.
+**When to bump:** whenever `internal/assets/files/Dockerfile` is modified **or** `Settings`
+struct fields change, increment `ConfigVersion` and add/update the relevant migration step.
 
 ---
 

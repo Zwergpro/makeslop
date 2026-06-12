@@ -1,15 +1,3 @@
-// Package projectconfig parses and scaffolds the project-local .makeslop.yaml.
-// Returned paths are absolute and guaranteed under the project root (trust
-// boundary for user-supplied YAML). All root parameters must be absolute and
-// EvalSymlinks-evaluated; direct callers must enforce this.
-//
-// exclude.scan drives the WalkDir secret scan via basename globs (patterns) and
-// bare skip-dir names — these are names, not paths, so no IsLocal/path checks
-// apply. exclude.files/exclude.dirs are explicit host paths for /dev/null and
-// tmpfs overlays; symlinks are warned about via Excludes.Warnings (ambiguous:
-// the link or its target?) and dropped from masking; missing entries and
-// non-symlink wrong-type drops stay silent; reserved agent paths are a hard
-// error (a user overlay would shadow the agent mount).
 package projectconfig
 
 import (

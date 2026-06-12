@@ -22,8 +22,8 @@ func TestLoad_MissingReturnsEmptyDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: unexpected error: %v", err)
 	}
-	if s.Version != CurrentVersion {
-		t.Errorf("Version = %d, want %d", s.Version, CurrentVersion)
+	if s.Version != 0 {
+		t.Errorf("Version = %d, want 0 for missing file", s.Version)
 	}
 	if s.Workspaces == nil {
 		t.Error("Workspaces map is nil; want initialized empty map")
@@ -137,7 +137,7 @@ func TestLoad_FileWithoutTmpDirSize_DefaultsTmpDirSize(t *testing.T) {
 func TestSaveLoad_TmpDirSizeRoundTrip(t *testing.T) {
 	base := t.TempDir()
 	want := &Settings{
-		Version:    CurrentVersion,
+		Version:    ConfigVersion,
 		Image:      DefaultImage,
 		Shell:      DefaultShell,
 		TmpDirSize: "1000m",
@@ -184,7 +184,7 @@ func TestLoad_TmpDirSizeByteStableWithoutWrite(t *testing.T) {
 func TestSaveLoadRoundTrip_PreservesNonDefaultImageAndShell(t *testing.T) {
 	base := t.TempDir()
 	want := &Settings{
-		Version:    CurrentVersion,
+		Version:    ConfigVersion,
 		Image:      "myimg:tag",
 		Shell:      "/bin/fish",
 		TmpDirSize: "2g",
@@ -212,7 +212,7 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	base := t.TempDir()
 
 	want := &Settings{
-		Version: CurrentVersion,
+		Version: ConfigVersion,
 		Workspaces: map[string]Workspace{
 			"/workspace/makeslop": {
 				Name:      "makeslop-abcdef",
@@ -270,7 +270,7 @@ func TestSaveCreatesBaseDir(t *testing.T) {
 	parent := t.TempDir()
 	base := filepath.Join(parent, "nested", "deep", ".makeslop")
 
-	s := &Settings{Version: CurrentVersion, Workspaces: map[string]Workspace{}}
+	s := &Settings{Version: ConfigVersion, Workspaces: map[string]Workspace{}}
 	if err := Save(base, s); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -310,7 +310,7 @@ func TestSaveLoadByteIdenticalForSameSettings(t *testing.T) {
 	base := t.TempDir()
 
 	s := &Settings{
-		Version: CurrentVersion,
+		Version: ConfigVersion,
 		// Image/Shell/TmpDirSize included so the post-Load defaulting does not
 		// alter the re-serialized byte sequence on the second save.
 		Image:      DefaultImage,
@@ -388,24 +388,11 @@ func TestDefaultBaseDir_HonorsHOME(t *testing.T) {
 	}
 }
 
-// Regression: a missing settings.json must yield MigratedVersion == 0, not
-// default to MigrationVersion (else stale installs skip migration).
-func TestLoad_MissingFile_MigratedVersionIsZero(t *testing.T) {
+// Regression: a settings.json without a version key loads as Version == 0
+// (ancient installs still migrate).
+func TestLoad_LegacyConfig_NoVersionKeyIsZero(t *testing.T) {
 	base := t.TempDir()
-
-	s, err := Load(base)
-	if err != nil {
-		t.Fatalf("Load: unexpected error: %v", err)
-	}
-	if s.MigratedVersion != 0 {
-		t.Errorf("MigratedVersion = %d, want 0 for missing file", s.MigratedVersion)
-	}
-}
-
-// Regression: a settings.json without migrated_version loads as 0 (backward compat).
-func TestLoad_LegacyConfig_MigratedVersionIsZero(t *testing.T) {
-	base := t.TempDir()
-	body := `{"version":1,"image":"claudebox","shell":"/bin/zsh","workspaces":{}}`
+	body := `{"image":"claudebox","shell":"/bin/zsh","workspaces":{}}`
 	if err := os.WriteFile(filepath.Join(base, SettingsFile), []byte(body), 0o644); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
@@ -414,20 +401,19 @@ func TestLoad_LegacyConfig_MigratedVersionIsZero(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if s.MigratedVersion != 0 {
-		t.Errorf("MigratedVersion = %d, want 0 for legacy file without migrated_version", s.MigratedVersion)
+	if s.Version != 0 {
+		t.Errorf("Version = %d, want 0 for legacy file without version key", s.Version)
 	}
 }
 
-func TestSaveLoad_MigratedVersionRoundTrips(t *testing.T) {
+func TestSaveLoad_VersionRoundTrips(t *testing.T) {
 	base := t.TempDir()
 	want := &Settings{
-		Version:         CurrentVersion,
-		Image:           DefaultImage,
-		Shell:           DefaultShell,
-		TmpDirSize:      DefaultTmpDirSize,
-		Workspaces:      map[string]Workspace{},
-		MigratedVersion: MigrationVersion,
+		Version:    ConfigVersion,
+		Image:      DefaultImage,
+		Shell:      DefaultShell,
+		TmpDirSize: DefaultTmpDirSize,
+		Workspaces: map[string]Workspace{},
 	}
 	if err := Save(base, want); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -437,8 +423,62 @@ func TestSaveLoad_MigratedVersionRoundTrips(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if got.MigratedVersion != want.MigratedVersion {
-		t.Errorf("MigratedVersion = %d, want %d", got.MigratedVersion, want.MigratedVersion)
+	if got.Version != want.Version {
+		t.Errorf("Version = %d, want %d", got.Version, want.Version)
+	}
+}
+
+// TestSave_VersionZeroIsNotOmitted guards against accidentally adding omitempty
+// to the version JSON tag: Version=0 must appear as "version":0 in serialized
+// output so legacy/pre-migrate installs are correctly identified as stale.
+func TestSave_VersionZeroIsNotOmitted(t *testing.T) {
+	base := t.TempDir()
+	s := &Settings{
+		Version:    0,
+		Image:      DefaultImage,
+		Shell:      DefaultShell,
+		TmpDirSize: DefaultTmpDirSize,
+		Workspaces: map[string]Workspace{},
+	}
+	if err := Save(base, s); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(base, SettingsFile))
+	if err != nil {
+		t.Fatalf("read settings.json: %v", err)
+	}
+	if !strings.Contains(string(raw), `"version": 0`) {
+		t.Errorf("expected \"version\": 0 in saved JSON (must not be omitted); got:\n%s", raw)
+	}
+}
+
+// TestLoad_DropsLegacyMigratedVersionKey verifies that a settings.json carrying
+// both "version" and the old "migrated_version" key loads without error, ignores
+// "migrated_version", and that a subsequent Save drops the key entirely.
+func TestLoad_DropsLegacyMigratedVersionKey(t *testing.T) {
+	base := t.TempDir()
+	body := `{"version":1,"image":"claudebox","shell":"/bin/zsh","workspaces":{},"migrated_version":4}`
+	if err := os.WriteFile(filepath.Join(base, SettingsFile), []byte(body), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	s, err := Load(base)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if s.Version != 1 {
+		t.Errorf("Version = %d, want 1", s.Version)
+	}
+
+	if err := Save(base, s); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(base, SettingsFile))
+	if err != nil {
+		t.Fatalf("read saved file: %v", err)
+	}
+	if strings.Contains(string(raw), "migrated_version") {
+		t.Errorf("saved settings.json still contains migrated_version:\n%s", raw)
 	}
 }
 
@@ -590,7 +630,7 @@ func TestBootstrap_DoesNotOverwriteExistingDockerfile(t *testing.T) {
 	}
 }
 
-// Bootstrap must not touch settings.json, so migrated_version is never stamped on init.
+// Bootstrap must not touch settings.json, so version is never stamped on init.
 func TestBootstrap_DoesNotWriteSettingsJSON(t *testing.T) {
 	base := filepath.Join(t.TempDir(), ".makeslop")
 

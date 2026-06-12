@@ -382,9 +382,9 @@ func TestInit_PreservesExistingProjectConfig(t *testing.T) {
 	}
 }
 
-// Fresh init (no prior settings.json) stamps MigratedVersion = MigrationVersion,
+// Fresh init (no prior settings.json) stamps Version = ConfigVersion,
 // so a freshly-init'd dir is never reported stale.
-func TestInit_FreshSeed_StampsMigratedVersion(t *testing.T) {
+func TestInit_FreshSeed_StampsVersion(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
@@ -417,12 +417,12 @@ func TestInit_FreshSeed_StampsMigratedVersion(t *testing.T) {
 	if loadErr != nil {
 		t.Fatalf("load settings after init: %v", loadErr)
 	}
-	if s.MigratedVersion != config.MigrationVersion {
-		t.Errorf("MigratedVersion = %d, want %d (MigrationVersion)", s.MigratedVersion, config.MigrationVersion)
+	if s.Version != config.ConfigVersion {
+		t.Errorf("Version = %d, want %d (ConfigVersion)", s.Version, config.ConfigVersion)
 	}
 }
 
-// An existing stale config gets a non-blocking nudge but MigratedVersion is NOT
+// An existing stale config gets a non-blocking nudge but Version is NOT
 // stamped — stamping would skip the actual migration.
 func TestInit_StaleConfig_NudgesWithoutStamping(t *testing.T) {
 	setHomeToTestParent(t)
@@ -431,17 +431,13 @@ func TestInit_StaleConfig_NudgesWithoutStamping(t *testing.T) {
 	t.Chdir(pwd)
 
 	// Seed a stale settings.json so we hit the "existing-but-stale" path.
-	staleMigrated := 0
-	if config.MigrationVersion == 0 {
-		t.Skip("MigrationVersion is 0; nothing would be stale")
-	}
+	// Version: 0 forces staleness since 0 < ConfigVersion(1).
 	s := &config.Settings{
-		Version:         config.CurrentVersion,
-		Image:           config.DefaultImage,
-		Shell:           config.DefaultShell,
-		TmpDirSize:      config.DefaultTmpDirSize,
-		Workspaces:      map[string]config.Workspace{},
-		MigratedVersion: staleMigrated,
+		Version:    0, // stale
+		Image:      config.DefaultImage,
+		Shell:      config.DefaultShell,
+		TmpDirSize: config.DefaultTmpDirSize,
+		Workspaces: map[string]config.Workspace{},
 	}
 	if err := config.Save(baseDir, s); err != nil {
 		t.Fatalf("seed stale settings: %v", err)
@@ -463,9 +459,9 @@ func TestInit_StaleConfig_NudgesWithoutStamping(t *testing.T) {
 	if loadErr != nil {
 		t.Fatalf("load settings after init: %v", loadErr)
 	}
-	if after.MigratedVersion != staleMigrated {
-		t.Errorf("init must not stamp MigratedVersion on stale dir; got %d, want %d",
-			after.MigratedVersion, staleMigrated)
+	if after.Version != 0 {
+		t.Errorf("init must not stamp Version on stale dir; got %d, want %d (stale)",
+			after.Version, 0)
 	}
 }
 
@@ -522,9 +518,9 @@ func TestInit_AfterBuild_TreatedAsFresh(t *testing.T) {
 	if loadErr != nil {
 		t.Fatalf("load settings after init: %v", loadErr)
 	}
-	if s.MigratedVersion != config.MigrationVersion {
-		t.Errorf("MigratedVersion = %d after build+init, want %d; stderr was %q",
-			s.MigratedVersion, config.MigrationVersion, stderr)
+	if s.Version != config.ConfigVersion {
+		t.Errorf("Version = %d after build+init, want %d (ConfigVersion); stderr was %q",
+			s.Version, config.ConfigVersion, stderr)
 	}
 
 	if strings.Contains(stderr, "note: your base config is") {

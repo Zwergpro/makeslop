@@ -15,11 +15,11 @@ type migration struct {
 	run  func(baseDir string) error
 }
 
-// migrations is the ordered list of steps. Append here and bump MigrationVersion
+// migrations is the ordered list of steps. Append here and bump ConfigVersion
 // in config.go when adding or changing a step.
 //
-// INVARIANT: every step must be idempotent. When MigratedVersion differs from
-// MigrationVersion all steps re-run in full — there is no per-step skip logic.
+// INVARIANT: every step must be idempotent. When Version differs from
+// ConfigVersion all steps re-run in full — there is no per-step skip logic.
 var migrations = []migration{
 	{name: DockerfileFile, run: WriteDockerfile},
 }
@@ -27,7 +27,7 @@ var migrations = []migration{
 // WriteDockerfile atomically writes the embedded assets.Dockerfile to
 // <baseDir>/Dockerfile, always overwriting any existing file (temp-file+rename).
 // Also called by `build --refresh` to reset a hand-edited Dockerfile without
-// running a migration or touching MigratedVersion.
+// running a migration or touching the Version stamp.
 func WriteDockerfile(baseDir string) error {
 	if err := os.MkdirAll(baseDir, 0o755); err != nil {
 		return fmt.Errorf("create base dir %s: %w", baseDir, err)
@@ -68,29 +68,28 @@ func WriteDockerfile(baseDir string) error {
 	return nil
 }
 
-// MigrationStatus returns s.MigratedVersion, the latest MigrationVersion, and
+// MigrationStatus returns s.Version, the latest ConfigVersion, and
 // whether the config is stale (current < latest).
 func MigrationStatus(s *Settings) (current, latest int, stale bool) {
-	current = s.MigratedVersion
-	latest = MigrationVersion
+	current = s.Version
+	latest = ConfigVersion
 	stale = current < latest
 	return current, latest, stale
 }
 
-// Migrate runs all migration steps when migrated_version differs from
-// MigrationVersion, returning (true, nil) when applied and (false, nil) when
-// already up to date.
+// Migrate runs all migration steps when Version differs from ConfigVersion,
+// returning (true, nil) when applied and (false, nil) when already up to date.
 //
 // The Load→stamp→Save sequence is protected by WithLock so a concurrent init
-// or config set cannot lose the MigratedVersion stamp. The steps themselves
-// run outside the lock because they are idempotent and don't touch settings.json.
+// or config set cannot lose the Version stamp. The steps themselves run outside
+// the lock because they are idempotent and don't touch settings.json.
 func Migrate(baseDir string) (applied bool, err error) {
 	// Best-effort early skip; the definitive check is under the lock below.
 	s, err := Load(baseDir)
 	if err != nil {
 		return false, fmt.Errorf("migrate load settings: %w", err)
 	}
-	if s.MigratedVersion >= MigrationVersion {
+	if s.Version >= ConfigVersion {
 		return false, nil
 	}
 
@@ -103,10 +102,10 @@ func Migrate(baseDir string) (applied bool, err error) {
 	// Re-check under the lock so we don't clobber concurrent workspace edits;
 	// errAlreadyStamped skips the save when another process won the race.
 	lockErr := Update(baseDir, func(fresh *Settings) error {
-		if fresh.MigratedVersion >= MigrationVersion {
+		if fresh.Version >= ConfigVersion {
 			return errAlreadyStamped
 		}
-		fresh.MigratedVersion = MigrationVersion
+		fresh.Version = ConfigVersion
 		return nil
 	})
 	if errors.Is(lockErr, errAlreadyStamped) {
@@ -119,5 +118,5 @@ func Migrate(baseDir string) (applied bool, err error) {
 }
 
 // errAlreadyStamped aborts the Update save when a concurrent migrate already
-// stamped MigratedVersion.
-var errAlreadyStamped = errors.New("settings already at MigrationVersion")
+// stamped Version to ConfigVersion.
+var errAlreadyStamped = errors.New("settings already at ConfigVersion")
