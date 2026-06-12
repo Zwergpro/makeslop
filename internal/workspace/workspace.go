@@ -1,5 +1,3 @@
-// Package workspace manages the workspace registry under ~/.makeslop,
-// keyed by absolute EvalSymlinks-evaluated paths.
 package workspace
 
 import (

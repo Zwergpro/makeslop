@@ -1,15 +1,3 @@
-// Package security scans for secret-bearing files under a project root so they
-// can be overlaid with /dev/null mounts, preventing container access to host
-// secrets. Scanning is config-driven: the caller supplies basename glob patterns
-// and directory names to prune.
-//
-// Walk errors are propagated immediately ("fail-loud"): if we cannot prove a
-// directory is secret-free, we must not proceed (no-.env-leak invariant).
-//
-// Symlink visibility: symlinks whose basename matches a secret pattern are NOT
-// masked (WalkDir does not follow them) but are returned in the second slice so
-// callers can surface a warning. Symlinks that do not match any pattern are
-// silently ignored (same as before).
 package security
 
 import (

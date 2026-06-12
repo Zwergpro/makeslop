@@ -1,5 +1,3 @@
-// Package config manages global settings (settings.json) and one-shot agent
-// directory bootstrap under ~/.makeslop.
 package config
 
 import (

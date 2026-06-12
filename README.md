@@ -13,6 +13,8 @@ Why use it:
 - **Isolation** — each project runs in its own container; no credential leakage between projects.
 - **Secret masking** — `.env`, PEM keys, and SSH keys are overlaid with `/dev/null` before launch.
 - **Reproducible** — one shared `claudebox` image, one Dockerfile, one `makeslop build`.
+- **Customizable** — edit the embedded Dockerfile or bring your own pre-built image. See
+  [Using a custom Docker image](docs/reference.md#using-a-custom-docker-image).
 
 ## Requirements
 

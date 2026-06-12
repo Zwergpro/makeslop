@@ -1,9 +1,3 @@
-// Build orchestration via the moby/moby SDK + a BuildKit session:
-//  1. Create a session, register filesync (context + dockerfile dir) and an authprovider.
-//  2. Run the session in a goroutine, wired to the daemon via DialHijack.
-//  3. Call ImageBuild with Version=BuilderBuildKit and the session ID.
-//  4. Render the daemon's build-trace stream via progressui, plain-text fallback otherwise.
-//  5. Close the session (the client is owned by the *Docker struct).
 package docker
 
 import (
