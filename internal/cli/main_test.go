@@ -295,6 +295,76 @@ func TestRoot_BareInvocation_ListsVersionCommand(t *testing.T) {
 	}
 }
 
+func TestRoot_BareInvocation_ListsLsCommand(t *testing.T) {
+	baseDir := t.TempDir()
+
+	stdout, stderr, err := runCmd(t, baseDir)
+	if err != nil {
+		t.Fatalf("bare makeslop should exit 0, got err: %v; stdout=%q stderr=%q", err, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "\n  ls ") {
+		t.Errorf("stdout missing '\\n  ls ' command entry: %q", stdout)
+	}
+}
+
+func TestRoot_BareInvocation_ListsRemoveCommand(t *testing.T) {
+	baseDir := t.TempDir()
+
+	stdout, stderr, err := runCmd(t, baseDir)
+	if err != nil {
+		t.Fatalf("bare makeslop should exit 0, got err: %v; stdout=%q stderr=%q", err, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "\n  remove ") {
+		t.Errorf("stdout missing '\\n  remove ' command entry: %q", stdout)
+	}
+}
+
+// TestRoot_LsCmd_Dispatches verifies that "makeslop ls" dispatches successfully
+// (exits 0 with empty registry, printing nudge to stderr).
+func TestRoot_LsCmd_Dispatches(t *testing.T) {
+	baseDir := t.TempDir()
+
+	stdout, stderr, err := runCmd(t, baseDir, "ls")
+	if err != nil {
+		t.Fatalf("makeslop ls should exit 0 with empty registry, got err: %v; stderr=%q", err, stderr)
+	}
+	if stdout != "" {
+		t.Errorf("ls with empty registry: expected empty stdout; got %q", stdout)
+	}
+	if !strings.Contains(stderr, "no workspaces registered") {
+		t.Errorf("ls with empty registry: stderr missing nudge; got %q", stderr)
+	}
+}
+
+// TestRoot_RemoveCmd_Dispatches verifies that "makeslop remove" with an unknown
+// name dispatches (exits non-zero via errSilent, prints hint to stderr).
+func TestRoot_RemoveCmd_Dispatches(t *testing.T) {
+	baseDir := t.TempDir()
+
+	_, stderr, err := runCmd(t, baseDir, "remove", "bogus-name")
+	if err == nil {
+		t.Fatalf("makeslop remove bogus-name should exit non-zero")
+	}
+	if !strings.Contains(stderr, "makeslop ls") {
+		t.Errorf("remove unknown name: stderr missing 'makeslop ls' hint; got %q", stderr)
+	}
+}
+
+// TestRoot_RemoveCmd_RmAliasRegistered verifies that the "rm" alias is registered
+// in the root cobra tree (dispatches to the same remove command).
+func TestRoot_RemoveCmd_RmAliasRegistered(t *testing.T) {
+	baseDir := t.TempDir()
+
+	_, stderr, err := runCmd(t, baseDir, "rm", "bogus-alias-name")
+	if err == nil {
+		t.Fatalf("makeslop rm bogus-alias-name should exit non-zero")
+	}
+	// The rm alias dispatches to remove, which prints the 'makeslop ls' hint for unknown names.
+	if !strings.Contains(stderr, "makeslop ls") {
+		t.Errorf("rm alias unknown name: stderr missing 'makeslop ls' hint; got %q", stderr)
+	}
+}
+
 // ── RunWithExitCode tests ─────────────────────────────────────────────────────
 
 // Daemon-reported StatusCode 137 (128+SIGKILL) must pass through verbatim. With

@@ -90,6 +90,49 @@ func (w *Workspaces) Init(pwd string) (string, error) {
 	return workspaceDir, nil
 }
 
+// Remove unregisters the workspace identified by name from the settings file
+// and returns the cache directory path so the caller can delete it after the
+// lock is released. The entire Load→mutate→Save sequence runs under
+// config.WithLock (mirroring Init) so concurrent Remove calls are safe.
+//
+// config.WithLock is used instead of config.Update because:
+//   - the not-found path must return ErrNotRegistered without calling Save;
+//   - the success path must surface cacheDir, a value computed inside the lock.
+//
+// The reused ErrNotRegistered sentinel's path-flavoured wording
+// ("no workspace registered for path") is intentionally never surfaced —
+// the CLI layer matches it with errors.Is and prints its own message.
+//
+// The lock does not touch the filesystem: after Remove returns the caller owns
+// os.RemoveAll(cacheDir). Settings are mutated first (under the short lock) so
+// that if RemoveAll fails the entry is already gone and cannot be re-removed.
+func (w *Workspaces) Remove(name string) (cacheDir string, err error) {
+	err = config.WithLock(w.baseDir, func() error {
+		s, err := config.Load(w.baseDir)
+		if err != nil {
+			return err
+		}
+		// Scan for the entry whose .Name == name (map is keyed by path, not name).
+		var foundKey string
+		for key, ws := range s.Workspaces {
+			if ws.Name == name {
+				foundKey = key
+				break
+			}
+		}
+		if foundKey == "" {
+			return ErrNotRegistered
+		}
+		delete(s.Workspaces, foundKey)
+		cacheDir = w.cacheDir(name)
+		return config.Save(w.baseDir, s)
+	})
+	if err != nil {
+		return "", err
+	}
+	return cacheDir, nil
+}
+
 func scaffoldTemplate(workspaceDir string) error {
 	for _, d := range []string{".claude", ".codex", "docs"} {
 		p := filepath.Join(workspaceDir, d)
