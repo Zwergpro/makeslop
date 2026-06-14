@@ -10,6 +10,8 @@ Complete reference for all `makeslop` commands, flags, runtime behavior, and con
   - [build](#build)
   - [run](#run)
   - [status](#status)
+  - [ls](#ls)
+  - [remove](#remove)
   - [migrate](#migrate)
   - [config](#config)
   - [version](#version)
@@ -136,6 +138,56 @@ action. Exit code is 0 when all blocking checks pass.
 **Flags:**
 - `--json` — emit `{"checks":[{"name","state","detail"}...],"ready":bool}`; exit code still
   reflects readiness
+
+---
+
+### ls
+
+Lists all registered workspaces in an aligned table. CI-safe; does not require a TTY or a live
+Docker daemon.
+
+Output columns: `NAME`, `PATH`, `CREATED` (UTC, format `2006-01-02 15:04 UTC`). Rows are sorted
+by workspace name.
+
+When no workspaces are registered, a nudge is printed to stderr and stdout stays empty:
+
+```
+no workspaces registered — run 'makeslop init'
+```
+
+The nudge is suppressed by `--quiet`; stdout stays empty in all cases (pipe-safe).
+
+**Flags:** inherits `--quiet` (root-level persistent flag).
+
+---
+
+### remove
+
+Unregisters a workspace **by name** and deletes its per-workspace cache directory
+(`~/.makeslop/workspaces/<name>/`). Does not require a TTY or a live Docker daemon.
+
+```sh
+makeslop remove <name>
+makeslop rm <name>       # alias
+```
+
+- Takes the workspace name as printed by `makeslop ls` (the `NAME` column).
+- Removes the registry entry from `settings.json` under a file lock.
+- Deletes the cache directory (`os.RemoveAll`) after the lock releases — idempotent if the
+  directory was already deleted manually.
+- Prints `removed <name>` to stderr on success (suppressed by `--quiet`).
+- If the name is not registered, exits non-zero with:
+  ```
+  no workspace named "<name>" — run 'makeslop ls'
+  ```
+- **No confirmation prompt** — deletes immediately (CI-safe).
+- **Always deletes the cache dir** — there is no opt-out flag.
+
+**Residual:** if the `os.RemoveAll` step fails after the registry entry is already deleted,
+re-running `remove <name>` will report "no workspace named" because the entry is gone. The error
+message includes the cache-dir path so the user can delete it manually.
+
+**Flags:** inherits `--quiet` (root-level persistent flag).
 
 ---
 
@@ -379,9 +431,9 @@ hosts where the running user is uid 1000. Full uid remapping is deferred to post
 makeslop: stdin/stdout must be a TTY — run in an interactive terminal
 ```
 
-`makeslop build`, `makeslop init`, `makeslop migrate`, `makeslop version`, `makeslop config`, and
-`makeslop status` do not require a TTY and work correctly in CI pipelines and non-interactive
-shells.
+`makeslop build`, `makeslop init`, `makeslop migrate`, `makeslop version`, `makeslop config`,
+`makeslop status`, `makeslop ls`, and `makeslop remove` do not require a TTY and work correctly
+in CI pipelines and non-interactive shells.
 
 ---
 
@@ -417,6 +469,7 @@ makeslop run -n > cmd.sh   # capture only the command; masked-file count goes to
 - `1` — `makeslop build` exits 1 on any build failure (the docker SDK returns an error; there is no
   child docker process to propagate an exit code from).
 - `1` — `makeslop status` exits 1 when any blocking check (daemon, base config, image, or workspace) fails.
+- `1` — `makeslop remove` exits 1 when the workspace name is not registered.
 - `1` — any other failure: no workspace registered for pwd, no TTY available, corrupt
   `settings.json`, I/O error, etc. The reason is written to stderr.
 

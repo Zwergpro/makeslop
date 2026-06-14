@@ -79,6 +79,8 @@ func newRootCmdWithDeps(baseDir string, deps dockerDeps) *cobra.Command {
 		newConfigCmd(baseDir),
 		newVersionCmd(),
 		newStatusCmd(ws, baseDir, defaultIsTTY, deps),
+		newLsCmd(ws, baseDir),
+		newRemoveCmd(ws),
 	)
 	return rootCmd
 }

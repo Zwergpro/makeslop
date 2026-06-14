@@ -618,6 +618,124 @@ func TestInit_ConcurrentDistinctPwdsAllRegistered(t *testing.T) {
 	}
 }
 
+func TestRemove_DeletesMatchingEntryAndReturnsCacheDir(t *testing.T) {
+	base := t.TempDir()
+	w := New(base)
+
+	// Register two workspaces so we can verify only the target is removed.
+	root := evalSymlinks(t, t.TempDir())
+	pwdA := filepath.Join(root, "projectA")
+	pwdB := filepath.Join(root, "projectB")
+	for _, p := range []string{pwdA, pwdB} {
+		if err := os.MkdirAll(p, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", p, err)
+		}
+	}
+	if _, err := w.Init(pwdA); err != nil {
+		t.Fatalf("Init A: %v", err)
+	}
+	if _, err := w.Init(pwdB); err != nil {
+		t.Fatalf("Init B: %v", err)
+	}
+
+	s, err := config.Load(base)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(s.Workspaces) != 2 {
+		t.Fatalf("expected 2 workspaces, got %d", len(s.Workspaces))
+	}
+
+	// Determine name of workspace A so we can remove it.
+	nameA := workspaceName(pwdA)
+	wantCacheDir := filepath.Join(base, config.WorkspacesDir, nameA)
+
+	gotCacheDir, err := w.Remove(nameA)
+	if err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if gotCacheDir != wantCacheDir {
+		t.Errorf("Remove returned cacheDir=%q, want %q", gotCacheDir, wantCacheDir)
+	}
+
+	// Settings should now contain only workspace B.
+	s2, err := config.Load(base)
+	if err != nil {
+		t.Fatalf("Load after Remove: %v", err)
+	}
+	if len(s2.Workspaces) != 1 {
+		t.Errorf("expected 1 workspace after Remove, got %d: %v", len(s2.Workspaces), s2.Workspaces)
+	}
+	if _, ok := s2.Workspaces[pwdA]; ok {
+		t.Errorf("workspace A (%q) still present after Remove", pwdA)
+	}
+	if _, ok := s2.Workspaces[pwdB]; !ok {
+		t.Errorf("workspace B (%q) missing after Remove of A", pwdB)
+	}
+}
+
+func TestRemove_UnknownNameReturnsErrNotRegistered(t *testing.T) {
+	base := t.TempDir()
+	w := New(base)
+
+	// Register one workspace so settings.json exists.
+	root := evalSymlinks(t, t.TempDir())
+	pwd := filepath.Join(root, "myproject")
+	if err := os.MkdirAll(pwd, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if _, err := w.Init(pwd); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	before, err := os.ReadFile(filepath.Join(base, config.SettingsFile))
+	if err != nil {
+		t.Fatalf("read before: %v", err)
+	}
+
+	_, err = w.Remove("does-not-exist")
+	if !errors.Is(err, ErrNotRegistered) {
+		t.Fatalf("Remove(unknown) err = %v, want ErrNotRegistered", err)
+	}
+
+	// Settings must be unchanged.
+	after, err := os.ReadFile(filepath.Join(base, config.SettingsFile))
+	if err != nil {
+		t.Fatalf("read after: %v", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Errorf("settings.json was modified by Remove(unknown)\nbefore=%s\nafter=%s", before, after)
+	}
+}
+
+func TestRemove_CorruptSettingsReturnsError(t *testing.T) {
+	base := t.TempDir()
+	w := New(base)
+
+	if err := os.WriteFile(filepath.Join(base, config.SettingsFile), []byte("{not json"), 0o644); err != nil {
+		t.Fatalf("seed bad settings: %v", err)
+	}
+
+	_, err := w.Remove("any-name")
+	if err == nil {
+		t.Fatal("expected error from corrupt settings, got nil")
+	}
+	if errors.Is(err, ErrNotRegistered) {
+		t.Errorf("error must NOT be ErrNotRegistered for corrupt settings: %v", err)
+	}
+}
+
+func TestRemove_NoSettingsFileReturnsErrNotRegistered(t *testing.T) {
+	base := t.TempDir()
+	w := New(base)
+
+	// No settings.json — nothing is registered.
+	_, err := w.Remove("any-name")
+	if !errors.Is(err, ErrNotRegistered) {
+		t.Fatalf("Remove with no settings.json: err = %v, want ErrNotRegistered", err)
+	}
+}
+
 func TestFindAncestor_RootRegistered(t *testing.T) {
 	base := t.TempDir()
 	w := New(base)

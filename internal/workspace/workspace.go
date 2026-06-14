@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 
 	"github.com/Zwergpro/makeslop/internal/config"
@@ -52,6 +53,29 @@ func (w *Workspaces) Lookup(s *config.Settings, pwd string) (matchedRoot, cacheD
 	return matched, w.cacheDir(ws.Name), nil
 }
 
+// Info is a presentation-ready registry entry: the path key joined with the
+// stored fields. Returned by List.
+type Info struct {
+	Name      string
+	Path      string
+	CreatedAt time.Time
+}
+
+// List returns every registered workspace sorted by name. A nil settings
+// yields an empty slice. The path-keyed layout of s.Workspaces stays
+// encapsulated here so callers never iterate the registry map directly.
+func (w *Workspaces) List(s *config.Settings) []Info {
+	if s == nil {
+		return nil
+	}
+	out := make([]Info, 0, len(s.Workspaces))
+	for path, ws := range s.Workspaces {
+		out = append(out, Info{Name: ws.Name, Path: path, CreatedAt: ws.CreatedAt})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
 // cacheDir is the per-workspace cache directory under the base dir.
 func (w *Workspaces) cacheDir(name string) string {
 	return filepath.Join(w.baseDir, config.WorkspacesDir, name)
@@ -88,6 +112,49 @@ func (w *Workspaces) Init(pwd string) (string, error) {
 		return "", err
 	}
 	return workspaceDir, nil
+}
+
+// Remove unregisters the workspace identified by name from the settings file
+// and returns the cache directory path so the caller can delete it after the
+// lock is released. The entire Load→mutate→Save sequence runs under
+// config.WithLock (mirroring Init) so concurrent Remove calls are safe.
+//
+// config.WithLock is used instead of config.Update because:
+//   - the not-found path must return ErrNotRegistered without calling Save;
+//   - the success path must surface cacheDir, a value computed inside the lock.
+//
+// The reused ErrNotRegistered sentinel's path-flavoured wording
+// ("no workspace registered for path") is intentionally never surfaced —
+// the CLI layer matches it with errors.Is and prints its own message.
+//
+// The lock does not touch the filesystem: after Remove returns the caller owns
+// os.RemoveAll(cacheDir). Settings are mutated first (under the short lock) so
+// that if RemoveAll fails the entry is already gone and cannot be re-removed.
+func (w *Workspaces) Remove(name string) (cacheDir string, err error) {
+	err = config.WithLock(w.baseDir, func() error {
+		s, err := config.Load(w.baseDir)
+		if err != nil {
+			return err
+		}
+		// Scan for the entry whose .Name == name (map is keyed by path, not name).
+		var foundKey string
+		for key, ws := range s.Workspaces {
+			if ws.Name == name {
+				foundKey = key
+				break
+			}
+		}
+		if foundKey == "" {
+			return ErrNotRegistered
+		}
+		delete(s.Workspaces, foundKey)
+		cacheDir = w.cacheDir(name)
+		return config.Save(w.baseDir, s)
+	})
+	if err != nil {
+		return "", err
+	}
+	return cacheDir, nil
 }
 
 func scaffoldTemplate(workspaceDir string) error {

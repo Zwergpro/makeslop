@@ -334,7 +334,7 @@ helper defined locally in each test package (no shared export). Do not add Windo
 ### TTY requirement is `run`-only
 `makeslop run` requires an interactive TTY (checked via `(*Docker).Run`'s `isTTYFn` predicate,
 injected at construction time via `WithTTYCheck`; defaults to real stdin+stdout detection).
-`makeslop build`, `makeslop init`, `makeslop migrate`, `makeslop config`, `makeslop status`, and `makeslop version` are CI/pipe-safe and never consult the TTY predicate.
+`makeslop build`, `makeslop init`, `makeslop migrate`, `makeslop config`, `makeslop status`, `makeslop ls`, `makeslop remove`, and `makeslop version` are CI/pipe-safe and never consult the TTY predicate.
 
 **Two distinct TTY notions** — do not conflate:
 - `docker.Docker`'s `isTTYFn` checks stdin+stdout and gates `Run` (returns `ErrNoTTY` when false).
@@ -343,8 +343,23 @@ injected at construction time via `WithTTYCheck`; defaults to real stdin+stdout 
 
 ### Home-directory guard exemptions
 `makeslop run` and `makeslop init` enforce the home-directory guard.
-`makeslop build`, `makeslop migrate`, `makeslop config`, `makeslop status`, and `makeslop version` are exempt — they operate on `~/.makeslop/` directly
+`makeslop build`, `makeslop migrate`, `makeslop config`, `makeslop status`, `makeslop ls`, `makeslop remove`, and `makeslop version` are exempt — they operate on `~/.makeslop/` directly
 and do not care about the current working directory.
+
+### `ls` and `remove` commands
+`makeslop ls` and `makeslop remove` (alias `rm`) manage the workspace registry in
+`~/.makeslop/settings.json`. Both are home-guard-exempt, TTY-exempt, and docker-free
+(no `dockerDeps` injected; they need only `baseDir` / `*workspace.Workspaces`).
+
+- `ls`: loads settings once via `config.Load`, sorts rows by name, renders to stdout via
+  `text/tabwriter`. Empty registry prints a nudge to stderr (suppressible by `--quiet`);
+  stdout stays empty.
+- `remove <name>` (alias `rm`): calls `ws.Remove(name)` under `config.WithLock` to delete the
+  registry entry, then `os.RemoveAll(cacheDir)` outside the lock (idempotent). Unknown name →
+  `errSilent`. Success message goes to stderr chrome (`--quiet` suppresses it).
+- `remove` **always** deletes the cache dir — no opt-out flag, no confirmation prompt (CI-safe).
+- `ConfigVersion` is **not** bumped by `ls`/`remove` — no `Settings` struct fields changed and
+  no embedded Dockerfile changed.
 
 ### ConfigVersion-on-change rule
 Whenever `internal/assets/files/Dockerfile` is modified (e.g. multi-arch support) **or** the
@@ -407,11 +422,11 @@ TTY and `NO_COLOR` is unset.
 
 ### --out-of-home flag scope
 `--out-of-home` is registered only on `init` and `run` (not a persistent root flag). Commands
-`version`, `config`, `migrate`, `build`, and `status` reject it as an unknown flag.
+`version`, `config`, `migrate`, `build`, `status`, `ls`, and `remove` reject it as an unknown flag.
 
 ### --global-only flag scope
 `--global-only` is registered only on `init` (not a persistent root flag). Commands `run`,
-`version`, `config`, `migrate`, `build`, and `status` reject it as an unknown flag.
+`version`, `config`, `migrate`, `build`, `status`, `ls`, and `remove` reject it as an unknown flag.
 It only affects a **fresh** scaffold: `Scaffold` is idempotent (EEXIST = success, never clobbers
 user edits), so on an already-init'd project `--global-only` is a no-op — documented, not silent.
 
