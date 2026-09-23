@@ -200,12 +200,12 @@
 **Files:**
 - Modify: `internal/cli/init.go`, `internal/cli/init_test.go`, `internal/cli/main_test.go`
 
-- [ ] in `init`: print the `note: no image configured …` line to `chrome` when `Image == ""`, and change the final hint to `run 'makeslop run'`
-- [ ] write tests:
+- [x] in `init`: print the `note: no image configured …` line to `chrome` when `Image == ""`, and change the final hint to `run 'makeslop run'`
+- [x] write tests:
   - no image → note printed, exit 0, workspace registered
   - image set → no note
-- [ ] add `TestQuiet_SuppressesInitImageNote` in `main_test.go`, replacing the deleted nudge test
-- [ ] run `go test -timeout=100s ./...`, which must pass before task 7
+- [x] add `TestQuiet_SuppressesInitImageNote` in `main_test.go`, replacing the deleted nudge test
+- [x] run `go test -timeout=100s ./...`, which must pass before task 7
 
 ### Task 7: Verify acceptance criteria
 - [ ] this search returns nothing:

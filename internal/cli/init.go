@@ -43,9 +43,10 @@ func runInit(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOf
 		return err
 	}
 
-	fmt.Fprintf(chrome,
-		"registered %s — run 'makeslop build' then 'makeslop run'\n",
-		filepath.Base(pwd))
+	if initSettings.Image == "" {
+		fmt.Fprintln(chrome, "note: no image configured — run 'makeslop config set image <ref>'")
+	}
+	fmt.Fprintf(chrome, "registered %s — run 'makeslop run'\n", filepath.Base(pwd))
 	fmt.Fprintln(cmd.OutOrStdout(), workspaceDir)
 	return nil
 }

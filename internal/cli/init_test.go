@@ -401,11 +401,58 @@ func TestInit_FreshSeed_RegistersWithHint(t *testing.T) {
 	if !strings.Contains(stderr, "registered") {
 		t.Errorf("stderr missing 'registered': %q", stderr)
 	}
-	if !strings.Contains(stderr, "makeslop build") {
-		t.Errorf("stderr missing 'makeslop build' hint: %q", stderr)
-	}
-	if !strings.Contains(stderr, "makeslop run") {
+	if !strings.Contains(stderr, "run 'makeslop run'") {
 		t.Errorf("stderr missing 'makeslop run' hint: %q", stderr)
+	}
+}
+
+// init with no image configured prints a note with the config-set remedy,
+// still exits 0, and still registers the workspace.
+func TestInit_NoImage_PrintsNote(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	stdout, stderr, err := runCmd(t, baseDir, "init")
+	if err != nil {
+		t.Fatalf("init failed: %v; stderr=%q", err, stderr)
+	}
+	if !strings.Contains(stderr, "note: no image configured — run 'makeslop config set image <ref>'") {
+		t.Errorf("stderr missing no-image note: %q", stderr)
+	}
+	if strings.TrimSpace(stdout) == "" {
+		t.Errorf("stdout must contain the workspace path; got empty")
+	}
+
+	lsOut, lsErr, err := runCmd(t, baseDir, "ls")
+	if err != nil {
+		t.Fatalf("ls failed: %v; stderr=%q", err, lsErr)
+	}
+	if !strings.Contains(lsOut, filepath.Base(evalSymlinks(t, pwd))) {
+		t.Errorf("workspace not registered; ls output=%q", lsOut)
+	}
+}
+
+// init with an image already configured prints no note.
+func TestInit_ImageSet_NoNote(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	if _, stderr, err := runCmd(t, baseDir, "config", "set", "image", "test-img"); err != nil {
+		t.Fatalf("config set image failed: %v; stderr=%q", err, stderr)
+	}
+	_, stderr, err := runCmd(t, baseDir, "init")
+	if err != nil {
+		t.Fatalf("init failed: %v; stderr=%q", err, stderr)
+	}
+	if strings.Contains(stderr, "no image configured") {
+		t.Errorf("note must not print when image is set; stderr=%q", stderr)
+	}
+	if !strings.Contains(stderr, "registered") {
+		t.Errorf("stderr missing 'registered': %q", stderr)
 	}
 }
 

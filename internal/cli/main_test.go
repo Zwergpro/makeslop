@@ -491,6 +491,25 @@ func TestQuiet_SuppressesRegisteredNotice(t *testing.T) {
 	}
 }
 
+// --quiet suppresses the init no-image note; the workspace path still prints.
+func TestQuiet_SuppressesInitImageNote(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	stdout, stderr, err := runCmd(t, baseDir, "--quiet", "init")
+	if err != nil {
+		t.Fatalf("init --quiet failed: %v; stderr=%q", err, stderr)
+	}
+	if strings.Contains(stderr, "no image configured") {
+		t.Errorf("--quiet must suppress the no-image note; stderr=%q", stderr)
+	}
+	if strings.TrimSpace(stdout) == "" {
+		t.Errorf("stdout must contain the workspace path even with --quiet; got empty")
+	}
+}
+
 // ── Error-voice tests (cross-cutting) ────────────────────────────────────────
 
 // Error-voice format "makeslop: <what> — <remedy>" with the --out-of-home flag named.
