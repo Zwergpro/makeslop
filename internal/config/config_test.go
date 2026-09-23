@@ -176,7 +176,7 @@ func TestLoad_TmpDirSizeByteStableWithoutWrite(t *testing.T) {
 	}
 }
 
-func TestSaveLoadRoundTrip_PreservesNonDefaultImageAndShell(t *testing.T) {
+func TestSaveLoadRoundTrip_PreservesCustomImageAndShell(t *testing.T) {
 	base := t.TempDir()
 	want := &Settings{
 		Image:      "myimg:tag",

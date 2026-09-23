@@ -208,15 +208,16 @@
 - [x] run `go test -timeout=100s ./...`, which must pass before task 7
 
 ### Task 7: Verify acceptance criteria
-- [ ] this search returns nothing:
+- [x] this search returns nothing:
   ```sh
   grep -rnE "DefaultImage|ConfigVersion|buildkit|progressui|internal/assets|BuildOptions|makeslop build|makeslop migrate" --include='*.go' .
   ```
   `claudebox` is left out on purpose: it is a valid test image name in spec/run tests.
-- [ ] `go mod tidy` produces no diff
-- [ ] `go build ./cmd/makeslop` succeeds and `./makeslop --help` lists neither build nor migrate
-- [ ] run the full test suite: `go test -timeout=100s ./...`
-- [ ] run `golangci-lint run`, which also catches leftover unused fakes and imports
+- [x] `go mod tidy` produces no diff
+- [x] `go build ./cmd/makeslop` succeeds and `./makeslop --help` lists neither build nor migrate
+- [x] run the full test suite: `go test -timeout=100s ./...`
+- [x] run `golangci-lint run`, which also catches leftover unused fakes and imports (golangci-lint v2.12.2 could not be fetched: module proxy download of unqueryvet failed; used `go vet ./...` + `staticcheck ./...` instead, both clean)
+- ➕ [x] renamed `TestSaveLoadRoundTrip_PreservesNonDefaultImageAndShell` → `…PreservesCustomImageAndShell` in `internal/config/config_test.go` (false-positive `DefaultImage` grep hit)
 
 ### Task 8: [Final] Update documentation
 - [ ] `README.md`:
