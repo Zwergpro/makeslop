@@ -165,13 +165,7 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, jso
 			cl.fail("base config", fmt.Sprintf("corrupt settings: %v", loadErr))
 		} else {
 			loadedSettings = s
-			current, latest, stale := config.MigrationStatus(s)
-			if stale {
-				// stale is non-blocking
-				cl.warn("base config", fmt.Sprintf("v%d (latest: v%d) — run 'makeslop migrate'", current, latest))
-			} else {
-				cl.ok("base config", "")
-			}
+			cl.ok("base config", "")
 		}
 	}
 

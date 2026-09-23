@@ -127,23 +127,24 @@
 - Modify: `internal/workspace/workspace_test.go`
 - Modify: `internal/cli/init.go`, `internal/cli/init_test.go`, `internal/cli/status.go`, `internal/cli/status_test.go`, `internal/cli/root.go`, `internal/cli/ls_test.go`, `internal/cli/main_test.go`, `internal/cli/version_test.go`
 
-- [ ] `git mv internal/assets/files/Dockerfile examples/claudebox/Dockerfile` and delete the rest of `internal/assets/`
-- [ ] delete the migrate files and remove `newMigrateCmd` from `root.go`
-- [ ] `main_test.go:247`: delete `TestRoot_BareInvocation_ListsMigrateCommand`
-- [ ] `config.go`: remove `ConfigVersion`, `DockerfileFile`, `Settings.Version`, the Dockerfile entry in `bootstrapFiles` and the `assets` import. **Keep `BaseConfigExists`.**
-- [ ] `init.go`: remove the `BaseConfigExists`/`freshSeed` stamp-and-nudge logic
-- [ ] `status.go`: the base-config check becomes ok/fail only, with no `MigrationStatus` and no warn
-- [ ] `config_test.go`: drop the version assertions (25-26, 237-238, 391-475, and the `"version": 0` test at 432-450), the assets import (:15), and `TestBootstrap_CreatesDockerfile` / `…DoesNotOverwriteExistingDockerfile` (:593, :610). Also remove **every** remaining `Version:`/`ConfigVersion` in fixtures (e.g. :140, :187, :215, :273, :313, :412); `grep -n 'Version' internal/config/*_test.go` must come back clean.
-- [ ] `lock_test.go:39-59`: **rewrite** the lost-update test, not delete it. Each goroutine adds `Workspaces[fmt.Sprint(i)]` inside `Update`, and the test asserts `len(Workspaces) == goroutines`.
-- [ ] drop the `Version:`/`ConfigVersion` fields from test fixtures:
+- [x] `git mv internal/assets/files/Dockerfile examples/claudebox/Dockerfile` and delete the rest of `internal/assets/`
+- [x] delete the migrate files and remove `newMigrateCmd` from `root.go`
+- [x] `main_test.go:247`: delete `TestRoot_BareInvocation_ListsMigrateCommand`
+- [x] `config.go`: remove `ConfigVersion`, `DockerfileFile`, `Settings.Version`, the Dockerfile entry in `bootstrapFiles` and the `assets` import. **Keep `BaseConfigExists`.**
+- [x] `init.go`: remove the `BaseConfigExists`/`freshSeed` stamp-and-nudge logic
+- [x] `status.go`: the base-config check becomes ok/fail only, with no `MigrationStatus` and no warn
+- [x] `config_test.go`: drop the version assertions (25-26, 237-238, 391-475, and the `"version": 0` test at 432-450), the assets import (:15), and `TestBootstrap_CreatesDockerfile` / `…DoesNotOverwriteExistingDockerfile` (:593, :610). Also remove **every** remaining `Version:`/`ConfigVersion` in fixtures (e.g. :140, :187, :215, :273, :313, :412); `grep -n 'Version' internal/config/*_test.go` must come back clean.
+- [x] `lock_test.go:39-59`: **rewrite** the lost-update test, not delete it. Each goroutine adds `Workspaces[fmt.Sprint(i)]` inside `Update`, and the test asserts `len(Workspaces) == goroutines`.
+- [x] drop the `Version:`/`ConfigVersion` fields from test fixtures:
   - `configkeys_test.go:206-211`
   - `workspace_test.go:196,230,258,565,744`
   - `ls_test.go:60,134`
-- [ ] `init_test.go`: delete the version=1 assertion (48-55), the fresh-seed stamping tests (385-424) and the stale-nudge tests (425-470)
-- [ ] `main_test.go:451-486`: delete `TestQuiet_SuppressesInitNudge`. Task 6 adds the image-note replacement.
-- [ ] remove the `{"migrate", …}` rows in `version_test.go` and `init_test.go`
-- [ ] update the `status_test.go` stale-warn cases
-- [ ] run `go test -timeout=100s ./...`, which must pass before task 3
+- [x] `init_test.go`: delete the version=1 assertion (48-55), the fresh-seed stamping tests (385-424) and the stale-nudge tests (425-470)
+- [x] `main_test.go:451-486`: delete `TestQuiet_SuppressesInitNudge`. Task 6 adds the image-note replacement.
+- [x] remove the `{"migrate", …}` rows in `version_test.go` and `init_test.go`
+- [x] update the `status_test.go` stale-warn cases (replaced with `TestStatus_LegacyVersionKey_BaseConfigOK`)
+- [x] run `go test -timeout=100s ./...`, which must pass before task 3
+- ➕ [x] kept `TestInit_FreshSeed_StampsVersion` as `TestInit_FreshSeed_RegistersWithHint` (version assertion dropped); deleted `TestInit_UpToDateConfig_NoNudge`; `TestLoad_DropsLegacyMigratedVersionKey` now also asserts the obsolete `version` key is dropped on Save
 
 ### Task 3: Add the image resolver, drop the default image, add the test helper
 

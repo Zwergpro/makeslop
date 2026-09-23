@@ -13,7 +13,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Zwergpro/makeslop/internal/config"
 	"github.com/Zwergpro/makeslop/internal/docker"
 	"github.com/Zwergpro/makeslop/internal/projectconfig"
 )
@@ -233,18 +232,6 @@ func mapKeys(m map[string][]byte) []string {
 	return keys
 }
 
-func TestRoot_BareInvocation_ListsMigrateCommand(t *testing.T) {
-	baseDir := t.TempDir()
-
-	stdout, stderr, err := runCmd(t, baseDir) // no args
-	if err != nil {
-		t.Fatalf("bare makeslop should exit 0, got err: %v; stdout=%q stderr=%q", err, stdout, stderr)
-	}
-	if !strings.Contains(stdout, "\n  migrate ") {
-		t.Errorf("stdout missing '\\n  migrate ' command entry: %q", stdout)
-	}
-}
-
 func TestRoot_BareInvocation_ListsConfigCommand(t *testing.T) {
 	baseDir := t.TempDir()
 
@@ -420,47 +407,6 @@ func TestRunWithExitCode_VersionSucceeds(t *testing.T) {
 }
 
 // ── Quiet tests (cross-cutting) ───────────────────────────────────────────────
-
-// --quiet suppresses the stale-config nudge (chrome) but not errors.
-func TestQuiet_SuppressesInitNudge(t *testing.T) {
-	setHomeToTestParent(t)
-	baseDir := t.TempDir()
-	pwd := t.TempDir()
-	t.Chdir(pwd)
-
-	// Version: 0 forces staleness since 0 < ConfigVersion(1).
-	s := &config.Settings{
-		Version:    0, // stale
-		Image:      config.DefaultImage,
-		Shell:      config.DefaultShell,
-		TmpDirSize: config.DefaultTmpDirSize,
-		Workspaces: map[string]config.Workspace{},
-	}
-	if err := config.Save(baseDir, s); err != nil {
-		t.Fatalf("seed stale settings: %v", err)
-	}
-
-	_, stderrNoQuiet, err := runCmd(t, baseDir, "init")
-	if err != nil {
-		t.Fatalf("init failed: %v; stderr=%q", err, stderrNoQuiet)
-	}
-	if !strings.Contains(stderrNoQuiet, "note: your base config is") {
-		t.Errorf("expected nudge on stderr without --quiet; got: %q", stderrNoQuiet)
-	}
-
-	s.Version = 0 // re-seed stale for the next call
-	if err := config.Save(baseDir, s); err != nil {
-		t.Fatalf("re-seed stale settings: %v", err)
-	}
-
-	_, stderrQuiet, err := runCmd(t, baseDir, "--quiet", "init")
-	if err != nil {
-		t.Fatalf("init --quiet failed: %v; stderr=%q", err, stderrQuiet)
-	}
-	if strings.Contains(stderrQuiet, "note: your base config is") {
-		t.Errorf("--quiet must suppress nudge; got: %q", stderrQuiet)
-	}
-}
 
 // --quiet suppresses the "masked N" notice but the /dev/null mounts still appear.
 func TestQuiet_SuppressesMaskedCount(t *testing.T) {

@@ -9,7 +9,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Zwergpro/makeslop/internal/config"
 	"github.com/Zwergpro/makeslop/internal/projectconfig"
 )
 
@@ -45,14 +44,10 @@ func TestInit_FromScratch(t *testing.T) {
 		t.Fatalf("read settings.json: %v", err)
 	}
 	var s struct {
-		Version    int                       `json:"version"`
 		Workspaces map[string]map[string]any `json:"workspaces"`
 	}
 	if err := json.Unmarshal(data, &s); err != nil {
 		t.Fatalf("unmarshal settings: %v", err)
-	}
-	if s.Version != 1 {
-		t.Errorf("expected version 1, got %d", s.Version)
 	}
 	resolvedPwd := evalSymlinks(t, pwd)
 	entry, ok := s.Workspaces[resolvedPwd]
@@ -382,9 +377,9 @@ func TestInit_PreservesExistingProjectConfig(t *testing.T) {
 	}
 }
 
-// Fresh init (no prior settings.json) stamps Version = ConfigVersion,
-// so a freshly-init'd dir is never reported stale.
-func TestInit_FreshSeed_StampsVersion(t *testing.T) {
+// Fresh init (no prior settings.json) registers the workspace and prints the
+// next-step hint on stderr.
+func TestInit_FreshSeed_RegistersWithHint(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
@@ -412,57 +407,6 @@ func TestInit_FreshSeed_StampsVersion(t *testing.T) {
 	if !strings.Contains(stderr, "makeslop run") {
 		t.Errorf("stderr missing 'makeslop run' hint: %q", stderr)
 	}
-
-	s, loadErr := config.Load(baseDir)
-	if loadErr != nil {
-		t.Fatalf("load settings after init: %v", loadErr)
-	}
-	if s.Version != config.ConfigVersion {
-		t.Errorf("Version = %d, want %d (ConfigVersion)", s.Version, config.ConfigVersion)
-	}
-}
-
-// An existing stale config gets a non-blocking nudge but Version is NOT
-// stamped — stamping would skip the actual migration.
-func TestInit_StaleConfig_NudgesWithoutStamping(t *testing.T) {
-	setHomeToTestParent(t)
-	baseDir := t.TempDir()
-	pwd := t.TempDir()
-	t.Chdir(pwd)
-
-	// Seed a stale settings.json so we hit the "existing-but-stale" path.
-	// Version: 0 forces staleness since 0 < ConfigVersion(1).
-	s := &config.Settings{
-		Version:    0, // stale
-		Image:      config.DefaultImage,
-		Shell:      config.DefaultShell,
-		TmpDirSize: config.DefaultTmpDirSize,
-		Workspaces: map[string]config.Workspace{},
-	}
-	if err := config.Save(baseDir, s); err != nil {
-		t.Fatalf("seed stale settings: %v", err)
-	}
-
-	_, stderr, err := runCmd(t, baseDir, "init")
-	if err != nil {
-		t.Fatalf("init on stale config failed: %v; stderr=%q", err, stderr)
-	}
-
-	if !strings.Contains(stderr, "note: your base config is") {
-		t.Errorf("stderr missing stale-config nudge: %q", stderr)
-	}
-	if !strings.Contains(stderr, "makeslop migrate") {
-		t.Errorf("stderr missing 'makeslop migrate' in nudge: %q", stderr)
-	}
-
-	after, loadErr := config.Load(baseDir)
-	if loadErr != nil {
-		t.Fatalf("load settings after init: %v", loadErr)
-	}
-	if after.Version != 0 {
-		t.Errorf("init must not stamp Version on stale dir; got %d, want %d (stale)",
-			after.Version, 0)
-	}
 }
 
 // init stdout is the bare workspace path only (no labels, no extra lines).
@@ -486,27 +430,6 @@ func TestInit_FreshSeed_StdoutIsBarePathOnly(t *testing.T) {
 	workspacesRoot := filepath.Join(baseDir, "workspaces")
 	if !strings.HasPrefix(line, workspacesRoot+string(filepath.Separator)) {
 		t.Errorf("workspace path %q not under %q", line, workspacesRoot)
-	}
-}
-
-// An up-to-date config must not emit the stale-config nudge.
-func TestInit_UpToDateConfig_NoNudge(t *testing.T) {
-	setHomeToTestParent(t)
-	baseDir := t.TempDir()
-	pwd := t.TempDir()
-	t.Chdir(pwd)
-
-	_, _, err := runCmd(t, baseDir, "init")
-	if err != nil {
-		t.Fatalf("first init failed: %v", err)
-	}
-
-	_, stderr, err := runCmd(t, baseDir, "init")
-	if err != nil {
-		t.Fatalf("second init failed: %v", err)
-	}
-	if strings.Contains(stderr, "note: your base config is") {
-		t.Errorf("stale-config nudge must not appear when config is up to date; stderr=%q", stderr)
 	}
 }
 
@@ -596,7 +519,6 @@ func TestGlobalOnly_RejectedOnNonInitCommands(t *testing.T) {
 	for _, cmd := range [][]string{
 		{"run", "--global-only"},
 		{"version", "--global-only"},
-		{"migrate", "--global-only"},
 		{"config", "--global-only"},
 		{"status", "--global-only"},
 	} {

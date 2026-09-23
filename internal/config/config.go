@@ -8,19 +8,11 @@ import (
 	"os"
 	"path/filepath"
 	"time"
-
-	"github.com/Zwergpro/makeslop/internal/assets"
 )
 
 const (
-	SettingsFile   = "settings.json"
-	WorkspacesDir  = "workspaces"
-	DockerfileFile = "Dockerfile"
-
-	// ConfigVersion is the single version governing both the settings schema and the
-	// one-shot ~/.makeslop asset refresh. Bump when the embedded assets OR the Settings
-	// shape change; `migrate` re-runs all idempotent steps and re-stamps.
-	ConfigVersion = 1
+	SettingsFile  = "settings.json"
+	WorkspacesDir = "workspaces"
 )
 
 // omitempty + Load-time defaulting keeps pre-existing files byte-stable until a user overrides.
@@ -38,7 +30,6 @@ type Workspace struct {
 // Settings is the persisted shape of <baseDir>/settings.json. Workspaces is
 // keyed by absolute, symlink-evaluated workspace root paths.
 type Settings struct {
-	Version    int                  `json:"version"`
 	Image      string               `json:"image,omitempty"`
 	Shell      string               `json:"shell,omitempty"`
 	TmpDirSize string               `json:"tmp_dir_size,omitempty"`
@@ -187,7 +178,6 @@ var bootstrapFiles = []struct {
 	content []byte
 }{
 	{".claude.json", []byte("{}\n")},
-	{DockerfileFile, assets.Dockerfile},
 }
 
 // BaseConfigExists reports whether <baseDir>/settings.json exists. Returns

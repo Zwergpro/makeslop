@@ -22,13 +22,6 @@ func runInit(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOf
 		return err
 	}
 
-	// Check before Bootstrap: determines stamp vs nudge path.
-	exists, err := config.BaseConfigExists(baseDir)
-	if err != nil {
-		return err
-	}
-	freshSeed := !exists
-
 	if err := config.Bootstrap(baseDir); err != nil {
 		return err
 	}
@@ -48,24 +41,6 @@ func runInit(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOf
 	}
 	if err := projectconfig.Scaffold(workspaceRoot, projectconfig.Cache{Content: !globalOnly, Agent: !globalOnly}); err != nil {
 		return err
-	}
-
-	// Fresh seed: stamp so the new dir is never reported stale.
-	// Existing: nudge only — stamping would skip the actual migration.
-	if freshSeed {
-		if lockErr := config.Update(baseDir, func(s *config.Settings) error {
-			s.Version = config.ConfigVersion
-			return nil
-		}); lockErr != nil {
-			return lockErr
-		}
-	} else {
-		current, latest, stale := config.MigrationStatus(initSettings)
-		if stale {
-			fmt.Fprintf(chrome,
-				"note: your base config is v%d, latest is v%d — run 'makeslop migrate'\n",
-				current, latest)
-		}
 	}
 
 	fmt.Fprintf(chrome,

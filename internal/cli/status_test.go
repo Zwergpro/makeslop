@@ -161,8 +161,9 @@ func TestStatus_WorkspaceNotRegistered_ExitsNonZero(t *testing.T) {
 	}
 }
 
-// A stale base config is non-blocking: warn line, but verdict stays ready.
-func TestStatus_StaleConfig_ReportsWarnButStaysReady(t *testing.T) {
+// A settings.json carrying the obsolete "version" key is ignored: the base
+// config check reports ok, with no warn line and no migrate hint.
+func TestStatus_LegacyVersionKey_BaseConfigOK(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
@@ -172,33 +173,49 @@ func TestStatus_StaleConfig_ReportsWarnButStaysReady(t *testing.T) {
 		t.Fatalf("init failed: %v", err)
 	}
 
-	s, err := config.Load(baseDir)
+	path := filepath.Join(baseDir, config.SettingsFile)
+	raw, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("load settings: %v", err)
+		t.Fatalf("read settings: %v", err)
 	}
-	// Force staleness: Version 0 < ConfigVersion(1).
-	s.Version = 0
-	if err := config.Save(baseDir, s); err != nil {
-		t.Fatalf("save stale settings: %v", err)
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatalf("unmarshal settings: %v", err)
+	}
+	m["version"] = 0
+	legacy, err := json.Marshal(m)
+	if err != nil {
+		t.Fatalf("marshal settings: %v", err)
+	}
+	if err := os.WriteFile(path, legacy, 0o644); err != nil {
+		t.Fatalf("write legacy settings: %v", err)
 	}
 
 	deps := newFakeStatusDeps(false, false)
 
-	_, stderr, statusErr := runCmdWithDeps(t, baseDir, deps, "status")
+	stdout, stderr, statusErr := runCmdWithDeps(t, baseDir, deps, "status", "--json")
 	if statusErr != nil {
-		t.Errorf("status must be ready despite stale config; err=%v stderr=%q", statusErr, stderr)
+		t.Errorf("status must be ready with a legacy version key; err=%v stderr=%q", statusErr, stderr)
 	}
-	if !strings.Contains(stderr, "ready") {
-		t.Errorf("stderr missing 'ready' verdict: %q", stderr)
+	var out statusResult
+	if err := json.Unmarshal([]byte(stdout), &out); err != nil {
+		t.Fatalf("unmarshal status json: %v; stdout=%q", err, stdout)
 	}
-	if strings.Contains(stderr, "not ready") {
-		t.Errorf("stale-config status must not contain 'not ready' (stale is non-blocking): %q", stderr)
+	found := false
+	for _, c := range out.Checks {
+		if c.Name != "base config" {
+			continue
+		}
+		found = true
+		if c.State != checkOK {
+			t.Errorf("base config state = %q, want %q (detail=%q)", c.State, checkOK, c.Detail)
+		}
+		if strings.Contains(c.Detail, "migrate") {
+			t.Errorf("base config detail must not mention migrate: %q", c.Detail)
+		}
 	}
-	if !strings.Contains(stderr, "base config") {
-		t.Errorf("stderr missing 'base config' check: %q", stderr)
-	}
-	if !strings.Contains(stderr, "makeslop migrate") {
-		t.Errorf("stderr missing 'makeslop migrate' hint in base config line: %q", stderr)
+	if !found {
+		t.Errorf("status --json missing 'base config' check: %s", stdout)
 	}
 }
 
@@ -634,7 +651,7 @@ func TestCheckList_Fail_ClearsReady(t *testing.T) {
 // warn appends a warn check but does NOT clear ready.
 func TestCheckList_Warn_NonBlocking(t *testing.T) {
 	cl := &checkList{}
-	cl.warn("base config", "stale — run migrate")
+	cl.warn("workspace", "not initialised")
 	if !cl.ready() {
 		t.Errorf("warn() must not clear ready")
 	}

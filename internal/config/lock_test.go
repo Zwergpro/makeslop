@@ -2,13 +2,14 @@ package config
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
 	"testing"
 )
 
-// Concurrent Load→mutate→Save under the lock must not lose updates.
+// Concurrent Update calls (Load→mutate→Save under the lock) must not lose updates.
 func TestWithLock_SerializesLoadSave(t *testing.T) {
 	base := t.TempDir()
 
@@ -31,14 +32,9 @@ func TestWithLock_SerializesLoadSave(t *testing.T) {
 		i := i
 		go func() {
 			defer wg.Done()
-			errs[i] = WithLock(base, func() error {
-				s, err := Load(base)
-				if err != nil {
-					return err
-				}
-				// Version doubles as a monotone counter here.
-				s.Version++
-				return Save(base, s)
+			errs[i] = Update(base, func(s *Settings) error {
+				s.Workspaces[fmt.Sprint(i)] = Workspace{Name: fmt.Sprintf("ws-%d", i)}
+				return nil
 			})
 		}()
 	}
@@ -54,9 +50,9 @@ func TestWithLock_SerializesLoadSave(t *testing.T) {
 	if err != nil {
 		t.Fatalf("final Load: %v", err)
 	}
-	if final.Version != goroutines {
-		t.Errorf("Version = %d, want %d (lost update detected)",
-			final.Version, goroutines)
+	if len(final.Workspaces) != goroutines {
+		t.Errorf("len(Workspaces) = %d, want %d (lost update detected)",
+			len(final.Workspaces), goroutines)
 	}
 }
 

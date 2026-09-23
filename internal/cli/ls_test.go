@@ -57,7 +57,6 @@ func TestLs_MultipleWorkspaces_SortedByName(t *testing.T) {
 	// to confirm the output is sorted).
 	createdAt := time.Date(2025, 3, 15, 12, 30, 0, 0, time.UTC)
 	s := &config.Settings{
-		Version:    config.ConfigVersion,
 		Image:      config.DefaultImage,
 		Shell:      config.DefaultShell,
 		TmpDirSize: config.DefaultTmpDirSize,
@@ -131,7 +130,6 @@ func TestLs_SingleWorkspace_ShowsTableWithEntry(t *testing.T) {
 
 	createdAt := time.Date(2025, 6, 1, 9, 0, 0, 0, time.UTC)
 	s := &config.Settings{
-		Version:    config.ConfigVersion,
 		Image:      config.DefaultImage,
 		Shell:      config.DefaultShell,
 		TmpDirSize: config.DefaultTmpDirSize,
