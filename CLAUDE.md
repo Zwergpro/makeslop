@@ -43,8 +43,10 @@ sync ("printed == executed"). Pure functions never touch the filesystem or exec;
 belong in `run.go`.
 
 Mount order in `BuildSpec`: project root first, then global mounts (`~/.makeslop/.claude/`,
-`.claude.json`, `.codex/`), then per-workspace overlays gated by `MountAgentCache` /
-`MountContentCache`, then secret masks last so a mask always wins. The two booleans default to
+`.claude.json`, `.codex/`), then sandbox-policy mounts (`.makeslop.yaml` read-only self-bind,
+`.git/hooks` tmpfs), then per-workspace overlays gated by `MountAgentCache` /
+`MountContentCache`, then secret masks last so a mask always wins. A `/dev/null` mask matching
+`.makeslop.yaml` itself is dropped so it can't override the read-only bind. The two booleans default to
 `false` in Go, so tests wanting full mounts must set them.
 
 ### Dependency injection (no global test hooks)

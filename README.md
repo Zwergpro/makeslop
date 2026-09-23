@@ -133,7 +133,8 @@ See [docs/security.md](docs/security.md) for the full masking spec and home-dire
 
 **Breaking changes (recent):** path-style patterns (e.g. `secrets/*.pem`) now hard-error at load
 time — patterns must be basename globs only (e.g. `*.pem`). A symlinked `.makeslop.yaml` is also
-now rejected by `run`, `init`, and `status` — replace the symlink with a regular file to migrate.
+now rejected by `run` and `init` (`status` reports it as a warning) — replace the symlink with a
+regular file to migrate.
 The `build` and `migrate` commands are removed and the image has no default: build your image
 yourself (e.g. from `examples/claudebox`, or from your old `~/.makeslop/Dockerfile`), then run
 `makeslop config set image <ref>`. `~/.makeslop/Dockerfile` and the `version` key in
