@@ -14,7 +14,7 @@ func TestWithLock_SerializesLoadSave(t *testing.T) {
 	base := t.TempDir()
 
 	seed := &Settings{
-		Image:      DefaultImage,
+		Image:      "claudebox",
 		Shell:      DefaultShell,
 		TmpDirSize: DefaultTmpDirSize,
 		Workspaces: map[string]Workspace{},

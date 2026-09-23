@@ -153,14 +153,15 @@
 - Modify: `internal/config/config.go`, `internal/config/config_test.go`, `internal/config/configkeys_test.go`, `internal/config/lock_test.go`
 - Modify: `internal/cli/main_test.go`, `internal/cli/run_test.go`, `internal/cli/status_test.go`, `internal/cli/config_test.go`, `internal/cli/ls_test.go`, `internal/cli/status.go`
 
-- [ ] add `errNoImage` and `resolveImage(flagVal, settingsImage string)` in `image.go`
-- [ ] `config.go`: remove `DefaultImage` and the `Image` defaulting in `Load` (`:64-69`, `:80-82`). Update the "defaulting … backward compatibility" comments (`:26`, `:56-58`) so they only mention `Shell`/`TmpDirSize`.
-- [ ] `status.go`: replace the `config.DefaultImage` fallback with a nil-guarded bridge: `imageName := ""; if loadedSettings != nil { imageName = loadedSettings.Image }`. `loadedSettings` is nil when settings.json is absent. Task 5 rewrites this.
-- [ ] add `initWithImage(t, baseDir)` to `main_test.go`. Switch the run/status tests that need an image (about 40 in `run_test.go`, 15 in `status_test.go`, 4 in `main_test.go`) from bare `init` to this helper.
-- [ ] replace the `DefaultImage` uses in tests: `configkeys_test.go:149,211`, `config_test.go`, `lock_test.go:16`, `cli/config_test.go:48`, `ls_test.go:61,135`
-- [ ] write a `resolveImage` table test with these cases: flag wins over settings; flag used when settings are empty; settings used when there is no flag; both empty → `errNoImage`; whitespace-only flag falls back to settings; whitespace-only flag with empty settings → `errNoImage`
-- [ ] write config tests: `Load` of a missing file → `Image == ""`; a file without `image` → `""`; `Shell`/`TmpDirSize` are still defaulted; `config list` prints `image = `
-- [ ] run `go test -timeout=100s ./...`, which must pass before task 4
+- [x] add `errNoImage` and `resolveImage(flagVal, settingsImage string)` in `image.go`
+- [x] `config.go`: remove `DefaultImage` and the `Image` defaulting in `Load` (`:64-69`, `:80-82`). Update the "defaulting … backward compatibility" comments (`:26`, `:56-58`) so they only mention `Shell`/`TmpDirSize`.
+- [x] `status.go`: replace the `config.DefaultImage` fallback with a nil-guarded bridge: `imageName := ""; if loadedSettings != nil { imageName = loadedSettings.Image }`. `loadedSettings` is nil when settings.json is absent. Task 5 rewrites this.
+- [x] add `initWithImage(t, baseDir)` to `main_test.go`. Switch the run/status tests that need an image (about 40 in `run_test.go`, 15 in `status_test.go`, 4 in `main_test.go`) from bare `init` to this helper.
+- [x] replace the `DefaultImage` uses in tests: `configkeys_test.go:149,211`, `config_test.go`, `lock_test.go:16`, `cli/config_test.go:48`, `ls_test.go:61,135`
+- [x] write a `resolveImage` table test with these cases: flag wins over settings; flag used when settings are empty; settings used when there is no flag; both empty → `errNoImage`; whitespace-only flag falls back to settings; whitespace-only flag with empty settings → `errNoImage`
+- [x] write config tests: `Load` of a missing file → `Image == ""`; a file without `image` → `""`; `Shell`/`TmpDirSize` are still defaulted; `config list` prints `image = `
+- [x] run `go test -timeout=100s ./...`, which must pass before task 4
+- ➕ [x] `TestOutOfHomeFlag_Bypasses` (run_test.go) seeds via `init --out-of-home`, so it gets an explicit `config set image test-img`; `initWithImage` returns init stdout (the workspace dir) for callers that parse it
 
 ### Task 4: Wire -i/--image into run
 

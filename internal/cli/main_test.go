@@ -78,6 +78,20 @@ func runCmd(t *testing.T, baseDir string, args ...string) (stdout, stderr string
 	return out.String(), errBuf.String(), err
 }
 
+// initWithImage registers the cwd via `init` and sets image=test-img so run/status
+// tests get past image resolution. Returns init's stdout (the workspace dir).
+func initWithImage(t *testing.T, baseDir string) string {
+	t.Helper()
+	initOut, stderr, err := runCmd(t, baseDir, "init")
+	if err != nil {
+		t.Fatalf("init failed: %v; stderr=%q", err, stderr)
+	}
+	if _, stderr, err := runCmd(t, baseDir, "config", "set", "image", "test-img"); err != nil {
+		t.Fatalf("config set image failed: %v; stderr=%q", err, stderr)
+	}
+	return initOut
+}
+
 func runCmdWithDeps(t *testing.T, baseDir string, deps dockerDeps, args ...string) (stdout, stderr string, err error) {
 	t.Helper()
 	cmd := newRootCmdWithDeps(baseDir, deps)
@@ -336,9 +350,7 @@ func TestRunWithExitCode_DaemonReports137_MapsTo137(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initWithImage(t, baseDir)
 
 	fc := newFakeDocker(137, true)
 
@@ -415,9 +427,7 @@ func TestQuiet_SuppressesMaskedCount(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initWithImage(t, baseDir)
 	resolvedPwd := evalSymlinks(t, pwd)
 
 	envFile := filepath.Join(resolvedPwd, ".env")
@@ -531,9 +541,7 @@ func TestErrorVoice_NoTTY_ContainsRemedy(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initWithImage(t, baseDir)
 	fc := newFakeDocker(0, false)
 
 	_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fc), "run")
@@ -558,9 +566,7 @@ func TestErrorVoice_DaemonDown_ContainsRemedy(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initWithImage(t, baseDir)
 
 	fc := newFakeDocker(0, true)
 	fc.PingErr = errors.New("connection refused")
@@ -587,9 +593,7 @@ func TestErrorVoice_ImageMissing_ContainsRemedy(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initWithImage(t, baseDir)
 
 	fc := newFakeDocker(0, true)
 	fc.ImageMissing = true

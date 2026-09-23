@@ -35,9 +35,7 @@ func TestStatus_AllGreen_ExitsZero(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initWithImage(t, baseDir)
 
 	deps := newFakeStatusDeps(false, false)
 
@@ -60,9 +58,7 @@ func TestStatus_DaemonDown_ExitsNonZero(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initWithImage(t, baseDir)
 
 	deps := newFakeStatusDeps(true, false)
 
@@ -88,9 +84,7 @@ func TestStatus_ImageMissing_ExitsNonZero(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initWithImage(t, baseDir)
 
 	deps := newFakeStatusDeps(false, true)
 
@@ -116,9 +110,7 @@ func TestStatus_ImageCheckError_ExitsNonZero(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initWithImage(t, baseDir)
 
 	deps := newFakeStatusDepsWithImageErr(errors.New("transport error: dial tcp"))
 
@@ -169,9 +161,7 @@ func TestStatus_LegacyVersionKey_BaseConfigOK(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initWithImage(t, baseDir)
 
 	path := filepath.Join(baseDir, config.SettingsFile)
 	raw, err := os.ReadFile(path)
@@ -226,9 +216,7 @@ func TestStatus_JSON_Shape(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initWithImage(t, baseDir)
 
 	deps := newFakeStatusDeps(false, false)
 
@@ -273,9 +261,7 @@ func TestStatus_JSON_ReadyField(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initWithImage(t, baseDir)
 
 	deps := newFakeStatusDeps(true, false)
 
@@ -392,9 +378,7 @@ func TestStatus_ExemptFromTTYRequirement(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initWithImage(t, baseDir)
 	deps := newFakeStatusDeps(false, false)
 
 	_, stderr, err := runCmdWithDeps(t, baseDir, deps, "status")
@@ -425,9 +409,7 @@ func TestStatus_Check5_PCErrShowsWarn(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initWithImage(t, baseDir)
 	resolvedPwd := evalSymlinks(t, pwd)
 
 	// Stale network: block that projectconfig.Load rejects.
@@ -462,9 +444,7 @@ func TestStatus_Check5_ScanErrShowsWarn(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initWithImage(t, baseDir)
 	resolvedPwd := evalSymlinks(t, pwd)
 
 	unreadable := filepath.Join(resolvedPwd, "secrets")
@@ -502,9 +482,7 @@ func TestStatus_Check5_MaskedFilesShowsOKWithCount(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initWithImage(t, baseDir)
 	resolvedPwd := evalSymlinks(t, pwd)
 
 	secretFile := filepath.Join(resolvedPwd, ".env")
@@ -581,9 +559,7 @@ func TestStatus_CheckOrdering(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initWithImage(t, baseDir)
 
 	deps := newFakeStatusDeps(false, false)
 

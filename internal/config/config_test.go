@@ -26,8 +26,8 @@ func TestLoad_MissingReturnsEmptyDefaults(t *testing.T) {
 	if len(s.Workspaces) != 0 {
 		t.Errorf("Workspaces len = %d, want 0", len(s.Workspaces))
 	}
-	if s.Image != DefaultImage {
-		t.Errorf("Image = %q, want %q", s.Image, DefaultImage)
+	if s.Image != "" {
+		t.Errorf("Image = %q, want empty (image has no default)", s.Image)
 	}
 	if s.Shell != DefaultShell {
 		t.Errorf("Shell = %q, want %q", s.Shell, DefaultShell)
@@ -61,6 +61,7 @@ func TestLoad_PreservesExplicitImageAndShell(t *testing.T) {
 }
 
 // Regression: settings.json written before Image/Shell existed must keep working.
+// Shell is defaulted; Image stays unset.
 func TestLoad_LegacyConfigGetsDefaultsForMissingFields(t *testing.T) {
 	base := t.TempDir()
 	body := `{"workspaces":{}}`
@@ -72,17 +73,17 @@ func TestLoad_LegacyConfigGetsDefaultsForMissingFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if s.Image != DefaultImage {
-		t.Errorf("Image = %q, want %q", s.Image, DefaultImage)
+	if s.Image != "" {
+		t.Errorf("Image = %q, want empty (image has no default)", s.Image)
 	}
 	if s.Shell != DefaultShell {
 		t.Errorf("Shell = %q, want %q", s.Shell, DefaultShell)
 	}
 }
 
-// Explicitly empty strings on disk must be treated like absent fields so a
-// future code path that writes "" can never starve callers of a usable value.
-func TestLoad_ExplicitEmptyImageAndShellGetsDefaults(t *testing.T) {
+// Explicitly empty strings on disk must be treated like absent fields: Shell
+// gets its default, Image stays empty (unset).
+func TestLoad_ExplicitEmptyImageAndShell(t *testing.T) {
 	base := t.TempDir()
 	body := `{"image":"","shell":"","workspaces":{}}`
 	if err := os.WriteFile(filepath.Join(base, SettingsFile), []byte(body), 0o644); err != nil {
@@ -93,8 +94,8 @@ func TestLoad_ExplicitEmptyImageAndShellGetsDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if s.Image != DefaultImage {
-		t.Errorf("Image = %q, want %q", s.Image, DefaultImage)
+	if s.Image != "" {
+		t.Errorf("Image = %q, want empty (image has no default)", s.Image)
 	}
 	if s.Shell != DefaultShell {
 		t.Errorf("Shell = %q, want %q", s.Shell, DefaultShell)
@@ -132,7 +133,7 @@ func TestLoad_FileWithoutTmpDirSize_DefaultsTmpDirSize(t *testing.T) {
 func TestSaveLoad_TmpDirSizeRoundTrip(t *testing.T) {
 	base := t.TempDir()
 	want := &Settings{
-		Image:      DefaultImage,
+		Image:      "claudebox",
 		Shell:      DefaultShell,
 		TmpDirSize: "1000m",
 		Workspaces: map[string]Workspace{},
@@ -227,9 +228,10 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	}
 
 	// Image, Shell, and TmpDirSize are omitempty — the saved struct has zero
-	// values so they are absent from JSON. Load must default them on read-back.
-	if got.Image != DefaultImage {
-		t.Errorf("Image = %q, want default %q", got.Image, DefaultImage)
+	// values so they are absent from JSON. Load defaults Shell/TmpDirSize on
+	// read-back; Image stays unset.
+	if got.Image != "" {
+		t.Errorf("Image = %q, want empty", got.Image)
 	}
 	if got.Shell != DefaultShell {
 		t.Errorf("Shell = %q, want default %q", got.Shell, DefaultShell)
@@ -299,9 +301,9 @@ func TestSaveLoadByteIdenticalForSameSettings(t *testing.T) {
 	base := t.TempDir()
 
 	s := &Settings{
-		// Image/Shell/TmpDirSize included so the post-Load defaulting does not
-		// alter the re-serialized byte sequence on the second save.
-		Image:      DefaultImage,
+		// Shell/TmpDirSize included so the post-Load defaulting does not alter
+		// the re-serialized byte sequence on the second save.
+		Image:      "claudebox",
 		Shell:      DefaultShell,
 		TmpDirSize: DefaultTmpDirSize,
 		Workspaces: map[string]Workspace{

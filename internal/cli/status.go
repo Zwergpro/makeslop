@@ -178,7 +178,7 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, jso
 	case settingsCorrupt:
 		cl.fail("image", "cannot check — settings unreadable")
 	default:
-		imageName := config.DefaultImage
+		imageName := ""
 		if loadedSettings != nil {
 			imageName = loadedSettings.Image
 		}

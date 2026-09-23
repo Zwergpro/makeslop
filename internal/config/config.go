@@ -15,9 +15,9 @@ const (
 	WorkspacesDir = "workspaces"
 )
 
-// omitempty + Load-time defaulting keeps pre-existing files byte-stable until a user overrides.
+// omitempty + Load-time defaulting of Shell/TmpDirSize keeps pre-existing files
+// byte-stable until a user overrides. Image is never defaulted: empty means unset.
 const (
-	DefaultImage      = "claudebox"
 	DefaultShell      = "/bin/zsh"
 	DefaultTmpDirSize = "100m"
 )
@@ -45,15 +45,14 @@ func DefaultBaseDir() (string, error) {
 }
 
 // Load reads <baseDir>/settings.json. A missing file yields default Settings
-// (not an error); malformed JSON is an error. Empty Image/Shell/TmpDirSize
-// default for backward compatibility.
+// (not an error); malformed JSON is an error. Empty Shell/TmpDirSize default
+// for backward compatibility; an empty Image stays empty (unset).
 func Load(baseDir string) (*Settings, error) {
 	path := filepath.Join(baseDir, SettingsFile)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return &Settings{
-				Image:      DefaultImage,
 				Shell:      DefaultShell,
 				TmpDirSize: DefaultTmpDirSize,
 				Workspaces: map[string]Workspace{},
@@ -67,9 +66,6 @@ func Load(baseDir string) (*Settings, error) {
 	}
 	if s.Workspaces == nil {
 		s.Workspaces = map[string]Workspace{}
-	}
-	if s.Image == "" {
-		s.Image = DefaultImage
 	}
 	if s.Shell == "" {
 		s.Shell = DefaultShell

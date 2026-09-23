@@ -146,7 +146,7 @@ func TestConfigList_DefaultSettings(t *testing.T) {
 	}
 
 	wantOrder := []ConfigEntry{
-		{Name: "image", Value: DefaultImage},
+		{Name: "image", Value: ""},
 		{Name: "shell", Value: DefaultShell},
 		{Name: "tmp_dir_size", Value: DefaultTmpDirSize},
 	}
@@ -202,11 +202,10 @@ func TestConfigSet_NoMutationOnValidationError(t *testing.T) {
 	}
 }
 
-// defaultSettings returns a fully-populated Settings with all defaults applied.
-// This helper is used by ConfigSet/ConfigGet tests, not Load tests.
+// defaultSettings returns Settings with all defaults applied (Image stays
+// unset — it has no default). Used by ConfigSet/ConfigGet tests, not Load tests.
 func defaultSettings() *Settings {
 	return &Settings{
-		Image:      DefaultImage,
 		Shell:      DefaultShell,
 		TmpDirSize: DefaultTmpDirSize,
 		Workspaces: map[string]Workspace{},
