@@ -295,7 +295,13 @@ prevents the agent from modifying the file that controls scan patterns, reserved
 masking — it cannot relax its own sandbox policy.
 
 When `.makeslop.yaml` is absent, the read-only bind is skipped (a missing bind source would fail
-container create, and there is nothing to protect).
+container create). The project root is still mounted read-write, so the agent can **create**
+`.makeslop.yaml`, and makeslop loads it on the next `makeslop run` like any other project config.
+That includes `environments.host` entries, which copy host secrets (for example
+`AWS_SECRET_ACCESS_KEY` or `GITHUB_TOKEN`) into the next container — see
+[Host environment passthrough](#host-environment-passthrough). Keep a `.makeslop.yaml` in every
+project (`makeslop init` creates one, which turns the read-only bind on), and review any new or
+changed `.makeslop.yaml` after a session (`git status` / `git diff`) before running again.
 
 ### Git hooks tmpfs mask
 
@@ -324,6 +330,17 @@ agent's container (see
 Anything listed there — tokens such as `GITHUB_TOKEN` included — is readable by the agent and by
 any code it runs. List only what the agent should have; everything else in the host environment
 stays out of the container.
+
+`.makeslop.yaml` is committed with the project, so you may not be the one who wrote its `host:`
+list. A cloned repository, or a pulled commit, can list any host variable (for example
+`AWS_SECRET_ACCESS_KEY` or `GITHUB_TOKEN`) and `makeslop run` will copy it into a container that
+has network access. makeslop does not warn about this. Before running in a repository you did not
+write, read its `.makeslop.yaml`, and review changes to `environments.host` as carefully as
+changes to `exclude` and the scan patterns.
+
+The agent itself can also write the list: in a project with no `.makeslop.yaml`, the file is not
+mounted read-only, so the agent can create one and its `host:` entries take effect on the next
+run (see [Config file read-only bind](#config-file-read-only-bind)).
 
 `makeslop run --dry-run` prints resolved host values in full, so its output can contain secrets.
 Redact it before sharing.

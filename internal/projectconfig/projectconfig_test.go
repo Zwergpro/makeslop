@@ -270,30 +270,12 @@ func TestLoad_ValidationRules(t *testing.T) {
 			yaml:        "exclude:\n  dirs:\n    - foo/..\n  files: []\n",
 			wantErrFrag: "refers to project root",
 		},
-		{
-			name:        "environments static key with equals sign",
-			yaml:        "environments:\n  static:\n    \"A=B\": value\n",
-			wantErrFrag: "must not contain '='",
-		},
-		{
-			name:        "environments static non-scalar value",
-			yaml:        "environments:\n  static:\n    FOO:\n      - a\n      - b\n",
-			wantErrFrag: "must be a scalar value",
-		},
-		{
-			name:        "environments static null value",
-			yaml:        "environments:\n  static:\n    KEY: null\n",
-			wantErrFrag: "has no value",
-		},
+		// One environments row proves walker errors reach Load; the walker's
+		// rules are covered by TestValidateEnvironments_Errors.
 		{
 			name:        "environments old flat form",
 			yaml:        "environments:\n  NODE_ENV: production\n",
 			wantErrFrag: "move entries under environments.static",
-		},
-		{
-			name:        "environments host scalar",
-			yaml:        "environments:\n  host: GITHUB_TOKEN\n",
-			wantErrFrag: "environments.host must be a list of variable names",
 		},
 	}
 
@@ -1221,16 +1203,31 @@ func TestStub_MatchesDefaultRenderStub(t *testing.T) {
 // envNode unmarshals snippet and returns the root content node (not the
 // DocumentNode), i.e. what yamlSchema.Environments receives. An empty snippet
 // returns the zero node, matching an absent environments: key.
-func envNode(t *testing.T, snippet string) yaml.Node {
+func envNode(t *testing.T, snippet string) *yaml.Node {
 	t.Helper()
 	var doc yaml.Node
 	if err := yaml.Unmarshal([]byte(snippet), &doc); err != nil {
 		t.Fatalf("unmarshal %q: %v", snippet, err)
 	}
 	if len(doc.Content) == 0 {
-		return yaml.Node{}
+		return &yaml.Node{}
 	}
-	return *doc.Content[0]
+	return doc.Content[0]
+}
+
+// envFromDoc decodes a whole document the way Load does (environments: into a
+// yaml.Node field), so aliases whose anchors sit outside the block survive
+// unresolved. Unlike Load it is not strict: unknown anchor-holding keys are
+// ignored here, while Load rejects them (see TestLoad_EnvironmentsAliases).
+func envFromDoc(t *testing.T, doc string) *yaml.Node {
+	t.Helper()
+	var s struct {
+		Environments yaml.Node `yaml:"environments"`
+	}
+	if err := yaml.Unmarshal([]byte(doc), &s); err != nil {
+		t.Fatalf("unmarshal %q: %v", doc, err)
+	}
+	return &s.Environments
 }
 
 func TestValidateEnvironments_Success(t *testing.T) {
@@ -1255,9 +1252,10 @@ func TestValidateEnvironments_Success(t *testing.T) {
 			want:    Env{},
 		},
 		{
-			name:    "static only, sorted",
+			// run sorts the merged pairs; the walker keeps file order.
+			name:    "static only, file order",
 			snippet: "static:\n  NODE_ENV: production\n  LOG_LEVEL: info\n  API_BASE_URL: https://api.example.com\n",
-			want:    Env{Static: []string{"API_BASE_URL=https://api.example.com", "LOG_LEVEL=info", "NODE_ENV=production"}},
+			want:    Env{Static: []string{"NODE_ENV=production", "LOG_LEVEL=info", "API_BASE_URL=https://api.example.com"}},
 		},
 		{
 			name:    "host only",
@@ -1288,12 +1286,24 @@ func TestValidateEnvironments_Success(t *testing.T) {
 			// node.Value is the raw scalar form, so numbers/booleans coerce.
 			name:    "static scalar coercion",
 			snippet: "static:\n  PORT: 8080\n  DEBUG: true\n  RATIO: 1.5\n",
-			want:    Env{Static: []string{"DEBUG=true", "PORT=8080", "RATIO=1.5"}},
+			want:    Env{Static: []string{"PORT=8080", "DEBUG=true", "RATIO=1.5"}},
+		},
+		{
+			// Same coercion for host entries; such names are simply unset on
+			// most hosts and get skipped by run.
+			name:    "host scalar coercion",
+			snippet: "host:\n  - 123\n  - true\n  - 1.5\n",
+			want:    Env{Host: []string{"1.5", "123", "true"}},
 		},
 		{
 			name:    "static explicit empty string",
 			snippet: "static:\n  EMPTY_VAR: \"\"\n",
 			want:    Env{Static: []string{"EMPTY_VAR="}},
+		},
+		{
+			name:    "alias as static value and host entry",
+			snippet: "static:\n  A: &v X_NAME\n  B: *v\nhost:\n  - *v\n",
+			want:    Env{Static: []string{"A=X_NAME", "B=X_NAME"}, Host: []string{"X_NAME"}},
 		},
 	}
 	for _, tc := range cases {
@@ -1309,169 +1319,243 @@ func TestValidateEnvironments_Success(t *testing.T) {
 	}
 }
 
+// A yaml.Node decode target keeps aliases unresolved; the walker follows them
+// for the block itself and for the static:/host: sub-keys.
+func TestValidateEnvironments_AliasedBlocks(t *testing.T) {
+	cases := []struct {
+		name string
+		doc  string
+		want Env
+	}{
+		{
+			name: "whole block aliased",
+			doc:  "base: &e\n  static: {A: one}\n  host: [H]\nenvironments: *e\n",
+			want: Env{Static: []string{"A=one"}, Host: []string{"H"}},
+		},
+		{
+			name: "static and host aliased",
+			doc:  "s: &s {A: one}\nl: &l [H]\nenvironments:\n  static: *s\n  host: *l\n",
+			want: Env{Static: []string{"A=one"}, Host: []string{"H"}},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := validateEnvironments(envFromDoc(t, tc.doc))
+			if err != nil {
+				t.Fatalf("validateEnvironments error: %v", err)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("got %#v, want %#v", got, tc.want)
+			}
+		})
+	}
+
+	// An aliased scalar under an unknown key is still the old flat form.
+	_, err := validateEnvironments(envFromDoc(t, "v: &v production\nenvironments:\n  NODE_ENV: *v\n"))
+	const flatForm = `projectconfig: environments: flat "KEY: value" form is no longer supported; move entries under environments.static`
+	if err == nil || err.Error() != flatForm {
+		t.Errorf("aliased flat form: err = %v, want %q", err, flatForm)
+	}
+}
+
 func TestValidateEnvironments_Errors(t *testing.T) {
 	const (
 		notMapping = `projectconfig: environments must be a mapping with optional "static" and "host" keys`
 		flatForm   = `projectconfig: environments: flat "KEY: value" form is no longer supported; move entries under environments.static`
 		staticMap  = "projectconfig: environments.static must be a mapping of KEY: value"
 		hostList   = "projectconfig: environments.host must be a list of variable names"
+		hint       = " (if this was the old flat form, move entries under environments.static)"
 	)
 	cases := []struct {
 		name    string
 		snippet string
-		wantErr string // full message when exact, else a fragment
-		exact   bool
+		wantErr string
 	}{
-		{name: "environments as a list", snippet: "[A]", wantErr: notMapping, exact: true},
-		{name: "environments as a scalar", snippet: "FOO", wantErr: notMapping, exact: true},
-		{name: "old flat form", snippet: "NODE_ENV: production\n", wantErr: flatForm, exact: true},
-		{name: "old flat form with null value", snippet: "NODE_ENV:\n", wantErr: flatForm, exact: true},
+		{name: "environments as a list", snippet: "[A]", wantErr: notMapping},
+		{name: "environments as a scalar", snippet: "FOO", wantErr: notMapping},
+		{name: "old flat form", snippet: "NODE_ENV: production\n", wantErr: flatForm},
+		{name: "old flat form with null value", snippet: "NODE_ENV:\n", wantErr: flatForm},
+		{name: "old flat form, uppercase HOST variable", snippet: "HOST: db.local\n", wantErr: flatForm},
 		{
 			name:    "unknown key with non-scalar value",
 			snippet: "hosts: [A]\n",
 			wantErr: `projectconfig: unknown key "hosts" in environments (allowed: static, host)`,
-			exact:   true,
 		},
 		{
-			name:    "YAML merge key is not expanded",
-			snippet: "<<: {static: {A: b}}\n",
-			wantErr: `projectconfig: unknown key "<<" in environments (allowed: static, host)`,
-			exact:   true,
+			name:    "typo hosts with scalar value",
+			snippet: "hosts: GITHUB_TOKEN\n",
+			wantErr: `projectconfig: unknown key "hosts" in environments (allowed: static, host)`,
 		},
-		{name: "scalar under static", snippet: "static: FOO\n", wantErr: staticMap, exact: true},
-		{name: "sequence under static", snippet: "static: [A]\n", wantErr: staticMap, exact: true},
-		{name: "host as scalar", snippet: "host: GITHUB_TOKEN\n", wantErr: hostList, exact: true},
-		{name: "host as mapping", snippet: "host:\n  GITHUB_TOKEN: x\n", wantErr: hostList, exact: true},
+		{
+			name:    "typo bare hosts",
+			snippet: "hosts:\n",
+			wantErr: `projectconfig: unknown key "hosts" in environments (allowed: static, host)`,
+		},
+		{
+			name:    "typo capitalised Host",
+			snippet: "Host: X\n",
+			wantErr: `projectconfig: unknown key "Host" in environments (allowed: static, host)`,
+		},
+		{
+			name:    "typo Statics",
+			snippet: "Statics: X\n",
+			wantErr: `projectconfig: unknown key "Statics" in environments (allowed: static, host)`,
+		},
+		{
+			name:    "merge key at top level",
+			snippet: "<<: {static: {A: b}}\n",
+			wantErr: "projectconfig: environments: merge keys (<<) are not supported",
+		},
+		{
+			name:    "merge key inside static",
+			snippet: "static:\n  <<: {A: b}\n",
+			wantErr: "projectconfig: environments.static: merge keys (<<) are not supported",
+		},
+		{name: "scalar under static", snippet: "static: FOO\n", wantErr: staticMap + hint},
+		{name: "sequence under static", snippet: "static: [A]\n", wantErr: staticMap},
+		{name: "host as scalar", snippet: "host: GITHUB_TOKEN\n", wantErr: hostList + hint},
+		{name: "old flat form variable named host", snippet: "host: db.local\n", wantErr: hostList + hint},
+		{name: "host as mapping", snippet: "host:\n  GITHUB_TOKEN: x\n", wantErr: hostList},
 		{
 			name:    "duplicate static block",
 			snippet: "static:\n  A: a\nstatic:\n  B: b\n",
 			wantErr: `projectconfig: duplicate key "static" in environments`,
-			exact:   true,
 		},
 		{
 			name:    "duplicate host block",
 			snippet: "host: [A]\nhost: [B]\n",
 			wantErr: `projectconfig: duplicate key "host" in environments`,
-			exact:   true,
 		},
 		{
 			name:    "duplicate key inside static",
 			snippet: "static:\n  A: a\n  A: b\n",
 			wantErr: `projectconfig: duplicate key "A" in environments.static`,
-			exact:   true,
 		},
 		{
 			name:    "null key at top level",
 			snippet: "~: x\n",
 			wantErr: "projectconfig: environments: key at line 1 must be a non-null scalar",
-			exact:   true,
 		},
 		{
 			name:    "complex key at top level",
 			snippet: "? [a]\n: x\n",
 			wantErr: "projectconfig: environments: key at line 1 must be a non-null scalar",
-			exact:   true,
 		},
 		{
 			name:    "null key inside static",
 			snippet: "static:\n  ~: x\n",
 			wantErr: "projectconfig: environments.static: key at line 2 must be a non-null scalar",
-			exact:   true,
 		},
 		{
 			name:    "complex key inside static",
 			snippet: "static:\n  ? [a]\n  : x\n",
 			wantErr: "projectconfig: environments.static: key at line 2 must be a non-null scalar",
-			exact:   true,
 		},
 		{
 			name:    "static key with equals sign",
 			snippet: "static:\n  \"A=B\": val\n",
-			wantErr: `projectconfig: environment key "A=B" must not contain '='`,
-			exact:   true,
+			wantErr: "projectconfig: environments.static: key at line 2 must not contain '='",
 		},
 		{
 			name:    "static empty key",
 			snippet: "static:\n  \"\": val\n",
 			wantErr: "projectconfig: empty key in environments.static",
-			exact:   true,
 		},
-		{name: "static key with LF", snippet: "static:\n  \"KEY\\nNAME\": val\n", wantErr: "must not contain newline or tab characters"},
-		{name: "static key with CR", snippet: "static:\n  \"KEY\\rNAME\": val\n", wantErr: "must not contain newline or tab characters"},
-		{name: "static key with TAB", snippet: "static:\n  \"KEY\\tNAME\": val\n", wantErr: "must not contain newline or tab characters"},
+		{
+			name:    "static key with LF",
+			snippet: "static:\n  \"KEY\\nNAME\": val\n",
+			wantErr: "projectconfig: environments.static: key at line 2 must not contain newline, carriage-return, or tab characters",
+		},
+		{
+			name:    "static key with CR",
+			snippet: "static:\n  \"KEY\\rNAME\": val\n",
+			wantErr: "projectconfig: environments.static: key at line 2 must not contain newline, carriage-return, or tab characters",
+		},
+		{
+			name:    "static key with TAB",
+			snippet: "static:\n  \"KEY\\tNAME\": val\n",
+			wantErr: "projectconfig: environments.static: key at line 2 must not contain newline, carriage-return, or tab characters",
+		},
 		{
 			name:    "static value with LF",
 			snippet: "static:\n  KEY: \"line1\\nline2\"\n",
-			wantErr: `projectconfig: environment key "KEY" value must not contain newline or tab characters`,
-			exact:   true,
+			wantErr: `projectconfig: environments.static: key "KEY" value must not contain newline, carriage-return, or tab characters`,
 		},
-		{name: "static value with CR", snippet: "static:\n  KEY: \"line1\\rline2\"\n", wantErr: "value must not contain newline or tab characters"},
-		{name: "static value with TAB", snippet: "static:\n  KEY: \"val1\\tval2\"\n", wantErr: "value must not contain newline or tab characters"},
+		{
+			name:    "static value with CR",
+			snippet: "static:\n  KEY: \"line1\\rline2\"\n",
+			wantErr: `projectconfig: environments.static: key "KEY" value must not contain newline, carriage-return, or tab characters`,
+		},
+		{
+			name:    "static value with TAB",
+			snippet: "static:\n  KEY: \"val1\\tval2\"\n",
+			wantErr: `projectconfig: environments.static: key "KEY" value must not contain newline, carriage-return, or tab characters`,
+		},
 		{
 			name:    "static sequence value",
 			snippet: "static:\n  FOO: [a, b]\n",
-			wantErr: `projectconfig: environment key "FOO" must be a scalar value`,
-			exact:   true,
+			wantErr: `projectconfig: environments.static: key "FOO" must be a scalar value`,
 		},
 		{
 			name:    "static mapping value",
 			snippet: "static:\n  FOO: {a: b}\n",
-			wantErr: `projectconfig: environment key "FOO" must be a scalar value`,
-			exact:   true,
+			wantErr: `projectconfig: environments.static: key "FOO" must be a scalar value`,
 		},
 		{
 			name:    "static null value",
 			snippet: "static:\n  KEY: null\n",
-			wantErr: `projectconfig: environment key "KEY" has no value`,
-			exact:   true,
+			wantErr: `projectconfig: environments.static: key "KEY" has no value`,
 		},
 		{
 			name:    "static bare value",
 			snippet: "static:\n  KEY:\n",
-			wantErr: `projectconfig: environment key "KEY" has no value`,
-			exact:   true,
+			wantErr: `projectconfig: environments.static: key "KEY" has no value`,
 		},
 		{
 			name:    "host null entry",
 			snippet: "host:\n  - ~\n",
 			wantErr: "projectconfig: environments.host entry at line 2 has no name",
-			exact:   true,
 		},
 		{
 			name:    "host bare dash entry",
 			snippet: "host:\n  -\n",
-			wantErr: "has no name",
+			wantErr: "projectconfig: environments.host entry at line 2 has no name",
 		},
 		{
 			name:    "host empty name",
 			snippet: "host:\n  - \"\"\n",
-			wantErr: "projectconfig: empty name in environments.host",
-			exact:   true,
+			wantErr: "projectconfig: environments.host entry at line 2 has no name",
 		},
 		{
 			name:    "host name with equals sign",
 			snippet: "host:\n  - A=B\n",
-			wantErr: `projectconfig: environments.host name "A=B" must not contain '='`,
-			exact:   true,
+			wantErr: "projectconfig: environments.host entry at line 2 must not contain '='",
 		},
 		{
 			name:    "host name with space",
 			snippet: "host:\n  - \"A B\"\n",
-			wantErr: `projectconfig: environments.host name "A B" must not contain whitespace`,
-			exact:   true,
+			wantErr: "projectconfig: environments.host entry at line 2 must not contain whitespace",
 		},
-		{name: "host name with tab", snippet: "host:\n  - \"A\\tB\"\n", wantErr: "must not contain whitespace"},
+		{
+			name:    "host name with tab",
+			snippet: "host:\n  - \"A\\tB\"\n",
+			wantErr: "projectconfig: environments.host entry at line 2 must not contain whitespace",
+		},
+		{
+			// unicode.IsSpace covers non-ASCII whitespace such as NO-BREAK SPACE.
+			name:    "host name with U+00A0",
+			snippet: "host:\n  - \"A B\"\n",
+			wantErr: "projectconfig: environments.host entry at line 2 must not contain whitespace",
+		},
 		{
 			name:    "host non-scalar entry",
 			snippet: "host:\n  - [A]\n",
 			wantErr: "projectconfig: environments.host entry at line 2 must be a variable name",
-			exact:   true,
 		},
 		{
 			name:    "static/host overlap",
 			snippet: "static:\n  GITHUB_TOKEN: x\nhost:\n  - GITHUB_TOKEN\n",
 			wantErr: `projectconfig: environment key "GITHUB_TOKEN" listed in both environments.static and environments.host`,
-			exact:   true,
 		},
 	}
 	for _, tc := range cases {
@@ -1480,15 +1564,8 @@ func TestValidateEnvironments_Errors(t *testing.T) {
 			if err == nil {
 				t.Fatalf("expected error %q, got nil (env %#v)", tc.wantErr, got)
 			}
-			msg := err.Error()
-			if tc.exact && msg != tc.wantErr {
-				t.Errorf("error = %q, want %q", msg, tc.wantErr)
-			}
-			if !tc.exact && !strings.Contains(msg, tc.wantErr) {
-				t.Errorf("error %q does not contain %q", msg, tc.wantErr)
-			}
-			if !strings.HasPrefix(msg, "projectconfig: ") {
-				t.Errorf("error missing 'projectconfig: ' prefix: %q", msg)
+			if err.Error() != tc.wantErr {
+				t.Errorf("error = %q, want %q", err.Error(), tc.wantErr)
 			}
 			if !reflect.DeepEqual(got, Env{}) {
 				t.Errorf("expected zero Env on error, got %#v", got)
@@ -1497,11 +1574,15 @@ func TestValidateEnvironments_Errors(t *testing.T) {
 	}
 }
 
-// Error messages name keys but never echo values (values may be secrets).
+// Error messages name keys but never echo values (values may be secrets),
+// including a KEY=value pasted where a name belongs.
 func TestValidateEnvironments_ErrorsOmitValues(t *testing.T) {
 	snippets := []string{
 		"static:\n  KEY: \"s3cr3t\\nvalue\"\n",
 		"SECRET_KEY: s3cr3t\n",
+		"static:\n  \"KEY=s3cr3t\": x\n",
+		"host:\n  - GITHUB_TOKEN=s3cr3t\n",
+		"host:\n  - GITHUB_TOKEN s3cr3t\n",
 	}
 	for _, s := range snippets {
 		_, err := validateEnvironments(envNode(t, s))
@@ -1515,7 +1596,7 @@ func TestValidateEnvironments_ErrorsOmitValues(t *testing.T) {
 }
 
 // An absent environments: block returns a zero Env.
-func TestLoad_AbsentEnvironments_NilEnv(t *testing.T) {
+func TestLoad_AbsentEnvironments_ZeroEnv(t *testing.T) {
 	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
@@ -1542,21 +1623,8 @@ cache:
 	}
 }
 
-func TestLoad_MissingFile_NilEnv(t *testing.T) {
-	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
-	root := evalSymlinks(t, t.TempDir())
-
-	_, _, env, err := Load(root)
-	if err != nil {
-		t.Fatalf("Load on missing file returned error: %v", err)
-	}
-	if !reflect.DeepEqual(env, Env{}) {
-		t.Errorf("expected zero Env for missing file, got %#v", env)
-	}
-}
-
 // Empty/whitespace-only files and an empty environments: block return a zero Env.
-func TestLoad_EmptyAndWhitespaceFile_NilEnv(t *testing.T) {
+func TestLoad_EmptyAndWhitespaceFile_ZeroEnv(t *testing.T) {
 	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 
 	cases := []struct {
@@ -1584,15 +1652,16 @@ func TestLoad_EmptyAndWhitespaceFile_NilEnv(t *testing.T) {
 	}
 }
 
-func TestLoad_EnvironmentsBlock_ReturnsSortedPairs(t *testing.T) {
+func TestLoad_EnvironmentsBlock_ReturnsPairs(t *testing.T) {
 	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
 	content := `environments:
   static:
-    NODE_ENV: production
+    NODE_ENV: &env production
     PORT: 8080
     LOG_LEVEL: info
+    FALLBACK_ENV: *env
   host:
     - TERM
     - GITHUB_TOKEN
@@ -1605,8 +1674,9 @@ func TestLoad_EnvironmentsBlock_ReturnsSortedPairs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
+	// Static keeps file order (run sorts); the alias resolves through Load.
 	want := Env{
-		Static: []string{"LOG_LEVEL=info", "NODE_ENV=production", "PORT=8080"},
+		Static: []string{"NODE_ENV=production", "PORT=8080", "LOG_LEVEL=info", "FALLBACK_ENV=production"},
 		Host:   []string{"GITHUB_TOKEN", "TERM"},
 	}
 	if !reflect.DeepEqual(env, want) {
@@ -1614,17 +1684,73 @@ func TestLoad_EnvironmentsBlock_ReturnsSortedPairs(t *testing.T) {
 	}
 }
 
+// Alias forms reachable from a real file: an anchor on a static value reused by
+// a host entry. A top-level key added only to hold an anchor is rejected by
+// strict decoding before the walker runs.
+func TestLoad_EnvironmentsAliases(t *testing.T) {
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+
+	t.Run("static value reused by host entry", func(t *testing.T) {
+		root := evalSymlinks(t, t.TempDir())
+		content := "environments:\n  static:\n    TOKEN_VAR: &tok GITHUB_TOKEN\n  host:\n    - *tok\n"
+		if err := os.WriteFile(filepath.Join(root, Filename), []byte(content), 0o644); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		_, _, env, err := Load(root)
+		if err != nil {
+			t.Fatalf("Load returned error: %v", err)
+		}
+		want := Env{Static: []string{"TOKEN_VAR=GITHUB_TOKEN"}, Host: []string{"GITHUB_TOKEN"}}
+		if !reflect.DeepEqual(env, want) {
+			t.Errorf("got %#v, want %#v", env, want)
+		}
+	})
+
+	t.Run("top-level anchor holder rejected", func(t *testing.T) {
+		root := evalSymlinks(t, t.TempDir())
+		content := "base: &e\n  static: {A: one}\nenvironments: *e\n"
+		if err := os.WriteFile(filepath.Join(root, Filename), []byte(content), 0o644); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		_, _, _, err := Load(root)
+		if err == nil || !strings.Contains(err.Error(), "field base not found") {
+			t.Errorf("err = %v, want strict-decode unknown field \"base\"", err)
+		}
+	})
+}
+
 // yaml.v3 skips its duplicate-key check for yaml.Node targets; the walker's own
-// check must still fire through Load.
-func TestLoad_EnvironmentsDuplicateStaticKey(t *testing.T) {
-	root := evalSymlinks(t, t.TempDir())
-	content := "environments:\n  static:\n    A: a\n    A: b\n"
-	if err := os.WriteFile(filepath.Join(root, Filename), []byte(content), 0o644); err != nil {
-		t.Fatalf("write: %v", err)
+// check must still fire through Load, at both levels.
+func TestLoad_EnvironmentsDuplicateKeys(t *testing.T) {
+	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+
+	cases := []struct {
+		name    string
+		content string
+		wantErr string
+	}{
+		{
+			name:    "duplicate static block",
+			content: "environments:\n  static:\n    A: a\n  static:\n    B: b\n",
+			wantErr: `projectconfig: duplicate key "static" in environments`,
+		},
+		{
+			name:    "duplicate key inside static",
+			content: "environments:\n  static:\n    A: a\n    A: b\n",
+			wantErr: `projectconfig: duplicate key "A" in environments.static`,
+		},
 	}
-	_, _, _, err := Load(root)
-	if err == nil || err.Error() != `projectconfig: duplicate key "A" in environments.static` {
-		t.Fatalf("err = %v, want duplicate key error", err)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := evalSymlinks(t, t.TempDir())
+			if err := os.WriteFile(filepath.Join(root, Filename), []byte(tc.content), 0o644); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			_, _, _, err := Load(root)
+			if err == nil || err.Error() != tc.wantErr {
+				t.Fatalf("err = %v, want %q", err, tc.wantErr)
+			}
+		})
 	}
 }
 

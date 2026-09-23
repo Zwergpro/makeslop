@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -37,9 +38,10 @@ func mergeUniqueSorted(a, b []string) []string {
 	return out
 }
 
-// resolveEnv merges env.Static with host-resolved env.Host pairs, sorted.
-// Unset host names are skipped; set-but-empty yields "NAME=". Host values pass
-// verbatim (newlines included). Returns nil when empty so no -e flags appear.
+// resolveEnv merges env.Static with host-resolved env.Host pairs, sorted by
+// key. This is the only place the final -e order is decided. Unset host names
+// are skipped; set-but-empty yields "NAME=". Host values pass verbatim
+// (newlines included). Returns nil when empty so no -e flags appear.
 func resolveEnv(env projectconfig.Env, lookup func(string) (string, bool)) []string {
 	out := make([]string, 0, len(env.Static)+len(env.Host))
 	out = append(out, env.Static...)
@@ -51,7 +53,13 @@ func resolveEnv(env projectconfig.Env, lookup func(string) (string, bool)) []str
 	if len(out) == 0 {
 		return nil
 	}
-	sort.Strings(out)
+	// Keys are unique (projectconfig rejects static/host overlap), so an
+	// unstable sort is deterministic.
+	sort.Slice(out, func(i, j int) bool {
+		ki, _, _ := strings.Cut(out[i], "=")
+		kj, _, _ := strings.Cut(out[j], "=")
+		return ki < kj
+	})
 	return out
 }
 

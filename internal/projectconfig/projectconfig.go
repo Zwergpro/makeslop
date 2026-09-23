@@ -89,7 +89,7 @@ type Cache struct {
 
 // Env is the parsed environments: block.
 type Env struct {
-	Static []string // sorted "KEY=VALUE"
+	Static []string // "KEY=VALUE" in file order
 	Host   []string // sorted, deduped variable names to copy from the host
 }
 
@@ -256,7 +256,7 @@ func Load(root string) (Excludes, Cache, Env, error) {
 		Agent:   schema.Cache.Agent == nil || *schema.Cache.Agent,
 	}
 
-	env, err := validateEnvironments(schema.Environments)
+	env, err := validateEnvironments(&schema.Environments)
 	if err != nil {
 		return Excludes{}, Cache{}, Env{}, err
 	}
@@ -343,52 +343,61 @@ func validateSkipDirs(entries []string) ([]string, error) {
 //
 // A zero or null node (block absent or empty) yields Env{}; so does a null
 // static:/host: sub-key. Rules:
+//   - Aliases (*name) are followed at every level: a yaml.Node decode target
+//     keeps them unresolved. Merge keys (<<) are rejected, not expanded.
 //   - Keys at both levels must be non-null scalars. Duplicates are detected
 //     here: yaml.v3 skips its own duplicate-key check when decoding into a
 //     yaml.Node.
 //   - An unknown key with a scalar value is the pre-static flat form and gets a
-//     migration hint; any other unknown key is reported as unknown.
-//   - static: keys must be non-empty and free of '=' and newline/tab; values
-//     must be non-null scalars without newline/tab. Explicit "" is accepted.
-//     Numbers/booleans coerce via node.Value.
+//     migration hint, unless it looks like a misspelled static/host (see
+//     isSubKeyTypo); any other unknown key is reported as unknown.
+//   - static: keys must be non-empty and free of '=' and newline,
+//     carriage-return, or tab; values must be non-null scalars without those
+//     characters. Explicit "" is accepted. Numbers/booleans coerce via
+//     node.Value. Pairs keep file order; run sorts the merged result.
 //   - host: entries must be non-null scalars, non-empty, and free of '=' and
 //     whitespace. Deduplicated silently and sorted.
 //   - A name in both static and host is an error.
 //
-// Error messages carry names only, never values.
-func validateEnvironments(node yaml.Node) (Env, error) {
-	if node.Kind == 0 || isNull(&node) {
+// Error messages carry names or line numbers only, never values.
+func validateEnvironments(node *yaml.Node) (Env, error) {
+	n := deref(node)
+	if n.Kind == 0 || isNull(n) {
 		return Env{}, nil
 	}
-	if node.Kind != yaml.MappingNode {
+	if n.Kind != yaml.MappingNode {
 		return Env{}, errors.New(`projectconfig: environments must be a mapping with optional "static" and "host" keys`)
 	}
 
 	var staticNode, hostNode *yaml.Node
-	for i := 0; i+1 < len(node.Content); i += 2 {
-		k, v := node.Content[i], node.Content[i+1]
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		k, v := deref(n.Content[i]), deref(n.Content[i+1])
 		if k.Kind != yaml.ScalarNode || isNull(k) {
 			return Env{}, fmt.Errorf("projectconfig: environments: key at line %d must be a non-null scalar", k.Line)
 		}
+		if isMerge(k) {
+			return Env{}, errors.New("projectconfig: environments: merge keys (<<) are not supported")
+		}
 		switch k.Value {
-		case "static", "host":
-			if (k.Value == "static" && staticNode != nil) || (k.Value == "host" && hostNode != nil) {
-				return Env{}, fmt.Errorf("projectconfig: duplicate key %q in environments", k.Value)
+		case "static":
+			if staticNode != nil {
+				return Env{}, errors.New(`projectconfig: duplicate key "static" in environments`)
 			}
-			if k.Value == "static" {
-				staticNode = v
-			} else {
-				hostNode = v
+			staticNode = v
+		case "host":
+			if hostNode != nil {
+				return Env{}, errors.New(`projectconfig: duplicate key "host" in environments`)
 			}
+			hostNode = v
 		default:
-			if v.Kind == yaml.ScalarNode {
+			if v.Kind == yaml.ScalarNode && !isSubKeyTypo(k.Value) {
 				return Env{}, errors.New(`projectconfig: environments: flat "KEY: value" form is no longer supported; move entries under environments.static`)
 			}
 			return Env{}, fmt.Errorf("projectconfig: unknown key %q in environments (allowed: static, host)", k.Value)
 		}
 	}
 
-	static, staticKeys, err := validateStaticEnv(staticNode)
+	static, err := validateStaticEnv(staticNode)
 	if err != nil {
 		return Env{}, err
 	}
@@ -396,95 +405,142 @@ func validateEnvironments(node yaml.Node) (Env, error) {
 	if err != nil {
 		return Env{}, err
 	}
+	hostSet := make(map[string]struct{}, len(host))
 	for _, name := range host {
-		if _, ok := staticKeys[name]; ok {
-			return Env{}, fmt.Errorf("projectconfig: environment key %q listed in both environments.static and environments.host", name)
+		hostSet[name] = struct{}{}
+	}
+	for _, pair := range static {
+		key, _, _ := strings.Cut(pair, "=")
+		if _, ok := hostSet[key]; ok {
+			return Env{}, fmt.Errorf("projectconfig: environment key %q listed in both environments.static and environments.host", key)
 		}
 	}
 	return Env{Static: static, Host: host}, nil
 }
 
-// validateStaticEnv validates environments.static into sorted "KEY=VALUE"
-// pairs plus the set of keys (for the static/host overlap check). A nil or null
-// node yields no pairs.
-func validateStaticEnv(node *yaml.Node) ([]string, map[string]struct{}, error) {
+// flatFormHint is appended to static:/host: shape errors when the value is a
+// scalar: that is what an old flat-form variable named "static" or "host"
+// looks like.
+const flatFormHint = " (if this was the old flat form, move entries under environments.static)"
+
+// shapeErr returns a static:/host: shape error, with flatFormHint appended
+// when node is a scalar.
+func shapeErr(node *yaml.Node, msg string) error {
+	if node.Kind == yaml.ScalarNode {
+		msg += flatFormHint
+	}
+	return errors.New(msg)
+}
+
+// validateStaticEnv validates environments.static into "KEY=VALUE" pairs in
+// file order. A nil or null node yields no pairs.
+func validateStaticEnv(node *yaml.Node) ([]string, error) {
 	if node == nil || isNull(node) {
-		return nil, nil, nil
+		return nil, nil
 	}
 	if node.Kind != yaml.MappingNode {
-		return nil, nil, errors.New("projectconfig: environments.static must be a mapping of KEY: value")
+		return nil, shapeErr(node, "projectconfig: environments.static must be a mapping of KEY: value")
 	}
 	keys := make(map[string]struct{}, len(node.Content)/2)
 	var result []string
 	for i := 0; i+1 < len(node.Content); i += 2 {
-		kn, v := node.Content[i], node.Content[i+1]
+		kn, v := deref(node.Content[i]), deref(node.Content[i+1])
 		if kn.Kind != yaml.ScalarNode || isNull(kn) {
-			return nil, nil, fmt.Errorf("projectconfig: environments.static: key at line %d must be a non-null scalar", kn.Line)
+			return nil, fmt.Errorf("projectconfig: environments.static: key at line %d must be a non-null scalar", kn.Line)
+		}
+		if isMerge(kn) {
+			return nil, errors.New("projectconfig: environments.static: merge keys (<<) are not supported")
 		}
 		k := kn.Value
 		if k == "" {
-			return nil, nil, fmt.Errorf("projectconfig: empty key in environments.static")
+			return nil, errors.New("projectconfig: empty key in environments.static")
 		}
+		// Line number, not the key: a malformed key may be a pasted KEY=secret.
 		if strings.Contains(k, "=") {
-			return nil, nil, fmt.Errorf("projectconfig: environment key %q must not contain '='", k)
+			return nil, fmt.Errorf("projectconfig: environments.static: key at line %d must not contain '='", kn.Line)
 		}
 		if strings.ContainsAny(k, "\n\r\t") {
-			return nil, nil, fmt.Errorf("projectconfig: environment key %q must not contain newline or tab characters", k)
+			return nil, fmt.Errorf("projectconfig: environments.static: key at line %d must not contain newline, carriage-return, or tab characters", kn.Line)
 		}
 		if _, dup := keys[k]; dup {
-			return nil, nil, fmt.Errorf("projectconfig: duplicate key %q in environments.static", k)
+			return nil, fmt.Errorf("projectconfig: duplicate key %q in environments.static", k)
 		}
 		keys[k] = struct{}{}
 		if v.Kind != yaml.ScalarNode {
-			return nil, nil, fmt.Errorf("projectconfig: environment key %q must be a scalar value", k)
+			return nil, fmt.Errorf("projectconfig: environments.static: key %q must be a scalar value", k)
 		}
 		if isNull(v) {
-			return nil, nil, fmt.Errorf("projectconfig: environment key %q has no value", k)
+			return nil, fmt.Errorf("projectconfig: environments.static: key %q has no value", k)
 		}
 		if strings.ContainsAny(v.Value, "\n\r\t") {
-			return nil, nil, fmt.Errorf("projectconfig: environment key %q value must not contain newline or tab characters", k)
+			return nil, fmt.Errorf("projectconfig: environments.static: key %q value must not contain newline, carriage-return, or tab characters", k)
 		}
 		result = append(result, k+"="+v.Value)
 	}
-	sort.Strings(result)
-	return result, keys, nil
+	return result, nil
 }
 
 // validateHostEnv validates environments.host into sorted, deduplicated
 // variable names. Whitespace is rejected more strictly than for static keys: a
 // host name has to exist in the host environment. A nil or null node yields no
-// names.
+// names. Entry errors cite the line, not the entry: a malformed entry may be a
+// pasted NAME=secret.
 func validateHostEnv(node *yaml.Node) ([]string, error) {
 	if node == nil || isNull(node) {
 		return nil, nil
 	}
 	if node.Kind != yaml.SequenceNode {
-		return nil, errors.New("projectconfig: environments.host must be a list of variable names")
+		return nil, shapeErr(node, "projectconfig: environments.host must be a list of variable names")
 	}
 	var names []string
 	for _, e := range node.Content {
+		e = deref(e)
 		if e.Kind != yaml.ScalarNode {
 			return nil, fmt.Errorf("projectconfig: environments.host entry at line %d must be a variable name", e.Line)
 		}
-		if isNull(e) {
+		if isNull(e) || e.Value == "" {
 			return nil, fmt.Errorf("projectconfig: environments.host entry at line %d has no name", e.Line)
 		}
-		name := e.Value
-		if name == "" {
-			return nil, fmt.Errorf("projectconfig: empty name in environments.host")
+		if strings.Contains(e.Value, "=") {
+			return nil, fmt.Errorf("projectconfig: environments.host entry at line %d must not contain '='", e.Line)
 		}
-		if strings.Contains(name, "=") {
-			return nil, fmt.Errorf("projectconfig: environments.host name %q must not contain '='", name)
+		if strings.IndexFunc(e.Value, unicode.IsSpace) >= 0 {
+			return nil, fmt.Errorf("projectconfig: environments.host entry at line %d must not contain whitespace", e.Line)
 		}
-		if strings.IndexFunc(name, unicode.IsSpace) >= 0 {
-			return nil, fmt.Errorf("projectconfig: environments.host name %q must not contain whitespace", name)
-		}
-		names = append(names, name)
-	}
-	if len(names) == 0 {
-		return nil, nil
+		names = append(names, e.Value)
 	}
 	return dedupSorted(names), nil
+}
+
+// isSubKeyTypo reports whether an unknown environments: key is a misspelled
+// static/host (other case, or a trailing "s") rather than an old flat-form
+// variable. All-uppercase keys are taken as variable names (HOST: db.local).
+func isSubKeyTypo(k string) bool {
+	if k == strings.ToUpper(k) {
+		return false
+	}
+	switch strings.TrimSuffix(strings.ToLower(k), "s") {
+	case "static", "host":
+		return true
+	}
+	return false
+}
+
+// deref follows YAML aliases (*name) to the anchored node. Through Load the
+// practical case is an alias to a value anchored inside environments:.
+// Aliasing the whole block or static:/host: needs an anchor outside the block,
+// and strict decoding rejects an extra key added just to hold one, so those
+// paths are mainly exercised by direct validateEnvironments tests.
+func deref(n *yaml.Node) *yaml.Node {
+	for n.Kind == yaml.AliasNode && n.Alias != nil {
+		n = n.Alias
+	}
+	return n
+}
+
+// isMerge reports whether n is a YAML merge key (<<).
+func isMerge(n *yaml.Node) bool {
+	return n.Kind == yaml.ScalarNode && n.ShortTag() == "!!merge"
 }
 
 // isNull reports whether n is a null scalar (bare "KEY:", "~", or "null").

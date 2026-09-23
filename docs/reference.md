@@ -359,8 +359,8 @@ environments:
 ```
 
 Each resulting pair becomes a `-e KEY=VALUE` flag passed to Docker. Variables appear inside the
-container alongside anything set in the image. All pairs (static and host) are passed in sorted
-key order (deterministic output in `--dry-run`).
+container alongside anything set in the image. All pairs (static and host) are passed sorted by
+key (deterministic output in `--dry-run`).
 
 ### `static`
 
@@ -378,8 +378,8 @@ environments:
 - Null values (`KEY:` or `KEY: null`) are rejected. A bare key with no value is almost always a
   mistake; provide an explicit value or remove the key.
 - Explicit empty string (`KEY: ""`) is accepted and injects `KEY=`.
-- Empty keys, keys containing `=`, and keys or values containing newline/tab characters are
-  rejected. Duplicate keys are rejected.
+- Empty keys, keys containing `=`, and keys or values containing newline, carriage-return, or tab
+  characters are rejected. Duplicate keys are rejected.
 
 ### `host`
 
@@ -403,15 +403,51 @@ projectconfig: environment key "NAME" listed in both environments.static and env
 ### Errors
 
 Any error in the block aborts `makeslop run` before the container starts (`makeslop status` reports
-it as a non-blocking `cannot read .makeslop.yaml` secret-scan warning). Messages name keys only, never values:
+it as a non-blocking `cannot read .makeslop.yaml` secret-scan warning). Messages name keys or
+line numbers only, never values. The full list:
 
 - `environments` not a mapping: `projectconfig: environments must be a mapping with optional "static" and "host" keys`
-- unknown sub-key with a list or map value (e.g. `hosts: [A]`): `projectconfig: unknown key "hosts" in environments (allowed: static, host)`
+- unknown key with a scalar value (the old flat form, see below): `projectconfig: environments: flat "KEY: value" form is no longer supported; move entries under environments.static`
+- unknown key with a list or map value, or a misspelled `static`/`host` (other case or a trailing
+  `s`, e.g. `hosts:` or `Host:`): `projectconfig: unknown key "hosts" in environments (allowed: static, host)`.
+  All-uppercase keys such as `HOST:` count as old flat-form variables.
+- duplicate `static` or `host`: `projectconfig: duplicate key "static" in environments`
+- null or non-scalar key: `projectconfig: environments: key at line N must be a non-null scalar`
+  (inside `static`: `projectconfig: environments.static: key at line N must be a non-null scalar`)
+- merge key: `projectconfig: environments: merge keys (<<) are not supported` (inside `static`:
+  `projectconfig: environments.static: merge keys (<<) are not supported`)
 - `static` not a mapping: `projectconfig: environments.static must be a mapping of KEY: value`
-- `host` not a list (e.g. `host: GITHUB_TOKEN`): `projectconfig: environments.host must be a list of variable names`
+- `host` not a list: `projectconfig: environments.host must be a list of variable names`
+- when `static` or `host` holds a single scalar (e.g. `host: GITHUB_TOKEN`, or an old flat-form
+  variable literally named `host`), the two messages above end with
+  ` (if this was the old flat form, move entries under environments.static)`
+- `static` keys: `projectconfig: empty key in environments.static`,
+  `projectconfig: environments.static: key at line N must not contain '='`,
+  `projectconfig: environments.static: key at line N must not contain newline, carriage-return, or tab characters`,
+  `projectconfig: duplicate key "KEY" in environments.static`
+- `static` values: `projectconfig: environments.static: key "KEY" must be a scalar value`,
+  `projectconfig: environments.static: key "KEY" has no value`,
+  `projectconfig: environments.static: key "KEY" value must not contain newline, carriage-return, or tab characters`
+- `host` entries: `projectconfig: environments.host entry at line N must be a variable name` (list
+  or map entry), `projectconfig: environments.host entry at line N has no name` (null or `""`),
+  `projectconfig: environments.host entry at line N must not contain '='`,
+  `projectconfig: environments.host entry at line N must not contain whitespace`
+- name in both lists: `projectconfig: environment key "NAME" listed in both environments.static and environments.host`
 
-YAML merge keys (`<<:`) are not supported inside `environments:`; they are rejected as unknown or
-non-scalar keys.
+YAML aliases (`*name`) work inside `environments:`: anchor a `static` value and reuse it in another
+`static` value or a `host` entry:
+
+```yaml
+environments:
+  static:
+    TOKEN_VAR: &tok GITHUB_TOKEN
+  host:
+    - *tok
+```
+
+The file is decoded strictly, so a top-level key added only to hold an anchor (e.g. `base: &e ...`
+followed by `environments: *e`) is rejected as an unknown field. YAML merge keys (`<<:`) are not
+expanded; they are rejected with the merge key error above.
 
 ### Migration from the flat form (breaking change)
 
@@ -464,7 +500,9 @@ break parsing.
 
 These mounts are layered on top of the read-write project bind. See
 [security.md — Sandbox-policy protection](security.md#sandbox-policy-protection) for details and
-known residuals.
+known residuals. Without a `.makeslop.yaml` there is no read-only bind, so the agent can create
+one (including `environments.host` entries) that takes effect on the next run; keep one in every
+project (`makeslop init` creates it).
 
 For secret masking and the home-directory guard, see [security.md](security.md).
 
@@ -512,6 +550,10 @@ This makes it suitable for CI inspection:
 ```
 makeslop run -n > cmd.sh   # capture only the command; masked-file count goes to stderr
 ```
+
+The output includes resolved `environments.host` values in full, secrets included. Do not keep it
+as a CI artifact or log it without redacting them. See
+[security.md — Host environment passthrough](security.md#host-environment-passthrough).
 
 ---
 

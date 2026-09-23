@@ -85,7 +85,10 @@ Mount order in `BuildSpec`: project root first, then global mounts (`~/.makeslop
 
 ### Project config (`.makeslop.yaml`)
 - Decoded in strict mode (`KnownFields(true)`), so unknown keys are hard errors. That includes the
-  `network:` block from older versions.
+  `network:` block from older versions. Exception: `environments:` is decoded as a raw
+  `yaml.Node`, which strict mode does not check. `validateEnvironments` does its own unknown-key
+  and duplicate-key detection at both levels and follows aliases by hand (`deref`). Its errors
+  name keys or line numbers, never values.
 - The file must be a regular file; a symlink is rejected. When it exists, it is mounted read-only
   over itself in the container (`ProtectProjectConfig`), and `.git/hooks` is tmpfs-masked
   (`MaskGitHooks`).
@@ -94,6 +97,7 @@ Mount order in `BuildSpec`: project root first, then global mounts (`~/.makeslop
   idempotent and never overwrites an existing file.
 - `Env{Static, Host}` comes from `environments:`; `Load` never reads the process env. Host names
   are resolved in `run.go` (`resolveEnv` with `os.LookupEnv`); unset names are skipped.
+  `resolveEnv` is the only place the final order (by key) is decided; `Env.Static` keeps file order.
 - Existing project files are never auto-migrated.
 
 ### Secret scan

@@ -7,7 +7,7 @@ container with controlled mounts and secret masking.
 
 makeslop gives each project its own container launched from a single shared base image. The agent
 gets your source tree plus its own persistent state directories (`.claude/`, `.codex/`, `docs/`),
-but nothing else from your host — no other projects, no ambient host environment (credentials in the shared agent config dirs like `.claude/` are present by design).
+but nothing else from your host — no other projects, and no host environment variables except the ones you list under `environments.host` (credentials in the shared agent config dirs like `.claude/` are present by design).
 
 Why use it:
 - **Isolation** — each project runs in its own container; no credential leakage between projects.

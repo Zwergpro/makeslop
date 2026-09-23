@@ -68,18 +68,27 @@
   - **Why the walker needs its own duplicate check:** when the decode target is a `yaml.Node`, yaml.v3 sets the node without calling `d.mapping()`, so its "mapping key already defined" check never runs. The walker keeps its own seen-map at both levels.
   - **Keys:** every key, at the top level and inside `static`, must be a `ScalarNode` whose tag is not `!!null`. This rejects `? [a]: x` and `~: x`.
   - **Null values:** a zero node or `!!null` (absent or empty block) gives `Env{}`, no error. So does an empty or null `static:`/`host:` sub-key.
-  - Error messages include only names, never values. All of them start with the `projectconfig: ` prefix.
+  - Error messages include only names or line numbers, never values (a malformed `static` key or `host` entry is cited by line, since it may be a pasted `NAME=secret`). All of them start with the `projectconfig: ` prefix.
   - Errors, all asserted in tests:
 
     | condition | message |
     |---|---|
     | `environments` is not a mapping (e.g. `environments: [A]`) | `projectconfig: environments must be a mapping with optional "static" and "host" keys` |
     | unknown key with a **scalar** value (old flat form) | `projectconfig: environments: flat "KEY: value" form is no longer supported; move entries under environments.static` |
-    | unknown key with a non-scalar value (e.g. typo `hosts: [A]`) | `projectconfig: unknown key %q in environments (allowed: static, host)` |
+    | unknown key with a non-scalar value (e.g. typo `hosts: [A]`), or a misspelled `static`/`host` (other case or trailing `s`, not all-uppercase) with any value | `projectconfig: unknown key %q in environments (allowed: static, host)` |
     | duplicate `static`/`host` key | `projectconfig: duplicate key %q in environments` |
-    | `static` not a mapping (scalar or sequence) | `projectconfig: environments.static must be a mapping of KEY: value` |
-    | `host` not a sequence (e.g. `host: GITHUB_TOKEN`) | `projectconfig: environments.host must be a list of variable names` |
+    | null/non-scalar key at top level / inside `static` | `projectconfig: environments: key at line %d must be a non-null scalar` / `projectconfig: environments.static: key at line %d must be a non-null scalar` |
+    | merge key (`<<`) at top level / inside `static` | `projectconfig: environments: merge keys (<<) are not supported` / `projectconfig: environments.static: merge keys (<<) are not supported` |
+    | `static` not a mapping (scalar or sequence) | `projectconfig: environments.static must be a mapping of KEY: value` (+ flat-form hint for a scalar) |
+    | `host` not a sequence (e.g. `host: GITHUB_TOKEN`) | `projectconfig: environments.host must be a list of variable names` (+ flat-form hint for a scalar) |
+    | flat-form hint suffix | ` (if this was the old flat form, move entries under environments.static)` |
+    | empty key inside `static` | `projectconfig: empty key in environments.static` |
+    | `static` key with `=` / `\n\r\t` | `projectconfig: environments.static: key at line %d must not contain '='` / `... must not contain newline, carriage-return, or tab characters` |
     | duplicate key inside `static` | `projectconfig: duplicate key %q in environments.static` |
+    | `static` value non-scalar / null / with `\n\r\t` | `projectconfig: environments.static: key %q must be a scalar value` / `... has no value` / `... value must not contain newline, carriage-return, or tab characters` |
+    | `host` entry non-scalar | `projectconfig: environments.host entry at line %d must be a variable name` |
+    | `host` entry null or `""` | `projectconfig: environments.host entry at line %d has no name` |
+    | `host` entry with `=` / whitespace | `projectconfig: environments.host entry at line %d must not contain '='` / `... must not contain whitespace` |
     | name in both `static` and `host` | `projectconfig: environment key %q listed in both environments.static and environments.host` |
 
   - **`static` pair rules** are today's rules, moved into the walker:
@@ -92,12 +101,13 @@
     - reject empty names, and names containing `=` or any whitespace (`unicode.IsSpace`)
     - the whitespace rule is stricter than for static keys on purpose: a variable name, unlike a static key, has to exist on the host
     - dedupe silently and sort
-  - YAML merge keys (`<<:`) inside `environments:` are no longer expanded. They end up rejected as unknown or non-scalar keys, which is acceptable; mention it in the migration note.
+  - YAML merge keys (`<<:`) inside `environments:` are no longer expanded; they are rejected with the merge-key error. Aliases (`*name`) are followed by hand at every level (a `yaml.Node` target keeps them unresolved); through `Load` only aliases to values anchored inside `environments:` are reachable, since strict decoding rejects extra top-level anchor-holder keys.
+  - `static` pairs keep file order; `resolveEnv` in `run.go` is the single place the final order (by key) is decided.
 - New type:
   ```go
   // Env is the parsed environments: block.
   type Env struct {
-      Static []string // sorted "KEY=VALUE"
+      Static []string // "KEY=VALUE" in file order
       Host   []string // sorted, deduped variable names to copy from the host
   }
   ```
@@ -105,7 +115,7 @@
 - `run.go` resolution (new small helper, e.g. `resolveEnv(env projectconfig.Env, lookup func(string) (string, bool)) []string`, called with `os.LookupEnv`):
   - unset → skipped silently
   - set but empty → `NAME=`
-  - result = `Static` + resolved host pairs, sorted
+  - result = `Static` + resolved host pairs, sorted by key
   - empty result → `nil`, so no `-e` flags appear
   - host values are passed verbatim, including newlines (e.g. PEM keys); `shellQuote` and the SDK handle them. The static `\n\r\t` rule does not apply to them; state this in the docs.
 

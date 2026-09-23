@@ -33,6 +33,12 @@ the filesystem or exec anything.
 A drift-guard test keeps both renderings honest. The "printed == executed" invariant holds: what
 `--dry-run` prints is what `run` passes to the Docker daemon.
 
+Container environment follows the same split. `projectconfig.Load` returns the `environments:`
+block as names and static pairs and never reads the process environment. `runRun` resolves it with
+`resolveEnv(env, os.LookupEnv)` into sorted `KEY=VALUE` pairs and passes them as `Options.Env`.
+`BuildSpec` only receives resolved pairs, so `--dry-run` prints exactly what is executed, resolved
+`host` values included.
+
 ---
 
 ## Mount groups and cache overlays
