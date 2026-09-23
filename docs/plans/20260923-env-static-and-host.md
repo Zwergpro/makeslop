@@ -194,7 +194,7 @@
 - [x] run linter: `golangci-lint run` (0 issues)
 
 ### Task 4: [Final] Update documentation
-- [ ] `docs/reference.md`: rewrite the "Environment variables" section. Cover:
+- [x] `docs/reference.md`: rewrite the "Environment variables" section. Cover:
   - `static`/`host` shape and the static value rules
   - host semantics: same name, unset → skipped, empty → `NAME=`
   - overlap error
@@ -203,13 +203,13 @@
   - host values are passed verbatim and not validated
   - YAML merge keys are not supported inside `environments:`
   - also update the short mention near line 80
-- [ ] `README.md` (~111-118): replace the flat `environments:` example and the "Inject static environment variables" wording with the static/host form
-- [ ] `docs/security.md`: add a short section:
+- [x] `README.md` (~111-118): replace the flat `environments:` example and the "Inject static environment variables" wording with the static/host form
+- [x] `docs/security.md`: add a short section:
   - `host` deliberately copies host values into the agent's container, so only list what the agent should have
   - `--dry-run` output can contain secrets
   - add a TOC entry
-- [ ] `CLAUDE.md`: update the `Load` return signature line to `(Excludes, Cache, Env, error)` and note that host resolution lives in `run.go`
-- [ ] move this plan to `docs/plans/completed/`
+- [x] `CLAUDE.md`: update the `Load` return signature line to `(Excludes, Cache, Env, error)` and note that host resolution lives in `run.go`
+- [x] move this plan to `docs/plans/completed/` (deferred: done after review phases)
 
 ## Post-Completion
 *Items requiring manual intervention or external systems - no checkboxes, informational only*

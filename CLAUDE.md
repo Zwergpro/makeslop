@@ -89,9 +89,11 @@ Mount order in `BuildSpec`: project root first, then global mounts (`~/.makeslop
 - The file must be a regular file; a symlink is rejected. When it exists, it is mounted read-only
   over itself in the container (`ProtectProjectConfig`), and `.git/hooks` is tmpfs-masked
   (`MaskGitHooks`).
-- `Load` returns `(Excludes, Cache, env []string, error)`. A missing `cache:` block means
+- `Load` returns `(Excludes, Cache, Env, error)`. A missing `cache:` block means
   `{Content:true, Agent:true}`. `init --global-only` scaffolds `{false,false}`. `Scaffold` is
   idempotent and never overwrites an existing file.
+- `Env{Static, Host}` comes from `environments:`; `Load` never reads the process env. Host names
+  are resolved in `run.go` (`resolveEnv` with `os.LookupEnv`); unset names are skipped.
 - Existing project files are never auto-migrated.
 
 ### Secret scan

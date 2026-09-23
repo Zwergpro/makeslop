@@ -12,6 +12,7 @@ control, and the home-directory guard. For in-container hardening flags (`--cap-
   - [Breaking change: path-style patterns rejected](#breaking-change-path-style-patterns-rejected)
   - [Breaking change: symlinked `.makeslop.yaml` rejected](#breaking-change-symlinked-makeslopyaml-rejected)
 - [Sandbox-policy protection](#sandbox-policy-protection)
+- [Host environment passthrough](#host-environment-passthrough)
 - [Example image hardening](#example-image-hardening)
 - [Network egress](#network-egress)
 - [Home-directory guard](#home-directory-guard)
@@ -312,6 +313,20 @@ and resolving `GIT_DIR`). If you use worktrees or submodules, be aware that the 
 the real hooks directory.
 
 Both protections are reflected in `--dry-run` output.
+
+---
+
+## Host environment passthrough
+
+`environments.host` in `.makeslop.yaml` deliberately copies host environment values into the
+agent's container (see
+[reference.md — Environment variables](reference.md#environment-variables-environments-block-in-makeslopyaml)).
+Anything listed there — tokens such as `GITHUB_TOKEN` included — is readable by the agent and by
+any code it runs. List only what the agent should have; everything else in the host environment
+stays out of the container.
+
+`makeslop run --dry-run` prints resolved host values in full, so its output can contain secrets.
+Redact it before sharing.
 
 ---
 
