@@ -47,7 +47,7 @@ func ensureWithinHome(stderr io.Writer, pwd string, outOfHome bool) error {
 	return nil
 }
 
-// quietWriter gates stderr chrome (notices, nudges, progress); errors still flow
+// quietWriter gates stderr chrome (notices and hints); errors still flow
 // to the underlying writer.
 type quietWriter struct {
 	w     io.Writer

@@ -7,13 +7,12 @@ Complete reference for all `makeslop` commands, flags, runtime behavior, and con
 - [Requirements](#requirements)
 - [Commands](#commands)
   - [init](#init)
-  - [build](#build)
   - [run](#run)
   - [status](#status)
-  - [migrate](#migrate)
   - [config](#config)
   - [version](#version)
-- [Setup flow and self-healing](#setup-flow-and-self-healing)
+- [Setup flow](#setup-flow)
+- [Using a custom Docker image](#using-a-custom-docker-image)
 - [Cache layout](#cache-layout)
 - [Container layout and mount table](#container-layout-and-mount-table)
 - [In-container security flags](#in-container-security-flags)
@@ -40,20 +39,19 @@ Complete reference for all `makeslop` commands, flags, runtime behavior, and con
 ### init
 
 Registers the current working directory as a workspace and seeds `~/.makeslop/` with initial files
-(including `Dockerfile` and `settings.json`).
+(`settings.json`, `.claude.json`, and the global agent directories). Existing files are never
+overwritten.
 
-- On a fresh `~/.makeslop/` the directory is stamped at the current `MigrationVersion`
-  (never stale after a fresh seed).
-- On an existing but stale directory a non-blocking nudge is printed to stderr and `init`
-  continues without modifying the existing files:
+- When no image is configured, a non-blocking note is printed to stderr (suppressed by `--quiet`)
+  and `init` still exits 0:
   ```
-  note: your base config is v<current>, latest is v<latest> — run 'makeslop migrate'
+  note: no image configured — run 'makeslop config set image <ref>'
   ```
 - If `pwd` is already a subdirectory of a registered workspace, the existing workspace's cache path
   is returned (idempotent, no mutation).
 - Otherwise a new entry is added to `settings.json`, the cache directory is created, and its
   absolute path is printed to stdout.
-- Prints to stderr (suppressed by --quiet): `registered <name> — run 'makeslop build' then 'makeslop run'`
+- Prints to stderr (suppressed by --quiet): `registered <name> — run 'makeslop run'`
   (emitted on both fresh registration and re-init of an existing workspace).
 
 **Flags:**
@@ -66,38 +64,6 @@ Registers the current working directory as a workspace and seeds `~/.makeslop/` 
 
 ---
 
-### build
-
-Builds (or rebuilds) the base Docker image from `~/.makeslop/Dockerfile` via the moby SDK.
-
-- **Self-healing:** if `~/.makeslop/` has not been initialised yet, `build` seeds the base
-  directory (runs `Bootstrap`) before building. Unlike `init`, it does not register a workspace or
-  create `.makeslop.yaml` — so `makeslop build` works on a fresh machine but a subsequent `run`
-  still requires `init`.
-- The image tag defaults to `claudebox` (configurable via `settings.json`).
-- **Empty context + BuildKit:** `build` passes an empty temporary directory as the Docker build
-  context (the Dockerfile downloads everything; no local files need shipping) and uses the BuildKit
-  API (`Version: "2"` via the moby SDK) so cache mounts (`--mount=type=cache`) work correctly. No
-  `DOCKER_BUILDKIT` environment variable is needed.
-- **Live build progress:** when stdout is a TTY, build steps stream live in the BuildKit `[+] Building`
-  UI. When stdout is not a TTY (piped or redirected), plain-text progress lines are written instead.
-  Build progress goes to stdout and is suppressed by `--quiet` (silent on success; build
-  errors still surface on stderr).
-- After a `migrate` that refreshes the `Dockerfile`, re-run `build` to pick up the changes.
-
-**Flags:**
-- `--no-cache` — bypasses the layer cache (passes `NoCache: true` to the SDK build call)
-- `--build-arg K=V` — repeatable; each value is forwarded to the daemon as a build argument
-  (use for proxy settings, version pins, etc.)
-- `--refresh` — overwrite `~/.makeslop/Dockerfile` from the embedded assets before building.
-  Use this to reset a hand-edited base Dockerfile to the shipped version without running a
-  separate `migrate` step. Does **not** touch `migrated_version` or any migration state —
-  `migrate` remains the sole owner of version tracking.
-- `--quiet` (global flag) — suppress stderr notices (e.g. the `--refresh` confirmation message)
-  **and** the build progress output on stdout. Build errors still print to stderr.
-
----
-
 ### run
 
 From within a registered workspace, launches an interactive, project-scoped Docker container with
@@ -107,16 +73,24 @@ groups can be disabled via `cache.content` and `cache.agent` in `.makeslop.yaml`
 
 - Exits with the container's exit code.
 - Refuses to launch when stdin or stdout is not a TTY (see [TTY policy](#tty-policy)).
+- Resolves the image first (see [Using a custom Docker image](#using-a-custom-docker-image)): the
+  `-i/--image` flag, else the `image` setting. With neither set it exits 1 before any workspace
+  lookup or daemon call (also on `--dry-run`):
+  ```
+  makeslop: no image configured — run 'makeslop config set image <ref>' or pass -i/--image
+  ```
 - If no ancestor directory is registered, exits non-zero with a hint to run `makeslop init`.
 - Before launching, performs two pre-flight checks (each bounded by a 10-second timeout; a
   black-hole `DOCKER_HOST` is surfaced as an error rather than hanging indefinitely):
   1. Daemon reachability (`— is docker running?`)
-  2. Image existence (`— run 'makeslop build'`). No auto-build.
+  2. Image existence. makeslop never pulls or builds; a missing image fails with
+     `image "X" not found locally — run 'docker pull X'`.
 - Ctrl-C / SIGTERM cancels the running container session cleanly.
 - `--dry-run` skips both pre-flight checks and the TTY check (printed == executed invariant).
 
 **Flags:**
 - `--dry-run` / `-n` — print the equivalent shell command and exit without launching the container
+- `--image` / `-i <ref>` — container image to run, overriding the `image` setting for this invocation
 - `--out-of-home` — bypass the home-directory guard
 - `--proxy host:port` — route container traffic through a remote HTTP forward proxy
   (see [security.md](security.md#network-egress--two-state-model)); note the `unix://` proxy URL
@@ -131,8 +105,11 @@ Runs an ordered health check and reports the result. CI-safe; does not require a
 
 Checks (in order); daemon and image checks are bounded by a 10-second preflight timeout:
 1. Daemon reachability — **blocking**
-2. Base config presence + staleness — absent/corrupt is blocking (`✗`), stale is non-blocking (`!`)
-3. Image existence — **blocking**
+2. Base config — **blocking**; `✗` when `settings.json` is absent or corrupt
+3. Image — **blocking**; `✗` when no image is configured (`no image configured — run 'makeslop
+   config set image <ref>'`), when settings are unreadable, when the daemon is down, or when the
+   image is missing locally (`— run 'docker pull X'`). An `-i` value skips the settings steps, so
+   the check works even when `settings.json` is absent or corrupt.
 4. Workspace registration — **blocking**
 5. Secret scan summary — non-blocking
 6. Proxy configuration — non-blocking; shows `"direct (bridge networking)"` or the upstream address
@@ -144,22 +121,7 @@ action. Exit code is 0 when all blocking checks pass.
 **Flags:**
 - `--json` — emit `{"checks":[{"name","state","detail"}...],"ready":bool}`; exit code still
   reflects readiness
-
----
-
-### migrate
-
-Brings `~/.makeslop/` up to date with the current binary.
-
-- Compares the binary's `MigrationVersion` constant against the `migrated_version` stored in
-  `settings.json`. When they differ, runs all migration steps (force-overwrites
-  `~/.makeslop/Dockerfile` from the embedded asset) and stamps the new version.
-- On success prints `makeslop: ~/.makeslop updated` to stdout and exits 0.
-- When already up to date, prints `makeslop: ~/.makeslop already up to date` to stdout and exits 0.
-- Does not require a prior `init` (creates `~/.makeslop/` if it does not exist).
-- `migrate` is an **explicit upgrade step**, not part of the normal setup flow. `init` always seeds
-  `~/.makeslop/` at the latest version, so a freshly initialized directory is never stale.
-- Exempt from the home-directory guard.
+- `--image` / `-i <ref>` — check this image instead of the `image` setting
 
 ---
 
@@ -172,7 +134,7 @@ Manages persistent settings in `~/.makeslop/settings.json`. Works without a prio
 - `makeslop config set <key> <value>` — validate and persist a setting.
 
 **Configurable keys:**
-- `image` — Docker image tag (default: `claudebox`)
+- `image` — Docker image reference (no default; required by `run`)
 - `shell` — shell to exec in the container (default: `/bin/zsh`)
 - `tmp_dir_size` — size of the `/tmp` tmpfs (default: `100m`)
 
@@ -191,16 +153,33 @@ without ldflags (e.g. via a plain `go build`).
 
 ---
 
-## Setup flow and self-healing
+## Setup flow
 
-Normal first-run order: `init` → `build` → `run`. After a binary update that ships a newer
-Dockerfile: `migrate` → `build`.
+Normal first-run order: build or pull an image yourself → `config set image <ref>` → `init` →
+`run`. `init` registers the workspace **and** seeds `~/.makeslop/`; `config set` creates
+`~/.makeslop/` if needed, so the first two makeslop steps can run in either order.
 
-`init` registers the workspace **and** seeds `~/.makeslop/` atomically, so a freshly initialized
-directory is always stamped at the current `MigrationVersion` — never reported stale on first run.
+---
 
-`migrate` is the explicit upgrade path for existing installs. `build` self-heals `~/.makeslop/`
-(seeds if absent), but does not register a workspace.
+## Using a custom Docker image
+
+makeslop does not build or pull images. Any image you have locally works, as long as it provides
+the configured shell and the agent CLIs you want to run as uid 1000 (see [Host UID](#host-uid)).
+[`examples/claudebox/Dockerfile`](../examples/claudebox/Dockerfile) is a starting point:
+
+```
+docker build -t claudebox examples/claudebox
+makeslop config set image claudebox
+```
+
+The image is resolved per invocation of `run` and `status`:
+
+1. the `-i/--image` flag, if non-empty (whitespace is trimmed)
+2. the `image` setting in `settings.json`, if non-empty
+3. otherwise an error: `no image configured — run 'makeslop config set image <ref>' or pass -i/--image`
+
+If the resolved image is not present locally, `run` fails with
+`image "X" not found locally — run 'docker pull X'` and `status` reports the same hint.
 
 ---
 
@@ -208,7 +187,6 @@ directory is always stamped at the current `MigrationVersion` — never reported
 
 ```
 ~/.makeslop/
-├── Dockerfile
 ├── settings.json
 ├── .settings.lock
 └── workspaces/
@@ -220,7 +198,7 @@ The per-workspace cache directory under `workspaces/` holds per-project agent st
 `.codex/`, `docs/`).
 
 `.settings.lock` is an advisory lock file that serializes concurrent writes to `settings.json`
-(used by `init`, `config set`, and `migrate`). It is a permanent artifact created on first write
+(used by `init`, `config set`, and `remove`). It is a permanent artifact created on first write
 and is safe to ignore in directory listings.
 
 ---
@@ -288,8 +266,8 @@ hosts where the running user is uid 1000. Full uid remapping is deferred to post
 makeslop: stdin/stdout must be a TTY — run in an interactive terminal
 ```
 
-`makeslop build`, `makeslop init`, `makeslop migrate`, `makeslop version`, `makeslop config`, and
-`makeslop status` do not require a TTY and work correctly in CI pipelines and non-interactive
+`makeslop init`, `makeslop version`, `makeslop config`, `makeslop status`, `makeslop ls`, and
+`makeslop remove` do not require a TTY and work correctly in CI pipelines and non-interactive
 shells.
 
 ---
@@ -318,14 +296,13 @@ makeslop run -n > cmd.sh   # capture only the command; masked-file count goes to
 
 ## Exit codes
 
-- `0` — success (`init` registered/reused a project, or the container exited cleanly, or `build`
-  completed successfully, or `status` found all blocking checks passing).
+- `0` — success (`init` registered/reused a project, or the container exited cleanly, or `status`
+  found all blocking checks passing).
 - container's exit code — `makeslop run` propagates `exit N` from the container as the host's
   exit code.
-- `1` — `makeslop build` exits 1 on any build failure (the docker SDK returns an error; there is no
-  child docker process to propagate an exit code from).
 - `1` — `makeslop status` exits 1 when any blocking check (daemon, base config, image, or workspace) fails.
-- `1` — any other failure: no workspace registered for pwd, no TTY available, corrupt
+- `1` — any other failure: no image configured, image missing locally, no workspace registered
+  for pwd, no TTY available, corrupt
   `settings.json`, invalid `--proxy` address, I/O error, etc. The reason is written to stderr.
 
 ---
@@ -335,9 +312,8 @@ makeslop run -n > cmd.sh   # capture only the command; masked-file count goes to
 - **stdout**: machine result only (paths, values, container output, `--json` output).
 - **stderr**: progress, `masked N` notice, nudges, errors.
 - Actionable errors follow the form `makeslop: <what failed> — <remedy>`.
-- `--quiet` (inherited by all subcommands): silences stderr chrome (notices, nudges, progress)
-  while keeping errors. For `build` it also silences the progress output on stdout (the one
-  command whose stdout the flag affects). Useful in scripts that parse stdout.
+- `--quiet` (inherited by all subcommands): silences stderr chrome (notices and hints such as the
+  `masked N` count and the `init` notes) while keeping errors. It never changes stdout.
 
 ---
 
@@ -354,29 +330,24 @@ on Linux hosts.
 ## Docker container settings (settings.json)
 
 The image, shell, and `/tmp` tmpfs size are configurable via `makeslop config set` or by editing
-`~/.makeslop/settings.json` directly. Defaults are `claudebox`, `/bin/zsh`, and `100m`:
+`~/.makeslop/settings.json` directly. `image` has no default; `shell` and `tmp_dir_size` default to
+`/bin/zsh` and `100m`:
 
 ```json
 {
-    "version": 1,
     "image": "claudebox",
     "shell": "/bin/zsh",
     "tmp_dir_size": "100m",
-    "workspaces": {},
-    "migrated_version": 2
+    "workspaces": {}
 }
 ```
 
 **Field notes:**
-- `version` — settings schema version (`CurrentVersion`); currently `1`. Increment only when the
-  `Settings` struct fields change.
-- `migrated_version` — written by `makeslop migrate` (or stamped by `makeslop init` on a fresh
-  seed) to record which migration generation `~/.makeslop/` is at. Absent means 0
-  (pre-migration). Currently `MigrationVersion = 2`. This field is **distinct** from `version`:
-  `version` gates JSON schema compatibility; `migrated_version` gates the one-shot directory
-  refresh.
-- Omitted or empty `image`/`shell`/`tmp_dir_size` fields fall back to their defaults; existing
-  `settings.json` files predating these keys keep working unchanged.
+- `image` — required by `run`; can be overridden per invocation with `-i/--image`. An omitted or
+  empty value means unset (see [Using a custom Docker image](#using-a-custom-docker-image)).
+- Omitted or empty `shell`/`tmp_dir_size` fields fall back to their defaults.
+- Obsolete keys from older versions (`version`, `migrated_version`) are ignored and dropped on the
+  next write.
 
 `tmp_dir_size` accepts a positive integer with an optional suffix: `k`/`K` (kibibytes), `m`/`M`
 (mebibytes), `g`/`G` (gibibytes), or no suffix (bytes). Example: `100m`, `2g`, `512k`, `1048576`.

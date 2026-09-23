@@ -12,8 +12,9 @@ but nothing else from your host — no other projects, no ambient host environme
 Why use it:
 - **Isolation** — each project runs in its own container; no credential leakage between projects.
 - **Secret masking** — `.env`, PEM keys, and SSH keys are overlaid with `/dev/null` before launch.
-- **Reproducible** — one shared `claudebox` image, one Dockerfile, one `makeslop build`.
-- **Customizable** — edit the embedded Dockerfile or bring your own pre-built image. See
+- **Bring your own image** — makeslop does not build images. Point it at any image you build or
+  pull (`makeslop config set image <ref>`, or `-i/--image` per invocation).
+  [`examples/claudebox/Dockerfile`](examples/claudebox/Dockerfile) is a starting point. See
   [Using a custom Docker image](docs/reference.md#using-a-custom-docker-image).
 
 ## Requirements
@@ -34,18 +35,23 @@ for each tagged version (built with [GoReleaser](https://goreleaser.com)).
 ## Quickstart
 
 ```
-# 1. From your project directory — register and seed the base config
+# 1. Build or pull an image (the example Dockerfile is a starting point)
+docker build -t claudebox examples/claudebox
+
+# 2. Tell makeslop which image to use
+makeslop config set image claudebox
+
+# 3. From your project directory — register the project and seed ~/.makeslop/
 makeslop init
 
-# 2. Build the claudebox Docker image (once, or after a migrate)
-makeslop build
-
-# 3. Launch an interactive agent session
+# 4. Launch an interactive agent session
 makeslop run
 ```
 
-That's the normal flow. `migrate` is an explicit upgrade step, not part of first-run setup —
-`init` always seeds at the latest version so a freshly initialized directory is never stale.
+The image has no default. If none is configured, `run` fails, `status` reports ✗, and `init`
+prints a note — each pointing at `makeslop config set image <ref>`. Override the configured image
+for one invocation with `-i/--image` (`makeslop run -i myimage:dev`). makeslop never pulls images:
+a missing local image fails with a `docker pull <ref>` hint.
 
 ## How it works
 
@@ -56,7 +62,7 @@ That's the normal flow. `migrate` is an explicit upgrade step, not part of first
 │    │  mounts project root + per-project agent state                          │
 │    ▼                                                                         │
 │  ──────────────────────────────────────────────────────────────────────────  │
-│  claudebox container  --cap-drop ALL  --security-opt no-new-privileges       │
+│  agent container      --cap-drop ALL  --security-opt no-new-privileges       │
 │                                                                              │
 │    /workspace/<name>    ← your project root (bind-mounted)                   │
 │    /home/user/.claude/  ← global agent config                                │
@@ -110,7 +116,7 @@ environments:
 
 Values must be scalars; numbers and booleans are coerced to strings. Absent block = no `-e` flags (backward-compatible). See [docs/reference.md](docs/reference.md#environment-variables-environments-block-in-makeslopyaml) for the full spec.
 
-Global settings (`~/.makeslop/settings.json`) control the image tag, shell, and `/tmp` size:
+Global settings (`~/.makeslop/settings.json`) control the image (required, no default), shell, and `/tmp` size:
 ```
 makeslop config set image claudebox
 makeslop config set shell /bin/zsh
@@ -132,16 +138,14 @@ now rejected by `run`, `init`, and `status` — replace the symlink with a regul
 
 | Command | What it does |
 |---|---|
-| `makeslop init` | Register project, seed `~/.makeslop/` at latest version |
-| `makeslop build` | Build (or rebuild) the `claudebox` Docker image |
+| `makeslop init` | Register project, seed `~/.makeslop/` |
 | `makeslop run` | Launch an interactive agent container (TTY required) |
 | `makeslop status` | Ordered readiness check: daemon, config, image, workspace, secrets |
-| `makeslop migrate` | Upgrade `~/.makeslop/` when the binary ships a newer migration version |
 | `makeslop config` | View or set global settings (`image`, `shell`, `tmp_dir_size`) |
 | `makeslop version` | Print the build version |
 
 `makeslop run --dry-run` prints the equivalent `docker run` command without launching.
-`makeslop build --refresh` resets `~/.makeslop/Dockerfile` to the embedded shipped version before building (useful after hand-editing).
+`run` and `status` accept `-i/--image <ref>` to override the configured image.
 
 ## Documentation
 

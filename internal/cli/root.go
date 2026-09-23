@@ -68,7 +68,7 @@ func newRootCmdWithDeps(baseDir string, deps dockerDeps) *cobra.Command {
 	}
 
 	rootCmd.PersistentFlags().Bool("quiet", false,
-		"suppress stderr chrome (notices, nudges, progress); errors still print")
+		"suppress stderr chrome (notices and hints); errors still print")
 
 	rootCmd.AddCommand(
 		newInitCmd(ws, baseDir),

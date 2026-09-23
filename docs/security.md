@@ -221,6 +221,6 @@ makeslop init --out-of-home
 makeslop run --out-of-home
 ```
 
-`makeslop build`, `makeslop migrate`, `makeslop config`, `makeslop version`, and `makeslop status`
+`makeslop config`, `makeslop version`, `makeslop status`, `makeslop ls`, and `makeslop remove`
 are **exempt** from the home-directory guard — they operate on `~/.makeslop/` directly and do not
 consult the current working directory. `--out-of-home` is not a valid flag on these commands.

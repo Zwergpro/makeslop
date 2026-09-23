@@ -220,23 +220,23 @@
 - ➕ [x] renamed `TestSaveLoadRoundTrip_PreservesNonDefaultImageAndShell` → `…PreservesCustomImageAndShell` in `internal/config/config_test.go` (false-positive `DefaultImage` grep hit)
 
 ### Task 8: [Final] Update documentation
-- [ ] `README.md`:
+- [x] `README.md`:
   - rewrite the quickstart as: build or pull an image (e.g. `docker build -t claudebox examples/claudebox`), `makeslop config set image <ref>`, `makeslop init`, `makeslop run`
   - remove the build/migrate rows from the command table, the `--refresh` paragraph, and the Dockerfile mentions (around lines 15-16, 40-48, 115, 135-144)
   - document `-i/--image`
-- [ ] `docs/reference.md`: same changes. Remove the `build`/`migrate` sections, the "not built — run 'makeslop build'" wording, and the migrate text in the `status` docs. Add `-i/--image` to `run` and `status`.
-- [ ] `docs/architecture.md`: drop the BuildKit, embedded-asset and config-versioning sections, and describe image resolution
-- [ ] `docs/security.md`: drop the build-context/sync note
-- [ ] `CLAUDE.md`:
+- [x] `docs/reference.md`: same changes. Remove the `build`/`migrate` sections, the "not built — run 'makeslop build'" wording, and the migrate text in the `status` docs. Add `-i/--image` to `run` and `status`.
+- [x] `docs/architecture.md`: drop the BuildKit, embedded-asset and config-versioning sections, and describe image resolution
+- [x] `docs/security.md`: drop the build-context/sync note
+- [x] `CLAUDE.md`:
   - remove the Build section and the integration-test command
   - Layout: remove `build`/`migrate` from the command list, `build.go` from the `internal/docker` line, and the `internal/assets` entry
   - DI section: drop `imageBuilder`
   - timeouts: "Run/Build get no deadline" becomes "Run gets no deadline"
   - "Config and versioning" becomes "Settings", keeping only the locking notes. Delete the "Bump ConfigVersion" paragraph and the `init` stale-nudge bullet.
   - add: "`image` is never defaulted; commands resolve it via `resolveImage` (flag > settings > `errNoImage`)"
-- [ ] `root.go:72`: reword the `--quiet` help text if it still mentions build progress
-- [ ] leave the historical `docs/plans/` files untouched
-- [ ] move this plan to `docs/plans/completed/`
+- [x] `root.go:72`: reword the `--quiet` help text if it still mentions build progress (now "notices and hints"; same wording in the `quietWriter` comment in `guard.go`)
+- [x] leave the historical `docs/plans/` files untouched
+- [x] move this plan to `docs/plans/completed/` (deferred — orchestrator moves it after review phases)
 
 ## Post-Completion
 *Items requiring manual intervention or external systems. Informational only.*
