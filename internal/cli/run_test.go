@@ -47,7 +47,7 @@ func TestRun_NotRegistered_NoMutation(t *testing.T) {
 		t.Fatalf("baseDir not empty before run: %v", beforeFiles)
 	}
 
-	stdout, stderr, err := runCmd(t, baseDir, "run")
+	stdout, stderr, err := runCmd(t, baseDir, "run", "-i", "test-img")
 	if err == nil {
 		t.Fatalf("expected error from makeslop go, got nil; stdout=%q stderr=%q", stdout, stderr)
 	}
@@ -173,7 +173,7 @@ func TestRun_Unregistered_DoesNotInvokeDocker(t *testing.T) {
 
 	fc := newFakeDocker(0, true)
 
-	_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fc), "run")
+	_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fc), "run", "-i", "test-img")
 	if err == nil {
 		t.Fatalf("expected error from unregistered makeslop go, got nil")
 	}
@@ -295,7 +295,7 @@ func TestRun_NotRegistered_ReturnsErrSilent(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	_, stderr, err := runCmd(t, baseDir, "run")
+	_, stderr, err := runCmd(t, baseDir, "run", "-i", "test-img")
 	if err == nil {
 		t.Fatalf("expected error from makeslop go, got nil")
 	}
@@ -652,7 +652,7 @@ func TestRun_DryRun_Unregistered_StillRefuses(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd) // no init — workspace not registered
 
-	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
+	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run", "-i", "test-img")
 	if err == nil {
 		t.Fatalf("expected error for unregistered workspace, got nil; stdout=%q", stdout)
 	}
@@ -1334,7 +1334,7 @@ func TestRun_DaemonDown_AbortsWithRemedy(t *testing.T) {
 	}
 }
 
-// Missing image: run aborts with the build remedy; no auto-build, no container.
+// Missing image: run aborts with the pull hint; no auto-pull, no container.
 func TestRun_ImageMissing_AbortsWithRemedy(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -1353,11 +1353,11 @@ func TestRun_ImageMissing_AbortsWithRemedy(t *testing.T) {
 	if !errors.Is(err, errSilent) {
 		t.Errorf("expected errSilent (tailored message written to stderr), got %v", err)
 	}
-	if !strings.Contains(stderr, "not built") {
-		t.Errorf("stderr missing 'not built': %q", stderr)
+	if !strings.Contains(stderr, `image "test-img" not found locally`) {
+		t.Errorf("stderr missing 'not found locally': %q", stderr)
 	}
-	if !strings.Contains(stderr, "makeslop build") {
-		t.Errorf("stderr missing 'makeslop build' remedy: %q", stderr)
+	if !strings.Contains(stderr, "docker pull test-img") {
+		t.Errorf("stderr missing 'docker pull' remedy: %q", stderr)
 	}
 	if fc.Started {
 		t.Errorf("docker container must not be started when image is missing")
@@ -1365,7 +1365,7 @@ func TestRun_ImageMissing_AbortsWithRemedy(t *testing.T) {
 }
 
 // A non-not-found ImageExists error must report "is docker running?" (not "not
-// built"), distinguishing a store/daemon error from a genuinely missing image.
+// found locally"), distinguishing a store/daemon error from a genuinely missing image.
 func TestRun_ImageOtherError_PropagatesError(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -1387,8 +1387,8 @@ func TestRun_ImageOtherError_PropagatesError(t *testing.T) {
 	if !strings.Contains(stderr, "is docker running?") {
 		t.Errorf("image other-error must emit 'is docker running?' hint; stderr=%q", stderr)
 	}
-	if strings.Contains(stderr, "not built") {
-		t.Errorf("image other-error must not emit 'not built' hint; stderr=%q", stderr)
+	if strings.Contains(stderr, "not found locally") {
+		t.Errorf("image other-error must not emit 'not found locally' hint; stderr=%q", stderr)
 	}
 	if fc.Started {
 		t.Errorf("docker container must not be started when ImageExists returns error")
@@ -2223,5 +2223,112 @@ func TestReportScanResults_RelFallbackToAbsolute(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "symlink") {
 		t.Errorf("stderr missing 'symlink' warning: %q", stderr.String())
+	}
+}
+
+// ── -i/--image resolution ──────────────────────────────────────────────────────
+
+// -i overrides the settings image in both the executed spec and the preflight.
+func TestRun_ImageFlag_OverridesSettings(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	initWithImage(t, baseDir)
+
+	fc := newFakeDocker(0, true)
+
+	_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fc), "run", "-i", "flag-img:1")
+	if err != nil {
+		t.Fatalf("run -i failed: %v; stderr=%q", err, stderr)
+	}
+	if fc.LastSpec.Image != "flag-img:1" {
+		t.Errorf("LastSpec.Image = %q, want %q", fc.LastSpec.Image, "flag-img:1")
+	}
+	if fc.ImageChecked != "flag-img:1" {
+		t.Errorf("image preflight checked %q, want %q", fc.ImageChecked, "flag-img:1")
+	}
+}
+
+func TestRun_ImageFlag_DryRunShowsOverride(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	initWithImage(t, baseDir)
+
+	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run", "--image", "flag-img:1")
+	if err != nil {
+		t.Fatalf("run --dry-run --image failed: %v; stderr=%q", err, stderr)
+	}
+	if !strings.Contains(stdout, "flag-img:1") {
+		t.Errorf("--dry-run output missing flag image; stdout=%q", stdout)
+	}
+	if strings.Contains(stdout, "test-img") {
+		t.Errorf("--dry-run output must not contain the settings image; stdout=%q", stdout)
+	}
+}
+
+// Registered workspace, no image anywhere: config error before any docker call.
+func TestRun_NoImage_FailsBeforeDocker(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{"run", []string{"run"}},
+		{"dry-run", []string{"run", "--dry-run"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			setHomeToTestParent(t)
+			baseDir := t.TempDir()
+			pwd := t.TempDir()
+			t.Chdir(pwd)
+
+			if _, stderr, err := runCmd(t, baseDir, "init"); err != nil {
+				t.Fatalf("init failed: %v; stderr=%q", err, stderr)
+			}
+
+			fc := newFakeDocker(0, true)
+
+			stdout, _, err := runCmdWithDeps(t, baseDir, depsFrom(fc), tc.args...)
+			if !errors.Is(err, errNoImage) {
+				t.Fatalf("expected errNoImage, got %v", err)
+			}
+			if !strings.Contains(err.Error(), "config set image") {
+				t.Errorf("error missing 'config set image' hint: %q", err.Error())
+			}
+			if stdout != "" {
+				t.Errorf("stdout must be empty; got %q", stdout)
+			}
+			if fc.DaemonChecked {
+				t.Error("daemon preflight must not run when no image is configured")
+			}
+			if fc.ImageChecked != "" || fc.Started {
+				t.Error("image preflight and runner must not be called when no image is configured")
+			}
+		})
+	}
+}
+
+// Resolve runs before Lookup, so an unregistered cwd with no image reports the image error.
+func TestRun_NoImage_Unregistered_ImageErrorWins(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	fc := newFakeDocker(0, true)
+
+	_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fc), "run")
+	if !errors.Is(err, errNoImage) {
+		t.Fatalf("expected errNoImage, got %v; stderr=%q", err, stderr)
+	}
+	if strings.Contains(stderr, "no workspace registered") {
+		t.Errorf("workspace error must not be printed before the image error; stderr=%q", stderr)
+	}
+	if fc.DaemonChecked || fc.Started {
+		t.Error("docker must not be touched")
 	}
 }

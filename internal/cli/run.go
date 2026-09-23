@@ -69,7 +69,7 @@ func reportScanResults(stderr, chrome io.Writer, root string, masked, symlinkMat
 	}
 }
 
-func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfHome, dryRun, quiet bool, deps dockerDeps) error {
+func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir, imageFlag string, outOfHome, dryRun, quiet bool, deps dockerDeps) error {
 	chrome := &quietWriter{w: cmd.ErrOrStderr(), quiet: quiet}
 	pwd, err := resolvePwd()
 	if err != nil {
@@ -81,6 +81,12 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfH
 
 	// Load once; pass the same *Settings to ws.Lookup to avoid a redundant read.
 	s, err := config.Load(baseDir)
+	if err != nil {
+		return err
+	}
+
+	// Before Lookup: a missing image is a config error and fails fast.
+	image, err := resolveImage(imageFlag, s.Image)
 	if err != nil {
 		return err
 	}
@@ -130,7 +136,7 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfH
 		WorkspaceName:        filepath.Base(workspaceDir),
 		WorkspaceHost:        workspaceDir,
 		BaseDir:              baseDir,
-		Image:                s.Image,
+		Image:                image,
 		Command:              s.Shell,
 		TmpDirSize:           s.TmpDirSize,
 		MaskedFiles:          maskedFiles,
@@ -149,15 +155,15 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfH
 		return nil
 	}
 
-	imageFound, imageErr := deps.imageExistsPreflight(cmd.Context(), s.Image)
+	imageFound, imageErr := deps.imageExistsPreflight(cmd.Context(), image)
 	if imageErr != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(),
-			"makeslop: check image %q: %v — is docker running?\n", s.Image, imageErr)
+			"makeslop: check image %q: %v — is docker running?\n", image, imageErr)
 		return errSilent
 	}
 	if !imageFound {
 		fmt.Fprintf(cmd.ErrOrStderr(),
-			"makeslop: image %q not built — run 'makeslop build'\n", s.Image)
+			"makeslop: image %q not found locally — run 'docker pull %s'\n", image, image)
 		return errSilent
 	}
 
@@ -175,6 +181,7 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfH
 func newRunCmd(ws *workspace.Workspaces, baseDir string, deps dockerDeps) *cobra.Command {
 	var outOfHome bool
 	var dryRun bool
+	var image string
 
 	cmd := &cobra.Command{
 		Use:          "run",
@@ -183,12 +190,14 @@ func newRunCmd(ws *workspace.Workspaces, baseDir string, deps dockerDeps) *cobra
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			quiet, _ := cmd.Flags().GetBool("quiet")
-			return runRun(cmd, ws, baseDir, outOfHome, dryRun, quiet, deps)
+			return runRun(cmd, ws, baseDir, image, outOfHome, dryRun, quiet, deps)
 		},
 	}
 	cmd.Flags().BoolVarP(&dryRun, "dry-run", "n", false,
 		"print the docker run command instead of executing it")
 	cmd.Flags().BoolVar(&outOfHome, "out-of-home", false,
 		"allow running outside the user's home directory")
+	cmd.Flags().StringVarP(&image, "image", "i", "",
+		"container image to run (overrides the settings image)")
 	return cmd
 }

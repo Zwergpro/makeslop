@@ -29,6 +29,9 @@ type fakeDocker struct {
 	ImageErr     error // ImageExists returns (false, err) unless ImageMissing
 
 	LastSpec docker.Spec // set when Run is called (isTTY=true)
+
+	DaemonChecked bool   // set when CheckDaemon is called
+	ImageChecked  string // last ref passed to ImageExists
 }
 
 func newFakeDocker(exitCode int, isTTY bool) *fakeDocker {
@@ -48,13 +51,15 @@ func (f *fakeDocker) Run(_ context.Context, s docker.Spec) error {
 }
 
 func (f *fakeDocker) CheckDaemon(_ context.Context) error {
+	f.DaemonChecked = true
 	if f.PingErr != nil {
 		return &docker.ErrDaemonUnreachable{Cause: f.PingErr}
 	}
 	return nil
 }
 
-func (f *fakeDocker) ImageExists(_ context.Context, _ string) (bool, error) {
+func (f *fakeDocker) ImageExists(_ context.Context, ref string) (bool, error) {
+	f.ImageChecked = ref
 	if f.ImageMissing {
 		return false, nil
 	}
@@ -519,7 +524,7 @@ func TestErrorVoice_NoWorkspace_ContainsRemedy(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	_, stderr, err := runCmd(t, baseDir, "run")
+	_, stderr, err := runCmd(t, baseDir, "run", "-i", "test-img")
 	if err == nil {
 		t.Fatalf("expected error from run with no workspace")
 	}
@@ -586,7 +591,7 @@ func TestErrorVoice_DaemonDown_ContainsRemedy(t *testing.T) {
 	}
 }
 
-// Error-voice format with a 'makeslop build' remedy.
+// Error-voice format with a 'docker pull' remedy.
 func TestErrorVoice_ImageMissing_ContainsRemedy(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -608,7 +613,7 @@ func TestErrorVoice_ImageMissing_ContainsRemedy(t *testing.T) {
 	if !strings.Contains(stderr, " — ") {
 		t.Errorf("image-missing error must contain em-dash remedy separator ' — '; got: %q", stderr)
 	}
-	if !strings.Contains(stderr, "makeslop build") {
-		t.Errorf("image-missing remedy must mention 'makeslop build'; got: %q", stderr)
+	if !strings.Contains(stderr, "docker pull") {
+		t.Errorf("image-missing remedy must mention 'docker pull'; got: %q", stderr)
 	}
 }

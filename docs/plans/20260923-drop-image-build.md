@@ -168,15 +168,16 @@
 **Files:**
 - Modify: `internal/cli/run.go`, `internal/cli/run_test.go`, `internal/cli/main_test.go`
 
-- [ ] register `-i, --image` on `run` and call `resolveImage` right after settings load, before `ws.Lookup`
-- [ ] pass the resolved image into `docker.Options.Image` and the image-exists preflight
-- [ ] change the missing-image message to `image "X" not found locally — run 'docker pull X'`
-- [ ] write tests: `-i` overrides settings, lands in the spec, and shows up in the `--dry-run` output
-- [ ] write tests for a registered workspace with no image and no flag: the error contains `config set image`; neither the daemon fake nor the runner fake is called; the same holds for `--dry-run`
-- [ ] write a test for an unregistered workspace with no image: the image error wins, because resolve runs before Lookup
-- [ ] update the existing missing-image test to expect the pull hint
-- [ ] `main_test.go:664-688`: update `TestErrorVoice_ImageMissing_ContainsRemedy` to expect `docker pull` instead of `makeslop build`, seeding it with `initWithImage` so it reaches the image-exists preflight
-- [ ] run `go test -timeout=100s ./...`, which must pass before task 5
+- [x] register `-i, --image` on `run` and call `resolveImage` right after settings load, before `ws.Lookup`
+- [x] pass the resolved image into `docker.Options.Image` and the image-exists preflight
+- [x] change the missing-image message to `image "X" not found locally — run 'docker pull X'`
+- [x] write tests: `-i` overrides settings, lands in the spec, and shows up in the `--dry-run` output
+- [x] write tests for a registered workspace with no image and no flag: the error contains `config set image`; neither the daemon fake nor the runner fake is called; the same holds for `--dry-run`
+- [x] write a test for an unregistered workspace with no image: the image error wins, because resolve runs before Lookup
+- [x] update the existing missing-image test to expect the pull hint
+- [x] `main_test.go:664-688`: update `TestErrorVoice_ImageMissing_ContainsRemedy` to expect `docker pull` instead of `makeslop build`, seeding it with `initWithImage` so it reaches the image-exists preflight
+- [x] run `go test -timeout=100s ./...`, which must pass before task 5
+- ➕ [x] unregistered-workspace tests (`TestRun_NotRegistered_*`, `TestRun_Unregistered_DoesNotInvokeDocker`, `TestRun_DryRun_Unregistered_StillRefuses`, `TestErrorVoice_NoWorkspace_ContainsRemedy`) now pass `-i test-img` to reach Lookup; `fakeDocker` gained `DaemonChecked`/`ImageChecked` tracking
 
 ### Task 5: Wire -i/--image into status
 
