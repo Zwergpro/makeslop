@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode"
 
 	"gopkg.in/yaml.v3"
 )
@@ -86,6 +87,12 @@ type Cache struct {
 	Agent   bool // mount per-workspace cache .claude/ + .codex/ (default true)
 }
 
+// Env is the parsed environments: block.
+type Env struct {
+	Static []string // sorted "KEY=VALUE"
+	Host   []string // sorted, deduped variable names to copy from the host
+}
+
 // yamlSchema is the strict decode target. KnownFields(true) rejects any unknown
 // key — including a stale "network:" block from a prior makeslop version, the
 // intended loud break.
@@ -102,9 +109,10 @@ type yamlSchema struct {
 		Content *bool `yaml:"content"`
 		Agent   *bool `yaml:"agent"`
 	} `yaml:"cache"`
-	// Decoded as yaml.Node for lenient scalar coercion (numbers/booleans
-	// become their string representations).
-	Environments map[string]yaml.Node `yaml:"environments"`
+	// Decoded as a raw yaml.Node and walked by validateEnvironments: that gives
+	// lenient scalar coercion (numbers/booleans become their string forms) and a
+	// targeted error for the old flat KEY: value form.
+	Environments yaml.Node `yaml:"environments"`
 }
 
 // Scaffold creates <root>/.makeslop.yaml with the stub for the given Cache
@@ -150,8 +158,9 @@ func Scaffold(root string, c Cache) error {
 //     missing entries and non-symlink wrong-type drops stay silent.
 //   - Cache: per-workspace overlay settings; defaults to {true,true} when the
 //     cache: block (or the whole file) is absent.
-//   - []string: sorted "KEY=VALUE" env pairs from environments:; nil when the
-//     block is absent (nil ≡ no env injection, backward-compatible).
+//   - Env: static "KEY=VALUE" pairs and host variable names from
+//     environments:; zero Env{} when the block is absent. Load never reads the
+//     process environment: callers resolve Env.Host themselves.
 //   - error: any parse, validation, or filesystem error, wrapped "projectconfig: ".
 //
 // The file at root/.makeslop.yaml must be a regular file. A symlink — dangling
@@ -159,7 +168,7 @@ func Scaffold(root string, c Cache) error {
 // depend on the file being a real file on disk.
 //
 // root must be absolute and EvalSymlinks-evaluated.
-func Load(root string) (Excludes, Cache, []string, error) {
+func Load(root string) (Excludes, Cache, Env, error) {
 	path := filepath.Join(root, Filename)
 
 	// Lstat before ReadFile to detect symlinks. ReadFile follows symlinks, which
@@ -168,17 +177,17 @@ func Load(root string) (Excludes, Cache, []string, error) {
 	linfo, lstErr := os.Lstat(path)
 	if lstErr != nil {
 		if errors.Is(lstErr, fs.ErrNotExist) {
-			return Excludes{}, Cache{Content: true, Agent: true}, nil, nil
+			return Excludes{}, Cache{Content: true, Agent: true}, Env{}, nil
 		}
-		return Excludes{}, Cache{}, nil, fmt.Errorf("projectconfig: read %s: %w", Filename, lstErr)
+		return Excludes{}, Cache{}, Env{}, fmt.Errorf("projectconfig: read %s: %w", Filename, lstErr)
 	}
 	if linfo.Mode()&fs.ModeSymlink != 0 {
-		return Excludes{}, Cache{}, nil, fmt.Errorf("projectconfig: %s is a symlink — the project config must be a regular file", Filename)
+		return Excludes{}, Cache{}, Env{}, fmt.Errorf("projectconfig: %s is a symlink — the project config must be a regular file", Filename)
 	}
 
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return Excludes{}, Cache{}, nil, fmt.Errorf("projectconfig: read %s: %w", Filename, err)
+		return Excludes{}, Cache{}, Env{}, fmt.Errorf("projectconfig: read %s: %w", Filename, err)
 	}
 
 	// Strict mode: unknown fields error out, surfacing typos and stale
@@ -190,27 +199,27 @@ func Load(root string) (Excludes, Cache, []string, error) {
 	if err := dec.Decode(&schema); err != nil {
 		if errors.Is(err, io.EOF) {
 			// Empty, whitespace-only, or comment-only YAML: zero config.
-			return Excludes{}, Cache{Content: true, Agent: true}, nil, nil
+			return Excludes{}, Cache{Content: true, Agent: true}, Env{}, nil
 		}
-		return Excludes{}, Cache{}, nil, fmt.Errorf("projectconfig: parse %s: %w", Filename, err)
+		return Excludes{}, Cache{}, Env{}, fmt.Errorf("projectconfig: parse %s: %w", Filename, err)
 	}
 
 	patterns, err := validatePatterns(schema.Exclude.Scan.Patterns)
 	if err != nil {
-		return Excludes{}, Cache{}, nil, err
+		return Excludes{}, Cache{}, Env{}, err
 	}
 	skipDirs, err := validateSkipDirs(schema.Exclude.Scan.SkipDirs)
 	if err != nil {
-		return Excludes{}, Cache{}, nil, err
+		return Excludes{}, Cache{}, Env{}, err
 	}
 
 	cleanedFiles, err := validateEntries(schema.Exclude.Files, "exclude.files")
 	if err != nil {
-		return Excludes{}, Cache{}, nil, err
+		return Excludes{}, Cache{}, Env{}, err
 	}
 	cleanedDirs, err := validateEntries(schema.Exclude.Dirs, "exclude.dirs")
 	if err != nil {
-		return Excludes{}, Cache{}, nil, err
+		return Excludes{}, Cache{}, Env{}, err
 	}
 
 	// A path in both lists is an error. Checked before stat-drop so the error is
@@ -221,17 +230,17 @@ func Load(root string) (Excludes, Cache, []string, error) {
 	}
 	for _, rel := range cleanedDirs {
 		if _, ok := seen[rel]; ok {
-			return Excludes{}, Cache{}, nil, fmt.Errorf("projectconfig: path %q listed in both exclude.files and exclude.dirs", rel)
+			return Excludes{}, Cache{}, Env{}, fmt.Errorf("projectconfig: path %q listed in both exclude.files and exclude.dirs", rel)
 		}
 	}
 
 	files, fileWarnings, err := statFilter(root, cleanedFiles, func(info os.FileInfo) bool { return info.Mode().IsRegular() })
 	if err != nil {
-		return Excludes{}, Cache{}, nil, err
+		return Excludes{}, Cache{}, Env{}, err
 	}
 	dirs, dirWarnings, err := statFilter(root, cleanedDirs, func(info os.FileInfo) bool { return info.IsDir() })
 	if err != nil {
-		return Excludes{}, Cache{}, nil, err
+		return Excludes{}, Cache{}, Env{}, err
 	}
 
 	files = dedupSorted(files)
@@ -247,12 +256,12 @@ func Load(root string) (Excludes, Cache, []string, error) {
 		Agent:   schema.Cache.Agent == nil || *schema.Cache.Agent,
 	}
 
-	envVars, err := validateEnvironments(schema.Environments)
+	env, err := validateEnvironments(schema.Environments)
 	if err != nil {
-		return Excludes{}, Cache{}, nil, err
+		return Excludes{}, Cache{}, Env{}, err
 	}
 
-	return Excludes{Files: files, Dirs: dirs, Patterns: patterns, SkipDirs: skipDirs, Warnings: warnings}, cacheCfg, envVars, nil
+	return Excludes{Files: files, Dirs: dirs, Patterns: patterns, SkipDirs: skipDirs, Warnings: warnings}, cacheCfg, env, nil
 }
 
 // validateEntries cleans and validates relative paths, erroring on the first
@@ -326,43 +335,161 @@ func validateSkipDirs(entries []string) ([]string, error) {
 	return dedupSorted(entries), nil
 }
 
-// validateEnvironments validates an environments: map into a sorted []string of
-// "KEY=VALUE" pairs. Rules:
-//   - Empty keys rejected ("-e =value" is broken docker syntax).
-//   - Keys must not contain '=' (breaks KEY=VALUE encoding) or newline/tab.
-//   - Values must be scalar nodes; non-scalars (lists/maps) rejected fail-loud.
-//   - Null scalars (bare KEY: or KEY: null) rejected — almost always a mistake.
-//   - Explicit empty string (KEY: "") accepted → "KEY=".
+// validateEnvironments walks the environments: node into an Env. Shape:
 //
-// yaml.v3 rejects duplicate map keys at decode time, so no dup-key handling here.
-func validateEnvironments(env map[string]yaml.Node) ([]string, error) {
-	if len(env) == 0 {
-		return nil, nil
+//	environments:
+//	  static: {KEY: value, ...}   # optional
+//	  host: [NAME, ...]           # optional
+//
+// A zero or null node (block absent or empty) yields Env{}; so does a null
+// static:/host: sub-key. Rules:
+//   - Keys at both levels must be non-null scalars. Duplicates are detected
+//     here: yaml.v3 skips its own duplicate-key check when decoding into a
+//     yaml.Node.
+//   - An unknown key with a scalar value is the pre-static flat form and gets a
+//     migration hint; any other unknown key is reported as unknown.
+//   - static: keys must be non-empty and free of '=' and newline/tab; values
+//     must be non-null scalars without newline/tab. Explicit "" is accepted.
+//     Numbers/booleans coerce via node.Value.
+//   - host: entries must be non-null scalars, non-empty, and free of '=' and
+//     whitespace. Deduplicated silently and sorted.
+//   - A name in both static and host is an error.
+//
+// Error messages carry names only, never values.
+func validateEnvironments(node yaml.Node) (Env, error) {
+	if node.Kind == 0 || isNull(&node) {
+		return Env{}, nil
 	}
-	result := make([]string, 0, len(env))
-	for k, v := range env {
+	if node.Kind != yaml.MappingNode {
+		return Env{}, errors.New(`projectconfig: environments must be a mapping with optional "static" and "host" keys`)
+	}
+
+	var staticNode, hostNode *yaml.Node
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		k, v := node.Content[i], node.Content[i+1]
+		if k.Kind != yaml.ScalarNode || isNull(k) {
+			return Env{}, fmt.Errorf("projectconfig: environments: key at line %d must be a non-null scalar", k.Line)
+		}
+		switch k.Value {
+		case "static", "host":
+			if (k.Value == "static" && staticNode != nil) || (k.Value == "host" && hostNode != nil) {
+				return Env{}, fmt.Errorf("projectconfig: duplicate key %q in environments", k.Value)
+			}
+			if k.Value == "static" {
+				staticNode = v
+			} else {
+				hostNode = v
+			}
+		default:
+			if v.Kind == yaml.ScalarNode {
+				return Env{}, errors.New(`projectconfig: environments: flat "KEY: value" form is no longer supported; move entries under environments.static`)
+			}
+			return Env{}, fmt.Errorf("projectconfig: unknown key %q in environments (allowed: static, host)", k.Value)
+		}
+	}
+
+	static, staticKeys, err := validateStaticEnv(staticNode)
+	if err != nil {
+		return Env{}, err
+	}
+	host, err := validateHostEnv(hostNode)
+	if err != nil {
+		return Env{}, err
+	}
+	for _, name := range host {
+		if _, ok := staticKeys[name]; ok {
+			return Env{}, fmt.Errorf("projectconfig: environment key %q listed in both environments.static and environments.host", name)
+		}
+	}
+	return Env{Static: static, Host: host}, nil
+}
+
+// validateStaticEnv validates environments.static into sorted "KEY=VALUE"
+// pairs plus the set of keys (for the static/host overlap check). A nil or null
+// node yields no pairs.
+func validateStaticEnv(node *yaml.Node) ([]string, map[string]struct{}, error) {
+	if node == nil || isNull(node) {
+		return nil, nil, nil
+	}
+	if node.Kind != yaml.MappingNode {
+		return nil, nil, errors.New("projectconfig: environments.static must be a mapping of KEY: value")
+	}
+	keys := make(map[string]struct{}, len(node.Content)/2)
+	var result []string
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		kn, v := node.Content[i], node.Content[i+1]
+		if kn.Kind != yaml.ScalarNode || isNull(kn) {
+			return nil, nil, fmt.Errorf("projectconfig: environments.static: key at line %d must be a non-null scalar", kn.Line)
+		}
+		k := kn.Value
 		if k == "" {
-			return nil, fmt.Errorf("projectconfig: empty key in environments")
+			return nil, nil, fmt.Errorf("projectconfig: empty key in environments.static")
 		}
 		if strings.Contains(k, "=") {
-			return nil, fmt.Errorf("projectconfig: environment key %q must not contain '='", k)
+			return nil, nil, fmt.Errorf("projectconfig: environment key %q must not contain '='", k)
 		}
 		if strings.ContainsAny(k, "\n\r\t") {
-			return nil, fmt.Errorf("projectconfig: environment key %q must not contain newline or tab characters", k)
+			return nil, nil, fmt.Errorf("projectconfig: environment key %q must not contain newline or tab characters", k)
 		}
+		if _, dup := keys[k]; dup {
+			return nil, nil, fmt.Errorf("projectconfig: duplicate key %q in environments.static", k)
+		}
+		keys[k] = struct{}{}
 		if v.Kind != yaml.ScalarNode {
-			return nil, fmt.Errorf("projectconfig: environment key %q must be a scalar value", k)
+			return nil, nil, fmt.Errorf("projectconfig: environment key %q must be a scalar value", k)
 		}
-		if v.Tag == "!!null" {
-			return nil, fmt.Errorf("projectconfig: environment key %q has no value", k)
+		if isNull(v) {
+			return nil, nil, fmt.Errorf("projectconfig: environment key %q has no value", k)
 		}
 		if strings.ContainsAny(v.Value, "\n\r\t") {
-			return nil, fmt.Errorf("projectconfig: environment key %q value must not contain newline or tab characters", k)
+			return nil, nil, fmt.Errorf("projectconfig: environment key %q value must not contain newline or tab characters", k)
 		}
 		result = append(result, k+"="+v.Value)
 	}
 	sort.Strings(result)
-	return result, nil
+	return result, keys, nil
+}
+
+// validateHostEnv validates environments.host into sorted, deduplicated
+// variable names. Whitespace is rejected more strictly than for static keys: a
+// host name has to exist in the host environment. A nil or null node yields no
+// names.
+func validateHostEnv(node *yaml.Node) ([]string, error) {
+	if node == nil || isNull(node) {
+		return nil, nil
+	}
+	if node.Kind != yaml.SequenceNode {
+		return nil, errors.New("projectconfig: environments.host must be a list of variable names")
+	}
+	var names []string
+	for _, e := range node.Content {
+		if e.Kind != yaml.ScalarNode {
+			return nil, fmt.Errorf("projectconfig: environments.host entry at line %d must be a variable name", e.Line)
+		}
+		if isNull(e) {
+			return nil, fmt.Errorf("projectconfig: environments.host entry at line %d has no name", e.Line)
+		}
+		name := e.Value
+		if name == "" {
+			return nil, fmt.Errorf("projectconfig: empty name in environments.host")
+		}
+		if strings.Contains(name, "=") {
+			return nil, fmt.Errorf("projectconfig: environments.host name %q must not contain '='", name)
+		}
+		if strings.IndexFunc(name, unicode.IsSpace) >= 0 {
+			return nil, fmt.Errorf("projectconfig: environments.host name %q must not contain whitespace", name)
+		}
+		names = append(names, name)
+	}
+	if len(names) == 0 {
+		return nil, nil
+	}
+	return dedupSorted(names), nil
+}
+
+// isNull reports whether n is a null scalar (bare "KEY:", "~", or "null").
+func isNull(n *yaml.Node) bool {
+	return n.Kind == yaml.ScalarNode && n.ShortTag() == "!!null"
 }
 
 // statFilter Lstats each path under root. Symlinks are dropped with a warning

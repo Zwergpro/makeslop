@@ -121,32 +121,32 @@
 - Modify: `internal/projectconfig/projectconfig.go`
 - Modify: `internal/projectconfig/projectconfig_test.go`
 
-- [ ] add `Env` struct; change `yamlSchema.Environments` to `yaml.Node` and update its comment (~projectconfig.go:105)
-- [ ] rewrite `validateEnvironments(node yaml.Node) (Env, error)` per the Technical Details:
+- [x] add `Env` struct; change `yamlSchema.Environments` to `yaml.Node` and update its comment (~projectconfig.go:105)
+- [x] rewrite `validateEnvironments(node yaml.Node) (Env, error)` per the Technical Details:
   - error table
   - key-node checks
   - duplicate detection at both levels
   - static rules
   - host entry rules, dedupe and sort
   - overlap check
-- [ ] update its doc comment (~329-337)
-- [ ] change `Load` to return `Env`; update its doc comment (fourth return value)
-- [ ] fix the `Load` call sites in `internal/cli/run.go` and `internal/cli/status.go` so the tree compiles:
+- [x] update its doc comment (~329-337)
+- [x] change `Load` to return `Env`; update its doc comment (fourth return value)
+- [x] fix the `Load` call sites in `internal/cli/run.go` and `internal/cli/status.go` so the tree compiles:
   - `run.go` uses `env.Static` only for now
   - `status.go` keeps discarding the value
   - these already use `_` and need no change: `security_test.go:50`, `init_test.go:509`, `:534`
-- [ ] add a test helper `envNode(t, yamlSnippet) yaml.Node`: unmarshal the snippet and return `doc.Content[0]`, not the DocumentNode
-- [ ] migrate existing tests to the new signature and the `static:` form:
+- [x] add a test helper `envNode(t, yamlSnippet) yaml.Node`: unmarshal the snippet and return `doc.Content[0]`, not the DocumentNode
+- [x] migrate existing tests to the new signature and the `static:` form:
   - `TestValidateEnvironments_*` (~1210-1400; currently built on `map[string]yaml.Node`)
   - the Load error-table env rows (~273-290)
-- [ ] update the Load-level env tests. Replace `envVars != nil` with `reflect.DeepEqual(env, Env{})`, and convert flat-form fixtures to `static:`:
+- [x] update the Load-level env tests. Replace `envVars != nil` with `reflect.DeepEqual(env, Env{})`, and convert flat-form fixtures to `static:`:
   - `TestLoad_AbsentEnvironments_NilEnv` (~1407)
   - `TestLoad_MissingFile_NilEnv` (~1435)
   - `TestLoad_EmptyAndWhitespaceFile_NilEnv` (~1448)
   - `TestLoad_EnvironmentsBlock_ReturnsSortedPairs` (~1476)
   - `TestLoad_MissingFile_NoSymlink_ReturnsDefaults` (~1666)
-- [ ] add success tests: static only, host only, both, empty `environments:`, empty/null sub-keys, block absent, host dedupe/sort, scalar coercion under static
-- [ ] add error tests, asserting every message in the error table:
+- [x] add success tests: static only, host only, both, empty `environments:`, empty/null sub-keys, block absent, host dedupe/sort, scalar coercion under static
+- [x] add error tests, asserting every message in the error table:
   - `environments` as a list
   - old flat form
   - unknown key with a non-scalar value
@@ -157,8 +157,10 @@
   - null key (`~: x`), complex key
   - host entries: `- ~`, bare `-`, empty, containing `=`, containing whitespace, non-scalar
   - static/host overlap
-- [ ] add a `status_test` row: a flat-form file shows the non-blocking `cannot read .makeslop.yaml` warning with the hint (modelled on the stale-`network:` test, ~status_test.go:403)
-- [ ] run `go test -timeout=100s ./...` - must pass before task 2
+- [x] add a `status_test` row: a flat-form file shows the non-blocking `cannot read .makeslop.yaml` warning with the hint (modelled on the stale-`network:` test, ~status_test.go:403)
+- [x] ➕ converted the `TestRun_EnvironmentsBlock_ProducesEnvFlags` fixture to `static:` here so the suite stays green (listed again under task 2)
+- [x] run `go test -timeout=100s ./...` - must pass before task 2
+  - ⚠️ `TestScan_WalkError_Propagated` and `TestStatus_Check5_ScanErrShowsWarn` fail in this dev environment only: the filesystem ignores `chmod 000`, so the unreadable dir stays readable. Unrelated to this change (`internal/security` is untouched); all other tests pass
 
 ### Task 2: Resolve host variables in `run`
 
@@ -168,7 +170,7 @@
 
 - [ ] add `resolveEnv(env projectconfig.Env, lookup func(string) (string, bool)) []string` in `run.go`; it merges static and resolved host pairs, sorted, and returns `nil` when empty
 - [ ] wire it in: `opts.Env = resolveEnv(env, os.LookupEnv)`
-- [ ] update `TestRun_EnvironmentsBlock_ProducesEnvFlags` to the `static:` form
+- [x] update `TestRun_EnvironmentsBlock_ProducesEnvFlags` to the `static:` form (done in task 1)
 - [ ] add unit tests for `resolveEnv` with a fake lookup:
   - set, set-empty (`NAME=`), unset (skipped)
   - sorted merge across static and host

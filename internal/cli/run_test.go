@@ -1621,7 +1621,7 @@ func TestRun_EnvironmentsBlock_ProducesEnvFlags(t *testing.T) {
 
 	resolvedPwd := evalSymlinks(t, pwd)
 
-	yamlContent := "exclude:\n  dirs: []\n  files: []\n  scan:\n    patterns: []\nenvironments:\n  NODE_ENV: production\n  PORT: \"8080\"\n  DEBUG: \"false\"\n"
+	yamlContent := "exclude:\n  dirs: []\n  files: []\n  scan:\n    patterns: []\nenvironments:\n  static:\n    NODE_ENV: production\n    PORT: \"8080\"\n    DEBUG: \"false\"\n"
 	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(yamlContent), 0o644); err != nil {
 		t.Fatalf("write yaml: %v", err)
 	}

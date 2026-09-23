@@ -430,6 +430,36 @@ func TestStatus_Check5_PCErrShowsWarn(t *testing.T) {
 	}
 }
 
+// An old flat environments: block (check 5) is non-blocking: warn with the
+// migration hint, status stays ready.
+func TestStatus_Check5_FlatEnvironmentsShowsWarnWithHint(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	initWithImage(t, baseDir)
+	resolvedPwd := evalSymlinks(t, pwd)
+
+	flatYAML := "environments:\n  NODE_ENV: production\n"
+	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(flatYAML), 0o644); err != nil {
+		t.Fatalf("write flat yaml: %v", err)
+	}
+
+	deps := newFakeStatusDeps(false, false)
+
+	_, stderr, err := runCmdWithDeps(t, baseDir, deps, "status")
+	if err != nil {
+		t.Errorf("status must remain ready despite pcErr (non-blocking); err=%v stderr=%q", err, stderr)
+	}
+	if !strings.Contains(stderr, "cannot read .makeslop.yaml") {
+		t.Errorf("stderr missing 'cannot read .makeslop.yaml' warn: %q", stderr)
+	}
+	if !strings.Contains(stderr, "move entries under environments.static") {
+		t.Errorf("stderr missing migration hint: %q", stderr)
+	}
+}
+
 // A security.Scan error (check 5) is non-blocking: warn, status stays ready.
 // Induced by an unreadable subdir that fails WalkDir.
 func TestStatus_Check5_ScanErrShowsWarn(t *testing.T) {

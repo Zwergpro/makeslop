@@ -112,7 +112,7 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir, imageFlag str
 		}
 	}
 
-	yamlExcludes, cacheCfg, envVars, err := projectconfig.Load(workspaceRoot)
+	yamlExcludes, cacheCfg, env, err := projectconfig.Load(workspaceRoot)
 	if err != nil {
 		return err
 	}
@@ -144,7 +144,7 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir, imageFlag str
 		MaskedDirs:           yamlExcludes.Dirs,
 		MountContentCache:    cacheCfg.Content,
 		MountAgentCache:      cacheCfg.Agent,
-		Env:                  envVars,
+		Env:                  env.Static,
 		ProtectProjectConfig: protectProjectConfig,
 		MaskGitHooks:         maskGitHooks,
 	}
