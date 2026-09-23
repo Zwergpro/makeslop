@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -34,6 +35,31 @@ func mergeUniqueSorted(a, b []string) []string {
 		out = append(out, s)
 	}
 	sort.Strings(out)
+	return out
+}
+
+// resolveEnv merges env.Static with host-resolved env.Host pairs, sorted by
+// key. This is the only place the final -e order is decided. Unset host names
+// are skipped; set-but-empty yields "NAME=". Host values pass verbatim
+// (newlines included). Returns nil when empty so no -e flags appear.
+func resolveEnv(env projectconfig.Env, lookup func(string) (string, bool)) []string {
+	out := make([]string, 0, len(env.Static)+len(env.Host))
+	out = append(out, env.Static...)
+	for _, name := range env.Host {
+		if v, ok := lookup(name); ok {
+			out = append(out, name+"="+v)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	// Keys are unique (projectconfig rejects static/host overlap), so an
+	// unstable sort is deterministic.
+	sort.Slice(out, func(i, j int) bool {
+		ki, _, _ := strings.Cut(out[i], "=")
+		kj, _, _ := strings.Cut(out[j], "=")
+		return ki < kj
+	})
 	return out
 }
 
@@ -112,7 +138,7 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir, imageFlag str
 		}
 	}
 
-	yamlExcludes, cacheCfg, envVars, err := projectconfig.Load(workspaceRoot)
+	yamlExcludes, cacheCfg, env, err := projectconfig.Load(workspaceRoot)
 	if err != nil {
 		return err
 	}
@@ -144,7 +170,7 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir, imageFlag str
 		MaskedDirs:           yamlExcludes.Dirs,
 		MountContentCache:    cacheCfg.Content,
 		MountAgentCache:      cacheCfg.Agent,
-		Env:                  envVars,
+		Env:                  resolveEnv(env, os.LookupEnv),
 		ProtectProjectConfig: protectProjectConfig,
 		MaskGitHooks:         maskGitHooks,
 	}

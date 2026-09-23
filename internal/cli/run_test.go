@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -1070,34 +1071,52 @@ func TestRun_YamlDedupsAgainstScan(t *testing.T) {
 
 // ── YAML error propagation tests ──────────────────────────────────────────────
 
-// Docker must never start when yaml parse fails (secret-masking invariant).
-// runWithExitCode (not runCmd) so non-errSilent errors land on stderr.
+// Docker must never start when yaml parse or validation fails (secret-masking
+// invariant). runWithExitCode (not runCmd) so non-errSilent errors land on stderr.
 func TestRun_YamlMalformedAbortsBeforeDocker(t *testing.T) {
-	setHomeToTestParent(t)
-	baseDir := t.TempDir()
-	pwd := t.TempDir()
-	t.Chdir(pwd)
-
-	initWithImage(t, baseDir)
-	resolvedPwd := evalSymlinks(t, pwd)
-
-	badYAML := []byte("exclude:\n  dirs: [unclosed\n")
-	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), badYAML, 0o644); err != nil {
-		t.Fatalf("write bad yaml: %v", err)
+	cases := []struct {
+		name     string
+		yaml     string
+		wantFrag string // "" = only the prefix is checked
+	}{
+		{name: "malformed yaml", yaml: "exclude:\n  dirs: [unclosed\n"},
+		{
+			name:     "old flat environments form",
+			yaml:     "environments:\n  NODE_ENV: production\n",
+			wantFrag: `flat "KEY: value" form is no longer supported; move entries under environments.static`,
+		},
 	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			setHomeToTestParent(t)
+			baseDir := t.TempDir()
+			pwd := t.TempDir()
+			t.Chdir(pwd)
 
-	fc := newFakeDocker(0, true)
+			initWithImage(t, baseDir)
+			resolvedPwd := evalSymlinks(t, pwd)
 
-	var stdout, stderr bytes.Buffer
-	code := runWithExitCodeAndDeps(baseDir, &stdout, &stderr, depsFrom(fc), []string{"run"})
-	if code == 0 {
-		t.Fatalf("expected non-zero exit from malformed yaml, got 0; stderr=%q", stderr.String())
-	}
-	if !strings.HasPrefix(stderr.String(), "makeslop: ") {
-		t.Errorf("stderr missing 'makeslop: ' prefix: %q", stderr.String())
-	}
-	if fc.Started {
-		t.Errorf("docker client must not be started on yaml parse error")
+			if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(tc.yaml), 0o644); err != nil {
+				t.Fatalf("write bad yaml: %v", err)
+			}
+
+			fc := newFakeDocker(0, true)
+
+			var stdout, stderr bytes.Buffer
+			code := runWithExitCodeAndDeps(baseDir, &stdout, &stderr, depsFrom(fc), []string{"run"})
+			if code == 0 {
+				t.Fatalf("expected non-zero exit from bad yaml, got 0; stderr=%q", stderr.String())
+			}
+			if !strings.HasPrefix(stderr.String(), "makeslop: ") {
+				t.Errorf("stderr missing 'makeslop: ' prefix: %q", stderr.String())
+			}
+			if !strings.Contains(stderr.String(), tc.wantFrag) {
+				t.Errorf("stderr %q does not contain %q", stderr.String(), tc.wantFrag)
+			}
+			if fc.Started {
+				t.Errorf("docker client must not be started on yaml error")
+			}
+		})
 	}
 }
 
@@ -1609,7 +1628,21 @@ func TestRun_CustomTmpDirSize_FlowsIntoDockerArgv(t *testing.T) {
 
 // ── Environments, sandbox mounts, and quiet/symlink tests ─────────────────────
 
-// An environments: block flows into -e KEY=VALUE flags (sorted) in the dry-run output.
+// dryRunEnvValues returns the -e values of a --dry-run ShellCommand in order.
+// Test values are shell-safe, so tokens are printed unquoted.
+func dryRunEnvValues(stdout string) []string {
+	var out []string
+	for _, line := range strings.Split(stdout, "\n") {
+		line = strings.TrimSuffix(strings.TrimSpace(line), " \\")
+		if v, ok := strings.CutPrefix(line, "-e "); ok {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// An environments: block flows into -e KEY=VALUE flags, sorted by key, in the
+// dry-run output.
 func TestRun_EnvironmentsBlock_ProducesEnvFlags(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -1621,7 +1654,7 @@ func TestRun_EnvironmentsBlock_ProducesEnvFlags(t *testing.T) {
 
 	resolvedPwd := evalSymlinks(t, pwd)
 
-	yamlContent := "exclude:\n  dirs: []\n  files: []\n  scan:\n    patterns: []\nenvironments:\n  NODE_ENV: production\n  PORT: \"8080\"\n  DEBUG: \"false\"\n"
+	yamlContent := "exclude:\n  dirs: []\n  files: []\n  scan:\n    patterns: []\nenvironments:\n  static:\n    NODE_ENV: production\n    PORT: \"8080\"\n    DEBUG: \"false\"\n"
 	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(yamlContent), 0o644); err != nil {
 		t.Fatalf("write yaml: %v", err)
 	}
@@ -1631,11 +1664,9 @@ func TestRun_EnvironmentsBlock_ProducesEnvFlags(t *testing.T) {
 		t.Fatalf("--dry-run failed: %v; stderr=%q", err, stderr)
 	}
 
-	// Environments are sorted: DEBUG < NODE_ENV < PORT
-	for _, want := range []string{"-e DEBUG=false", "-e NODE_ENV=production", "-e PORT=8080"} {
-		if !strings.Contains(stdout, want) {
-			t.Errorf("--dry-run stdout missing %q\nstdout:\n%s", want, stdout)
-		}
+	want := []string{"DEBUG=false", "NODE_ENV=production", "PORT=8080"}
+	if got := dryRunEnvValues(stdout); !slices.Equal(got, want) {
+		t.Errorf("--dry-run -e values = %q, want %q\nstdout:\n%s", got, want, stdout)
 	}
 
 	// Workspace mount must reference the registered workspace dir.
@@ -1664,6 +1695,166 @@ func TestRun_NoEnvironmentsBlock_NoEnvFlags(t *testing.T) {
 			t.Errorf("--dry-run output must not contain -e flags when environments: block is absent\nstdout:\n%s", stdout)
 			break
 		}
+	}
+}
+
+func TestResolveEnv(t *testing.T) {
+	hostEnv := map[string]string{
+		"SET_VAR":   "val",
+		"EMPTY_VAR": "",
+		"PEM_KEY":   "line1\nline2\n",
+		"AAA_FIRST": "1",
+		"PORT":      "80",
+	}
+	lookup := func(name string) (string, bool) {
+		v, ok := hostEnv[name]
+		return v, ok
+	}
+
+	tests := []struct {
+		name string
+		env  projectconfig.Env
+		want []string
+	}{
+		{name: "empty env", env: projectconfig.Env{}, want: nil},
+		{name: "only unset host names", env: projectconfig.Env{Host: []string{"UNSET_A", "UNSET_B"}}, want: nil},
+		{name: "set host var", env: projectconfig.Env{Host: []string{"SET_VAR"}}, want: []string{"SET_VAR=val"}},
+		{name: "set-empty host var", env: projectconfig.Env{Host: []string{"EMPTY_VAR"}}, want: []string{"EMPTY_VAR="}},
+		{name: "unset host var skipped", env: projectconfig.Env{Host: []string{"SET_VAR", "UNSET_VAR"}}, want: []string{"SET_VAR=val"}},
+		{name: "static only, file order sorted", env: projectconfig.Env{Static: []string{"B=2", "A=1"}}, want: []string{"A=1", "B=2"}},
+		{
+			name: "sorted merge across static and host",
+			env:  projectconfig.Env{Static: []string{"MID=m", "ZED=z"}, Host: []string{"AAA_FIRST", "SET_VAR"}},
+			want: []string{"AAA_FIRST=1", "MID=m", "SET_VAR=val", "ZED=z"},
+		},
+		{
+			// Sorting full "KEY=VALUE" strings would put PORT2 first ('2' < '=').
+			name: "sorted by key, not by pair",
+			env:  projectconfig.Env{Static: []string{"PORT2=x"}, Host: []string{"PORT"}},
+			want: []string{"PORT=80", "PORT2=x"},
+		},
+		{
+			name: "host value with newline passed verbatim",
+			env:  projectconfig.Env{Host: []string{"PEM_KEY"}},
+			want: []string{"PEM_KEY=line1\nline2\n"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := resolveEnv(tc.env, lookup)
+			if tc.want == nil {
+				if got != nil {
+					t.Fatalf("resolveEnv = %#v, want nil", got)
+				}
+				return
+			}
+			if !slices.Equal(got, tc.want) {
+				t.Fatalf("resolveEnv = %#v, want %#v", got, tc.want)
+			}
+		})
+	}
+}
+
+// resolveEnv must not reorder or write through env.Static (spare capacity
+// included) and must look up only env.Host names.
+func TestResolveEnv_NoAliasingAndLooksUpOnlyHost(t *testing.T) {
+	backing := make([]string, 2, 8)
+	backing[0], backing[1] = "Z=1", "A=2"
+	env := projectconfig.Env{Static: backing, Host: []string{"H1", "H2"}}
+
+	var looked []string
+	lookup := func(name string) (string, bool) {
+		looked = append(looked, name)
+		return "v", true
+	}
+
+	got := resolveEnv(env, lookup)
+
+	if want := []string{"A=2", "H1=v", "H2=v", "Z=1"}; !slices.Equal(got, want) {
+		t.Errorf("resolveEnv = %q, want %q", got, want)
+	}
+	if want := []string{"Z=1", "A=2"}; !slices.Equal(env.Static, want) {
+		t.Errorf("env.Static mutated: %q, want %q", env.Static, want)
+	}
+	if spare := backing[:4]; spare[2] != "" || spare[3] != "" {
+		t.Errorf("resolveEnv wrote into env.Static spare capacity: %q", spare)
+	}
+	if want := []string{"H1", "H2"}; !slices.Equal(looked, want) {
+		t.Errorf("lookup called with %q, want %q", looked, want)
+	}
+}
+
+// environments.host names are resolved from the host environment and printed in --dry-run.
+func TestRun_EnvironmentsHost_DryRunResolvesValues(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	initWithImage(t, baseDir)
+	resolvedPwd := evalSymlinks(t, pwd)
+
+	const unsetName = "MAKESLOP_TEST_UNSET_VAR_7F3A"
+	t.Setenv("MAKESLOP_TEST_SET_VAR", "val")
+	t.Setenv("MAKESLOP_TEST_EMPTY_VAR", "")
+	t.Setenv(unsetName, "") // registers restore; t.Setenv cannot unset by itself
+	if err := os.Unsetenv(unsetName); err != nil {
+		t.Fatalf("unsetenv: %v", err)
+	}
+
+	yamlContent := "exclude:\n  dirs: []\n  files: []\n  scan:\n    patterns: []\n" +
+		"environments:\n  static:\n    MAKESLOP_TEST_STATIC: s\n  host:\n" +
+		"    - MAKESLOP_TEST_SET_VAR\n    - " + unsetName + "\n    - MAKESLOP_TEST_EMPTY_VAR\n"
+	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(yamlContent), 0o644); err != nil {
+		t.Fatalf("write yaml: %v", err)
+	}
+
+	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
+	if err != nil {
+		t.Fatalf("--dry-run failed: %v; stderr=%q", err, stderr)
+	}
+
+	// Sorted: EMPTY < SET < STATIC; the unset name is absent.
+	want := []string{"MAKESLOP_TEST_EMPTY_VAR=", "MAKESLOP_TEST_SET_VAR=val", "MAKESLOP_TEST_STATIC=s"}
+	if got := dryRunEnvValues(stdout); !slices.Equal(got, want) {
+		t.Errorf("--dry-run -e values = %q, want %q\nstdout:\n%s", got, want, stdout)
+	}
+	if strings.Contains(stdout, unsetName) {
+		t.Errorf("--dry-run stdout must not mention unset host var %q\nstdout:\n%s", unsetName, stdout)
+	}
+}
+
+// A real run hands the runner the same resolved, sorted pairs dry-run prints.
+func TestRun_EnvironmentsHost_SpecEnvResolved(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	initWithImage(t, baseDir)
+	resolvedPwd := evalSymlinks(t, pwd)
+
+	const unsetName = "MAKESLOP_TEST_UNSET_VAR_9B2C"
+	t.Setenv("MAKESLOP_TEST_SET_VAR", "line1\nline2")
+	t.Setenv(unsetName, "")
+	if err := os.Unsetenv(unsetName); err != nil {
+		t.Fatalf("unsetenv: %v", err)
+	}
+
+	yamlContent := "environments:\n  static:\n    ZZ_STATIC: z\n    AA_STATIC: a\n  host:\n" +
+		"    - MAKESLOP_TEST_SET_VAR\n    - " + unsetName + "\n"
+	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(yamlContent), 0o644); err != nil {
+		t.Fatalf("write yaml: %v", err)
+	}
+
+	fc := newFakeDocker(0, true)
+	if _, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fc), "run"); err != nil {
+		t.Fatalf("run failed: %v; stderr=%q", err, stderr)
+	}
+
+	want := []string{"AA_STATIC=a", "MAKESLOP_TEST_SET_VAR=line1\nline2", "ZZ_STATIC=z"}
+	if !slices.Equal(fc.LastSpec.Env, want) {
+		t.Errorf("spec Env = %q, want %q", fc.LastSpec.Env, want)
 	}
 }
 

@@ -7,7 +7,7 @@ container with controlled mounts and secret masking.
 
 makeslop gives each project its own container launched from a single shared base image. The agent
 gets your source tree plus its own persistent state directories (`.claude/`, `.codex/`, `docs/`),
-but nothing else from your host — no other projects, no ambient host environment (credentials in the shared agent config dirs like `.claude/` are present by design).
+but nothing else from your host — no other projects, and no host environment variables except the ones you list under `environments.host` (credentials in the shared agent config dirs like `.claude/` are present by design).
 
 Why use it:
 - **Isolation** — each project runs in its own container; no credential leakage between projects.
@@ -108,14 +108,17 @@ exclude:
   files: []   # overlay these with /dev/null inside the container
 ```
 
-Inject static environment variables into the container with an `environments:` block:
+Inject environment variables into the container with an `environments:` block — fixed values under `static`, names to copy from the host under `host`:
 
 ```yaml
 environments:
-  HTTP_PROXY: "http://192.168.1.1:11111"
+  static:
+    HTTP_PROXY: "http://192.168.1.1:11111"
+  host:
+    - GITHUB_TOKEN
 ```
 
-Values must be scalars; numbers and booleans are coerced to strings. Absent block = no `-e` flags (backward-compatible). See [docs/reference.md](docs/reference.md#environment-variables-environments-block-in-makeslopyaml) for the full spec.
+Static values must be scalars; numbers and booleans are coerced to strings. Host names are copied under the same name; unset ones are skipped. The old flat `environments: {KEY: value}` form is rejected — move entries under `static:`. Absent block = no `-e` flags. See [docs/reference.md](docs/reference.md#environment-variables-environments-block-in-makeslopyaml) for the full spec.
 
 Global settings (`~/.makeslop/settings.json`) control the image (required, no default), shell, and `/tmp` size:
 ```

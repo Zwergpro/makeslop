@@ -77,8 +77,8 @@ never overwrites existing files.
 From within a registered workspace, launches an interactive, project-scoped Docker container with
 the workspace source tree mounted in. By default, per-workspace + global agent config
 (`.claude/`, `.codex/`, `CLAUDE.md`, `docs/`) are also mounted as overlay groups; individual
-groups can be disabled via `cache.content` and `cache.agent` in `.makeslop.yaml`. Static
-environment variables can be injected via the `environments:` block — see
+groups can be disabled via `cache.content` and `cache.agent` in `.makeslop.yaml`. Static values
+and host-passthrough variables can be injected via the `environments:` block — see
 [Environment variables](#environment-variables-environments-block-in-makeslopyaml).
 
 - Exits with the container's exit code.
@@ -344,45 +344,139 @@ scaffolds `.makeslop.yaml` with both groups disabled.
 
 ## Environment variables (`environments:` block in `.makeslop.yaml`)
 
-Declare static environment variables to inject into the app container at runtime using an optional
-`environments:` block in the project-local `.makeslop.yaml`:
+Inject environment variables into the app container at runtime with an optional `environments:`
+block in the project-local `.makeslop.yaml`. It has two optional sub-keys:
 
 ```yaml
 environments:
-  NODE_ENV: production
-  PORT: 8080
-  LOG_LEVEL: debug
-  API_BASE_URL: "https://api.example.com"
+  static:            # fixed KEY: value pairs
+    NODE_ENV: production
+    PORT: 8080
+    API_BASE_URL: "https://api.example.com"
+  host:              # names whose values are copied from the host environment at run time
+    - GITHUB_TOKEN
+    - TERM
 ```
 
-Each key–value pair becomes a `-e KEY=VALUE` flag passed to Docker. Variables appear inside the
-container alongside anything set in the image.
+Each resulting pair becomes a `-e KEY=VALUE` flag passed to Docker. Variables appear inside the
+container alongside anything set in the image. All pairs (static and host) are passed sorted by
+key (deterministic output in `--dry-run`).
 
-**Value types:** Values must be YAML scalars. Strings, numbers, and booleans are all accepted and
-coerced to their string representation:
+### `static`
+
+A mapping of `KEY: value`. Values must be YAML scalars; strings, numbers, and booleans are all
+accepted and coerced to their string representation:
 
 ```yaml
 environments:
-  PORT: 8080        # → PORT=8080
-  DEBUG: true       # → DEBUG=true
-  RETRIES: 3        # → RETRIES=3
+  static:
+    PORT: 8080        # → PORT=8080
+    DEBUG: true       # → DEBUG=true
 ```
-
-**Rules and error handling:**
 
 - Non-scalar values (lists, maps) are rejected with a hard error — `makeslop run` will not launch.
 - Null values (`KEY:` or `KEY: null`) are rejected. A bare key with no value is almost always a
   mistake; provide an explicit value or remove the key.
-- Explicit empty string (`KEY: ""`) is accepted and injects `KEY=` into the container (a valid
-  empty environment variable).
-- Empty keys are rejected.
-- Variables are passed in sorted key order (deterministic output in `--dry-run`).
+- Explicit empty string (`KEY: ""`) is accepted and injects `KEY=`.
+- Empty keys, keys containing `=`, and keys or values containing newline, carriage-return, or tab
+  characters are rejected. Duplicate keys are rejected.
 
-**Absent block:** When `environments:` is absent from `.makeslop.yaml`, no `-e` flags are emitted —
-behavior is byte-identical to before this feature was added (backward-compatible).
+### `host`
+
+A list of variable names. At `run` time each name is looked up in the host environment and copied
+into the container **under the same name**:
+
+- Set on the host → `NAME=<value>`.
+- Set but empty on the host → `NAME=`.
+- Unset on the host → skipped silently (no `-e` flag).
+- Names must be non-empty and must not contain `=` or whitespace. Duplicates are dropped.
+- Host values are passed **verbatim and are not validated** — unlike `static` values, they may
+  contain newlines (e.g. a PEM key).
+- Renaming (host `A` → container `B`) and default values are not supported.
+
+A name listed in both `static` and `host` is an error:
+
+```
+projectconfig: environment key "NAME" listed in both environments.static and environments.host
+```
+
+### Errors
+
+Any error in the block aborts `makeslop run` before the container starts (`makeslop status` reports
+it as a non-blocking `cannot read .makeslop.yaml` secret-scan warning). Messages name keys or
+line numbers only, never values. The full list:
+
+- `environments` not a mapping: `projectconfig: environments must be a mapping with optional "static" and "host" keys`
+- unknown key with a scalar value (the old flat form, see below): `projectconfig: environments: flat "KEY: value" form is no longer supported; move entries under environments.static`
+- unknown key with a list or map value, or a misspelled `static`/`host` (other case or a trailing
+  `s`, e.g. `hosts:` or `Host:`): `projectconfig: unknown key "hosts" in environments (allowed: static, host)`.
+  All-uppercase keys such as `HOST:` count as old flat-form variables.
+- duplicate `static` or `host`: `projectconfig: duplicate key "static" in environments`
+- null or non-scalar key: `projectconfig: environments: key at line N must be a non-null scalar`
+  (inside `static`: `projectconfig: environments.static: key at line N must be a non-null scalar`)
+- merge key: `projectconfig: environments: merge keys (<<) are not supported` (inside `static`:
+  `projectconfig: environments.static: merge keys (<<) are not supported`)
+- `static` not a mapping: `projectconfig: environments.static must be a mapping of KEY: value`
+- `host` not a list: `projectconfig: environments.host must be a list of variable names`
+- when `static` or `host` holds a single scalar (e.g. `host: GITHUB_TOKEN`, or an old flat-form
+  variable literally named `host`), the two messages above end with
+  ` (if this was the old flat form, move entries under environments.static)`
+- `static` keys: `projectconfig: empty key in environments.static`,
+  `projectconfig: environments.static: key at line N must not contain '='`,
+  `projectconfig: environments.static: key at line N must not contain newline, carriage-return, or tab characters`,
+  `projectconfig: duplicate key "KEY" in environments.static`
+- `static` values: `projectconfig: environments.static: key "KEY" must be a scalar value`,
+  `projectconfig: environments.static: key "KEY" has no value`,
+  `projectconfig: environments.static: key "KEY" value must not contain newline, carriage-return, or tab characters`
+- `host` entries: `projectconfig: environments.host entry at line N must be a variable name` (list
+  or map entry), `projectconfig: environments.host entry at line N has no name` (null or `""`),
+  `projectconfig: environments.host entry at line N must not contain '='`,
+  `projectconfig: environments.host entry at line N must not contain whitespace`
+- name in both lists: `projectconfig: environment key "NAME" listed in both environments.static and environments.host`
+
+YAML aliases (`*name`) work inside `environments:`: anchor a `static` value and reuse it in another
+`static` value or a `host` entry:
+
+```yaml
+environments:
+  static:
+    TOKEN_VAR: &tok GITHUB_TOKEN
+  host:
+    - *tok
+```
+
+The file is decoded strictly, so a top-level key added only to hold an anchor (e.g. `base: &e ...`
+followed by `environments: *e`) is rejected as an unknown field. YAML merge keys (`<<:`) are not
+expanded; they are rejected with the merge key error above.
+
+### Migration from the flat form (breaking change)
+
+Earlier versions accepted a flat `environments: {KEY: value}` map. That form is now rejected and
+`makeslop run` fails with:
+
+```
+projectconfig: environments: flat "KEY: value" form is no longer supported; move entries under environments.static
+```
+
+Files are not auto-migrated. Move the entries one level down, under `static:`:
+
+```yaml
+# before
+environments:
+  NODE_ENV: production
+
+# after
+environments:
+  static:
+    NODE_ENV: production
+```
+
+**Absent block:** When `environments:` is absent or empty, no `-e` flags are emitted.
 
 **Verification (`--dry-run`):** Use `makeslop run --dry-run` to see the exact `-e` flags before
-launching the container.
+launching the container. **`--dry-run` prints resolved `host` values in full, secrets included** —
+do not paste its output into logs or issues without redacting them. See
+[security.md — Host environment passthrough](security.md#host-environment-passthrough).
 
 ---
 
@@ -406,7 +500,9 @@ break parsing.
 
 These mounts are layered on top of the read-write project bind. See
 [security.md — Sandbox-policy protection](security.md#sandbox-policy-protection) for details and
-known residuals.
+known residuals. Without a `.makeslop.yaml` there is no read-only bind, so the agent can create
+one (including `environments.host` entries) that takes effect on the next run; keep one in every
+project (`makeslop init` creates it).
 
 For secret masking and the home-directory guard, see [security.md](security.md).
 
@@ -454,6 +550,10 @@ This makes it suitable for CI inspection:
 ```
 makeslop run -n > cmd.sh   # capture only the command; masked-file count goes to stderr
 ```
+
+The output includes resolved `environments.host` values in full, secrets included. Do not keep it
+as a CI artifact or log it without redacting them. See
+[security.md — Host environment passthrough](security.md#host-environment-passthrough).
 
 ---
 

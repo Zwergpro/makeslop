@@ -1290,6 +1290,36 @@ func TestShellCommand_EnvLinesRendered(t *testing.T) {
 	}
 }
 
+// Host values pass verbatim, so a value may hold a newline and a single quote
+// (PEM keys, tokens). ShellCommand must render it as one quoted token that a
+// POSIX shell reads back as the exact value, and Args/ContainerConfig must
+// carry it unchanged.
+func TestEnv_NewlineAndQuoteValue_AllProjectionsAgree(t *testing.T) {
+	const pair = "K=line1\nline2'x"
+	o := sampleOptions()
+	o.Env = []string{pair}
+	spec := BuildSpec(o)
+
+	var argsEnv []string
+	args := spec.Args()
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == "-e" {
+			argsEnv = append(argsEnv, args[i+1])
+		}
+	}
+	if !reflect.DeepEqual(argsEnv, []string{pair}) {
+		t.Errorf("Args -e values = %q, want [%q]", argsEnv, pair)
+	}
+	if !reflect.DeepEqual(spec.ContainerConfig().Env, []string{pair}) {
+		t.Errorf("ContainerConfig().Env = %q, want [%q]", spec.ContainerConfig().Env, pair)
+	}
+
+	wantTok := `'K=line1` + "\n" + `line2'\''x'`
+	if !strings.Contains(spec.ShellCommand(), "  -e "+wantTok+" \\\n") {
+		t.Errorf("ShellCommand() missing single quoted token %q; got:\n%s", wantTok, spec.ShellCommand())
+	}
+}
+
 func TestContainerConfig_EnvPropagated(t *testing.T) {
 	spec := Spec{
 		Image:   "img",
