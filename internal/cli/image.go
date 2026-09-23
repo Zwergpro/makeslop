@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/Zwergpro/makeslop/internal/config"
 )
 
 // noImageHint is the shared "no image" message; errNoImage, the init note, and
@@ -18,13 +20,17 @@ func imageSet(s string) bool {
 }
 
 // resolveImage picks the container image: the -i/--image flag wins, then the
-// settings image; both empty (after trimming) yields errNoImage.
+// settings image; both empty (after trimming) yields errNoImage. The chosen
+// value must be a valid image reference (config.NormalizeImage).
 func resolveImage(flagVal, settingsImage string) (string, error) {
-	if imageSet(flagVal) {
-		return strings.TrimSpace(flagVal), nil
-	}
-	if imageSet(settingsImage) {
-		return strings.TrimSpace(settingsImage), nil
+	for _, v := range []string{flagVal, settingsImage} {
+		ref, err := config.NormalizeImage(v)
+		if err != nil {
+			return "", err
+		}
+		if ref != "" {
+			return ref, nil
+		}
 	}
 	return "", errNoImage
 }

@@ -88,6 +88,51 @@ func TestConfigSet_EmptyImage_Rejected(t *testing.T) {
 	}
 }
 
+func TestConfigSet_InvalidImage_Rejected(t *testing.T) {
+	for _, v := range []string{"--privileged", "-x", "MyImage:latest", "img:", "a b"} {
+		t.Run("value:"+v, func(t *testing.T) {
+			s := defaultSettings()
+			orig := s.Image
+			if err := ConfigSet(s, "image", v); err == nil {
+				t.Errorf("ConfigSet(image=%q) expected error, got nil", v)
+			}
+			if s.Image != orig {
+				t.Errorf("Image mutated on error: got %q, want %q", s.Image, orig)
+			}
+		})
+	}
+}
+
+func TestNormalizeImage(t *testing.T) {
+	tests := []struct {
+		in, want string
+		wantErr  bool
+	}{
+		{in: "", want: ""},
+		{in: "  ", want: ""},
+		{in: " claudebox ", want: "claudebox"},
+		{in: "ghcr.io/org/img:1.2", want: "ghcr.io/org/img:1.2"},
+		{in: "localhost:5000/img", want: "localhost:5000/img"},
+		{in: "img@sha256:" + strings.Repeat("a", 64), want: "img@sha256:" + strings.Repeat("a", 64)},
+		{in: "t", want: "t"},
+		{in: "--privileged", wantErr: true},
+		{in: "-img", wantErr: true},
+		{in: "MyImage", wantErr: true},
+		{in: "img:", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.in, func(t *testing.T) {
+			got, err := NormalizeImage(tt.in)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("NormalizeImage(%q) err = %v, wantErr %v", tt.in, err, tt.wantErr)
+			}
+			if got != tt.want {
+				t.Errorf("NormalizeImage(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestConfigSet_EmptyShell_Rejected(t *testing.T) {
 	for _, v := range []string{"", "  "} {
 		t.Run("value:"+v, func(t *testing.T) {

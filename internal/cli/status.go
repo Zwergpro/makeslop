@@ -149,11 +149,10 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir, imageFlag 
 		cl.fail("daemon", "is docker running? — run 'docker info'")
 	}
 
-	// 2. Base config. loadedSettings is reused by checks 3 and 4 (settingsImage
-	// is its image, empty when settings are absent or unreadable);
-	// settingsUnreadable distinguishes an unreadable/corrupt file from an absent one.
+	// 2. Base config. loadedSettings is reused by checks 3 and 4 (nil when
+	// settings are absent or unreadable); settingsUnreadable distinguishes an
+	// unreadable/corrupt file from an absent one.
 	var loadedSettings *config.Settings
-	var settingsImage string
 	var settingsUnreadable bool
 	exists, err := config.BaseConfigExists(baseDir)
 	if err != nil {
@@ -168,7 +167,6 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir, imageFlag 
 			cl.fail("base config", fmt.Sprintf("corrupt settings: %v", loadErr))
 		} else {
 			loadedSettings = s
-			settingsImage = s.Image
 			cl.ok("base config", "")
 		}
 	}
@@ -178,12 +176,16 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir, imageFlag 
 	// reported before daemon state: they don't need the daemon to diagnose.
 	// The inspect is skipped when the daemon is down (it would hit the same
 	// dead daemon and burn a second preflight timeout).
+	var settingsImage string
+	if loadedSettings != nil {
+		settingsImage = loadedSettings.Image
+	}
 	imageName, resolveErr := resolveImage(imageFlag, settingsImage)
 	switch {
 	case !imageSet(imageFlag) && settingsUnreadable:
 		cl.fail("image", "cannot check — settings unreadable")
 	case resolveErr != nil:
-		cl.fail("image", noImageHint)
+		cl.fail("image", resolveErr.Error())
 	case !daemonUp:
 		cl.fail("image", "cannot check — daemon unreachable")
 	default:

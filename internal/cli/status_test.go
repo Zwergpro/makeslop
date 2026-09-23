@@ -735,7 +735,7 @@ func assertNotReady(t *testing.T, result statusResult, err error) {
 	}
 }
 
-const noImageDetail = "no image configured — run 'makeslop config set image <ref>'"
+const noImageDetail = "no image configured — run 'makeslop config set image <ref>' or pass -i/--image"
 
 // Image unset → image check fails with the config-set hint, even when the
 // daemon is down (config errors are reported before daemon state).
@@ -825,6 +825,24 @@ func TestStatus_ImageFlag_OverridesSettings(t *testing.T) {
 				t.Errorf("ImageExists ref = %q, want %q", fc.ImageChecked, "other:tag")
 			}
 		})
+	}
+}
+
+// A malformed -i value fails the image check with the parse error and never
+// reaches the daemon.
+func TestStatus_ImageFlag_Invalid(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	t.Chdir(t.TempDir())
+	initWithImage(t, baseDir)
+
+	fc := newFakeDocker(0, false)
+	check, result, _ := statusJSONCheck(t, baseDir, depsFrom(fc), "image", "-i", "MyImage")
+	if result.Ready || check.State != checkFail || !strings.Contains(check.Detail, "invalid image reference") {
+		t.Errorf("image check = %+v, want fail with invalid image reference", check)
+	}
+	if fc.ImageChecked != "" {
+		t.Errorf("ImageExists must not be called; got ref %q", fc.ImageChecked)
 	}
 }
 

@@ -2317,6 +2317,34 @@ func TestRun_ImageFlag_DryRunShowsOverride(t *testing.T) {
 	}
 }
 
+// A flag-shaped image must never reach the printed docker command, and a
+// malformed reference is reported as such instead of blaming the daemon.
+func TestRun_InvalidImageFlag_RejectedBeforeDocker(t *testing.T) {
+	for _, args := range [][]string{
+		{"run", "--dry-run", "-i=--privileged"},
+		{"run", "--image", "MyImage:latest"},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			setHomeToTestParent(t)
+			baseDir := t.TempDir()
+			t.Chdir(t.TempDir())
+			initWithImage(t, baseDir)
+
+			fc := newFakeDocker(0, true)
+			stdout, _, err := runCmdWithDeps(t, baseDir, depsFrom(fc), args...)
+			if err == nil || !strings.Contains(err.Error(), "invalid image reference") {
+				t.Fatalf("err = %v, want invalid image reference", err)
+			}
+			if stdout != "" {
+				t.Errorf("stdout must be empty; got %q", stdout)
+			}
+			if fc.DaemonChecked || fc.ImageChecked != "" || fc.Started {
+				t.Error("docker must not be called for an invalid image reference")
+			}
+		})
+	}
+}
+
 // Registered workspace, no image anywhere: config error before any docker call.
 func TestRun_NoImage_FailsBeforeDocker(t *testing.T) {
 	for _, tc := range []struct {

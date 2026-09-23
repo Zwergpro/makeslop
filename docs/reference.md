@@ -89,6 +89,8 @@ environment variables can be injected via the `environments:` block — see
   ```
   makeslop: no image configured — run 'makeslop config set image <ref>' or pass -i/--image
   ```
+  The resolved value must be a valid image reference (lowercase name, optional tag/digest, no
+  leading `-`); an invalid one fails the same way, before any docker call.
 - If no ancestor directory is registered, exits non-zero with a hint to run `makeslop init`.
 - Before launching, performs two pre-flight checks:
   1. Daemon reachability (`— is docker running?`)
@@ -115,7 +117,7 @@ Checks (in order):
 1. Daemon reachability — **blocking**
 2. Base config (`settings.json`) presence — absent or corrupt is blocking (`✗`)
 3. Image — **blocking**. Resolved like `run` (`-i/--image`, then the `image` setting). Fails
-   when no image is configured, when settings are unreadable and no `-i` was given, when the
+   when no image is configured or the reference is invalid, when settings are unreadable and no `-i` was given, when the
    daemon is down, or when the image is not present locally (same "build or pull it" hint as
    `run`). Passing `-i` lets the check run even when `settings.json` is absent or corrupt.
 4. Workspace registration — **blocking**
@@ -192,7 +194,7 @@ Manages persistent settings in `~/.makeslop/settings.json`. Works without a prio
 
 **Configurable keys:**
 - `image` — container image reference, e.g. `claudebox` or `my-org/agent:latest` (**no default**;
-  must be set here or passed per invocation with `-i/--image`; empty values are rejected). Unset
+  must be set here or passed per invocation with `-i/--image`; empty values and invalid references are rejected). Unset
   shows as `image = ` in `config list`.
 - `shell` — shell to exec in the container (default: `/bin/zsh`)
 - `tmp_dir_size` — size of the `/tmp` tmpfs (default: `100m`)

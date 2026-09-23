@@ -129,7 +129,10 @@ In `internal/cli`, both calls go through `dockerDeps.checkDaemonPreflight` /
 
 makeslop has no embedded image, no build step, and no default image. `resolveImage` in
 `internal/cli/image.go` picks the image for `run` and `status`: the `-i/--image` flag wins, then
-the `image` setting; both empty (after trimming) yields `errNoImage`. The `-i/--image` flag is
+the `image` setting; both empty (after trimming) yields `errNoImage`. The chosen value goes through
+`config.NormalizeImage` (also used by `config set image`), which rejects anything that isn't a
+valid docker reference, including a leading `-` that `--dry-run` would otherwise print as a flag.
+The `-i/--image` flag is
 registered on those two commands only.
 
 - `run` resolves the image **before** `ws.Lookup`, so a config error fails fast (and `--dry-run`
