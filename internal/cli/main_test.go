@@ -18,8 +18,6 @@ import (
 	"github.com/Zwergpro/makeslop/internal/projectconfig"
 )
 
-// fakeDocker is a boundary fake satisfying all three consumer interfaces, injected
-// via newRootCmdWithDeps.
 type fakeDocker struct {
 	exitCode int
 	isTTY    bool // when false, Run returns docker.ErrNoTTY
@@ -84,8 +82,6 @@ func runCmd(t *testing.T, baseDir string, args ...string) (stdout, stderr string
 	return out.String(), errBuf.String(), err
 }
 
-// initWithImage registers the cwd via `init` and sets image=test-img so run/status
-// tests get past image resolution. Returns init's stdout (the workspace dir).
 func initWithImage(t *testing.T, baseDir string) string {
 	t.Helper()
 	initOut, stderr, err := runCmd(t, baseDir, "init")
@@ -98,8 +94,7 @@ func initWithImage(t *testing.T, baseDir string) string {
 	return initOut
 }
 
-// writeWhitespaceImage overwrites settings.json with "image": "   ", which
-// `config set` would reject.
+// Write directly because config set rejects whitespace-only images.
 func writeWhitespaceImage(t *testing.T, baseDir string) {
 	t.Helper()
 	data := []byte(`{"image":"   ","workspaces":{}}`)
@@ -262,7 +257,6 @@ func mapKeys(m map[string][]byte) []string {
 	return keys
 }
 
-// build and migrate were removed: unknown commands, absent from help.
 func TestRoot_RemovedCommands_Unknown(t *testing.T) {
 	baseDir := t.TempDir()
 
@@ -521,14 +515,12 @@ func TestQuiet_SuppressesRegisteredNotice(t *testing.T) {
 	}
 }
 
-// --quiet suppresses the init no-image note; the workspace path still prints.
 func TestQuiet_SuppressesInitImageNote(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	// Same setup without --quiet prints the note (init is idempotent).
 	if _, stderr, err := runCmd(t, baseDir, "init"); err != nil {
 		t.Fatalf("init failed: %v; stderr=%q", err, stderr)
 	} else if !strings.Contains(stderr, "no image configured") {
@@ -647,7 +639,6 @@ func TestErrorVoice_DaemonDown_ContainsRemedy(t *testing.T) {
 	}
 }
 
-// Error-voice format for the no-image config error, printed via the exit-code path.
 func TestErrorVoice_NoImage_ContainsRemedy(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -667,7 +658,6 @@ func TestErrorVoice_NoImage_ContainsRemedy(t *testing.T) {
 	}
 }
 
-// Error-voice format with a 'build or pull' remedy.
 func TestErrorVoice_ImageMissing_ContainsRemedy(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()

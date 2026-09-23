@@ -377,8 +377,6 @@ func TestInit_PreservesExistingProjectConfig(t *testing.T) {
 	}
 }
 
-// Fresh init (no prior settings.json) registers the workspace and prints the
-// next-step hint on stderr.
 func TestInit_FreshSeed_RegistersWithHint(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -406,8 +404,6 @@ func TestInit_FreshSeed_RegistersWithHint(t *testing.T) {
 	}
 }
 
-// init with no image configured prints a note with the config-set remedy,
-// still exits 0, and still registers the workspace.
 func TestInit_NoImage_PrintsNote(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -434,7 +430,6 @@ func TestInit_NoImage_PrintsNote(t *testing.T) {
 	}
 }
 
-// init with an image already configured prints no note.
 func TestInit_ImageSet_NoNote(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -456,7 +451,6 @@ func TestInit_ImageSet_NoNote(t *testing.T) {
 	}
 }
 
-// A hand-edited whitespace-only image counts as unset, so init still prints the note.
 func TestInit_WhitespaceImage_PrintsNote(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -476,7 +470,6 @@ func TestInit_WhitespaceImage_PrintsNote(t *testing.T) {
 	}
 }
 
-// init stdout is the bare workspace path only (no labels, no extra lines).
 func TestInit_FreshSeed_StdoutIsBarePathOnly(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()

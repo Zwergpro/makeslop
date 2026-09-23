@@ -85,7 +85,8 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir, imageFlag str
 		return err
 	}
 
-	// Before Lookup: a missing image is a config error and fails fast.
+	// Resolve the image first so an unregistered workspace cannot hide a
+	// missing image setting.
 	image, err := resolveImage(imageFlag, s.Image)
 	if err != nil {
 		return err

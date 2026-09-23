@@ -9,7 +9,6 @@ import (
 	"testing"
 )
 
-// Concurrent Update calls (Load→mutate→Save under the lock) must not lose updates.
 func TestUpdate_ConcurrentNoLostUpdates(t *testing.T) {
 	base := t.TempDir()
 
@@ -56,7 +55,6 @@ func TestUpdate_ConcurrentNoLostUpdates(t *testing.T) {
 	}
 }
 
-// Explicit Load→mutate→Save inside WithLock must serialize concurrent writers.
 func TestWithLock_SerializesLoadSave(t *testing.T) {
 	base := t.TempDir()
 	if err := Save(base, &Settings{Workspaces: map[string]Workspace{}}); err != nil {

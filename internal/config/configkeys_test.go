@@ -247,8 +247,6 @@ func TestConfigSet_NoMutationOnValidationError(t *testing.T) {
 	}
 }
 
-// defaultSettings returns Settings with all defaults applied (Image stays
-// unset — it has no default). Used by ConfigSet/ConfigGet tests, not Load tests.
 func defaultSettings() *Settings {
 	return &Settings{
 		Shell:      DefaultShell,

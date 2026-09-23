@@ -149,9 +149,7 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir, imageFlag 
 		cl.fail("daemon", "is docker running? — run 'docker info'")
 	}
 
-	// 2. Base config. loadedSettings is reused by checks 3 and 4 (nil when
-	// settings are absent or unreadable); settingsUnreadable distinguishes an
-	// unreadable/corrupt file from an absent one.
+	// The image check needs to distinguish corrupt settings from an unset image.
 	var loadedSettings *config.Settings
 	var settingsUnreadable bool
 	exists, err := config.BaseConfigExists(baseDir)
@@ -171,11 +169,8 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir, imageFlag 
 		}
 	}
 
-	// 3. Image. An explicit -i skips the settings-derived steps so the check
-	// works even when settings.json is absent or corrupt. Config problems are
-	// reported before daemon state: they don't need the daemon to diagnose.
-	// The inspect is skipped when the daemon is down (it would hit the same
-	// dead daemon and burn a second preflight timeout).
+	// An explicit image can be checked despite missing or corrupt settings.
+	// Report configuration errors first; a down daemon would cost another timeout.
 	var settingsImage string
 	if loadedSettings != nil {
 		settingsImage = loadedSettings.Image

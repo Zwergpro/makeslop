@@ -15,8 +15,6 @@ const (
 	WorkspacesDir = "workspaces"
 )
 
-// omitempty + Load-time defaulting of Shell/TmpDirSize keeps pre-existing files
-// byte-stable until a user overrides. Image is never defaulted: empty means unset.
 const (
 	DefaultShell      = "/bin/zsh"
 	DefaultTmpDirSize = "100m"
@@ -44,9 +42,8 @@ func DefaultBaseDir() (string, error) {
 	return filepath.Join(home, ".makeslop"), nil
 }
 
-// Load reads <baseDir>/settings.json. A missing file yields default Settings
-// (not an error); malformed JSON is an error. Empty Shell/TmpDirSize default
-// for backward compatibility; an empty Image stays empty (unset).
+// Load defaults legacy shell and tmpfs settings; an unset image still requires
+// an explicit choice from the user.
 func Load(baseDir string) (*Settings, error) {
 	path := filepath.Join(baseDir, SettingsFile)
 	data, err := os.ReadFile(path)

@@ -4,9 +4,7 @@ linters:
   default: standard
   settings:
     errcheck:
-      # These Close/Remove calls appear in defer, t.Cleanup, or teardown
-      # paths where an error cannot be meaningfully handled or propagated.
-      # fmt.Fprint* write errors to stderr/stdout are also not actionable.
+      # Cleanup failures and diagnostic write errors cannot be acted on here.
       exclude-functions:
         - fmt.Fprint
         - fmt.Fprintln

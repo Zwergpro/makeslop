@@ -6,8 +6,6 @@ import (
 	"github.com/Zwergpro/makeslop/internal/docker"
 )
 
-// Consumer-side docker interfaces. *docker.Docker satisfies all three; tests
-// inject fakes via newRootCmdWithDeps.
 type containerRunner interface {
 	Run(ctx context.Context, s docker.Spec) error
 }

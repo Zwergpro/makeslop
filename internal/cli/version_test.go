@@ -85,7 +85,6 @@ func TestOutOfHome_RejectedOnVersion(t *testing.T) {
 	}
 }
 
-// -i/--image is registered only on run and status.
 func TestImageFlag_RejectedOnOtherCommands(t *testing.T) {
 	baseDir := t.TempDir()
 

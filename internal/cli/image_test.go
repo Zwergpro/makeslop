@@ -35,7 +35,6 @@ func TestResolveImage(t *testing.T) {
 	}
 }
 
-// An invalid reference from either source is an error, never a silent fallback.
 func TestResolveImage_InvalidReference(t *testing.T) {
 	for _, tc := range []struct{ name, flag, settings string }{
 		{name: "flag with leading dash", flag: "--privileged", settings: "ok-img"},

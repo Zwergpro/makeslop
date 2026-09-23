@@ -45,11 +45,8 @@ var configKeys = []configKey{
 	},
 }
 
-// NormalizeImage trims v and validates it as a docker image reference. An
-// empty or whitespace-only v yields ("", nil) so callers can fall back to
-// another source. Validation rejects typos (e.g. uppercase) before they reach
-// the daemon, and a leading '-' before it can land in a printed docker command
-// as a flag.
+// NormalizeImage accepts an empty value so callers can try another source.
+// Validate before rendering dry-run output to keep flag-shaped values out of it.
 func NormalizeImage(v string) (string, error) {
 	ref := strings.TrimSpace(v)
 	if ref == "" {

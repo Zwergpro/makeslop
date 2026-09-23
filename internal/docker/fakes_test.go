@@ -23,8 +23,6 @@ func skipNonPOSIX(t *testing.T, why string) {
 	}
 }
 
-// noopClient is a no-op apiClient. fakeRunClient embeds it and overrides only
-// the methods that carry test logic.
 type noopClient struct{}
 
 func (noopClient) ContainerCreate(_ context.Context, _ moby.ContainerCreateOptions) (moby.ContainerCreateResult, error) {
@@ -65,8 +63,6 @@ func (noopClient) ImageInspect(_ context.Context, _ string, _ ...moby.ImageInspe
 
 func (noopClient) Close() error { return nil }
 
-// fakeRunClient scripts the Run container lifecycle with a given exit code and
-// records calls. Set PingErr for daemon-down, ImageMissing/ImageErr for image errors.
 type fakeRunClient struct {
 	noopClient
 	PingErr      error // if non-nil, Ping returns this

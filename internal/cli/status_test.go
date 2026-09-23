@@ -78,7 +78,6 @@ func TestStatus_DaemonDown_ExitsNonZero(t *testing.T) {
 	}
 }
 
-// Missing image → exit non-zero, pull hint.
 func TestStatus_ImageMissing_ExitsNonZero(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -154,8 +153,6 @@ func TestStatus_WorkspaceNotRegistered_ExitsNonZero(t *testing.T) {
 	}
 }
 
-// A settings.json carrying the obsolete "version" key is ignored: the base
-// config check reports ok, with no warn line and no migrate hint.
 func TestStatus_LegacyVersionKey_BaseConfigOK(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -550,8 +547,6 @@ func TestStatus_CorruptSettings_WorkspaceShowsCannotCheck(t *testing.T) {
 	}
 }
 
-// Corrupt settings with the daemon down → the image check reports the
-// unreadable settings, not the daemon: config errors are checked first.
 func TestStatus_CorruptSettings_DaemonDown_ImageShowsSettingsUnreadable(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -706,8 +701,6 @@ func TestStatus_RenderNotReadyVerdict(t *testing.T) {
 	}
 }
 
-// statusJSONCheck runs `status --json` with args and returns the named check,
-// the parsed result, and the command error (nil when ready, errSilent otherwise).
 func statusJSONCheck(t *testing.T, baseDir string, deps dockerDeps, name string, args ...string) (statusCheck, statusResult, error) {
 	t.Helper()
 	stdout, stderr, cmdErr := runCmdWithDeps(t, baseDir, deps, append([]string{"status", "--json"}, args...)...)
@@ -724,7 +717,6 @@ func statusJSONCheck(t *testing.T, baseDir string, deps dockerDeps, name string,
 	return statusCheck{}, result, cmdErr
 }
 
-// assertNotReady checks the not-ready contract: errSilent and ready=false.
 func assertNotReady(t *testing.T, result statusResult, err error) {
 	t.Helper()
 	if !errors.Is(err, errSilent) {
@@ -737,8 +729,6 @@ func assertNotReady(t *testing.T, result statusResult, err error) {
 
 const noImageDetail = "no image configured — run 'makeslop config set image <ref>' or pass -i/--image"
 
-// Image unset → image check fails with the config-set hint, even when the
-// daemon is down (config errors are reported before daemon state).
 func TestStatus_ImageUnset_FailsWithConfigSetHint(t *testing.T) {
 	for _, daemonDown := range []bool{false, true} {
 		t.Run(fmt.Sprintf("daemonDown=%v", daemonDown), func(t *testing.T) {
@@ -765,7 +755,6 @@ func TestStatus_ImageUnset_FailsWithConfigSetHint(t *testing.T) {
 	}
 }
 
-// Unset image in --json: ready is false and the text verdict names the hint.
 func TestStatus_ImageUnset_JSONNotReady(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -789,7 +778,6 @@ func TestStatus_ImageUnset_JSONNotReady(t *testing.T) {
 	}
 }
 
-// Missing local image in --json carries the pull hint.
 func TestStatus_ImageMissing_JSONPullHint(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -804,7 +792,6 @@ func TestStatus_ImageMissing_JSONPullHint(t *testing.T) {
 	}
 }
 
-// -i overrides the settings image.
 func TestStatus_ImageFlag_OverridesSettings(t *testing.T) {
 	for _, flag := range []string{"-i", "--image"} {
 		t.Run(flag, func(t *testing.T) {
@@ -828,8 +815,6 @@ func TestStatus_ImageFlag_OverridesSettings(t *testing.T) {
 	}
 }
 
-// A malformed -i value fails the image check with the parse error and never
-// reaches the daemon.
 func TestStatus_ImageFlag_Invalid(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -846,8 +831,6 @@ func TestStatus_ImageFlag_Invalid(t *testing.T) {
 	}
 }
 
-// -i works without settings.json: the image check passes even though base
-// config fails.
 func TestStatus_ImageFlag_SettingsAbsent(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -864,8 +847,6 @@ func TestStatus_ImageFlag_SettingsAbsent(t *testing.T) {
 	}
 }
 
-// -i works with corrupt settings.json: the image is inspected rather than
-// reported as unreadable.
 func TestStatus_ImageFlag_SettingsCorrupt(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -887,7 +868,6 @@ func TestStatus_ImageFlag_SettingsCorrupt(t *testing.T) {
 	}
 }
 
-// -i with the daemon down → daemon-unreachable, no inspect.
 func TestStatus_ImageFlag_DaemonDown(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -905,7 +885,6 @@ func TestStatus_ImageFlag_DaemonDown(t *testing.T) {
 	}
 }
 
-// settings.json absent and no -i → the image check reports the no-image hint.
 func TestStatus_SettingsAbsent_NoFlag_NoImageHint(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -922,8 +901,6 @@ func TestStatus_SettingsAbsent_NoFlag_NoImageHint(t *testing.T) {
 	}
 }
 
-// settings.json present but unstat-able (EACCES on baseDir) and no -i → the
-// image check reports unreadable settings, not "no image configured".
 func TestStatus_SettingsUnstatable_ImageShowsSettingsUnreadable(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root bypasses directory permissions")
@@ -948,7 +925,6 @@ func TestStatus_SettingsUnstatable_ImageShowsSettingsUnreadable(t *testing.T) {
 	}
 }
 
-// Whitespace-only settings image counts as unset.
 func TestStatus_WhitespaceImage_TreatedAsUnset(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()

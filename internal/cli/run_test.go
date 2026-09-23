@@ -1334,7 +1334,6 @@ func TestRun_DaemonDown_AbortsWithRemedy(t *testing.T) {
 	}
 }
 
-// Missing image: run aborts with the pull hint; no auto-pull, no container.
 func TestRun_ImageMissing_AbortsWithRemedy(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -1364,8 +1363,6 @@ func TestRun_ImageMissing_AbortsWithRemedy(t *testing.T) {
 	}
 }
 
-// A non-not-found ImageExists error must report "is docker running?" (not "not
-// found locally"), distinguishing a store/daemon error from a genuinely missing image.
 func TestRun_ImageOtherError_PropagatesError(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -2226,9 +2223,6 @@ func TestReportScanResults_RelFallbackToAbsolute(t *testing.T) {
 	}
 }
 
-// ── -i/--image resolution ──────────────────────────────────────────────────────
-
-// -i overrides the settings image in both the executed spec and the preflight.
 func TestRun_ImageFlag_OverridesSettings(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -2251,7 +2245,6 @@ func TestRun_ImageFlag_OverridesSettings(t *testing.T) {
 	}
 }
 
-// -i supplies the image when settings have none (plain init).
 func TestRun_ImageFlag_NoSettingsImage(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -2276,7 +2269,6 @@ func TestRun_ImageFlag_NoSettingsImage(t *testing.T) {
 	}
 }
 
-// A whitespace-only settings image counts as unset.
 func TestRun_WhitespaceImage_TreatedAsUnset(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -2317,8 +2309,6 @@ func TestRun_ImageFlag_DryRunShowsOverride(t *testing.T) {
 	}
 }
 
-// A flag-shaped image must never reach the printed docker command, and a
-// malformed reference is reported as such instead of blaming the daemon.
 func TestRun_InvalidImageFlag_RejectedBeforeDocker(t *testing.T) {
 	for _, args := range [][]string{
 		{"run", "--dry-run", "-i=--privileged"},
@@ -2345,7 +2335,6 @@ func TestRun_InvalidImageFlag_RejectedBeforeDocker(t *testing.T) {
 	}
 }
 
-// Registered workspace, no image anywhere: config error before any docker call.
 func TestRun_NoImage_FailsBeforeDocker(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -2386,7 +2375,6 @@ func TestRun_NoImage_FailsBeforeDocker(t *testing.T) {
 	}
 }
 
-// Resolve runs before Lookup, so an unregistered cwd with no image reports the image error.
 func TestRun_NoImage_Unregistered_ImageErrorWins(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()

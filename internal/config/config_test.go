@@ -60,8 +60,7 @@ func TestLoad_PreservesExplicitImageAndShell(t *testing.T) {
 	}
 }
 
-// Regression: settings.json written before Image/Shell existed must keep working.
-// Shell is defaulted; Image stays unset.
+// Old settings files must remain usable without inventing an image choice.
 func TestLoad_LegacyConfigGetsDefaultsForMissingFields(t *testing.T) {
 	base := t.TempDir()
 	body := `{"workspaces":{}}`
@@ -81,8 +80,6 @@ func TestLoad_LegacyConfigGetsDefaultsForMissingFields(t *testing.T) {
 	}
 }
 
-// Explicitly empty strings on disk must be treated like absent fields: Shell
-// gets its default, Image stays empty (unset).
 func TestLoad_ExplicitEmptyImageAndShell(t *testing.T) {
 	base := t.TempDir()
 	body := `{"image":"","shell":"","workspaces":{}}`
@@ -227,9 +224,6 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 
-	// Image, Shell, and TmpDirSize are omitempty — the saved struct has zero
-	// values so they are absent from JSON. Load defaults Shell/TmpDirSize on
-	// read-back; Image stays unset.
 	if got.Image != "" {
 		t.Errorf("Image = %q, want empty", got.Image)
 	}
@@ -301,8 +295,7 @@ func TestSaveLoadByteIdenticalForSameSettings(t *testing.T) {
 	base := t.TempDir()
 
 	s := &Settings{
-		// Shell/TmpDirSize included so the post-Load defaulting does not alter
-		// the re-serialized byte sequence on the second save.
+		// Avoid defaults changing the bytes on the second save.
 		Image:      "claudebox",
 		Shell:      DefaultShell,
 		TmpDirSize: DefaultTmpDirSize,
@@ -378,9 +371,6 @@ func TestDefaultBaseDir_HonorsHOME(t *testing.T) {
 	}
 }
 
-// TestLoad_DropsLegacyVersionKeys verifies that a settings.json carrying the
-// obsolete "version" and "migrated_version" keys loads without error, ignores
-// them, and that a subsequent Save drops both keys entirely.
 func TestLoad_DropsLegacyVersionKeys(t *testing.T) {
 	base := t.TempDir()
 	body := `{"version":1,"image":"claudebox","shell":"/bin/zsh","workspaces":{},"migrated_version":4}`
@@ -444,7 +434,6 @@ func TestBootstrap_CreatesDirsAndClaudeJSON(t *testing.T) {
 		t.Errorf("Bootstrap must not create settings.json; stat err=%v", err)
 	}
 
-	// The Dockerfile is no longer seeded (images are user-built).
 	if _, err := os.Stat(filepath.Join(base, "Dockerfile")); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("Bootstrap must not create Dockerfile; stat err=%v", err)
 	}
@@ -523,7 +512,6 @@ func TestBootstrap_PartialStateRecovers(t *testing.T) {
 	}
 }
 
-// Bootstrap must not touch settings.json.
 func TestBootstrap_DoesNotWriteSettingsJSON(t *testing.T) {
 	base := filepath.Join(t.TempDir(), ".makeslop")
 
