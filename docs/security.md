@@ -1,17 +1,18 @@
 # makeslop — Security
 
-This document covers makeslop's security-relevant behaviors: secret masking, sandbox-policy
-protection, network egress, and the home-directory guard. For in-container hardening flags
-(`--cap-drop ALL`, `no-new-privileges`, `--tmpfs`, bind-mount rationale), see
+This document covers makeslop's security-relevant behaviors: secret masking, network egress
+control, and the home-directory guard. For in-container hardening flags (`--cap-drop ALL`,
+`no-new-privileges`, `--tmpfs`, bind-mount rationale), see
 [reference.md — In-container security flags](reference.md#in-container-security-flags).
 
 ## Table of Contents
 
 - [Secret masking](#secret-masking)
-  - [Trust assumptions](#trust-assumptions)
 - [Project-local exclusions](#project-local-exclusions)
-  - [Validation rules](#validation-rules)
+  - [Breaking change: path-style patterns rejected](#breaking-change-path-style-patterns-rejected)
+  - [Breaking change: symlinked `.makeslop.yaml` rejected](#breaking-change-symlinked-makeslopyaml-rejected)
 - [Sandbox-policy protection](#sandbox-policy-protection)
+- [Example image hardening](#example-image-hardening)
 - [Network egress](#network-egress)
 - [Home-directory guard](#home-directory-guard)
 
@@ -70,18 +71,6 @@ Walk errors (e.g. unreadable subdirectories) are propagated immediately and abor
 matches the no-secret-leak invariant: if a directory cannot be read, we cannot prove it is
 secret-free.
 
-`.gitignore` is intentionally ignored because most `.env` files are gitignored — that is precisely
-why the scan is necessary.
-
-When at least one file is masked, `makeslop` prints `makeslop: masked N secret file(s)` to stderr.
-Zero hits are silent.
-
-**Pre-existing projects:** makeslop never rewrites an existing `.makeslop.yaml`. If yours predates
-the secret-masking feature, it has no `exclude.scan` block and masking will not run; if it predates
-the current default list, it may be missing some of the patterns above. Copy the complete
-`exclude.scan` block (with both `patterns` and `skip-dirs`) from the generated template in
-[Project-local exclusions](#project-local-exclusions) below into your existing `.makeslop.yaml`.
-
 ### Trust assumptions
 
 `skip-dirs` directories are **bind-mounted into the container unscanned**. The scan guarantee
@@ -97,13 +86,31 @@ trade-off is a longer pre-launch walk on large trees. The default skip list (`.g
 in particular is skipped because it is almost always benign and scanning it would be very slow on
 repos with long histories.
 
+`.gitignore` is intentionally ignored because most `.env` files are gitignored — that is precisely
+why the scan is necessary.
+
+When at least one file is masked, `makeslop` prints `makeslop: masked N secret file(s)` to stderr.
+Zero hits are silent.
+
+**Pre-existing projects:** if your `.makeslop.yaml` predates the secret-masking feature, it will
+not contain an `exclude.scan` block — secret masking will not run. Copy the complete
+`exclude.scan` block (with both `patterns` and `skip-dirs`) from the generated template in
+[Project-local exclusions](#project-local-exclusions) below into your existing `.makeslop.yaml`
+to restore masking.
+
+**Updating scan patterns:** if your `.makeslop.yaml` has an `exclude.scan` block but was generated
+before the hardening pass (2026-06-10), it may be missing the 8 newer patterns (`*.p12`, `*.pfx`,
+`*.tfstate`, `.pypirc`, `.htpasswd`, `service-account*.json`, `kubeconfig`, `*.kubeconfig`). These
+are not added automatically (makeslop never rewrites a project-local config). Copy the missing
+entries from the template below into your `exclude.scan.patterns` list.
+
 ---
 
 ## Project-local exclusions
 
 `makeslop init` creates a `.makeslop.yaml` file at the project root. The generated file includes
-the default `exclude.scan` block (patterns + skip-dirs for the secret scan), empty `files`/`dirs`
-lists, and the `cache:` block:
+the default `exclude.scan` block (patterns + skip-dirs for the secret scan) and empty `files`/`dirs`
+lists:
 
 ```yaml
 exclude:
@@ -138,14 +145,16 @@ cache:
   agent: true
 ```
 
-(`init --global-only` writes `false` for both `cache:` keys.)
-
 Edit this file to control scanning and hide additional directories and files from the container on
 every `makeslop run` invocation:
 
-- Entries under `exclude.scan.patterns` are **basename globs only** — `makeslop` matches each
-  pattern against the file's *name* (e.g. `secret.pem`), not its full path. Remove all patterns to
-  disable secret masking entirely.
+- Entries under `exclude.scan.patterns` are **basename globs only** — patterns must not contain a
+  `/` path separator. `makeslop` matches each pattern against the file's *name* (e.g. `secret.pem`),
+  not its full path (e.g. `secrets/secret.pem`). Path-style patterns such as `secrets/*.pem` or
+  `**/*.env` are now rejected with a hard error at startup (see
+  [Breaking change: path-style patterns rejected](#breaking-change-path-style-patterns-rejected)
+  below). Use basename forms: `*.pem`, `*.env`.
+  Remove all patterns to disable secret masking entirely.
 - Entries under `exclude.scan.skip-dirs` are bare directory names pruned during the walk.
 - Entries under `exclude.dirs` are mounted as an empty in-memory tmpfs, so the container sees an
   empty directory at that path instead of the real contents.
@@ -167,8 +176,99 @@ exclude:
 ```
 
 The scan results and the `exclude.files` entries are merged; if the same path is found by the scan
-and listed in `exclude.files`, only one overlay mount is emitted. Entries that do not exist on the
-host, or have the wrong type (a directory under `files`, a file under `dirs`), are silently skipped.
+and listed in `exclude.files`, only one overlay mount is emitted. A YAML parse error aborts the
+launch before docker is invoked.
+
+### Breaking change: path-style patterns rejected
+
+Starting with this release, `exclude.scan.patterns` entries that contain a `/` are **rejected with a
+hard error** by `makeslop run` (`makeslop status` reports the same error as a secret-scan
+warning):
+
+```
+projectconfig: scan pattern "secrets/*.pem" contains a path separator — patterns match basenames only
+```
+
+**Why:** `Scan` matches patterns against the file's *basename* using `filepath.Match`. A pattern
+like `secrets/*.pem` could never match because the basename `secret.pem` does not contain a slash.
+Previously such patterns were silently accepted and silently dropped — masking appeared configured
+but nothing was masked.
+
+**Migration:** change any path-style pattern to its basename equivalent:
+
+```yaml
+# Before (silently broken — never matched anything):
+exclude:
+  scan:
+    patterns:
+      - "secrets/*.pem"
+      - "**/*.env"
+      - "config/credentials.json"
+
+# After (correct basename globs):
+exclude:
+  scan:
+    patterns:
+      - "*.pem"
+      - "*.env"
+      - "credentials.json"
+```
+
+If you need to mask a *specific file* at a specific path (not a pattern), add it to
+`exclude.files` instead:
+
+```yaml
+exclude:
+  files:
+    - secrets/prod.pem
+    - config/credentials.json
+```
+
+### Breaking change: symlinked `.makeslop.yaml` rejected
+
+`makeslop run` and `makeslop init` now reject a `.makeslop.yaml` that is a symlink (dangling or
+live) with a hard error (`makeslop status` reports it as a non-blocking secret-scan warning):
+
+```
+projectconfig: .makeslop.yaml is a symlink — the project config must be a regular file
+```
+
+**Why:** a dangling symlink was previously treated as "no config present" (the follow of a broken
+link returned `ENOENT`), which silently dropped all scan patterns. Even a live symlink to a valid
+file is rejected because `ProtectProjectConfig` already refuses to create the read-only bind mount
+for a symlinked config (a symlink bind-mount does not protect the file contents). Consistent
+rejection at load time prevents a split-brain state where the file is loaded but not protected.
+
+**Migration:** replace the symlink with a regular file:
+
+```sh
+cp --remove-destination "$(readlink .makeslop.yaml)" .makeslop.yaml
+```
+
+Or, on macOS (no `--remove-destination`):
+
+```sh
+cp "$(readlink .makeslop.yaml)" .makeslop.yaml.tmp && mv .makeslop.yaml.tmp .makeslop.yaml
+```
+
+---
+
+**YAML parse errors are hard failures.** Any unknown field in `.makeslop.yaml` — including the now-removed
+`network:` block from earlier makeslop versions — causes a strict-decode error that aborts `makeslop run`
+before Docker is contacted. If you upgrade from a version that had proxy support and your `.makeslop.yaml`
+contains a `network:` block, remove it:
+
+```yaml
+# Remove this block entirely if present:
+# network:
+#   proxy:
+#     address: 10.0.0.5:3128
+```
+
+**Reserved paths.** The paths `.claude`, `.codex`, `docs`, `CLAUDE.md`, and `.makeslop.yaml` are
+already mounted by `makeslop run` (agent state or sandbox-policy mounts). Listing them in
+`.makeslop.yaml` is rejected with an error
+(`projectconfig: path %q collides with a reserved agent path`).
 
 **Symlink warnings.** If an entry in `exclude.files` or `exclude.dirs` is a symlink on the host,
 it is dropped from masking and a warning is printed to stderr:
@@ -179,46 +279,6 @@ makeslop: warning: path "<rel>" is a symlink and is NOT masked
 
 This warning bypasses `--quiet` — degraded protection is never silent.
 
-### Validation rules
-
-`.makeslop.yaml` is parsed before docker is invoked, and every error below aborts `makeslop run`
-(`makeslop status` reports it as a non-blocking `!` on the secret-scan check):
-
-- **Unknown keys** — the file is decoded in strict mode, so a typo or a stale block is a hard
-  error. This includes the `network:` block (`network.proxy.address`) from earlier makeslop
-  versions; the egress proxy it configured no longer exists (see [Network egress](#network-egress)).
-  Remove the block if present.
-- **Path-style scan patterns** — a pattern containing `/` could never match a basename, so it is
-  rejected rather than silently masking nothing:
-  ```
-  projectconfig: scan pattern "secrets/*.pem" contains a path separator — patterns match basenames only
-  ```
-  Rewrite it as a basename glob (`*.pem`), or list the specific path under `exclude.files`
-  (`secrets/prod.pem`). Empty patterns and invalid glob syntax are also rejected.
-- **Invalid skip-dirs** — entries must be bare directory names (no `/`, not `.` or `..`, not empty).
-- **Invalid paths** in `exclude.files`/`exclude.dirs` — empty, absolute, escaping the project
-  root, referring to the root itself, or listed in both lists.
-- **Reserved paths** — `.claude`, `.codex`, `docs`, `CLAUDE.md`, and `.makeslop.yaml` are already
-  mounted by `makeslop run` (agent-state or sandbox-policy mounts). Listing them is rejected
-  (`projectconfig: path "<path>" collides with a reserved agent path`).
-- **Symlinked `.makeslop.yaml`** — a symlink (dangling or live) is rejected by `run` and `init`:
-  ```
-  projectconfig: .makeslop.yaml is a symlink — the project config must be a regular file
-  ```
-  A dangling link would otherwise read as "no config" and silently drop all scan patterns, and a
-  live link could not be protected by the read-only bind (see
-  [Sandbox-policy protection](#sandbox-policy-protection)). Replace the symlink with a regular file:
-  ```sh
-  cp --remove-destination "$(readlink .makeslop.yaml)" .makeslop.yaml
-  ```
-  On macOS (no `--remove-destination`):
-  ```sh
-  cp "$(readlink .makeslop.yaml)" .makeslop.yaml.tmp && mv .makeslop.yaml.tmp .makeslop.yaml
-  ```
-
-Invalid `environments:` entries are also hard errors; see
-[reference.md — Environment variables](reference.md#environment-variables-environments-block-in-makeslopyaml).
-
 ---
 
 ## Sandbox-policy protection
@@ -228,12 +288,10 @@ container from escaping its sandbox:
 
 ### Config file read-only bind
 
-When `.makeslop.yaml` is a regular file at the project root, `makeslop run` re-mounts it
-**read-only** over itself inside the container (a bind mount layered on top of the read-write
-project bind). This prevents the agent from modifying the file that controls scan patterns,
-reserved paths, and secret masking — it cannot relax its own sandbox policy. If a scan pattern
-(e.g. a broad `*.yaml`) would also mask the config file, that `/dev/null` overlay is dropped so it
-does not replace the read-only bind.
+When `.makeslop.yaml` exists at the project root, `makeslop run` re-mounts it **read-only** over
+itself inside the container (a bind mount layered on top of the read-write project bind). This
+prevents the agent from modifying the file that controls scan patterns, reserved paths, and secret
+masking — it cannot relax its own sandbox policy.
 
 When `.makeslop.yaml` is absent, the read-only bind is skipped (a missing bind source would fail
 container create, and there is nothing to protect).
@@ -249,19 +307,43 @@ operations after the session.
 *file* (a gitfile pointing at the real gitdir elsewhere). The directory gate correctly leaves the
 hooks tmpfs off in that case — the daemon would otherwise create an empty `.git/hooks/` directory
 in the project root. However, the real hooks directory lives outside the workspace and is **not
-masked**. makeslop does not chase the gitfile target. If you use worktrees or submodules, be aware
-that the agent can write to the real hooks directory if it is reachable from the container.
+masked**. Makeslop does not chase the gitfile target (that would require parsing `.git` file contents
+and resolving `GIT_DIR`). If you use worktrees or submodules, be aware that the agent can write to
+the real hooks directory.
 
 Both protections are reflected in `--dry-run` output.
 
 ---
 
+## Example image hardening
+
+makeslop does not build or ship an image; the image is whatever you configure (see
+[reference.md — Using a custom Docker image](reference.md#using-a-custom-docker-image)). The
+in-container security flags and mounts apply regardless of the image, but what is *inside* the
+image is your responsibility.
+
+The example [`examples/claudebox/Dockerfile`](../examples/claudebox/Dockerfile) is derived from a
+pinned Debian base (`debian:trixie-slim` referenced by digest) and installs infrastructure tools
+(Go, Node.js) from official distribution tarballs with per-architecture sha256 checksum
+verification.
+
+**"Pin infra, float agents" policy:** infrastructure layers whose sha256 is verified at build time
+(base image digest, Go tarball, Node tarball, zsh-in-docker script) are pinned to exact versions
+with hardcoded checksums in the Dockerfile. Agent installers (`claude.ai/install.sh`,
+`@openai/codex`) are intentionally left floating — these are under active development and users
+benefit from receiving the latest agent version on each build. Pinning agent versions is an
+accepted residual risk (documented maintainer decision).
+
+**Maintaining pins:** when `GO_VERSION` or `NODE_VERSION` is bumped, the corresponding
+per-architecture sha256 values in the `RUN` commands must be updated to match the new release.
+Users pick up the change by rebuilding their image with `docker build`.
+
+---
+
 ## Network egress
 
-The container uses Docker's default bridge networking and has full internet access. There is no
-built-in egress proxy, no `--network none` isolation, and no sidecar container. If you need to
-route traffic through a proxy, set the usual variables yourself via the `environments:` block
-(e.g. `HTTP_PROXY`, `HTTPS_PROXY`); makeslop does not enforce them.
+The app container uses standard Docker bridge networking with full internet access. There is no
+built-in egress proxy, no `--network none` isolation, and no socat sidecar.
 
 Use `--dry-run` to preview the resulting container launch command (printed as an equivalent
 `docker run` invocation), including all exclusion mounts, before launching:
@@ -289,5 +371,6 @@ makeslop init --out-of-home
 makeslop run --out-of-home
 ```
 
-`makeslop config`, `makeslop version`, `makeslop status`, `makeslop ls`, and `makeslop remove`
-are **exempt** from the home-directory guard. `--out-of-home` is not a valid flag on these commands.
+`makeslop config`, `makeslop version`, `makeslop status`, `makeslop ls`, and `makeslop remove` are
+**exempt** from the home-directory guard — they never register or mount the current working
+directory. `--out-of-home` is not a valid flag on these commands.

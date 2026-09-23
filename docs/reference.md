@@ -13,12 +13,10 @@ Complete reference for all `makeslop` commands, flags, runtime behavior, and con
   - [remove](#remove)
   - [config](#config)
   - [version](#version)
-- [Setup flow](#setup-flow)
-- [Using a custom Docker image](#using-a-custom-docker-image)
-- [Project config (`.makeslop.yaml`)](#project-config-makeslopyaml)
+- [Setup flow and breaking changes](#setup-flow-and-breaking-changes)
 - [Cache layout](#cache-layout)
 - [Container layout and mount table](#container-layout-and-mount-table)
-- [Environment variables (`environments:` block in `.makeslop.yaml`)](#environment-variables-environments-block-in-makeslopyaml)
+- [Environment variables](#environment-variables-environments-block-in-makeslopyaml)
 - [In-container security flags](#in-container-security-flags)
 - [Host UID](#host-uid)
 - [TTY policy](#tty-policy)
@@ -27,6 +25,7 @@ Complete reference for all `makeslop` commands, flags, runtime behavior, and con
 - [Output conventions](#output-conventions)
 - [Path resolution](#path-resolution)
 - [Docker container settings (settings.json)](#docker-container-settings-settingsjson)
+- [Using a custom Docker image](#using-a-custom-docker-image)
 
 ---
 
@@ -35,6 +34,9 @@ Complete reference for all `makeslop` commands, flags, runtime behavior, and con
 - A Docker **daemon** must be reachable (via `DOCKER_HOST` or the default Unix socket
   `/var/run/docker.sock`). `makeslop` uses the moby/moby Go SDK directly; the `docker` CLI binary
   is **not** required.
+- A container **image** present in the local daemon. makeslop never builds or pulls images; build
+  or pull one yourself and point makeslop at it (see
+  [Using a custom Docker image](#using-a-custom-docker-image)).
 
 ---
 
@@ -42,32 +44,31 @@ Complete reference for all `makeslop` commands, flags, runtime behavior, and con
 
 ### init
 
-Registers the current working directory as a workspace, seeds `~/.makeslop/` with initial files
-(`.claude.json` and the global `.claude/`, `.codex/`, and `workspaces/` directories, plus
-`settings.json` on first registration), and scaffolds a `.makeslop.yaml` at the workspace root.
-Existing files are never overwritten.
+Registers the current working directory as a workspace and seeds `~/.makeslop/` (the `.claude/`,
+`.codex/`, and `workspaces/` directories and an empty `.claude.json`). Seeding is idempotent and
+never overwrites existing files.
 
-- When no image is configured, a non-blocking note is printed to stderr (suppressed by `--quiet`)
-  and `init` still exits 0:
+- If `pwd` is already a subdirectory of a registered workspace, the existing workspace's cache path
+  is returned (idempotent, no mutation).
+- Otherwise a new entry is added to `settings.json`, the cache directory is created, and its
+  absolute path is printed to stdout.
+- If no image is configured, a non-blocking note is printed to stderr (suppressed by `--quiet`);
+  `init` still succeeds:
   ```
   note: no image configured — run 'makeslop config set image <ref>'
   ```
-- If `pwd` is already a subdirectory of a registered workspace, the existing workspace's cache path
-  is returned (idempotent, no registry mutation).
-- Otherwise a new entry is added to `settings.json`, the cache directory is created, and its
-  absolute path is printed to stdout.
-- A symlinked `.makeslop.yaml` at the workspace root is rejected with an error (see
-  [Project config](#project-config-makeslopyaml)).
-- Prints to stderr (suppressed by --quiet): `registered <name> — run 'makeslop run'`
+- Prints to stderr (suppressed by `--quiet`): `registered <name> — run 'makeslop run'`
   (emitted on both fresh registration and re-init of an existing workspace).
 
 **Flags:**
 - `--out-of-home` — bypass the home-directory guard (see [security.md](security.md#home-directory-guard))
 - `--global-only` — scaffold `.makeslop.yaml` with both per-workspace cache overlay groups disabled
   (only the global `~/.makeslop` mounts remain). This only affects a **fresh** scaffold:
-  `Scaffold` is idempotent (EEXIST = success, never clobbers existing user edits), so on an
-  already-init'd project the flag is a no-op — a note is not printed in that case, but the
-  existing YAML is left unchanged.
+  `Scaffold` is idempotent (EEXIST is success when the existing file is a regular file, never
+  clobbers existing user edits), so on an already-init'd project the flag is a no-op — a note is
+  not printed in that case, but the existing YAML is left unchanged. If `.makeslop.yaml` is a
+  symlink, `init` exits with an error (see
+  [security.md — symlinked .makeslop.yaml](security.md#breaking-change-symlinked-makeslopyaml-rejected)).
 
 ---
 
@@ -76,31 +77,32 @@ Existing files are never overwritten.
 From within a registered workspace, launches an interactive, project-scoped Docker container with
 the workspace source tree mounted in. By default, per-workspace + global agent config
 (`.claude/`, `.codex/`, `CLAUDE.md`, `docs/`) are also mounted as overlay groups; individual
-groups can be disabled via `cache.content` and `cache.agent` in `.makeslop.yaml`.
+groups can be disabled via `cache.content` and `cache.agent` in `.makeslop.yaml`. Static
+environment variables can be injected via the `environments:` block — see
+[Environment variables](#environment-variables-environments-block-in-makeslopyaml).
 
 - Exits with the container's exit code.
 - Refuses to launch when stdin or stdout is not a TTY (see [TTY policy](#tty-policy)).
-- Resolves the image first (see [Using a custom Docker image](#using-a-custom-docker-image)): the
-  `-i/--image` flag, else the `image` setting. With neither set it exits 1 before any workspace
-  lookup or daemon call (also on `--dry-run`):
+- **Image resolution:** `-i/--image` wins, then the `image` setting. There is no default image; if
+  neither is set, `run` exits non-zero before the workspace lookup (this applies to `--dry-run`
+  too):
   ```
   makeslop: no image configured — run 'makeslop config set image <ref>' or pass -i/--image
   ```
 - If no ancestor directory is registered, exits non-zero with a hint to run `makeslop init`.
-- Parses `.makeslop.yaml` strictly: unknown keys (including the `network:` block from older
-  versions), path-style scan patterns, and a symlinked config file abort the launch before the
-  container starts (see [Project config](#project-config-makeslopyaml)).
-- Before launching, performs two pre-flight checks (each bounded by a 10-second timeout; a
-  black-hole `DOCKER_HOST` is surfaced as an error rather than hanging indefinitely):
+- Before launching, performs two pre-flight checks:
   1. Daemon reachability (`— is docker running?`)
-  2. Image existence. makeslop never pulls or builds; a missing image fails with
-     `image "X" not found locally — build or pull it (e.g. 'docker pull X')`.
-- Ctrl-C / SIGTERM cancels the running container session cleanly.
+  2. Image existence in the local daemon. makeslop never builds or pulls; a missing image fails
+     with:
+     ```
+     makeslop: image "<ref>" not found locally — build or pull it (e.g. 'docker pull <ref>')
+     ```
 - `--dry-run` skips both pre-flight checks and the TTY check (printed == executed invariant).
 
 **Flags:**
 - `--dry-run` / `-n` — print the equivalent shell command and exit without launching the container
-- `--image` / `-i <ref>` — container image to run, overriding the `image` setting for this invocation
+- `--image` / `-i <ref>` — container image to run for this invocation (overrides the `image`
+  setting; not persisted)
 - `--out-of-home` — bypass the home-directory guard
 
 ---
@@ -109,27 +111,24 @@ groups can be disabled via `cache.content` and `cache.agent` in `.makeslop.yaml`
 
 Runs an ordered health check and reports the result. CI-safe; does not require a TTY.
 
-Checks (in order); daemon and image checks are bounded by a 10-second preflight timeout:
+Checks (in order):
 1. Daemon reachability — **blocking**
-2. Base config — **blocking**; `✗` when `settings.json` is absent, unreadable, or corrupt
-3. Image — **blocking**; `✗` when no image is configured (`no image configured — run 'makeslop
-   config set image <ref>'`), when settings are unreadable, when the daemon is down, or when the
-   image is missing locally (`— build or pull it (e.g. 'docker pull X')`). An `-i` value skips the
-   settings steps, so the check works even when `settings.json` is absent or corrupt.
+2. Base config (`settings.json`) presence — absent or corrupt is blocking (`✗`)
+3. Image — **blocking**. Resolved like `run` (`-i/--image`, then the `image` setting). Fails
+   when no image is configured, when settings are unreadable and no `-i` was given, when the
+   daemon is down, or when the image is not present locally (same "build or pull it" hint as
+   `run`). Passing `-i` lets the check run even when `settings.json` is absent or corrupt.
 4. Workspace registration — **blocking**
-5. Secret scan summary — non-blocking; `✓ will mask N file(s)` when the scan finds matches, `!`
-   when `.makeslop.yaml` cannot be loaded or the scan fails, `–` otherwise (including when no
-   workspace resolved)
+5. Secret scan summary — non-blocking. An unreadable `.makeslop.yaml` (including a symlinked
+   one) is reported here as a warning (`!`); `status` does not fail on it, unlike `run`/`init`.
 
-Each check emits one aligned line with a glyph (`✓ ✗ ! –`; `[ok] [fail] [!] [–]` when stderr is not
-a terminal or `NO_COLOR` is set). A final verdict line (`ready`, or `not ready — <first failing
-check's detail>`) names the next action. The human-readable report goes to stderr. Exit code is 0
-when all blocking checks pass.
+Each check emits one aligned line with a glyph (`✓ ✗ ! –`). A final verdict line names the next
+action. Exit code is 0 when all blocking checks pass.
 
 **Flags:**
-- `--json` — emit `{"checks":[{"name","state","detail"}...],"ready":bool}` to stdout; `state` is
-  one of `ok`, `fail`, `warn`, `info`. Exit code still reflects readiness
-- `--image` / `-i <ref>` — check this image instead of the `image` setting
+- `--json` — emit `{"checks":[{"name","state","detail"}...],"ready":bool}`; exit code still
+  reflects readiness
+- `--image` / `-i <ref>` — image to check (overrides the `image` setting)
 
 ---
 
@@ -168,7 +167,7 @@ makeslop rm <name>       # alias
 - Deletes the cache directory (`os.RemoveAll`) after the lock releases — idempotent if the
   directory was already deleted manually.
 - Prints `removed <name>` to stderr on success (suppressed by `--quiet`).
-- If the name is not registered, exits 1 with:
+- If the name is not registered, exits non-zero with:
   ```
   no workspace named "<name>" — run 'makeslop ls'
   ```
@@ -189,20 +188,19 @@ Manages persistent settings in `~/.makeslop/settings.json`. Works without a prio
 
 - `makeslop config` / `makeslop config list` — print all current effective settings as
   `key = value` lines.
-- `makeslop config set <key> <value>` — validate and persist a setting, then print the stored
-  value as `key = value` on stdout.
+- `makeslop config set <key> <value>` — validate and persist a setting.
 
 **Configurable keys:**
-- `image` — Docker image reference (no default; required by `run`)
+- `image` — container image reference, e.g. `claudebox` or `my-org/agent:latest` (**no default**;
+  must be set here or passed per invocation with `-i/--image`; empty values are rejected). Unset
+  shows as `image = ` in `config list`.
 - `shell` — shell to exec in the container (default: `/bin/zsh`)
 - `tmp_dir_size` — size of the `/tmp` tmpfs (default: `100m`)
 
-Accepted `tmp_dir_size` forms: `100m`, `2g`, `512k`, `1048576` (bare number = bytes). `0` is
-rejected (docker would treat it as unlimited). `image` and `shell` reject empty or whitespace-only
-values. An unknown key is an error that lists the valid keys.
+Accepted `tmp_dir_size` forms: `100m`, `2g`, `512k`, `1048576` (bare number = bytes).
 
-`config set` creates `~/.makeslop/` if absent. `config list` reads only; it does not write and
-does not create the directory.
+`config set` self-heals via `Save`'s `MkdirAll` (creates `~/.makeslop/` if absent).
+`config list` reads only; it does not write and does not create the directory.
 
 ---
 
@@ -214,63 +212,76 @@ without ldflags (e.g. via a plain `go build`).
 
 ---
 
-## Setup flow
+## Setup flow and breaking changes
 
-Normal first-run order: build or pull an image yourself → `config set image <ref>` → `init` →
-`run`. `init` registers the workspace **and** seeds `~/.makeslop/`; `config set` creates
-`~/.makeslop/` if needed, so the first two makeslop steps can run in either order.
+Normal first-run order:
 
----
+1. Build or pull an image yourself, e.g. `docker build -t claudebox examples/claudebox` from a
+   clone of this repo.
+2. `makeslop config set image <ref>`.
+3. `makeslop init` in the project directory.
+4. `makeslop run`.
 
-## Using a custom Docker image
+Steps 2 and 3 can happen in either order. `init` only notes a missing image; `run` is the command
+that requires one. `makeslop status` reports what is still missing.
 
-makeslop does not build or pull images. Any image you have locally works, as long as it provides
-the configured shell and the agent CLIs you want to run as uid 1000 (see [Host UID](#host-uid)).
-[`examples/claudebox/Dockerfile`](../examples/claudebox/Dockerfile) is a starting point. From a clone of this repo:
+### Breaking change: `build` and `migrate` removed, no default image
+
+makeslop no longer ships or builds an image. The `build` and `migrate` commands are gone, and the
+`image` setting has no default (it used to fall back to `claudebox`). To upgrade:
+
+- Build your image yourself, e.g. from [`examples/claudebox/Dockerfile`](../examples/claudebox/Dockerfile)
+  or from your old `~/.makeslop/Dockerfile`, then run `makeslop config set image <ref>`. If you
+  used the old default, `docker images` probably still lists `claudebox`, so
+  `makeslop config set image claudebox` is enough.
+- `~/.makeslop/Dockerfile` is no longer read or written; delete it if you like.
+- The `version` key in `settings.json` is ignored and dropped on the next settings write. No
+  migration step is needed.
+
+### Breaking change: `network:` block removed from `.makeslop.yaml`
+
+Earlier versions of makeslop supported an optional egress-proxy feature configured via a `network:`
+block in `.makeslop.yaml`:
+
+```yaml
+network:
+  proxy:
+    address: 10.0.0.5:3128
+```
+
+This feature has been removed. The `network:` block is now an **unknown field** and causes a hard
+parse error that aborts `makeslop run` before Docker is contacted. If your `.makeslop.yaml` contains
+a `network:` block, remove it to upgrade:
 
 ```
-docker build -t claudebox examples/claudebox
-makeslop config set image claudebox
+# Remove the network: block entirely from .makeslop.yaml
 ```
 
-The image is resolved per invocation of `run` and `status`:
+The app container now always uses standard Docker bridge networking with full internet access. No
+socat sidecar, no `--network none`, and no `--proxy` flag.
 
-1. the `-i/--image` flag, if non-empty (whitespace is trimmed)
-2. the `image` setting in `settings.json`, if non-empty
-3. otherwise an error: `no image configured — run 'makeslop config set image <ref>' or pass -i/--image`
+### Breaking changes: `.makeslop.yaml` validation tightened
 
-If the resolved image is not present locally, `run` fails with
-`image "X" not found locally — build or pull it (e.g. 'docker pull X')` and `status` reports the same hint.
+Two additional hard errors were added for invalid `.makeslop.yaml` configurations that were
+previously silent (and silently lost secret masking). Full details and migration instructions are
+in [security.md](security.md#project-local-exclusions).
 
----
+**Path-style scan patterns now error.** Entries in `exclude.scan.patterns` that contain `/` are
+rejected at startup. These patterns could never match (Scan matches basenames). Move path-style
+patterns to `exclude.files` for specific paths, or rewrite them as basename globs:
 
-## Project config (`.makeslop.yaml`)
+```
+# Error: projectconfig: scan pattern "secrets/*.pem" contains a path separator — patterns match basenames only
+```
 
-`makeslop init` scaffolds `.makeslop.yaml` at the workspace root; it is never overwritten or
-auto-migrated afterwards. The file holds three optional top-level blocks:
+Fix: replace `secrets/*.pem` with `*.pem` (or add `secrets/my.pem` to `exclude.files`).
 
-- `exclude:` — secret-scan patterns and skip-dirs plus extra file/dir masks (see
-  [security.md — Project-local exclusions](security.md#project-local-exclusions))
-- `cache:` — per-workspace overlay groups (see [Container layout and mount table](#container-layout-and-mount-table))
-- `environments:` — static environment variables (see
-  [Environment variables](#environment-variables-environments-block-in-makeslopyaml))
+**Symlinked `.makeslop.yaml` now errors.** If `.makeslop.yaml` is a symlink, both `makeslop init`
+and `makeslop run` exit with an error. Replace the symlink with a regular file:
 
-A missing, empty, or comment-only file is equivalent to no configuration (no scan, both cache
-groups enabled, no env vars).
-
-The file is decoded in **strict mode**: any unknown key is a hard error that aborts `makeslop run`
-before the container starts. This includes the `network:` block (`network.proxy.address`) from
-older makeslop versions, which no longer exists — remove it if present. Other hard errors:
-
-- `.makeslop.yaml` is a symlink (dangling or live) —
-  `projectconfig: .makeslop.yaml is a symlink — the project config must be a regular file`.
-  Replace it with a regular file (`init` rejects it too).
-- A scan pattern contains `/` —
-  `projectconfig: scan pattern "secrets/*.pem" contains a path separator — patterns match basenames only`.
-- Invalid `exclude.files`/`exclude.dirs` entries (absolute, escaping the root, reserved agent
-  paths, or listed in both lists) and invalid `environments:` entries.
-
-`makeslop status` reports the same errors as a non-blocking `!` on the secret-scan check.
+```sh
+cp --remove-destination "$(readlink .makeslop.yaml)" .makeslop.yaml
+```
 
 ---
 
@@ -278,55 +289,41 @@ older makeslop versions, which no longer exists — remove it if present. Other 
 
 ```
 ~/.makeslop/
-├── settings.json
-├── .settings.lock
+├── .claude/            # global agent config (mounted at /home/user/.claude/)
 ├── .claude.json
-├── .claude/
 ├── .codex/
+├── settings.json
 └── workspaces/
     └── <basename>-<sha256[:6]>/
-        ├── .claude/
-        ├── .codex/
-        ├── docs/
-        └── CLAUDE.md
 ```
 
 `settings.json` records each registered workspace keyed by its absolute, symlink-evaluated path.
 The per-workspace cache directory under `workspaces/` holds per-project agent state (`.claude/`,
-`.codex/`, `docs/`, `CLAUDE.md`). `.claude.json`, `.claude/`, and `.codex/` at the top level are
-the global agent state shared by every workspace.
-
-`.settings.lock` is an advisory lock file that serializes concurrent writes to `settings.json`
-(used by `init`, `config set`, and `remove`). It is a permanent artifact created on first write
-and is safe to ignore in directory listings.
+`.codex/`, `docs/`).
 
 ---
 
 ## Container layout and mount table
 
 `makeslop run` runs with workdir `/workspace/<name>` (where `<name>` is the registered workspace's
-cache-dir basename). Mounts are applied in this order:
+cache-dir basename):
 
-| Host                                                  | Container                          | Group               |
-| ----------------------------------------------------- | ---------------------------------- | ------------------- |
-| `<projectRoot>`                                       | `/workspace/<name>`                | always              |
-| `~/.makeslop/.claude/`                                | `/home/user/.claude/`              | global              |
-| `~/.makeslop/.claude.json`                            | `/home/user/.claude.json`          | global              |
-| `~/.makeslop/.codex/`                                 | `/home/user/.codex/`               | global              |
-| `<projectRoot>/.makeslop.yaml`                        | `/workspace/<name>/.makeslop.yaml` | sandbox-policy (ro) |
-| tmpfs (empty)                                         | `/workspace/<name>/.git/hooks`     | git-hooks mask      |
-| `~/.makeslop/workspaces/<name>/.claude/`              | `/workspace/<name>/.claude/`       | agent-state         |
-| `~/.makeslop/workspaces/<name>/.codex/`               | `/workspace/<name>/.codex/`        | agent-state         |
-| `~/.makeslop/workspaces/<name>/docs/`                 | `/workspace/<name>/docs/`          | content             |
-| `~/.makeslop/workspaces/<name>/CLAUDE.md`             | `/workspace/<name>/CLAUDE.md`      | content             |
-
-Secret masks (`/dev/null` file overlays and tmpfs dir overlays) follow all of the above, so a mask
-always wins over the mount it shadows.
+| Host                                                  | Container                          | Group              |
+| ----------------------------------------------------- | ---------------------------------- | ------------------ |
+| `<projectRoot>`                                       | `/workspace/<name>`                | always             |
+| `~/.makeslop/.claude/`                                | `/home/user/.claude/`              | global             |
+| `~/.makeslop/.claude.json`                            | `/home/user/.claude.json`          | global             |
+| `~/.makeslop/.codex/`                                 | `/home/user/.codex/`               | global             |
+| `<projectRoot>/.makeslop.yaml`                        | `/workspace/<name>/.makeslop.yaml` | sandbox-policy (ro)|
+| tmpfs (empty)                                         | `/workspace/<name>/.git/hooks`     | git-hooks mask     |
+| `~/.makeslop/workspaces/<name>/.claude/`              | `/workspace/<name>/.claude/`       | agent-state        |
+| `~/.makeslop/workspaces/<name>/.codex/`               | `/workspace/<name>/.codex/`        | agent-state        |
+| `~/.makeslop/workspaces/<name>/docs/`                 | `/workspace/<name>/docs/`          | content            |
+| `~/.makeslop/workspaces/<name>/CLAUDE.md`             | `/workspace/<name>/CLAUDE.md`      | content            |
 
 The **global** mounts (rows 2–4) are always present. The **sandbox-policy** read-only bind (row 5)
-is present only when `.makeslop.yaml` is a regular file at the project root. The **git-hooks mask**
-tmpfs (row 6) is present only when `.git` is a directory at the project root (not a gitfile). See
-[security.md — Sandbox-policy protection](security.md#sandbox-policy-protection). The
+is present only when `.makeslop.yaml` exists at the project root. The **git-hooks mask** tmpfs (row
+6) is present only when `.git` is a directory at the project root (not a gitfile). The
 **agent-state** and **content** overlay mounts (rows 7–10) can be disabled per-project via the
 `cache:` block in `.makeslop.yaml`:
 
@@ -337,15 +334,15 @@ cache:
 ```
 
 Setting a group to `false` omits those overlay mounts so the project's real files show through.
-An absent `cache:` block (or an absent key within it) is equivalent to `true`. The
-`init --global-only` flag is a convenience shortcut that scaffolds `.makeslop.yaml` with both
-groups disabled.
+An absent `cache:` block is equivalent to `{content: true, agent: true}` — behavior is identical
+to before this feature was added. The `init --global-only` flag is a convenience shortcut that
+scaffolds `.makeslop.yaml` with both groups disabled.
 
 ---
 
 ## Environment variables (`environments:` block in `.makeslop.yaml`)
 
-Declare static environment variables to inject into the container at runtime using an optional
+Declare static environment variables to inject into the app container at runtime using an optional
 `environments:` block in the project-local `.makeslop.yaml`:
 
 ```yaml
@@ -369,17 +366,18 @@ environments:
   RETRIES: 3        # → RETRIES=3
 ```
 
-**Rules and error handling** (each violation is a hard error — `makeslop run` will not launch):
+**Rules and error handling:**
 
-- Non-scalar values (lists, maps) are rejected.
+- Non-scalar values (lists, maps) are rejected with a hard error — `makeslop run` will not launch.
 - Null values (`KEY:` or `KEY: null`) are rejected. A bare key with no value is almost always a
   mistake; provide an explicit value or remove the key.
 - Explicit empty string (`KEY: ""`) is accepted and injects `KEY=` into the container (a valid
   empty environment variable).
-- Empty keys, keys containing `=`, and keys or values containing a newline or tab are rejected.
-- Variables are passed in sorted `KEY=VALUE` order (deterministic output in `--dry-run`).
+- Empty keys are rejected.
+- Variables are passed in sorted key order (deterministic output in `--dry-run`).
 
-**Absent block:** When `environments:` is absent from `.makeslop.yaml`, no `-e` flags are emitted.
+**Absent block:** When `environments:` is absent from `.makeslop.yaml`, no `-e` flags are emitted —
+behavior is byte-identical to before this feature was added (backward-compatible).
 
 **Verification (`--dry-run`):** Use `makeslop run --dry-run` to see the exact `-e` flags before
 launching the container.
@@ -394,9 +392,8 @@ Security flags applied inside the container:
 - `--cap-drop ALL`
 - `--security-opt no-new-privileges`
 
-Mounts are emitted as `--mount type=bind,source=...,target=...` (with `,readonly` for the
-sandbox-policy bind) or `--mount type=tmpfs,target=...`, so paths containing `:` do not break
-parsing; fields containing `,` or `"` are CSV-quoted.
+Mounts are emitted as `--mount type=bind,source=...,target=...` so paths containing `:` do not
+break parsing.
 
 **Sandbox-policy mounts** (applied when the host path exists):
 
@@ -409,7 +406,7 @@ These mounts are layered on top of the read-write project bind. See
 [security.md — Sandbox-policy protection](security.md#sandbox-policy-protection) for details and
 known residuals.
 
-For secret masking, network egress, and the home-directory guard, see [security.md](security.md).
+For secret masking and the home-directory guard, see [security.md](security.md).
 
 ---
 
@@ -429,8 +426,8 @@ makeslop: stdin/stdout must be a TTY — run in an interactive terminal
 ```
 
 `makeslop init`, `makeslop version`, `makeslop config`, `makeslop status`, `makeslop ls`, and
-`makeslop remove` do not require a TTY and work correctly in CI pipelines and non-interactive
-shells.
+`makeslop remove` do not require a TTY and work correctly
+in CI pipelines and non-interactive shells.
 
 ---
 
@@ -440,8 +437,9 @@ Pass `--dry-run` (short: `-n`) to print the equivalent shell command for the con
 `makeslop` would execute and then exit without launching the container. The output is a multi-line,
 backslash-continued, paste-ready shell command on stdout. All pre-launch checks still run
 (home-directory guard, settings load, image resolution, workspace lookup, project config parse,
-secret scan), so the printed command equals the real invocation byte-for-byte. Daemon and image
-pre-flight checks are skipped on `--dry-run`.
+secret scan), so the
+printed command equals the real invocation byte-for-byte. Daemon and image pre-flight checks are
+skipped on `--dry-run`.
 
 ```
 makeslop run --dry-run
@@ -459,26 +457,25 @@ makeslop run -n > cmd.sh   # capture only the command; masked-file count goes to
 
 ## Exit codes
 
-- `0` — success (`init` registered/reused a project, or the container exited cleanly, or `status`
-  found all blocking checks passing).
+- `0` — success (`init` registered/reused a project, or the container exited cleanly, or
+  `status` found all blocking checks passing).
 - container's exit code — `makeslop run` propagates `exit N` from the container as the host's
-  exit code (including `137` for a SIGKILLed container).
+  exit code.
 - `1` — `makeslop status` exits 1 when any blocking check (daemon, base config, image, or workspace) fails.
 - `1` — `makeslop remove` exits 1 when the workspace name is not registered.
-- `1` — any other failure: no image configured, image missing locally, daemon unreachable, no
-  workspace registered for pwd, no TTY available, corrupt `settings.json`, invalid
-  `.makeslop.yaml`, I/O error, etc. The reason is written to stderr.
+- `1` — any other failure: no image configured, image not found locally, no workspace registered
+  for pwd, no TTY available, corrupt `settings.json`, I/O error, etc. The reason is written to
+  stderr.
 
 ---
 
 ## Output conventions
 
 - **stdout**: machine result only (paths, values, container output, `--json` output).
-- **stderr**: progress, `masked N` notice, nudges, the human-readable `status` report, errors.
+- **stderr**: `masked N` notice, notes and hints, errors.
 - Actionable errors follow the form `makeslop: <what failed> — <remedy>`.
-- `--quiet` (inherited by all subcommands): silences stderr chrome (notices and hints such as the
-  `masked N` count, the `init` notes, the `ls` nudge, and `removed <name>`) while keeping errors
-  and warnings. It never changes stdout.
+- `--quiet` (inherited by all subcommands): silences stderr chrome (notices and hints) while
+  keeping errors. Useful in scripts that parse stdout.
 
 ---
 
@@ -495,8 +492,8 @@ on Linux hosts.
 ## Docker container settings (settings.json)
 
 The image, shell, and `/tmp` tmpfs size are configurable via `makeslop config set` or by editing
-`~/.makeslop/settings.json` directly. `image` has no default; `shell` and `tmp_dir_size` default to
-`/bin/zsh` and `100m`:
+`~/.makeslop/settings.json` directly. `image` has no default; `shell` and `tmp_dir_size` default
+to `/bin/zsh` and `100m`:
 
 ```json
 {
@@ -508,13 +505,78 @@ The image, shell, and `/tmp` tmpfs size are configurable via `makeslop config se
 ```
 
 **Field notes:**
-- `image` — required by `run`; can be overridden per invocation with `-i/--image`. An omitted or
-  empty value means unset (see [Using a custom Docker image](#using-a-custom-docker-image)).
-- Omitted or empty `shell`/`tmp_dir_size` fields fall back to their defaults.
-- Obsolete keys from older versions (`version`, `migrated_version`) are ignored and dropped on the
-  next write.
+- `image` — required before `run` (unless `-i/--image` is passed). Omitted or empty means unset;
+  it is never filled in with a default.
+- Omitted or empty `shell`/`tmp_dir_size` fields fall back to their defaults; existing
+  `settings.json` files predating these keys keep working unchanged.
+- Obsolete keys from older versions (`version`, `migrated_version`) are ignored and dropped the
+  next time makeslop writes the file.
 
 `tmp_dir_size` accepts a positive integer with an optional suffix: `k`/`K` (kibibytes), `m`/`M`
 (mebibytes), `g`/`G` (gibibytes), or no suffix (bytes). Example: `100m`, `2g`, `512k`, `1048576`.
 A bare number without a suffix is interpreted by Docker as **bytes** — `512` means 512 bytes, not
 512 MB.
+
+---
+
+## Using a custom Docker image
+
+makeslop does not build, ship, or pull images. The image that `makeslop run` launches is whatever
+`-i/--image` names, or else the `image` setting (see
+[Docker container settings](#docker-container-settings-settingsjson)). You build or pull it
+yourself.
+
+### Starting from the example image
+
+[`examples/claudebox/Dockerfile`](../examples/claudebox/Dockerfile) is a ready-made image with
+Claude Code, Codex, Go, and Node.js. From a clone of this repo:
+
+```sh
+docker build -t claudebox examples/claudebox
+makeslop config set image claudebox
+```
+
+Copy and edit that Dockerfile to add packages, tools, or language runtimes, then rebuild with
+`docker build`. makeslop never touches it.
+
+### Any other image
+
+```sh
+docker pull my-org/my-agent:latest     # or: docker build -t my-org/my-agent:latest .
+makeslop config set image my-org/my-agent:latest
+makeslop run
+```
+
+To try an image without changing the setting, pass it for one invocation:
+
+```sh
+makeslop run -i my-org/my-agent:dev
+makeslop status -i my-org/my-agent:dev
+```
+
+`makeslop run` performs an **image-existence preflight** (a local image inspect) and launches the
+image directly. It never pulls and never builds, so make sure the image is present in the local
+daemon before running.
+
+### Image contract
+
+A custom image must satisfy the assumptions makeslop and the bind mounts rely on:
+
+- **User:** runs as **uid 1000** with home `/home/user` (the container is launched as uid 1000; the
+  agent-config mounts target `/home/user/.claude`, `/home/user/.codex`, etc.). See
+  [Host UID](#host-uid).
+- **Workdir:** a writable `/workspace` directory (the project tree is bind-mounted at
+  `/workspace/<name>`). See the [mount table](#container-layout-and-mount-table).
+- **Shell:** the configured `shell` must exist at its path inside the image. The container is exec'd
+  with this shell as its command (default `/bin/zsh`). Either install that shell in your image, or
+  point makeslop at one your image already has:
+  ```sh
+  makeslop config set shell /bin/bash
+  ```
+- **Agents (optional):** the `claude` / `codex` CLIs are not required by makeslop itself — include
+  them only if you want them available in the container. Their per-workspace and global state
+  directories are mounted regardless.
+
+The in-container security flags (`--cap-drop ALL`, `--security-opt no-new-privileges`, the `/tmp`
+tmpfs) and all bind mounts are applied by makeslop at launch time and are independent of which image
+you use. Verify the exact launch with `makeslop run --dry-run`.
