@@ -235,10 +235,6 @@ func (f *fakeClient) ContainerRemove(_ context.Context, _ string, opts moby.Cont
 	return moby.ContainerRemoveResult{}, nil
 }
 
-func (f *fakeClient) DialHijack(_ context.Context, _, _ string, _ map[string][]string) (net.Conn, error) {
-	return nil, errors.New("DialHijack not implemented in fakeClient")
-}
-
 func (f *fakeClient) Close() error {
 	f.closed = true
 	return nil

@@ -135,7 +135,7 @@ func renderChecks(w io.Writer, checks []statusCheck, ready bool, tty bool) {
 	}
 }
 
-func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, jsonMode bool, ttyPred isTTYFunc, deps dockerDeps) error {
+func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir, imageFlag string, jsonMode bool, ttyPred isTTYFunc, deps dockerDeps) error {
 	ctx := cmd.Context()
 	stderr := cmd.ErrOrStderr()
 
@@ -149,50 +149,46 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, jso
 		cl.fail("daemon", "is docker running? — run 'docker info'")
 	}
 
-	// 2. Base config. loadedSettings is reused by checks 3 and 4;
-	// settingsCorrupt distinguishes an unreadable file from an absent one.
+	// The image check needs to distinguish corrupt settings from an unset image.
 	var loadedSettings *config.Settings
-	var settingsCorrupt bool
+	var settingsUnreadable bool
 	exists, err := config.BaseConfigExists(baseDir)
 	if err != nil {
+		settingsUnreadable = true
 		cl.fail("base config", fmt.Sprintf("cannot read settings: %v", err))
 	} else if !exists {
 		cl.fail("base config", "run 'makeslop init' to create ~/.makeslop")
 	} else {
 		s, loadErr := config.Load(baseDir)
 		if loadErr != nil {
-			settingsCorrupt = true
+			settingsUnreadable = true
 			cl.fail("base config", fmt.Sprintf("corrupt settings: %v", loadErr))
 		} else {
 			loadedSettings = s
-			current, latest, stale := config.MigrationStatus(s)
-			if stale {
-				// stale is non-blocking
-				cl.warn("base config", fmt.Sprintf("v%d (latest: v%d) — run 'makeslop migrate'", current, latest))
-			} else {
-				cl.ok("base config", "")
-			}
+			cl.ok("base config", "")
 		}
 	}
 
-	// 3. Image. Skipped when the daemon is down (the inspect would hit the same
-	// dead daemon and burn a second preflight timeout) or when settings are
-	// corrupt (the configured image name is unknown — don't guess a default).
+	// An explicit image can be checked despite missing or corrupt settings.
+	// Report configuration errors first; a down daemon would cost another timeout.
+	var settingsImage string
+	if loadedSettings != nil {
+		settingsImage = loadedSettings.Image
+	}
+	imageName, resolveErr := resolveImage(imageFlag, settingsImage)
 	switch {
+	case !imageSet(imageFlag) && settingsUnreadable:
+		cl.fail("image", "cannot check — settings unreadable")
+	case resolveErr != nil:
+		cl.fail("image", resolveErr.Error())
 	case !daemonUp:
 		cl.fail("image", "cannot check — daemon unreachable")
-	case settingsCorrupt:
-		cl.fail("image", "cannot check — settings unreadable")
 	default:
-		imageName := config.DefaultImage
-		if loadedSettings != nil {
-			imageName = loadedSettings.Image
-		}
 		imageFound, imageErr := deps.imageExistsPreflight(ctx, imageName)
 		if imageErr != nil {
 			cl.fail("image", fmt.Sprintf("error checking image %q: %v — is docker running?", imageName, imageErr))
 		} else if !imageFound {
-			cl.fail("image", fmt.Sprintf("image %q not built — run 'makeslop build'", imageName))
+			cl.fail("image", imageNotFoundHint(imageName))
 		} else {
 			cl.ok("image", "")
 		}
@@ -261,6 +257,7 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, jso
 
 func newStatusCmd(ws *workspace.Workspaces, baseDir string, ttyPred isTTYFunc, deps dockerDeps) *cobra.Command {
 	var jsonMode bool
+	var image string
 
 	cmd := &cobra.Command{
 		Use:          "status",
@@ -268,10 +265,12 @@ func newStatusCmd(ws *workspace.Workspaces, baseDir string, ttyPred isTTYFunc, d
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runStatus(cmd, ws, baseDir, jsonMode, ttyPred, deps)
+			return runStatus(cmd, ws, baseDir, image, jsonMode, ttyPred, deps)
 		},
 	}
 	cmd.Flags().BoolVar(&jsonMode, "json", false,
 		"emit JSON instead of human-readable output")
+	cmd.Flags().StringVarP(&image, "image", "i", "",
+		"container image to check (overrides the settings image)")
 	return cmd
 }

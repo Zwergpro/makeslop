@@ -9,7 +9,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Zwergpro/makeslop/internal/config"
 	"github.com/Zwergpro/makeslop/internal/projectconfig"
 )
 
@@ -45,14 +44,10 @@ func TestInit_FromScratch(t *testing.T) {
 		t.Fatalf("read settings.json: %v", err)
 	}
 	var s struct {
-		Version    int                       `json:"version"`
 		Workspaces map[string]map[string]any `json:"workspaces"`
 	}
 	if err := json.Unmarshal(data, &s); err != nil {
 		t.Fatalf("unmarshal settings: %v", err)
-	}
-	if s.Version != 1 {
-		t.Errorf("expected version 1, got %d", s.Version)
 	}
 	resolvedPwd := evalSymlinks(t, pwd)
 	entry, ok := s.Workspaces[resolvedPwd]
@@ -382,9 +377,7 @@ func TestInit_PreservesExistingProjectConfig(t *testing.T) {
 	}
 }
 
-// Fresh init (no prior settings.json) stamps Version = ConfigVersion,
-// so a freshly-init'd dir is never reported stale.
-func TestInit_FreshSeed_StampsVersion(t *testing.T) {
+func TestInit_FreshSeed_RegistersWithHint(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
@@ -406,66 +399,77 @@ func TestInit_FreshSeed_StampsVersion(t *testing.T) {
 	if !strings.Contains(stderr, "registered") {
 		t.Errorf("stderr missing 'registered': %q", stderr)
 	}
-	if !strings.Contains(stderr, "makeslop build") {
-		t.Errorf("stderr missing 'makeslop build' hint: %q", stderr)
-	}
-	if !strings.Contains(stderr, "makeslop run") {
+	if !strings.Contains(stderr, "run 'makeslop run'") {
 		t.Errorf("stderr missing 'makeslop run' hint: %q", stderr)
-	}
-
-	s, loadErr := config.Load(baseDir)
-	if loadErr != nil {
-		t.Fatalf("load settings after init: %v", loadErr)
-	}
-	if s.Version != config.ConfigVersion {
-		t.Errorf("Version = %d, want %d (ConfigVersion)", s.Version, config.ConfigVersion)
 	}
 }
 
-// An existing stale config gets a non-blocking nudge but Version is NOT
-// stamped — stamping would skip the actual migration.
-func TestInit_StaleConfig_NudgesWithoutStamping(t *testing.T) {
+func TestInit_NoImage_PrintsNote(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	// Seed a stale settings.json so we hit the "existing-but-stale" path.
-	// Version: 0 forces staleness since 0 < ConfigVersion(1).
-	s := &config.Settings{
-		Version:    0, // stale
-		Image:      config.DefaultImage,
-		Shell:      config.DefaultShell,
-		TmpDirSize: config.DefaultTmpDirSize,
-		Workspaces: map[string]config.Workspace{},
-	}
-	if err := config.Save(baseDir, s); err != nil {
-		t.Fatalf("seed stale settings: %v", err)
-	}
-
-	_, stderr, err := runCmd(t, baseDir, "init")
+	stdout, stderr, err := runCmd(t, baseDir, "init")
 	if err != nil {
-		t.Fatalf("init on stale config failed: %v; stderr=%q", err, stderr)
+		t.Fatalf("init failed: %v; stderr=%q", err, stderr)
+	}
+	if !strings.Contains(stderr, "note: no image configured — run 'makeslop config set image <ref>'") {
+		t.Errorf("stderr missing no-image note: %q", stderr)
+	}
+	if strings.TrimSpace(stdout) == "" {
+		t.Errorf("stdout must contain the workspace path; got empty")
 	}
 
-	if !strings.Contains(stderr, "note: your base config is") {
-		t.Errorf("stderr missing stale-config nudge: %q", stderr)
+	lsOut, lsErr, err := runCmd(t, baseDir, "ls")
+	if err != nil {
+		t.Fatalf("ls failed: %v; stderr=%q", err, lsErr)
 	}
-	if !strings.Contains(stderr, "makeslop migrate") {
-		t.Errorf("stderr missing 'makeslop migrate' in nudge: %q", stderr)
-	}
-
-	after, loadErr := config.Load(baseDir)
-	if loadErr != nil {
-		t.Fatalf("load settings after init: %v", loadErr)
-	}
-	if after.Version != 0 {
-		t.Errorf("init must not stamp Version on stale dir; got %d, want %d (stale)",
-			after.Version, 0)
+	if !strings.Contains(lsOut, filepath.Base(evalSymlinks(t, pwd))) {
+		t.Errorf("workspace not registered; ls output=%q", lsOut)
 	}
 }
 
-// init stdout is the bare workspace path only (no labels, no extra lines).
+func TestInit_ImageSet_NoNote(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	if _, stderr, err := runCmd(t, baseDir, "config", "set", "image", "test-img"); err != nil {
+		t.Fatalf("config set image failed: %v; stderr=%q", err, stderr)
+	}
+	_, stderr, err := runCmd(t, baseDir, "init")
+	if err != nil {
+		t.Fatalf("init failed: %v; stderr=%q", err, stderr)
+	}
+	if strings.Contains(stderr, "no image configured") {
+		t.Errorf("note must not print when image is set; stderr=%q", stderr)
+	}
+	if !strings.Contains(stderr, "registered") {
+		t.Errorf("stderr missing 'registered': %q", stderr)
+	}
+}
+
+func TestInit_WhitespaceImage_PrintsNote(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	t.Chdir(t.TempDir())
+
+	if _, stderr, err := runCmd(t, baseDir, "init"); err != nil {
+		t.Fatalf("init failed: %v; stderr=%q", err, stderr)
+	}
+	writeWhitespaceImage(t, baseDir)
+
+	_, stderr, err := runCmd(t, baseDir, "init")
+	if err != nil {
+		t.Fatalf("second init failed: %v; stderr=%q", err, stderr)
+	}
+	if !strings.Contains(stderr, "note: no image configured") {
+		t.Errorf("whitespace-only image must trigger the note; stderr=%q", stderr)
+	}
+}
+
 func TestInit_FreshSeed_StdoutIsBarePathOnly(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -486,66 +490,6 @@ func TestInit_FreshSeed_StdoutIsBarePathOnly(t *testing.T) {
 	workspacesRoot := filepath.Join(baseDir, "workspaces")
 	if !strings.HasPrefix(line, workspacesRoot+string(filepath.Separator)) {
 		t.Errorf("workspace path %q not under %q", line, workspacesRoot)
-	}
-}
-
-// Edge case: build's Bootstrap creates dirs + Dockerfile but no settings.json,
-// so a later init must treat the dir as fresh (stamp latest), not stale.
-func TestInit_AfterBuild_TreatedAsFresh(t *testing.T) {
-	setHomeToTestParent(t)
-	baseDir := t.TempDir()
-	pwd := t.TempDir()
-	t.Chdir(pwd)
-
-	if err := config.Bootstrap(baseDir); err != nil {
-		t.Fatalf("Bootstrap (simulating build): %v", err)
-	}
-
-	exists, err := config.BaseConfigExists(baseDir)
-	if err != nil {
-		t.Fatalf("BaseConfigExists: %v", err)
-	}
-	if exists {
-		t.Fatal("pre-condition failed: settings.json must not exist after Bootstrap alone")
-	}
-
-	_, stderr, err := runCmd(t, baseDir, "init")
-	if err != nil {
-		t.Fatalf("init after build failed: %v; stderr=%q", err, stderr)
-	}
-
-	s, loadErr := config.Load(baseDir)
-	if loadErr != nil {
-		t.Fatalf("load settings after init: %v", loadErr)
-	}
-	if s.Version != config.ConfigVersion {
-		t.Errorf("Version = %d after build+init, want %d (ConfigVersion); stderr was %q",
-			s.Version, config.ConfigVersion, stderr)
-	}
-
-	if strings.Contains(stderr, "note: your base config is") {
-		t.Errorf("stale-config nudge must not appear after build+init (fresh seed); stderr=%q", stderr)
-	}
-}
-
-// An up-to-date config must not emit the stale-config nudge.
-func TestInit_UpToDateConfig_NoNudge(t *testing.T) {
-	setHomeToTestParent(t)
-	baseDir := t.TempDir()
-	pwd := t.TempDir()
-	t.Chdir(pwd)
-
-	_, _, err := runCmd(t, baseDir, "init")
-	if err != nil {
-		t.Fatalf("first init failed: %v", err)
-	}
-
-	_, stderr, err := runCmd(t, baseDir, "init")
-	if err != nil {
-		t.Fatalf("second init failed: %v", err)
-	}
-	if strings.Contains(stderr, "note: your base config is") {
-		t.Errorf("stale-config nudge must not appear when config is up to date; stderr=%q", stderr)
 	}
 }
 
@@ -635,8 +579,6 @@ func TestGlobalOnly_RejectedOnNonInitCommands(t *testing.T) {
 	for _, cmd := range [][]string{
 		{"run", "--global-only"},
 		{"version", "--global-only"},
-		{"migrate", "--global-only"},
-		{"build", "--global-only"},
 		{"config", "--global-only"},
 		{"status", "--global-only"},
 	} {

@@ -9,8 +9,7 @@ import (
 	moby "github.com/moby/moby/client"
 )
 
-// preflightTimeout bounds preflight ping/inspect calls so they never hang on a
-// black-hole DOCKER_HOST. Not applied to long-lived Run/Build.
+// Bound daemon probes so an unreachable DOCKER_HOST cannot hang the CLI.
 const preflightTimeout = 10 * time.Second
 
 // WithPreflightTimeout wraps parent with a preflightTimeout deadline; callers

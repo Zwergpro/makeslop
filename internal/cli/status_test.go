@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -35,9 +36,7 @@ func TestStatus_AllGreen_ExitsZero(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initWithImage(t, baseDir)
 
 	deps := newFakeStatusDeps(false, false)
 
@@ -60,9 +59,7 @@ func TestStatus_DaemonDown_ExitsNonZero(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initWithImage(t, baseDir)
 
 	deps := newFakeStatusDeps(true, false)
 
@@ -81,16 +78,13 @@ func TestStatus_DaemonDown_ExitsNonZero(t *testing.T) {
 	}
 }
 
-// Missing image → exit non-zero, build hint.
 func TestStatus_ImageMissing_ExitsNonZero(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initWithImage(t, baseDir)
 
 	deps := newFakeStatusDeps(false, true)
 
@@ -104,8 +98,8 @@ func TestStatus_ImageMissing_ExitsNonZero(t *testing.T) {
 	if !strings.Contains(stderr, "not ready") {
 		t.Errorf("stderr missing 'not ready': %q", stderr)
 	}
-	if !strings.Contains(stderr, "makeslop build") {
-		t.Errorf("stderr missing 'makeslop build' hint: %q", stderr)
+	if !strings.Contains(stderr, `image "test-img" not found locally — build or pull it (e.g. 'docker pull test-img')`) {
+		t.Errorf("stderr missing 'docker pull' hint: %q", stderr)
 	}
 }
 
@@ -116,9 +110,7 @@ func TestStatus_ImageCheckError_ExitsNonZero(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initWithImage(t, baseDir)
 
 	deps := newFakeStatusDepsWithImageErr(errors.New("transport error: dial tcp"))
 
@@ -161,44 +153,57 @@ func TestStatus_WorkspaceNotRegistered_ExitsNonZero(t *testing.T) {
 	}
 }
 
-// A stale base config is non-blocking: warn line, but verdict stays ready.
-func TestStatus_StaleConfig_ReportsWarnButStaysReady(t *testing.T) {
+func TestStatus_LegacyVersionKey_BaseConfigOK(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initWithImage(t, baseDir)
 
-	s, err := config.Load(baseDir)
+	path := filepath.Join(baseDir, config.SettingsFile)
+	raw, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("load settings: %v", err)
+		t.Fatalf("read settings: %v", err)
 	}
-	// Force staleness: Version 0 < ConfigVersion(1).
-	s.Version = 0
-	if err := config.Save(baseDir, s); err != nil {
-		t.Fatalf("save stale settings: %v", err)
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatalf("unmarshal settings: %v", err)
+	}
+	m["version"] = 0
+	legacy, err := json.Marshal(m)
+	if err != nil {
+		t.Fatalf("marshal settings: %v", err)
+	}
+	if err := os.WriteFile(path, legacy, 0o644); err != nil {
+		t.Fatalf("write legacy settings: %v", err)
 	}
 
 	deps := newFakeStatusDeps(false, false)
 
-	_, stderr, statusErr := runCmdWithDeps(t, baseDir, deps, "status")
+	stdout, stderr, statusErr := runCmdWithDeps(t, baseDir, deps, "status", "--json")
 	if statusErr != nil {
-		t.Errorf("status must be ready despite stale config; err=%v stderr=%q", statusErr, stderr)
+		t.Errorf("status must be ready with a legacy version key; err=%v stderr=%q", statusErr, stderr)
 	}
-	if !strings.Contains(stderr, "ready") {
-		t.Errorf("stderr missing 'ready' verdict: %q", stderr)
+	var out statusResult
+	if err := json.Unmarshal([]byte(stdout), &out); err != nil {
+		t.Fatalf("unmarshal status json: %v; stdout=%q", err, stdout)
 	}
-	if strings.Contains(stderr, "not ready") {
-		t.Errorf("stale-config status must not contain 'not ready' (stale is non-blocking): %q", stderr)
+	found := false
+	for _, c := range out.Checks {
+		if c.Name != "base config" {
+			continue
+		}
+		found = true
+		if c.State != checkOK {
+			t.Errorf("base config state = %q, want %q (detail=%q)", c.State, checkOK, c.Detail)
+		}
+		if strings.Contains(c.Detail, "migrate") {
+			t.Errorf("base config detail must not mention migrate: %q", c.Detail)
+		}
 	}
-	if !strings.Contains(stderr, "base config") {
-		t.Errorf("stderr missing 'base config' check: %q", stderr)
-	}
-	if !strings.Contains(stderr, "makeslop migrate") {
-		t.Errorf("stderr missing 'makeslop migrate' hint in base config line: %q", stderr)
+	if !found {
+		t.Errorf("status --json missing 'base config' check: %s", stdout)
 	}
 }
 
@@ -209,9 +214,7 @@ func TestStatus_JSON_Shape(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initWithImage(t, baseDir)
 
 	deps := newFakeStatusDeps(false, false)
 
@@ -256,9 +259,7 @@ func TestStatus_JSON_ReadyField(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initWithImage(t, baseDir)
 
 	deps := newFakeStatusDeps(true, false)
 
@@ -375,9 +376,7 @@ func TestStatus_ExemptFromTTYRequirement(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initWithImage(t, baseDir)
 	deps := newFakeStatusDeps(false, false)
 
 	_, stderr, err := runCmdWithDeps(t, baseDir, deps, "status")
@@ -408,9 +407,7 @@ func TestStatus_Check5_PCErrShowsWarn(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initWithImage(t, baseDir)
 	resolvedPwd := evalSymlinks(t, pwd)
 
 	// Stale network: block that projectconfig.Load rejects.
@@ -445,9 +442,7 @@ func TestStatus_Check5_ScanErrShowsWarn(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initWithImage(t, baseDir)
 	resolvedPwd := evalSymlinks(t, pwd)
 
 	unreadable := filepath.Join(resolvedPwd, "secrets")
@@ -485,9 +480,7 @@ func TestStatus_Check5_MaskedFilesShowsOKWithCount(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initWithImage(t, baseDir)
 	resolvedPwd := evalSymlinks(t, pwd)
 
 	secretFile := filepath.Join(resolvedPwd, ".env")
@@ -554,6 +547,21 @@ func TestStatus_CorruptSettings_WorkspaceShowsCannotCheck(t *testing.T) {
 	}
 }
 
+func TestStatus_CorruptSettings_DaemonDown_ImageShowsSettingsUnreadable(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	t.Chdir(t.TempDir())
+	if err := os.WriteFile(filepath.Join(baseDir, config.SettingsFile), []byte("{not json"), 0o644); err != nil {
+		t.Fatalf("write corrupt settings: %v", err)
+	}
+
+	check, result, err := statusJSONCheck(t, baseDir, newFakeStatusDeps(true, false), "image")
+	assertNotReady(t, result, err)
+	if check.State != checkFail || check.Detail != "cannot check — settings unreadable" {
+		t.Errorf("image check = %+v, want settings-unreadable fail", check)
+	}
+}
+
 // TestStatus_CheckOrdering verifies that the five status checks appear in
 // the documented order: daemon → base config → image → workspace → secret scan.
 // Reordering the checks in runStatus would break the first-failing-check remedy
@@ -564,9 +572,7 @@ func TestStatus_CheckOrdering(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initWithImage(t, baseDir)
 
 	deps := newFakeStatusDeps(false, false)
 
@@ -616,7 +622,7 @@ func TestCheckList_Ok_AppendsAndStaysReady(t *testing.T) {
 func TestCheckList_Fail_ClearsReady(t *testing.T) {
 	cl := &checkList{}
 	cl.ok("daemon", "")
-	cl.fail("image", "run 'makeslop build'")
+	cl.fail("image", "run 'docker pull x'")
 	if cl.ready() {
 		t.Errorf("fail() must clear ready")
 	}
@@ -626,15 +632,15 @@ func TestCheckList_Fail_ClearsReady(t *testing.T) {
 	if cl.checks[1].State != checkFail {
 		t.Errorf("state = %q, want %q", cl.checks[1].State, checkFail)
 	}
-	if cl.checks[1].Detail != "run 'makeslop build'" {
-		t.Errorf("detail = %q, want %q", cl.checks[1].Detail, "run 'makeslop build'")
+	if cl.checks[1].Detail != "run 'docker pull x'" {
+		t.Errorf("detail = %q, want %q", cl.checks[1].Detail, "run 'docker pull x'")
 	}
 }
 
 // warn appends a warn check but does NOT clear ready.
 func TestCheckList_Warn_NonBlocking(t *testing.T) {
 	cl := &checkList{}
-	cl.warn("base config", "stale — run migrate")
+	cl.warn("workspace", "not initialised")
 	if !cl.ready() {
 		t.Errorf("warn() must not clear ready")
 	}
@@ -674,7 +680,7 @@ func TestStatus_RenderNotReadyVerdict(t *testing.T) {
 	var buf bytes.Buffer
 	checks := []statusCheck{
 		{Name: "daemon", State: checkFail, Detail: "run 'docker info'"},
-		{Name: "image", State: checkFail, Detail: "run 'makeslop build'"},
+		{Name: "image", State: checkFail, Detail: "run 'docker pull x'"},
 	}
 	renderChecks(&buf, checks, false, false)
 
@@ -686,11 +692,251 @@ func TestStatus_RenderNotReadyVerdict(t *testing.T) {
 		t.Errorf("verdict must name first failing check remedy: %q", out)
 	}
 	// The second check's remedy may appear in its detail line but not the verdict line.
-	if strings.Contains(out, "run 'makeslop build'") {
+	if strings.Contains(out, "run 'docker pull x'") {
 		lines := strings.Split(strings.TrimSpace(out), "\n")
 		lastLine := lines[len(lines)-1]
-		if strings.Contains(lastLine, "run 'makeslop build'") {
+		if strings.Contains(lastLine, "run 'docker pull x'") {
 			t.Errorf("verdict line must only mention first failing check remedy; got: %q", lastLine)
 		}
+	}
+}
+
+func statusJSONCheck(t *testing.T, baseDir string, deps dockerDeps, name string, args ...string) (statusCheck, statusResult, error) {
+	t.Helper()
+	stdout, stderr, cmdErr := runCmdWithDeps(t, baseDir, deps, append([]string{"status", "--json"}, args...)...)
+	var result statusResult
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("--json output is not valid JSON: %v\nstdout: %s\nstderr: %s", err, stdout, stderr)
+	}
+	for _, c := range result.Checks {
+		if c.Name == name {
+			return c, result, cmdErr
+		}
+	}
+	t.Fatalf("--json missing %q check; got: %+v", name, result.Checks)
+	return statusCheck{}, result, cmdErr
+}
+
+func assertNotReady(t *testing.T, result statusResult, err error) {
+	t.Helper()
+	if !errors.Is(err, errSilent) {
+		t.Errorf("expected errSilent, got %v", err)
+	}
+	if result.Ready {
+		t.Errorf("ready must be false")
+	}
+}
+
+const noImageDetail = "no image configured — run 'makeslop config set image <ref>' or pass -i/--image"
+
+func TestStatus_ImageUnset_FailsWithConfigSetHint(t *testing.T) {
+	for _, daemonDown := range []bool{false, true} {
+		t.Run(fmt.Sprintf("daemonDown=%v", daemonDown), func(t *testing.T) {
+			setHomeToTestParent(t)
+			baseDir := t.TempDir()
+			t.Chdir(t.TempDir())
+			if _, stderr, err := runCmd(t, baseDir, "init"); err != nil {
+				t.Fatalf("init failed: %v; stderr=%q", err, stderr)
+			}
+
+			fc := newFakeDocker(0, false)
+			if daemonDown {
+				fc.PingErr = errors.New("connection refused")
+			}
+			check, result, err := statusJSONCheck(t, baseDir, depsFrom(fc), "image")
+			assertNotReady(t, result, err)
+			if check.State != checkFail || check.Detail != noImageDetail {
+				t.Errorf("image check = %+v, want fail %q", check, noImageDetail)
+			}
+			if fc.ImageChecked != "" {
+				t.Errorf("ImageExists must not be called without an image; got %q", fc.ImageChecked)
+			}
+		})
+	}
+}
+
+func TestStatus_ImageUnset_JSONNotReady(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	t.Chdir(t.TempDir())
+	if _, stderr, err := runCmd(t, baseDir, "init"); err != nil {
+		t.Fatalf("init failed: %v; stderr=%q", err, stderr)
+	}
+
+	check, result, err := statusJSONCheck(t, baseDir, newFakeStatusDeps(false, false), "image")
+	assertNotReady(t, result, err)
+	if check.Detail != noImageDetail {
+		t.Errorf("image detail = %q, want %q", check.Detail, noImageDetail)
+	}
+
+	_, stderr, err := runCmdWithDeps(t, baseDir, newFakeStatusDeps(false, false), "status")
+	if !errors.Is(err, errSilent) {
+		t.Errorf("expected errSilent, got %v", err)
+	}
+	if !strings.Contains(stderr, "not ready — "+noImageDetail) {
+		t.Errorf("verdict must name the config-set hint: %q", stderr)
+	}
+}
+
+func TestStatus_ImageMissing_JSONPullHint(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	t.Chdir(t.TempDir())
+	initWithImage(t, baseDir)
+
+	check, result, err := statusJSONCheck(t, baseDir, newFakeStatusDeps(false, true), "image")
+	assertNotReady(t, result, err)
+	want := `image "test-img" not found locally — build or pull it (e.g. 'docker pull test-img')`
+	if check.State != checkFail || check.Detail != want {
+		t.Errorf("image check = %+v, want fail %q", check, want)
+	}
+}
+
+func TestStatus_ImageFlag_OverridesSettings(t *testing.T) {
+	for _, flag := range []string{"-i", "--image"} {
+		t.Run(flag, func(t *testing.T) {
+			setHomeToTestParent(t)
+			baseDir := t.TempDir()
+			t.Chdir(t.TempDir())
+			initWithImage(t, baseDir)
+
+			fc := newFakeDocker(0, false)
+			check, result, err := statusJSONCheck(t, baseDir, depsFrom(fc), "image", flag, "other:tag")
+			if err != nil || !result.Ready {
+				t.Errorf("status must be fully ready: err=%v ready=%v checks=%+v", err, result.Ready, result.Checks)
+			}
+			if check.State != checkOK {
+				t.Errorf("image check = %+v, want ok", check)
+			}
+			if fc.ImageChecked != "other:tag" {
+				t.Errorf("ImageExists ref = %q, want %q", fc.ImageChecked, "other:tag")
+			}
+		})
+	}
+}
+
+func TestStatus_ImageFlag_Invalid(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	t.Chdir(t.TempDir())
+	initWithImage(t, baseDir)
+
+	fc := newFakeDocker(0, false)
+	check, result, _ := statusJSONCheck(t, baseDir, depsFrom(fc), "image", "-i", "MyImage")
+	if result.Ready || check.State != checkFail || !strings.Contains(check.Detail, "invalid image reference") {
+		t.Errorf("image check = %+v, want fail with invalid image reference", check)
+	}
+	if fc.ImageChecked != "" {
+		t.Errorf("ImageExists must not be called; got ref %q", fc.ImageChecked)
+	}
+}
+
+func TestStatus_ImageFlag_SettingsAbsent(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	t.Chdir(t.TempDir())
+
+	fc := newFakeDocker(0, false)
+	check, result, err := statusJSONCheck(t, baseDir, depsFrom(fc), "image", "-i", "flag-img")
+	assertNotReady(t, result, err) // base config still fails
+	if check.State != checkOK {
+		t.Errorf("image check = %+v, want ok", check)
+	}
+	if fc.ImageChecked != "flag-img" {
+		t.Errorf("ImageExists ref = %q, want %q", fc.ImageChecked, "flag-img")
+	}
+}
+
+func TestStatus_ImageFlag_SettingsCorrupt(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	t.Chdir(t.TempDir())
+	if err := os.WriteFile(filepath.Join(baseDir, config.SettingsFile), []byte("{not json"), 0o644); err != nil {
+		t.Fatalf("write corrupt settings: %v", err)
+	}
+
+	fc := newFakeDocker(0, false)
+	fc.ImageMissing = true
+	check, result, err := statusJSONCheck(t, baseDir, depsFrom(fc), "image", "-i", "flag-img")
+	assertNotReady(t, result, err)
+	want := `image "flag-img" not found locally — build or pull it (e.g. 'docker pull flag-img')`
+	if check.State != checkFail || check.Detail != want {
+		t.Errorf("image check = %+v, want fail %q", check, want)
+	}
+	if fc.ImageChecked != "flag-img" {
+		t.Errorf("ImageExists ref = %q, want %q", fc.ImageChecked, "flag-img")
+	}
+}
+
+func TestStatus_ImageFlag_DaemonDown(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	t.Chdir(t.TempDir())
+
+	fc := newFakeDocker(0, false)
+	fc.PingErr = errors.New("connection refused")
+	check, result, err := statusJSONCheck(t, baseDir, depsFrom(fc), "image", "-i", "flag-img")
+	assertNotReady(t, result, err)
+	if check.State != checkFail || check.Detail != "cannot check — daemon unreachable" {
+		t.Errorf("image check = %+v, want daemon-unreachable fail", check)
+	}
+	if fc.ImageChecked != "" {
+		t.Errorf("ImageExists must not be called with the daemon down; got %q", fc.ImageChecked)
+	}
+}
+
+func TestStatus_SettingsAbsent_NoFlag_NoImageHint(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	t.Chdir(t.TempDir())
+
+	fc := newFakeDocker(0, false)
+	check, result, err := statusJSONCheck(t, baseDir, depsFrom(fc), "image")
+	assertNotReady(t, result, err)
+	if check.State != checkFail || check.Detail != noImageDetail {
+		t.Errorf("image check = %+v, want fail %q", check, noImageDetail)
+	}
+	if fc.ImageChecked != "" {
+		t.Errorf("ImageExists must not be called without an image; got %q", fc.ImageChecked)
+	}
+}
+
+func TestStatus_SettingsUnstatable_ImageShowsSettingsUnreadable(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses directory permissions")
+	}
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	t.Chdir(t.TempDir())
+	initWithImage(t, baseDir)
+	if err := os.Chmod(baseDir, 0o000); err != nil {
+		t.Fatalf("chmod baseDir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(baseDir, 0o755) })
+
+	fc := newFakeDocker(0, false)
+	check, result, err := statusJSONCheck(t, baseDir, depsFrom(fc), "image")
+	assertNotReady(t, result, err)
+	if check.State != checkFail || check.Detail != "cannot check — settings unreadable" {
+		t.Errorf("image check = %+v, want settings-unreadable fail", check)
+	}
+	if fc.ImageChecked != "" {
+		t.Errorf("ImageExists must not be called; got %q", fc.ImageChecked)
+	}
+}
+
+func TestStatus_WhitespaceImage_TreatedAsUnset(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	t.Chdir(t.TempDir())
+	if _, stderr, err := runCmd(t, baseDir, "init"); err != nil {
+		t.Fatalf("init failed: %v; stderr=%q", err, stderr)
+	}
+	writeWhitespaceImage(t, baseDir)
+
+	check, result, err := statusJSONCheck(t, baseDir, newFakeStatusDeps(false, false), "image")
+	assertNotReady(t, result, err)
+	if check.State != checkFail || check.Detail != noImageDetail {
+		t.Errorf("image check = %+v, want fail %q", check, noImageDetail)
 	}
 }

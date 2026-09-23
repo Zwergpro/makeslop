@@ -10,8 +10,9 @@ control, and the home-directory guard. For in-container hardening flags (`--cap-
 - [Secret masking](#secret-masking)
 - [Project-local exclusions](#project-local-exclusions)
   - [Breaking change: path-style patterns rejected](#breaking-change-path-style-patterns-rejected)
-  - [Breaking change: symlinked `.makeslop.yaml` rejected](#breaking-change-symlinked-makeslopya-ml-rejected)
+  - [Breaking change: symlinked `.makeslop.yaml` rejected](#breaking-change-symlinked-makeslopyaml-rejected)
 - [Sandbox-policy protection](#sandbox-policy-protection)
+- [Example image hardening](#example-image-hardening)
 - [Network egress](#network-egress)
 - [Home-directory guard](#home-directory-guard)
 
@@ -181,7 +182,8 @@ launch before docker is invoked.
 ### Breaking change: path-style patterns rejected
 
 Starting with this release, `exclude.scan.patterns` entries that contain a `/` are **rejected with a
-hard error** at startup (`makeslop run`, `makeslop status`):
+hard error** by `makeslop run` (`makeslop status` reports the same error as a secret-scan
+warning):
 
 ```
 projectconfig: scan pattern "secrets/*.pem" contains a path separator — patterns match basenames only
@@ -224,8 +226,8 @@ exclude:
 
 ### Breaking change: symlinked `.makeslop.yaml` rejected
 
-`makeslop run`, `makeslop init`, and `makeslop status` now reject a `.makeslop.yaml` that is a
-symlink (dangling or live) with a hard error:
+`makeslop run` and `makeslop init` now reject a `.makeslop.yaml` that is a symlink (dangling or
+live) with a hard error (`makeslop status` reports it as a non-blocking secret-scan warning):
 
 ```
 projectconfig: .makeslop.yaml is a symlink — the project config must be a regular file
@@ -313,11 +315,17 @@ Both protections are reflected in `--dry-run` output.
 
 ---
 
-## Embedded image hardening
+## Example image hardening
 
-The container image built by `makeslop build` is derived from a pinned Debian base (`debian:trixie-slim`
-referenced by digest) and installs infrastructure tools (Go, Node.js) from official distribution
-tarballs with per-architecture sha256 checksum verification.
+makeslop does not build or ship an image; the image is whatever you configure (see
+[reference.md — Using a custom Docker image](reference.md#using-a-custom-docker-image)). The
+in-container security flags and mounts apply regardless of the image, but what is *inside* the
+image is your responsibility.
+
+The example [`examples/claudebox/Dockerfile`](../examples/claudebox/Dockerfile) is derived from a
+pinned Debian base (`debian:trixie-slim` referenced by digest) and installs infrastructure tools
+(Go, Node.js) from official distribution tarballs with per-architecture sha256 checksum
+verification.
 
 **"Pin infra, float agents" policy:** infrastructure layers whose sha256 is verified at build time
 (base image digest, Go tarball, Node tarball, zsh-in-docker script) are pinned to exact versions
@@ -327,9 +335,8 @@ benefit from receiving the latest agent version on each build. Pinning agent ver
 accepted residual risk (documented maintainer decision).
 
 **Maintaining pins:** when `GO_VERSION` or `NODE_VERSION` is bumped, the corresponding
-per-architecture sha256 values in the `RUN` commands must be updated to match the new release, and
-`ConfigVersion` must be incremented so existing installs pick up the refreshed Dockerfile via
-`makeslop migrate` + `makeslop build`.
+per-architecture sha256 values in the `RUN` commands must be updated to match the new release.
+Users pick up the change by rebuilding their image with `docker build`.
 
 ---
 
@@ -364,6 +371,6 @@ makeslop init --out-of-home
 makeslop run --out-of-home
 ```
 
-`makeslop build`, `makeslop migrate`, `makeslop config`, `makeslop version`, and `makeslop status`
-are **exempt** from the home-directory guard — they operate on `~/.makeslop/` directly and do not
-consult the current working directory. `--out-of-home` is not a valid flag on these commands.
+`makeslop config`, `makeslop version`, `makeslop status`, `makeslop ls`, and `makeslop remove` are
+**exempt** from the home-directory guard — they never register or mount the current working
+directory. `--out-of-home` is not a valid flag on these commands.

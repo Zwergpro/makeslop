@@ -18,8 +18,6 @@ import (
 	"github.com/Zwergpro/makeslop/internal/projectconfig"
 )
 
-// fakeDocker is a boundary fake satisfying all four consumer interfaces, injected
-// via newRootCmdWithDeps.
 type fakeDocker struct {
 	exitCode int
 	isTTY    bool // when false, Run returns docker.ErrNoTTY
@@ -29,10 +27,10 @@ type fakeDocker struct {
 	ImageMissing bool  // ImageExists returns (false, nil)
 	ImageErr     error // ImageExists returns (false, err) unless ImageMissing
 
-	BuildErr      error
-	LastBuildOpts docker.BuildOptions
-
 	LastSpec docker.Spec // set when Run is called (isTTY=true)
+
+	DaemonChecked bool   // set when CheckDaemon is called
+	ImageChecked  string // last ref passed to ImageExists
 }
 
 func newFakeDocker(exitCode int, isTTY bool) *fakeDocker {
@@ -51,22 +49,16 @@ func (f *fakeDocker) Run(_ context.Context, s docker.Spec) error {
 	return nil
 }
 
-func (f *fakeDocker) Build(_ context.Context, o docker.BuildOptions, _ io.Writer) error {
-	f.LastBuildOpts = o
-	if f.BuildErr != nil {
-		return f.BuildErr
-	}
-	return nil
-}
-
 func (f *fakeDocker) CheckDaemon(_ context.Context) error {
+	f.DaemonChecked = true
 	if f.PingErr != nil {
 		return &docker.ErrDaemonUnreachable{Cause: f.PingErr}
 	}
 	return nil
 }
 
-func (f *fakeDocker) ImageExists(_ context.Context, _ string) (bool, error) {
+func (f *fakeDocker) ImageExists(_ context.Context, ref string) (bool, error) {
+	f.ImageChecked = ref
 	if f.ImageMissing {
 		return false, nil
 	}
@@ -90,6 +82,27 @@ func runCmd(t *testing.T, baseDir string, args ...string) (stdout, stderr string
 	return out.String(), errBuf.String(), err
 }
 
+func initWithImage(t *testing.T, baseDir string) string {
+	t.Helper()
+	initOut, stderr, err := runCmd(t, baseDir, "init")
+	if err != nil {
+		t.Fatalf("init failed: %v; stderr=%q", err, stderr)
+	}
+	if _, stderr, err := runCmd(t, baseDir, "config", "set", "image", "test-img"); err != nil {
+		t.Fatalf("config set image failed: %v; stderr=%q", err, stderr)
+	}
+	return initOut
+}
+
+// Write directly because config set rejects whitespace-only images.
+func writeWhitespaceImage(t *testing.T, baseDir string) {
+	t.Helper()
+	data := []byte(`{"image":"   ","workspaces":{}}`)
+	if err := os.WriteFile(filepath.Join(baseDir, config.SettingsFile), data, 0o644); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+}
+
 func runCmdWithDeps(t *testing.T, baseDir string, deps dockerDeps, args ...string) (stdout, stderr string, err error) {
 	t.Helper()
 	cmd := newRootCmdWithDeps(baseDir, deps)
@@ -102,7 +115,7 @@ func runCmdWithDeps(t *testing.T, baseDir string, deps dockerDeps, args ...strin
 }
 
 func depsFrom(f *fakeDocker) dockerDeps {
-	return dockerDeps{runner: f, builder: f, daemon: f, image: f}
+	return dockerDeps{runner: f, daemon: f, image: f}
 }
 
 // runWithExitCodeAndDeps mirrors runWithExitCode with injected deps and a plain
@@ -244,30 +257,21 @@ func mapKeys(m map[string][]byte) []string {
 	return keys
 }
 
-func TestRoot_BareInvocation_ListsMigrateCommand(t *testing.T) {
+func TestRoot_RemovedCommands_Unknown(t *testing.T) {
 	baseDir := t.TempDir()
 
-	stdout, stderr, err := runCmd(t, baseDir) // no args
+	help, stderr, err := runCmd(t, baseDir)
 	if err != nil {
-		t.Fatalf("bare makeslop should exit 0, got err: %v; stdout=%q stderr=%q", err, stdout, stderr)
+		t.Fatalf("bare makeslop should exit 0, got err: %v; stderr=%q", err, stderr)
 	}
-	if !strings.Contains(stdout, "\n  migrate ") {
-		t.Errorf("stdout missing '\\n  migrate ' command entry: %q", stdout)
-	}
-}
-
-func TestRoot_BareInvocation_ListsBuildCommand(t *testing.T) {
-	baseDir := t.TempDir()
-
-	stdout, stderr, err := runCmd(t, baseDir) // no args
-	if err != nil {
-		t.Fatalf("bare makeslop should exit 0, got err: %v; stdout=%q stderr=%q", err, stdout, stderr)
-	}
-	if !strings.Contains(stdout, "\n  build ") {
-		t.Errorf("stdout missing '\\n  build ' command entry: %q", stdout)
-	}
-	if stderr != "" {
-		t.Errorf("expected empty stderr, got %q", stderr)
+	for _, name := range []string{"build", "migrate"} {
+		if strings.Contains(help, "\n  "+name+" ") {
+			t.Errorf("help must not list %q: %q", name, help)
+		}
+		_, _, err := runCmd(t, baseDir, name)
+		if err == nil || !strings.Contains(err.Error(), "unknown command") {
+			t.Errorf("%s: expected unknown command error, got %v", name, err)
+		}
 	}
 }
 
@@ -375,9 +379,7 @@ func TestRunWithExitCode_DaemonReports137_MapsTo137(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initWithImage(t, baseDir)
 
 	fc := newFakeDocker(137, true)
 
@@ -447,47 +449,6 @@ func TestRunWithExitCode_VersionSucceeds(t *testing.T) {
 
 // ── Quiet tests (cross-cutting) ───────────────────────────────────────────────
 
-// --quiet suppresses the stale-config nudge (chrome) but not errors.
-func TestQuiet_SuppressesInitNudge(t *testing.T) {
-	setHomeToTestParent(t)
-	baseDir := t.TempDir()
-	pwd := t.TempDir()
-	t.Chdir(pwd)
-
-	// Version: 0 forces staleness since 0 < ConfigVersion(1).
-	s := &config.Settings{
-		Version:    0, // stale
-		Image:      config.DefaultImage,
-		Shell:      config.DefaultShell,
-		TmpDirSize: config.DefaultTmpDirSize,
-		Workspaces: map[string]config.Workspace{},
-	}
-	if err := config.Save(baseDir, s); err != nil {
-		t.Fatalf("seed stale settings: %v", err)
-	}
-
-	_, stderrNoQuiet, err := runCmd(t, baseDir, "init")
-	if err != nil {
-		t.Fatalf("init failed: %v; stderr=%q", err, stderrNoQuiet)
-	}
-	if !strings.Contains(stderrNoQuiet, "note: your base config is") {
-		t.Errorf("expected nudge on stderr without --quiet; got: %q", stderrNoQuiet)
-	}
-
-	s.Version = 0 // re-seed stale for the next call
-	if err := config.Save(baseDir, s); err != nil {
-		t.Fatalf("re-seed stale settings: %v", err)
-	}
-
-	_, stderrQuiet, err := runCmd(t, baseDir, "--quiet", "init")
-	if err != nil {
-		t.Fatalf("init --quiet failed: %v; stderr=%q", err, stderrQuiet)
-	}
-	if strings.Contains(stderrQuiet, "note: your base config is") {
-		t.Errorf("--quiet must suppress nudge; got: %q", stderrQuiet)
-	}
-}
-
 // --quiet suppresses the "masked N" notice but the /dev/null mounts still appear.
 func TestQuiet_SuppressesMaskedCount(t *testing.T) {
 	setHomeToTestParent(t)
@@ -495,9 +456,7 @@ func TestQuiet_SuppressesMaskedCount(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initWithImage(t, baseDir)
 	resolvedPwd := evalSymlinks(t, pwd)
 
 	envFile := filepath.Join(resolvedPwd, ".env")
@@ -556,6 +515,30 @@ func TestQuiet_SuppressesRegisteredNotice(t *testing.T) {
 	}
 }
 
+func TestQuiet_SuppressesInitImageNote(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	if _, stderr, err := runCmd(t, baseDir, "init"); err != nil {
+		t.Fatalf("init failed: %v; stderr=%q", err, stderr)
+	} else if !strings.Contains(stderr, "no image configured") {
+		t.Errorf("without --quiet the no-image note must print; stderr=%q", stderr)
+	}
+
+	stdout, stderr, err := runCmd(t, baseDir, "--quiet", "init")
+	if err != nil {
+		t.Fatalf("init --quiet failed: %v; stderr=%q", err, stderr)
+	}
+	if strings.Contains(stderr, "no image configured") {
+		t.Errorf("--quiet must suppress the no-image note; stderr=%q", stderr)
+	}
+	if strings.TrimSpace(stdout) == "" {
+		t.Errorf("stdout must contain the workspace path even with --quiet; got empty")
+	}
+}
+
 // ── Error-voice tests (cross-cutting) ────────────────────────────────────────
 
 // Error-voice format "makeslop: <what> — <remedy>" with the --out-of-home flag named.
@@ -589,7 +572,7 @@ func TestErrorVoice_NoWorkspace_ContainsRemedy(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	_, stderr, err := runCmd(t, baseDir, "run")
+	_, stderr, err := runCmd(t, baseDir, "run", "-i", "test-img")
 	if err == nil {
 		t.Fatalf("expected error from run with no workspace")
 	}
@@ -611,9 +594,7 @@ func TestErrorVoice_NoTTY_ContainsRemedy(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initWithImage(t, baseDir)
 	fc := newFakeDocker(0, false)
 
 	_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fc), "run")
@@ -638,9 +619,7 @@ func TestErrorVoice_DaemonDown_ContainsRemedy(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initWithImage(t, baseDir)
 
 	fc := newFakeDocker(0, true)
 	fc.PingErr = errors.New("connection refused")
@@ -660,16 +639,32 @@ func TestErrorVoice_DaemonDown_ContainsRemedy(t *testing.T) {
 	}
 }
 
-// Error-voice format with a 'makeslop build' remedy.
+func TestErrorVoice_NoImage_ContainsRemedy(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	t.Chdir(t.TempDir())
+	if _, stderr, err := runCmd(t, baseDir, "init"); err != nil {
+		t.Fatalf("init failed: %v; stderr=%q", err, stderr)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := runWithExitCodeAndDeps(baseDir, &stdout, &stderr, depsFrom(newFakeDocker(0, true)), []string{"run"})
+	if code != 1 {
+		t.Errorf("exit code = %d, want 1", code)
+	}
+	want := "makeslop: no image configured — run 'makeslop config set image <ref>' or pass -i/--image\n"
+	if stderr.String() != want {
+		t.Errorf("stderr = %q, want %q", stderr.String(), want)
+	}
+}
+
 func TestErrorVoice_ImageMissing_ContainsRemedy(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initWithImage(t, baseDir)
 
 	fc := newFakeDocker(0, true)
 	fc.ImageMissing = true
@@ -684,7 +679,7 @@ func TestErrorVoice_ImageMissing_ContainsRemedy(t *testing.T) {
 	if !strings.Contains(stderr, " — ") {
 		t.Errorf("image-missing error must contain em-dash remedy separator ' — '; got: %q", stderr)
 	}
-	if !strings.Contains(stderr, "makeslop build") {
-		t.Errorf("image-missing remedy must mention 'makeslop build'; got: %q", stderr)
+	if !strings.Contains(stderr, "build or pull it (e.g. 'docker pull test-img')") {
+		t.Errorf("image-missing remedy must mention build or pull; got: %q", stderr)
 	}
 }

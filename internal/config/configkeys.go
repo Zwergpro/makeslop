@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/distribution/reference"
 )
 
 // tmpDirSizeRe validates docker --tmpfs size values: digits with an optional
@@ -43,12 +45,28 @@ var configKeys = []configKey{
 	},
 }
 
+// NormalizeImage accepts an empty value so callers can try another source.
+// Validate before rendering dry-run output to keep flag-shaped values out of it.
+func NormalizeImage(v string) (string, error) {
+	ref := strings.TrimSpace(v)
+	if ref == "" {
+		return "", nil
+	}
+	if _, err := reference.ParseDockerRef(ref); err != nil {
+		return "", fmt.Errorf("invalid image reference %q: %w", ref, err)
+	}
+	return ref, nil
+}
+
 func setImage(s *Settings, v string) error {
-	trimmed := strings.TrimSpace(v)
-	if trimmed == "" {
+	ref, err := NormalizeImage(v)
+	if err != nil {
+		return fmt.Errorf("image: %w", err)
+	}
+	if ref == "" {
 		return fmt.Errorf("image: value must not be empty or whitespace-only")
 	}
-	s.Image = trimmed
+	s.Image = ref
 	return nil
 }
 

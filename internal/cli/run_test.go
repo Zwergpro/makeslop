@@ -47,7 +47,7 @@ func TestRun_NotRegistered_NoMutation(t *testing.T) {
 		t.Fatalf("baseDir not empty before run: %v", beforeFiles)
 	}
 
-	stdout, stderr, err := runCmd(t, baseDir, "run")
+	stdout, stderr, err := runCmd(t, baseDir, "run", "-i", "test-img")
 	if err == nil {
 		t.Fatalf("expected error from makeslop go, got nil; stdout=%q stderr=%q", stdout, stderr)
 	}
@@ -77,10 +77,7 @@ func TestRun_AfterInit_LaunchesDocker(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	initOut, _, err := runCmd(t, baseDir, "init")
-	if err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initOut := initWithImage(t, baseDir)
 	workspaceDir := strings.TrimSpace(initOut)
 
 	fc := newFakeDocker(0, true)
@@ -130,10 +127,7 @@ func TestRun_FromSubdirectory_MountsRegisteredAncestor(t *testing.T) {
 	baseDir := t.TempDir()
 	parent := t.TempDir()
 	t.Chdir(parent)
-	initOut, _, err := runCmd(t, baseDir, "init")
-	if err != nil {
-		t.Fatalf("parent init failed: %v", err)
-	}
+	initOut := initWithImage(t, baseDir)
 	workspaceDir := strings.TrimSpace(initOut)
 
 	sub := filepath.Join(parent, "deeply", "nested")
@@ -179,7 +173,7 @@ func TestRun_Unregistered_DoesNotInvokeDocker(t *testing.T) {
 
 	fc := newFakeDocker(0, true)
 
-	_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fc), "run")
+	_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fc), "run", "-i", "test-img")
 	if err == nil {
 		t.Fatalf("expected error from unregistered makeslop go, got nil")
 	}
@@ -198,9 +192,7 @@ func TestRun_NoTTY_FailsBeforeDocker(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initWithImage(t, baseDir)
 	fc := newFakeDocker(0, false)
 
 	_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fc), "run")
@@ -227,9 +219,7 @@ func TestRun_ExitCodePropagation(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initWithImage(t, baseDir)
 	fc := newFakeDocker(42, true)
 
 	var stdout, stderr bytes.Buffer
@@ -246,9 +236,7 @@ func TestRun_CustomImageAndShell_FlowFromSettings(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initWithImage(t, baseDir)
 	s, err := config.Load(baseDir)
 	if err != nil {
 		t.Fatalf("load settings: %v", err)
@@ -307,7 +295,7 @@ func TestRun_NotRegistered_ReturnsErrSilent(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	_, stderr, err := runCmd(t, baseDir, "run")
+	_, stderr, err := runCmd(t, baseDir, "run", "-i", "test-img")
 	if err == nil {
 		t.Fatalf("expected error from makeslop go, got nil")
 	}
@@ -369,6 +357,9 @@ func TestOutOfHomeFlag_Bypasses(t *testing.T) {
 	if strings.Contains(stderr, "refusing to run") {
 		t.Errorf("init --out-of-home: stderr unexpectedly contains 'refusing to run': %q", stderr)
 	}
+	if _, stderr, err := runCmd(t, baseDir, "config", "set", "image", "test-img"); err != nil {
+		t.Fatalf("config set image failed: %v; stderr=%q", err, stderr)
+	}
 
 	fc := newFakeDocker(0, true)
 
@@ -390,10 +381,7 @@ func TestRun_MasksFoundEnvFiles_ArgvContainsDevNullMounts(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	initOut, _, err := runCmd(t, baseDir, "init")
-	if err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initOut := initWithImage(t, baseDir)
 	workspaceDir := strings.TrimSpace(initOut)
 
 	resolvedPwd := evalSymlinks(t, pwd)
@@ -455,9 +443,7 @@ func TestRun_NoEnvFiles_PrintsNothingExtraOnStderr(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initWithImage(t, baseDir)
 
 	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
 	if err != nil {
@@ -560,9 +546,7 @@ func TestRun_DryRun_SkipsDocker(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initWithImage(t, baseDir)
 
 	fc := newFakeDocker(0, false)
 
@@ -585,10 +569,7 @@ func TestRun_DryRun_StdoutEqualsBuildSpecShellCommand(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	initOut, _, err := runCmd(t, baseDir, "init")
-	if err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initOut := initWithImage(t, baseDir)
 	workspaceDir := strings.TrimSpace(initOut)
 
 	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
@@ -628,9 +609,7 @@ func TestRun_DryRun_ShortFlag(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initWithImage(t, baseDir)
 
 	stdoutLong, stderrLong, errLong := runCmd(t, baseDir, "run", "--dry-run")
 	if errLong != nil {
@@ -655,9 +634,7 @@ func TestRun_DryRun_NoTTY_Succeeds(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initWithImage(t, baseDir)
 
 	// Real ttyCheck returns false under go test; docker.Run must never be reached.
 	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
@@ -675,7 +652,7 @@ func TestRun_DryRun_Unregistered_StillRefuses(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd) // no init — workspace not registered
 
-	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
+	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run", "-i", "test-img")
 	if err == nil {
 		t.Fatalf("expected error for unregistered workspace, got nil; stdout=%q", stdout)
 	}
@@ -725,9 +702,7 @@ func TestRun_DryRun_OutOfHomeBypasses(t *testing.T) {
 
 	insidePwd := t.TempDir()
 	t.Chdir(insidePwd)
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init inside home failed: %v", err)
-	}
+	initWithImage(t, baseDir)
 
 	newHome := t.TempDir()
 	t.Setenv("HOME", evalSymlinks(t, newHome))
@@ -754,9 +729,7 @@ func TestRun_DryRun_CorruptSettings(t *testing.T) {
 	t.Chdir(pwd)
 
 	// Register, then corrupt settings so ws.Lookup fails.
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initWithImage(t, baseDir)
 	if err := os.WriteFile(filepath.Join(baseDir, "settings.json"), []byte("{not json"), 0o644); err != nil {
 		t.Fatalf("corrupt settings: %v", err)
 	}
@@ -780,10 +753,7 @@ func TestRun_DryRun_MasksEnvFiles_StdoutContainsDevNullMounts(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	initOut, _, err := runCmd(t, baseDir, "init")
-	if err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initOut := initWithImage(t, baseDir)
 	workspaceDir := strings.TrimSpace(initOut)
 
 	resolvedPwd := evalSymlinks(t, pwd)
@@ -845,10 +815,7 @@ func TestRun_DryRun_FromSubdir_MountsAncestor(t *testing.T) {
 	parent := t.TempDir()
 	t.Chdir(parent)
 
-	initOut, _, err := runCmd(t, baseDir, "init")
-	if err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initOut := initWithImage(t, baseDir)
 	workspaceDir := strings.TrimSpace(initOut)
 
 	sub := filepath.Join(parent, "deeply", "nested")
@@ -878,9 +845,7 @@ func TestRun_EmptyScanPatterns_NoFilesMasked(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initWithImage(t, baseDir)
 	resolvedPwd := evalSymlinks(t, pwd)
 
 	envFile := filepath.Join(resolvedPwd, ".env")
@@ -910,10 +875,7 @@ func TestRun_LoadsYamlAndMergesMaskedFiles(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	initOut, _, err := runCmd(t, baseDir, "init")
-	if err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initOut := initWithImage(t, baseDir)
 	workspaceDir := strings.TrimSpace(initOut)
 	resolvedPwd := evalSymlinks(t, pwd)
 
@@ -968,9 +930,7 @@ func TestRun_BadScanPattern_AbortsBeforeDocker(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initWithImage(t, baseDir)
 	resolvedPwd := evalSymlinks(t, pwd)
 
 	// Invalid glob (unclosed bracket).
@@ -991,10 +951,7 @@ func TestRun_LoadsYamlMaskedDirs_TmpfsMountInArgv(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	initOut, _, err := runCmd(t, baseDir, "init")
-	if err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initOut := initWithImage(t, baseDir)
 	workspaceDir := strings.TrimSpace(initOut)
 	resolvedPwd := evalSymlinks(t, pwd)
 
@@ -1041,10 +998,7 @@ func TestRun_YamlAbsentIsBitIdenticalArgv(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	initOut, _, err := runCmd(t, baseDir, "init")
-	if err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initOut := initWithImage(t, baseDir)
 	workspaceDir := strings.TrimSpace(initOut)
 	resolvedPwd := evalSymlinks(t, pwd)
 
@@ -1086,10 +1040,7 @@ func TestRun_YamlDedupsAgainstScan(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	initOut, _, err := runCmd(t, baseDir, "init")
-	if err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initOut := initWithImage(t, baseDir)
 	workspaceDir := strings.TrimSpace(initOut)
 	resolvedPwd := evalSymlinks(t, pwd)
 
@@ -1127,9 +1078,7 @@ func TestRun_YamlMalformedAbortsBeforeDocker(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initWithImage(t, baseDir)
 	resolvedPwd := evalSymlinks(t, pwd)
 
 	badYAML := []byte("exclude:\n  dirs: [unclosed\n")
@@ -1159,9 +1108,7 @@ func TestRun_YamlReservedPathAbortsBeforeDocker(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initWithImage(t, baseDir)
 	resolvedPwd := evalSymlinks(t, pwd)
 
 	yamlContent := "exclude:\n  dirs: [.claude]\n  files: []\n"
@@ -1191,9 +1138,7 @@ func TestRun_YamlDirAndFileDupAborts(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initWithImage(t, baseDir)
 	resolvedPwd := evalSymlinks(t, pwd)
 
 	yamlContent := "exclude:\n  dirs: [data]\n  files: [data]\n"
@@ -1224,9 +1169,7 @@ func TestRun_StaleNetworkBlockAbortsBeforeDocker(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initWithImage(t, baseDir)
 	resolvedPwd := evalSymlinks(t, pwd)
 
 	staleYAML := "exclude:\n  dirs: []\n  files: []\nnetwork:\n  proxy:\n    address: 10.0.0.5:3128\n"
@@ -1255,9 +1198,7 @@ func TestRun_YamlMissingPathSkippedSilently(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initWithImage(t, baseDir)
 	resolvedPwd := evalSymlinks(t, pwd)
 
 	yamlContent := "exclude:\n  dirs: []\n  files: [secrets/api.key]\n"
@@ -1285,10 +1226,7 @@ func TestRun_DryRun_DefaultIsBridge(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	initOut, _, err := runCmd(t, baseDir, "init")
-	if err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initOut := initWithImage(t, baseDir)
 	workspaceDir := strings.TrimSpace(initOut)
 	resolvedPwd := evalSymlinks(t, pwd)
 
@@ -1336,10 +1274,7 @@ func TestRun_DryRunIncludesMaskedDirs(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	initOut, _, err := runCmd(t, baseDir, "init")
-	if err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initOut := initWithImage(t, baseDir)
 	workspaceDir := strings.TrimSpace(initOut)
 	resolvedPwd := evalSymlinks(t, pwd)
 
@@ -1379,9 +1314,7 @@ func TestRun_DaemonDown_AbortsWithRemedy(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initWithImage(t, baseDir)
 
 	fc := newFakeDocker(0, true)
 	fc.PingErr = errors.New("connection refused")
@@ -1401,16 +1334,13 @@ func TestRun_DaemonDown_AbortsWithRemedy(t *testing.T) {
 	}
 }
 
-// Missing image: run aborts with the build remedy; no auto-build, no container.
 func TestRun_ImageMissing_AbortsWithRemedy(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initWithImage(t, baseDir)
 
 	fc := newFakeDocker(0, true)
 	fc.ImageMissing = true
@@ -1422,28 +1352,24 @@ func TestRun_ImageMissing_AbortsWithRemedy(t *testing.T) {
 	if !errors.Is(err, errSilent) {
 		t.Errorf("expected errSilent (tailored message written to stderr), got %v", err)
 	}
-	if !strings.Contains(stderr, "not built") {
-		t.Errorf("stderr missing 'not built': %q", stderr)
+	if !strings.Contains(stderr, `image "test-img" not found locally`) {
+		t.Errorf("stderr missing 'not found locally': %q", stderr)
 	}
-	if !strings.Contains(stderr, "makeslop build") {
-		t.Errorf("stderr missing 'makeslop build' remedy: %q", stderr)
+	if !strings.Contains(stderr, "build or pull it (e.g. 'docker pull test-img')") {
+		t.Errorf("stderr missing 'docker pull' remedy: %q", stderr)
 	}
 	if fc.Started {
 		t.Errorf("docker container must not be started when image is missing")
 	}
 }
 
-// A non-not-found ImageExists error must report "is docker running?" (not "not
-// built"), distinguishing a store/daemon error from a genuinely missing image.
 func TestRun_ImageOtherError_PropagatesError(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initWithImage(t, baseDir)
 
 	fc := newFakeDocker(0, true)
 	fc.ImageErr = errors.New("permission denied reading image store")
@@ -1458,8 +1384,8 @@ func TestRun_ImageOtherError_PropagatesError(t *testing.T) {
 	if !strings.Contains(stderr, "is docker running?") {
 		t.Errorf("image other-error must emit 'is docker running?' hint; stderr=%q", stderr)
 	}
-	if strings.Contains(stderr, "not built") {
-		t.Errorf("image other-error must not emit 'not built' hint; stderr=%q", stderr)
+	if strings.Contains(stderr, "not found locally") {
+		t.Errorf("image other-error must not emit 'not found locally' hint; stderr=%q", stderr)
 	}
 	if fc.Started {
 		t.Errorf("docker container must not be started when ImageExists returns error")
@@ -1474,9 +1400,7 @@ func TestRun_DryRun_SkipsDaemonAndImageCheck(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initWithImage(t, baseDir)
 
 	fc := newFakeDocker(0, false)
 	fc.PingErr = errors.New("connection refused")
@@ -1501,9 +1425,7 @@ func TestRun_HappyPath_LaunchesDocker(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initWithImage(t, baseDir)
 
 	fc := newFakeDocker(0, true)
 
@@ -1526,10 +1448,7 @@ func TestRun_DryRun_CacheDisabled(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	initOut, _, err := runCmd(t, baseDir, "init")
-	if err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initOut := initWithImage(t, baseDir)
 	workspaceDir := strings.TrimSpace(initOut)
 	workspaceName := filepath.Base(workspaceDir)
 
@@ -1580,10 +1499,7 @@ func TestRun_DryRun_CacheDefault(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	initOut, _, err := runCmd(t, baseDir, "init")
-	if err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initOut := initWithImage(t, baseDir)
 	workspaceDir := strings.TrimSpace(initOut)
 	workspaceName := filepath.Base(workspaceDir)
 
@@ -1627,10 +1543,7 @@ func TestRun_DryRun_CacheMixed(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	initOut, _, err := runCmd(t, baseDir, "init")
-	if err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initOut := initWithImage(t, baseDir)
 	workspaceDir := strings.TrimSpace(initOut)
 	workspaceName := filepath.Base(workspaceDir)
 
@@ -1674,9 +1587,7 @@ func TestRun_CustomTmpDirSize_FlowsIntoDockerArgv(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initWithImage(t, baseDir)
 	s, err := config.Load(baseDir)
 	if err != nil {
 		t.Fatalf("load settings: %v", err)
@@ -1705,10 +1616,7 @@ func TestRun_EnvironmentsBlock_ProducesEnvFlags(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	initOut, _, err := runCmd(t, baseDir, "init")
-	if err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initOut := initWithImage(t, baseDir)
 	workspaceDir := strings.TrimSpace(initOut)
 
 	resolvedPwd := evalSymlinks(t, pwd)
@@ -1744,9 +1652,7 @@ func TestRun_NoEnvironmentsBlock_NoEnvFlags(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initWithImage(t, baseDir)
 
 	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
 	if err != nil {
@@ -1770,10 +1676,7 @@ func TestRun_GitAndConfig_BothSandboxMounts(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	initOut, _, err := runCmd(t, baseDir, "init")
-	if err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initOut := initWithImage(t, baseDir)
 	workspaceDir := strings.TrimSpace(initOut)
 	workspaceName := filepath.Base(workspaceDir)
 	resolvedPwd := evalSymlinks(t, pwd)
@@ -1826,10 +1729,7 @@ func TestRun_NoGit_NoHooksMask(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	initOut, _, err := runCmd(t, baseDir, "init")
-	if err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initOut := initWithImage(t, baseDir)
 	workspaceDir := strings.TrimSpace(initOut)
 	workspaceName := filepath.Base(workspaceDir)
 	resolvedPwd := evalSymlinks(t, pwd)
@@ -1860,10 +1760,7 @@ func TestRun_NoConfig_NoConfigMount(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	initOut, _, err := runCmd(t, baseDir, "init")
-	if err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initOut := initWithImage(t, baseDir)
 	workspaceDir := strings.TrimSpace(initOut)
 	workspaceName := filepath.Base(workspaceDir)
 	resolvedPwd := evalSymlinks(t, pwd)
@@ -1896,10 +1793,7 @@ func TestRun_GitFile_NoHooksMask(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	initOut, _, err := runCmd(t, baseDir, "init")
-	if err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initOut := initWithImage(t, baseDir)
 	workspaceDir := strings.TrimSpace(initOut)
 	workspaceName := filepath.Base(workspaceDir)
 	resolvedPwd := evalSymlinks(t, pwd)
@@ -1933,9 +1827,7 @@ func TestRun_QuietContract_SuppressesMaskedButNotSymlinkWarnings(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initWithImage(t, baseDir)
 	resolvedPwd := evalSymlinks(t, pwd)
 
 	// Create a real .env so the scan finds 1 match for the chrome line.
@@ -1986,10 +1878,7 @@ func TestRun_DryRun_SandboxMountsPresent(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	initOut, _, err := runCmd(t, baseDir, "init")
-	if err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initOut := initWithImage(t, baseDir)
 	workspaceDir := strings.TrimSpace(initOut)
 	workspaceName := filepath.Base(workspaceDir)
 	resolvedPwd := evalSymlinks(t, pwd)
@@ -2033,9 +1922,7 @@ func TestRun_QuietContract_BothWarningSources(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initWithImage(t, baseDir)
 	resolvedPwd := evalSymlinks(t, pwd)
 
 	// Source 1 (security.Scan): a symlink whose basename matches a scan pattern.
@@ -2085,9 +1972,7 @@ func TestRun_ConfigAsSymlink_FailsLoud(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initWithImage(t, baseDir)
 	resolvedPwd := evalSymlinks(t, pwd)
 
 	// Replace .makeslop.yaml with a live symlink pointing to a valid config file.
@@ -2121,9 +2006,7 @@ func TestRun_ProjectconfigSymlinkWarning(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initWithImage(t, baseDir)
 	resolvedPwd := evalSymlinks(t, pwd)
 
 	// Create a symlink that will be listed in exclude.files.
@@ -2168,9 +2051,7 @@ func TestRun_DaemonCheckedBeforeYamlParse(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initWithImage(t, baseDir)
 	resolvedPwd := evalSymlinks(t, pwd)
 
 	// Plant an invalid .makeslop.yaml so that a YAML parse error would occur
@@ -2270,9 +2151,7 @@ func TestRun_DryRun_DaemonDown_StillPrints(t *testing.T) {
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
-	if _, _, err := runCmd(t, baseDir, "init"); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
+	initWithImage(t, baseDir)
 
 	// Daemon unreachable AND TTY false (typical in CI / go test).
 	fc := newFakeDocker(0, false)
@@ -2341,5 +2220,177 @@ func TestReportScanResults_RelFallbackToAbsolute(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "symlink") {
 		t.Errorf("stderr missing 'symlink' warning: %q", stderr.String())
+	}
+}
+
+func TestRun_ImageFlag_OverridesSettings(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	initWithImage(t, baseDir)
+
+	fc := newFakeDocker(0, true)
+
+	_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fc), "run", "-i", "flag-img:1")
+	if err != nil {
+		t.Fatalf("run -i failed: %v; stderr=%q", err, stderr)
+	}
+	if fc.LastSpec.Image != "flag-img:1" {
+		t.Errorf("LastSpec.Image = %q, want %q", fc.LastSpec.Image, "flag-img:1")
+	}
+	if fc.ImageChecked != "flag-img:1" {
+		t.Errorf("image preflight checked %q, want %q", fc.ImageChecked, "flag-img:1")
+	}
+}
+
+func TestRun_ImageFlag_NoSettingsImage(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	if _, stderr, err := runCmd(t, baseDir, "init"); err != nil {
+		t.Fatalf("init failed: %v; stderr=%q", err, stderr)
+	}
+
+	fc := newFakeDocker(0, true)
+
+	_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fc), "run", "-i", "flag-img")
+	if err != nil {
+		t.Fatalf("run -i failed: %v; stderr=%q", err, stderr)
+	}
+	if fc.LastSpec.Image != "flag-img" {
+		t.Errorf("LastSpec.Image = %q, want %q", fc.LastSpec.Image, "flag-img")
+	}
+	if fc.ImageChecked != "flag-img" {
+		t.Errorf("image preflight checked %q, want %q", fc.ImageChecked, "flag-img")
+	}
+}
+
+func TestRun_WhitespaceImage_TreatedAsUnset(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	if _, stderr, err := runCmd(t, baseDir, "init"); err != nil {
+		t.Fatalf("init failed: %v; stderr=%q", err, stderr)
+	}
+	writeWhitespaceImage(t, baseDir)
+
+	fc := newFakeDocker(0, true)
+	if _, _, err := runCmdWithDeps(t, baseDir, depsFrom(fc), "run"); !errors.Is(err, errNoImage) {
+		t.Fatalf("expected errNoImage, got %v", err)
+	}
+	if fc.DaemonChecked || fc.Started {
+		t.Error("docker must not be called when the image is whitespace-only")
+	}
+}
+
+func TestRun_ImageFlag_DryRunShowsOverride(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	initWithImage(t, baseDir)
+
+	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run", "--image", "flag-img:1")
+	if err != nil {
+		t.Fatalf("run --dry-run --image failed: %v; stderr=%q", err, stderr)
+	}
+	if !strings.Contains(stdout, "flag-img:1") {
+		t.Errorf("--dry-run output missing flag image; stdout=%q", stdout)
+	}
+	if strings.Contains(stdout, "test-img") {
+		t.Errorf("--dry-run output must not contain the settings image; stdout=%q", stdout)
+	}
+}
+
+func TestRun_InvalidImageFlag_RejectedBeforeDocker(t *testing.T) {
+	for _, args := range [][]string{
+		{"run", "--dry-run", "-i=--privileged"},
+		{"run", "--image", "MyImage:latest"},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			setHomeToTestParent(t)
+			baseDir := t.TempDir()
+			t.Chdir(t.TempDir())
+			initWithImage(t, baseDir)
+
+			fc := newFakeDocker(0, true)
+			stdout, _, err := runCmdWithDeps(t, baseDir, depsFrom(fc), args...)
+			if err == nil || !strings.Contains(err.Error(), "invalid image reference") {
+				t.Fatalf("err = %v, want invalid image reference", err)
+			}
+			if stdout != "" {
+				t.Errorf("stdout must be empty; got %q", stdout)
+			}
+			if fc.DaemonChecked || fc.ImageChecked != "" || fc.Started {
+				t.Error("docker must not be called for an invalid image reference")
+			}
+		})
+	}
+}
+
+func TestRun_NoImage_FailsBeforeDocker(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{"run", []string{"run"}},
+		{"dry-run", []string{"run", "--dry-run"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			setHomeToTestParent(t)
+			baseDir := t.TempDir()
+			pwd := t.TempDir()
+			t.Chdir(pwd)
+
+			if _, stderr, err := runCmd(t, baseDir, "init"); err != nil {
+				t.Fatalf("init failed: %v; stderr=%q", err, stderr)
+			}
+
+			fc := newFakeDocker(0, true)
+
+			stdout, _, err := runCmdWithDeps(t, baseDir, depsFrom(fc), tc.args...)
+			if !errors.Is(err, errNoImage) {
+				t.Fatalf("expected errNoImage, got %v", err)
+			}
+			if !strings.Contains(err.Error(), "config set image") {
+				t.Errorf("error missing 'config set image' hint: %q", err.Error())
+			}
+			if stdout != "" {
+				t.Errorf("stdout must be empty; got %q", stdout)
+			}
+			if fc.DaemonChecked {
+				t.Error("daemon preflight must not run when no image is configured")
+			}
+			if fc.ImageChecked != "" || fc.Started {
+				t.Error("image preflight and runner must not be called when no image is configured")
+			}
+		})
+	}
+}
+
+func TestRun_NoImage_Unregistered_ImageErrorWins(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	fc := newFakeDocker(0, true)
+
+	_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fc), "run")
+	if !errors.Is(err, errNoImage) {
+		t.Fatalf("expected errNoImage, got %v; stderr=%q", err, stderr)
+	}
+	if strings.Contains(stderr, "no workspace registered") {
+		t.Errorf("workspace error must not be printed before the image error; stderr=%q", stderr)
+	}
+	if fc.DaemonChecked || fc.Started {
+		t.Error("docker must not be touched")
 	}
 }

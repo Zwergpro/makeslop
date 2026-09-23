@@ -9,10 +9,10 @@ agent-facing notes live in `CLAUDE.md`; this file is a self-contained human-read
 - [Pure/impure split](#pureimpure-split)
 - [Mount groups and cache overlays](#mount-groups-and-cache-overlays)
 - [apiClient seam and fake clients](#apiclient-seam-and-fake-clients)
-- [BuildKit session build flow](#buildkit-session-build-flow)
 - [Preflight helpers](#preflight-helpers)
+- [Image resolution](#image-resolution)
 - [Config-driven scan engine](#config-driven-scan-engine)
-- [Version constants](#version-constants)
+- [Settings schema](#settings-schema)
 - [POSIX-only invariant](#posix-only-invariant)
 - [Exit-code contract](#exit-code-contract)
 - [Contributing / Build](#contributing--build)
@@ -22,7 +22,7 @@ agent-facing notes live in `CLAUDE.md`; this file is a self-contained human-read
 ## Pure/impure split
 
 Argv assembly (`internal/docker/spec.go`) is **pure** and fully table-tested. Side-effecting SDK
-calls live in `internal/docker/run.go` and `internal/docker/build.go`. Pure functions never touch
+calls live in `internal/docker/run.go` and `internal/docker/preflight.go`. Pure functions never touch
 the filesystem or exec anything.
 
 `spec.go` exposes two renderings of the same logical spec:
@@ -73,56 +73,35 @@ must set them on their `sampleOptions()` or equivalent fixture.
 ## apiClient seam and fake clients
 
 `internal/docker/client.go` declares a narrow unexported `apiClient` interface covering all SDK
-methods used by `Run`, `Build`, `Ping`, and `ImageInspect`. A compile-time assertion
-`var _ apiClient = (*moby.Client)(nil)` guards against signature drift.
+methods used by `Run`, `CheckDaemon`, and `ImageExists`. A compile-time assertion
+`var _ apiClient = (*moby.Client)(nil)` guards against signature drift. Adding an SDK call means
+extending `apiClient` and the fakes below.
 
 The interface covers: `ContainerCreate`, `ContainerAttach`, `ContainerStart`, `ContainerWait`,
-`ContainerResize`, `ContainerRemove`, `ImageBuild`, `DialHijack`, `Ping`, `ImageInspect`, `Close`.
+`ContainerResize`, `ContainerRemove`, `Ping`, `ImageInspect`, `Close`.
 
 `internal/docker` uses constructor dependency injection. `docker.New(opts ...Option)` builds a
 real moby client from the environment; `WithClient(c apiClient)` (same-package `_test.go` only)
 injects a fake. There is no `testing.go` production file, no `SetClientForTest`, no
-`newClientFn` package-level variable, and no exported `FakeRunClient`/`FakeBuildClient` type.
+`newClientFn` package-level variable, and no exported `FakeRunClient` type.
 
 Test fakes live in `_test.go` files (compiled only during `go test`):
 
+- **`noopClient`** (`internal/docker/fakes_test.go`) — zero-behavior implementation of every
+  `apiClient` method; embedded by the fakes so each only overrides what it scripts.
 - **`fakeRunClient`** (`internal/docker/fakes_test.go`) — simulates the preflight/`Run` lifecycle
-  with a scripted exit code. Supports `PingErr`, `ImageMissing`, `BlockPing`,
+  with a scripted exit code. Supports `PingErr`, `ImageMissing`, `ImageErr`, `BlockPing`,
   `BlockImageInspect` fields.
-- **`fakeBuildClient`** (`internal/docker/fakes_test.go`) — simulates `Build`; records the last
-  build options in `lastBuildOptions`.
 - **`fakeClient`** (`internal/docker/run_test.go`) — the `Run`-lifecycle fake used by
   `run_test.go`; distinct from `fakeRunClient`. Has `attachPayload` to script delayed output.
 
-`internal/cli` boundary fakes live in `internal/cli/main_test.go` (package `cli`, `_test.go`).
+`internal/cli` depends on consumer-side interfaces in `internal/cli/deps.go` (`containerRunner`,
+`daemonChecker`, `imageChecker`), bundled in `dockerDeps`. Tests build the command tree with
+`newRootCmdWithDeps(baseDir, deps)` and the `fakeDocker` boundary fake in
+`internal/cli/main_test.go`. If `docker.New()` fails, `dockerNewErrStub` defers the error to the
+first Docker call so non-Docker commands (`config`, `ls`, `version`, …) still work.
 
 There are no shell shims, no `dockerBinary` global, no `executableTempDir`.
-
----
-
-## BuildKit session build flow
-
-`internal/docker/build.go` implements `Build` via the moby/moby SDK + a BuildKit session:
-
-1. A `session.Session` is created, allowing `filesync` (context dir + dockerfile dir) and
-   `authprovider.NewDockerAuthProvider` for registry pulls.
-2. A dialer adapter wraps `cli.DialHijack(ctx, "/session", proto, meta)` to match
-   `session.Dialer`'s `func(ctx, proto, meta)` signature.
-3. `s.Run(ctx, dialer)` is started in a goroutine.
-4. `ImageBuild` is called with `Version: build.BuilderBuildKit` (the `"2"` selector) and the
-   session ID. No `DOCKER_BUILDKIT` environment variable is needed.
-5. The response body is decoded as a BuildKit JSON trace stream; `aux` frames carrying
-   `moby.buildkit.trace` payloads are decoded into `*client.SolveStatus` and fed to
-   `progressui.NewDisplay(...).UpdateFrom` for rendering.
-6. The session and client are closed when the build finishes.
-
-`build.go` depends on `github.com/moby/buildkit` (direct dep, pinned in `go.mod`).
-
-`build` passes an empty temporary directory as the docker build context — the Dockerfile downloads
-everything, so no local files need shipping. This keeps the context transfer instant.
-
-An integration test (gated by `MAKESLOP_DOCKER_IT=1`) exercises the full `Build` flow against a
-live Docker daemon. See [Contributing / Build](#contributing--build) for the command.
 
 ---
 
@@ -139,6 +118,31 @@ live Docker daemon. See [Contributing / Build](#contributing--build) for the com
 
 Both methods share the `*Docker`'s single long-lived client — no per-call client construction or
 close. `cmd` callers must `defer d.Close()` once after construction to release the connection.
+
+In `internal/cli`, both calls go through `dockerDeps.checkDaemonPreflight` /
+`imageExistsPreflight`, which bound them with `preflightTimeout` (10s) so a black-hole
+`DOCKER_HOST` cannot hang `run` or `status`. `Run` itself gets no deadline.
+
+---
+
+## Image resolution
+
+makeslop has no embedded image, no build step, and no default image. `resolveImage` in
+`internal/cli/image.go` picks the image for `run` and `status`: the `-i/--image` flag wins, then
+the `image` setting; both empty (after trimming) yields `errNoImage`. The chosen value goes through
+`config.NormalizeImage` (also used by `config set image`), which rejects anything that isn't a
+valid docker reference, including a leading `-` that `--dry-run` would otherwise print as a flag.
+The `-i/--image` flag is
+registered on those two commands only.
+
+- `run` resolves the image **before** `ws.Lookup`, so a config error fails fast (and `--dry-run`
+  also needs an image, since the printed command must equal the executed one).
+- `status` resolves it in its image check. An explicit `-i` bypasses the settings, so the check
+  works even when `settings.json` is absent or corrupt.
+- `init` never fails on a missing image; it prints a non-blocking note built from the same
+  `noImageHint` text.
+- A resolved image missing from the local daemon fails with `imageNotFoundHint` ("build or pull
+  it"). There is no auto-pull.
 
 ---
 
@@ -161,30 +165,22 @@ project `.makeslop.yaml` files are never auto-migrated; users with an old stub m
 
 ---
 
-## Version constants
+## Settings schema
 
-`internal/config/config.go` defines a single constant:
+`~/.makeslop/settings.json` has no version stamp and no migration step. `config.Load` defaults
+`Shell` and `TmpDirSize` when they are empty; `Image` is never defaulted (empty means unset).
+Obsolete keys from older versions (`version`, `migrated_version`) are ignored on load and dropped
+on the next `Save`, because `Settings` no longer has fields for them.
 
-```go
-ConfigVersion = 1  // increment when Settings fields change OR when the Dockerfile changes
-```
+Schema changes must therefore stay backward compatible: add fields with `omitempty` plus
+load-time defaulting rather than renaming or repurposing existing keys.
 
-The `Settings` struct records it as:
+`config.Bootstrap` seeds only the agent directories (`.claude/`, `.codex/`, `workspaces/`) and an
+empty `.claude.json`, never overwriting existing files. There are no embedded assets.
 
-```json
-{
-    "version": 1,
-    ...
-}
-```
-
-- **`version` / `ConfigVersion`** — governs both JSON schema compatibility and the one-shot
-  directory refresh. `makeslop migrate` compares `settings.json`'s `version` field against
-  `ConfigVersion`; when they differ, it runs all idempotent migration steps (force-overwrites
-  `~/.makeslop/Dockerfile` from the embedded asset) and stamps `version` to `ConfigVersion`.
-
-**When to bump:** whenever `internal/assets/files/Dockerfile` is modified **or** `Settings`
-struct fields change, increment `ConfigVersion` and add/update the relevant migration step.
+Every read-modify-write of `settings.json` goes through `config.Update` / `config.WithLock`
+(in-process mutex plus `flock` on `<baseDir>/.settings.lock`). Never nest `WithLock`, including
+inside an `Update` mutate func: the nested call self-deadlocks.
 
 ---
 
@@ -222,18 +218,12 @@ ldflags landing pad) and `func main() { os.Exit(cli.Main(version, os.Args[1:])) 
 
 ```
 go build ./cmd/makeslop
-go test ./...
+go test -timeout=100s ./...
+golangci-lint run
 ```
 
-Tests do not use shell shims, so there is no `noexec`/`GOTMPDIR` constraint. The `GOTMPDIR`
-prefix (`GOTMPDIR=/home/user go test ./...`) remains harmless if you have it in muscle memory, but
-is no longer required.
-
-To run the Docker integration test against a live daemon:
-
-```
-MAKESLOP_DOCKER_IT=1 go test -tags integration ./internal/docker/
-```
+Tests do not use shell shims, so there is no `noexec`/`GOTMPDIR` constraint, and none of them
+need a live Docker daemon.
 
 The version string is stamped at build time:
 

@@ -45,7 +45,7 @@ func TestConfigList_FreshBaseDir_PrintsThreeDefaults(t *testing.T) {
 	}
 
 	wantLines := []string{
-		"image = " + config.DefaultImage,
+		"image = \n",
 		"shell = " + config.DefaultShell,
 		"tmp_dir_size = " + config.DefaultTmpDirSize,
 	}

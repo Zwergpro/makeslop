@@ -335,16 +335,6 @@ func mountsFor(mounts []Mount) []mount.Mount {
 	return out
 }
 
-// BuildOptions is the caller-supplied input to Build. Path fields must be absolute.
-type BuildOptions struct {
-	Image          string   // -t tag (required)
-	DockerfilePath string   // -f path (required)
-	ContextDir     string   // empty ⇒ Build auto-creates a temp dir
-	NoCache        bool     // --no-cache
-	BuildArgs      []string // forwarded as build arguments
-	Quiet          bool     // suppress build progress output
-}
-
 // csvField returns s as a single RFC 4180 CSV field: unquoted when free of
 // CSV-special characters, otherwise wrapped in `"` with embedded `"` doubled.
 func csvField(s string) string {

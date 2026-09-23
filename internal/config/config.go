@@ -8,24 +8,14 @@ import (
 	"os"
 	"path/filepath"
 	"time"
-
-	"github.com/Zwergpro/makeslop/internal/assets"
 )
 
 const (
-	SettingsFile   = "settings.json"
-	WorkspacesDir  = "workspaces"
-	DockerfileFile = "Dockerfile"
-
-	// ConfigVersion is the single version governing both the settings schema and the
-	// one-shot ~/.makeslop asset refresh. Bump when the embedded assets OR the Settings
-	// shape change; `migrate` re-runs all idempotent steps and re-stamps.
-	ConfigVersion = 1
+	SettingsFile  = "settings.json"
+	WorkspacesDir = "workspaces"
 )
 
-// omitempty + Load-time defaulting keeps pre-existing files byte-stable until a user overrides.
 const (
-	DefaultImage      = "claudebox"
 	DefaultShell      = "/bin/zsh"
 	DefaultTmpDirSize = "100m"
 )
@@ -38,7 +28,6 @@ type Workspace struct {
 // Settings is the persisted shape of <baseDir>/settings.json. Workspaces is
 // keyed by absolute, symlink-evaluated workspace root paths.
 type Settings struct {
-	Version    int                  `json:"version"`
 	Image      string               `json:"image,omitempty"`
 	Shell      string               `json:"shell,omitempty"`
 	TmpDirSize string               `json:"tmp_dir_size,omitempty"`
@@ -53,16 +42,14 @@ func DefaultBaseDir() (string, error) {
 	return filepath.Join(home, ".makeslop"), nil
 }
 
-// Load reads <baseDir>/settings.json. A missing file yields default Settings
-// (not an error); malformed JSON is an error. Empty Image/Shell/TmpDirSize
-// default for backward compatibility.
+// Load defaults legacy shell and tmpfs settings; an unset image still requires
+// an explicit choice from the user.
 func Load(baseDir string) (*Settings, error) {
 	path := filepath.Join(baseDir, SettingsFile)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return &Settings{
-				Image:      DefaultImage,
 				Shell:      DefaultShell,
 				TmpDirSize: DefaultTmpDirSize,
 				Workspaces: map[string]Workspace{},
@@ -76,9 +63,6 @@ func Load(baseDir string) (*Settings, error) {
 	}
 	if s.Workspaces == nil {
 		s.Workspaces = map[string]Workspace{}
-	}
-	if s.Image == "" {
-		s.Image = DefaultImage
 	}
 	if s.Shell == "" {
 		s.Shell = DefaultShell
@@ -182,14 +166,6 @@ var bootstrapDirs = []string{
 	WorkspacesDir,
 }
 
-var bootstrapFiles = []struct {
-	name    string
-	content []byte
-}{
-	{".claude.json", []byte("{}\n")},
-	{DockerfileFile, assets.Dockerfile},
-}
-
 // BaseConfigExists reports whether <baseDir>/settings.json exists. Returns
 // (false, nil) when absent and (false, err) for any other stat failure, so
 // callers can distinguish "not initialised" from "unreadable".
@@ -214,11 +190,5 @@ func Bootstrap(baseDir string) error {
 			return fmt.Errorf("create dir %s: %w", dir, err)
 		}
 	}
-	for _, f := range bootstrapFiles {
-		path := filepath.Join(baseDir, f.name)
-		if err := bootstrapFile(path, f.content); err != nil {
-			return err
-		}
-	}
-	return nil
+	return bootstrapFile(filepath.Join(baseDir, ".claude.json"), []byte("{}\n"))
 }
