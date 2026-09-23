@@ -184,16 +184,16 @@
 **Files:**
 - Modify: `internal/cli/status.go`, `internal/cli/status_test.go`
 
-- [ ] register `-i, --image` on `status` and thread it into `runStatus`
-- [ ] rewrite the image check in the order given in Technical Details: flag, corrupt, unset, daemon down, inspect
-- [ ] write tests:
+- [x] register `-i, --image` on `status` and thread it into `runStatus`
+- [x] rewrite the image check in the order given in Technical Details: flag, corrupt, unset, daemon down, inspect
+- [x] write tests:
   - unset image → ✗ with the config-set hint, including when the daemon is down
   - `-i` overrides settings
   - `-i` works when settings.json is absent
   - `-i` works when settings.json is corrupt
-- [ ] write tests: the `--json` output reflects the unset-image failure and `ready: false`; a missing local image shows the pull hint
-- [ ] update the existing corrupt-settings-with-daemon-down test (around `status_test.go:530`) for the new order
-- [ ] run `go test -timeout=100s ./...`, which must pass before task 6
+- [x] write tests: the `--json` output reflects the unset-image failure and `ready: false`; a missing local image shows the pull hint
+- [x] update the existing corrupt-settings-with-daemon-down test (around `status_test.go:530`) for the new order
+- [x] run `go test -timeout=100s ./...`, which must pass before task 6
 
 ### Task 6: Add the init warning when no image is set
 

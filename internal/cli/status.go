@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"unicode/utf8"
 
 	"github.com/spf13/cobra"
@@ -135,7 +136,7 @@ func renderChecks(w io.Writer, checks []statusCheck, ready bool, tty bool) {
 	}
 }
 
-func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, jsonMode bool, ttyPred isTTYFunc, deps dockerDeps) error {
+func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir, imageFlag string, jsonMode bool, ttyPred isTTYFunc, deps dockerDeps) error {
 	ctx := cmd.Context()
 	stderr := cmd.ErrOrStderr()
 
@@ -169,24 +170,30 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, jso
 		}
 	}
 
-	// 3. Image. Skipped when the daemon is down (the inspect would hit the same
-	// dead daemon and burn a second preflight timeout) or when settings are
-	// corrupt (the configured image name is unknown — don't guess a default).
+	// 3. Image. An explicit -i skips the settings-derived steps so the check
+	// works even when settings.json is absent or corrupt. Config problems are
+	// reported before daemon state: they don't need the daemon to diagnose.
+	// The inspect is skipped when the daemon is down (it would hit the same
+	// dead daemon and burn a second preflight timeout).
+	settingsImage := ""
+	if loadedSettings != nil {
+		settingsImage = loadedSettings.Image
+	}
+	imageName, resolveErr := resolveImage(imageFlag, settingsImage)
+	flagGiven := strings.TrimSpace(imageFlag) != ""
 	switch {
+	case !flagGiven && settingsCorrupt:
+		cl.fail("image", "cannot check — settings unreadable")
+	case resolveErr != nil:
+		cl.fail("image", "no image configured — run 'makeslop config set image <ref>'")
 	case !daemonUp:
 		cl.fail("image", "cannot check — daemon unreachable")
-	case settingsCorrupt:
-		cl.fail("image", "cannot check — settings unreadable")
 	default:
-		imageName := ""
-		if loadedSettings != nil {
-			imageName = loadedSettings.Image
-		}
 		imageFound, imageErr := deps.imageExistsPreflight(ctx, imageName)
 		if imageErr != nil {
 			cl.fail("image", fmt.Sprintf("error checking image %q: %v — is docker running?", imageName, imageErr))
 		} else if !imageFound {
-			cl.fail("image", fmt.Sprintf("image %q not built — run 'makeslop build'", imageName))
+			cl.fail("image", fmt.Sprintf("image %q not found locally — run 'docker pull %s'", imageName, imageName))
 		} else {
 			cl.ok("image", "")
 		}
@@ -255,6 +262,7 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, jso
 
 func newStatusCmd(ws *workspace.Workspaces, baseDir string, ttyPred isTTYFunc, deps dockerDeps) *cobra.Command {
 	var jsonMode bool
+	var image string
 
 	cmd := &cobra.Command{
 		Use:          "status",
@@ -262,10 +270,12 @@ func newStatusCmd(ws *workspace.Workspaces, baseDir string, ttyPred isTTYFunc, d
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runStatus(cmd, ws, baseDir, jsonMode, ttyPred, deps)
+			return runStatus(cmd, ws, baseDir, image, jsonMode, ttyPred, deps)
 		},
 	}
 	cmd.Flags().BoolVar(&jsonMode, "json", false,
 		"emit JSON instead of human-readable output")
+	cmd.Flags().StringVarP(&image, "image", "i", "",
+		"container image to check (overrides the settings image)")
 	return cmd
 }
