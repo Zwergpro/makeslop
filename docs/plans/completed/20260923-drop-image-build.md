@@ -236,7 +236,7 @@
   - add: "`image` is never defaulted; commands resolve it via `resolveImage` (flag > settings > `errNoImage`)"
 - [x] `root.go:72`: reword the `--quiet` help text if it still mentions build progress (now "notices and hints"; same wording in the `quietWriter` comment in `guard.go`)
 - [x] leave the historical `docs/plans/` files untouched
-- [x] move this plan to `docs/plans/completed/` (deferred — orchestrator moves it after review phases)
+- [x] move this plan to `docs/plans/completed/` (moved to `docs/plans/completed/` during finalize, after review phases)
 
 ## Post-Completion
 *Items requiring manual intervention or external systems. Informational only.*
