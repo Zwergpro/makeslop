@@ -89,31 +89,6 @@ func TestImageExistsOtherError(t *testing.T) {
 	}
 }
 
-// CheckDaemon also works with fakeBuildClient (both fakes satisfy apiClient).
-func TestCheckDaemonBuildClient(t *testing.T) {
-	t.Run("ok", func(t *testing.T) {
-		f := newFakeBuildClient(0)
-		d := newDockerWithClient(t, f)
-		if err := d.CheckDaemon(context.Background()); err != nil {
-			t.Fatalf("CheckDaemon() unexpected error: %v", err)
-		}
-	})
-	t.Run("down", func(t *testing.T) {
-		f := newFakeBuildClient(0)
-		f.PingErr = errors.New("dial tcp: no such file or directory")
-		d := newDockerWithClient(t, f)
-
-		err := d.CheckDaemon(context.Background())
-		if err == nil {
-			t.Fatal("CheckDaemon() expected error, got nil")
-		}
-		var dr *ErrDaemonUnreachable
-		if !errors.As(err, &dr) {
-			t.Fatalf("expected *ErrDaemonUnreachable, got %T", err)
-		}
-	})
-}
-
 // A blocking Ping past the deadline must yield *ErrDaemonUnreachable wrapping
 // context.DeadlineExceeded — proving the deadline is wired through. (Unit scope:
 // does not prove a real SDK call against a black-hole DOCKER_HOST aborts.)

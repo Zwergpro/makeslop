@@ -10,7 +10,7 @@ import (
 )
 
 // preflightTimeout bounds preflight ping/inspect calls so they never hang on a
-// black-hole DOCKER_HOST. Not applied to long-lived Run/Build.
+// black-hole DOCKER_HOST. Not applied to long-lived Run.
 const preflightTimeout = 10 * time.Second
 
 // WithPreflightTimeout wraps parent with a preflightTimeout deadline; callers

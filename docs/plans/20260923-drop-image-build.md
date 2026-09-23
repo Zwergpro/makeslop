@@ -101,19 +101,20 @@
 - Modify: `internal/cli/deps.go`, `internal/cli/root.go`, `internal/cli/main_test.go`, `internal/cli/version_test.go`, `internal/cli/init_test.go`
 - Modify: `go.mod`, `go.sum`, optionally `.golangci.yml`
 
-- [ ] delete the build command files and remove `newBuildCmd` from `root.go`
-- [ ] delete the docker build files
-- [ ] `client.go`: remove `ImageBuild` and `DialHijack` from `apiClient`, and drop the now-unused `io`/`net` imports
-- [ ] `spec.go`: delete `BuildOptions` (`spec.go:338-346`)
-- [ ] fix the stale "Build" wording in the doc comments at `docker.go:11` and `preflight.go:13`
-- [ ] `fakes_test.go`: delete the `fakeBuildClient` type (`:180-211`) and the `noopClient` `ImageBuild`/`DialHijack` methods (`:59-65`). Fix the `noopClient` doc comment and remove unused imports.
-- [ ] `run_test.go:238-240`: delete `(*fakeClient).DialHijack`
-- [ ] `deps.go`: remove `imageBuilder`, the `dockerDeps.builder` field and `dockerNewErrStub.Build`, and drop the `io` import. In `root.go:50,56`, remove the `builder:` wiring.
-- [ ] `main_test.go`: remove the `fakeDocker.Build` method and the `LastBuildOpts` field (`:33`, `:54`). Drop `builder: f` from `depsFrom` (`:104-105`) and fix the nearby comment that mentions "four interfaces".
-- [ ] `main_test.go:259`: delete `TestRoot_BareInvocation_ListsBuildCommand`
-- [ ] remove the `{"build", …}` rows from the flag-rejection tables in `version_test.go:73-74` and `init_test.go:638-639`. Delete the build+init test in `init_test.go:492-523`, or strip its build part.
-- [ ] run `go mod tidy` and confirm buildkit and fsutil are gone. Optionally drop the stale `(net.Conn).SetDeadline` / `internal/networks.Gateway` exclusions in `.golangci.yml`.
-- [ ] run `go build ./... && go test -timeout=100s ./...`, which must pass before task 2
+- [x] delete the build command files and remove `newBuildCmd` from `root.go`
+- [x] delete the docker build files
+- [x] `client.go`: remove `ImageBuild` and `DialHijack` from `apiClient`, and drop the now-unused `io`/`net` imports
+- [x] `spec.go`: delete `BuildOptions` (`spec.go:338-346`)
+- [x] fix the stale "Build" wording in the doc comments at `docker.go:11` and `preflight.go:13`
+- [x] `fakes_test.go`: delete the `fakeBuildClient` type (`:180-211`) and the `noopClient` `ImageBuild`/`DialHijack` methods (`:59-65`). Fix the `noopClient` doc comment and remove unused imports.
+- [x] `run_test.go:238-240`: delete `(*fakeClient).DialHijack`
+- [x] `deps.go`: remove `imageBuilder`, the `dockerDeps.builder` field and `dockerNewErrStub.Build`, and drop the `io` import. In `root.go:50,56`, remove the `builder:` wiring.
+- [x] `main_test.go`: remove the `fakeDocker.Build` method and the `LastBuildOpts` field (`:33`, `:54`). Drop `builder: f` from `depsFrom` (`:104-105`) and fix the nearby comment that mentions "four interfaces".
+- [x] `main_test.go:259`: delete `TestRoot_BareInvocation_ListsBuildCommand`
+- [x] remove the `{"build", …}` rows from the flag-rejection tables in `version_test.go:73-74` and `init_test.go:638-639`. Delete the build+init test in `init_test.go:492-523`, or strip its build part.
+- [x] run `go mod tidy` and confirm buildkit and fsutil are gone. Optionally drop the stale `(net.Conn).SetDeadline` / `internal/networks.Gateway` exclusions in `.golangci.yml`. (dropped both)
+- [x] run `go build ./... && go test -timeout=100s ./...`, which must pass before task 2
+- ➕ [x] deleted the `fakeBuildClient` duplicate tests in `internal/docker/client_test.go` and `preflight_test.go` (equivalent `fakeRunClient` tests already exist)
 
 ### Task 2: Remove the migrate/version mechanism and embedded assets
 

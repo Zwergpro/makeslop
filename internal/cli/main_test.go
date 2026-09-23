@@ -18,7 +18,7 @@ import (
 	"github.com/Zwergpro/makeslop/internal/projectconfig"
 )
 
-// fakeDocker is a boundary fake satisfying all four consumer interfaces, injected
+// fakeDocker is a boundary fake satisfying all three consumer interfaces, injected
 // via newRootCmdWithDeps.
 type fakeDocker struct {
 	exitCode int
@@ -28,9 +28,6 @@ type fakeDocker struct {
 	PingErr      error // CheckDaemon returns this wrapped in ErrDaemonUnreachable
 	ImageMissing bool  // ImageExists returns (false, nil)
 	ImageErr     error // ImageExists returns (false, err) unless ImageMissing
-
-	BuildErr      error
-	LastBuildOpts docker.BuildOptions
 
 	LastSpec docker.Spec // set when Run is called (isTTY=true)
 }
@@ -47,14 +44,6 @@ func (f *fakeDocker) Run(_ context.Context, s docker.Spec) error {
 	f.LastSpec = s
 	if f.exitCode != 0 {
 		return &docker.ExitError{Code: f.exitCode}
-	}
-	return nil
-}
-
-func (f *fakeDocker) Build(_ context.Context, o docker.BuildOptions, _ io.Writer) error {
-	f.LastBuildOpts = o
-	if f.BuildErr != nil {
-		return f.BuildErr
 	}
 	return nil
 }
@@ -102,7 +91,7 @@ func runCmdWithDeps(t *testing.T, baseDir string, deps dockerDeps, args ...strin
 }
 
 func depsFrom(f *fakeDocker) dockerDeps {
-	return dockerDeps{runner: f, builder: f, daemon: f, image: f}
+	return dockerDeps{runner: f, daemon: f, image: f}
 }
 
 // runWithExitCodeAndDeps mirrors runWithExitCode with injected deps and a plain
@@ -253,21 +242,6 @@ func TestRoot_BareInvocation_ListsMigrateCommand(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "\n  migrate ") {
 		t.Errorf("stdout missing '\\n  migrate ' command entry: %q", stdout)
-	}
-}
-
-func TestRoot_BareInvocation_ListsBuildCommand(t *testing.T) {
-	baseDir := t.TempDir()
-
-	stdout, stderr, err := runCmd(t, baseDir) // no args
-	if err != nil {
-		t.Fatalf("bare makeslop should exit 0, got err: %v; stdout=%q stderr=%q", err, stdout, stderr)
-	}
-	if !strings.Contains(stdout, "\n  build ") {
-		t.Errorf("stdout missing '\\n  build ' command entry: %q", stdout)
-	}
-	if stderr != "" {
-		t.Errorf("expected empty stderr, got %q", stderr)
 	}
 }
 

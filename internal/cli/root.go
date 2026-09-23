@@ -46,14 +46,13 @@ func newRootCmd(baseDir string) (*cobra.Command, func()) {
 	d, newErr := docker.New()
 	if newErr != nil {
 		deps := dockerDeps{
-			runner:  dockerNewErrStub{newErr},
-			builder: dockerNewErrStub{newErr},
-			daemon:  dockerNewErrStub{newErr},
-			image:   dockerNewErrStub{newErr},
+			runner: dockerNewErrStub{newErr},
+			daemon: dockerNewErrStub{newErr},
+			image:  dockerNewErrStub{newErr},
 		}
 		return newRootCmdWithDeps(baseDir, deps), func() {}
 	}
-	deps := dockerDeps{runner: d, builder: d, daemon: d, image: d}
+	deps := dockerDeps{runner: d, daemon: d, image: d}
 	return newRootCmdWithDeps(baseDir, deps), func() { _ = d.Close() }
 }
 
@@ -75,7 +74,6 @@ func newRootCmdWithDeps(baseDir string, deps dockerDeps) *cobra.Command {
 		newInitCmd(ws, baseDir),
 		newRunCmd(ws, baseDir, deps),
 		newMigrateCmd(baseDir),
-		newBuildCmd(baseDir, deps),
 		newConfigCmd(baseDir),
 		newVersionCmd(),
 		newStatusCmd(ws, baseDir, defaultIsTTY, deps),

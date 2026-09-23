@@ -8,8 +8,8 @@ import (
 	"golang.org/x/term"
 )
 
-// Docker holds the dependencies shared by Run, Build, CheckDaemon, and
-// ImageExists. Construct with New; call Close when done.
+// Docker holds the dependencies shared by Run, CheckDaemon, and ImageExists.
+// Construct with New; call Close when done.
 type Docker struct {
 	client              apiClient
 	isTTYFn             func() bool

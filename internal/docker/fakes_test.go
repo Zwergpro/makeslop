@@ -3,10 +3,8 @@ package docker
 // Test-only helpers and fake apiClient types for the docker package.
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"io"
 	"net"
 	"runtime"
 	"testing"
@@ -25,8 +23,8 @@ func skipNonPOSIX(t *testing.T, why string) {
 	}
 }
 
-// noopClient is a no-op apiClient. fakeRunClient and fakeBuildClient embed it
-// and override only the methods that carry test logic.
+// noopClient is a no-op apiClient. fakeRunClient embeds it and overrides only
+// the methods that carry test logic.
 type noopClient struct{}
 
 func (noopClient) ContainerCreate(_ context.Context, _ moby.ContainerCreateOptions) (moby.ContainerCreateResult, error) {
@@ -56,14 +54,6 @@ func (noopClient) ContainerRemove(_ context.Context, _ string, _ moby.ContainerR
 	return moby.ContainerRemoveResult{}, nil
 }
 
-func (noopClient) ImageBuild(_ context.Context, _ io.Reader, _ moby.ImageBuildOptions) (moby.ImageBuildResult, error) {
-	return moby.ImageBuildResult{Body: io.NopCloser(bytes.NewReader(nil))}, nil
-}
-
-func (noopClient) DialHijack(_ context.Context, _, _ string, _ map[string][]string) (net.Conn, error) {
-	return nil, nil
-}
-
 func (noopClient) Ping(_ context.Context, _ moby.PingOptions) (moby.PingResult, error) {
 	return moby.PingResult{}, nil
 }
@@ -76,7 +66,7 @@ func (noopClient) ImageInspect(_ context.Context, _ string, _ ...moby.ImageInspe
 func (noopClient) Close() error { return nil }
 
 // preflightStub scripts the preflight Ping/ImageInspect pair on top of
-// noopClient defaults. Embedded by fakeRunClient and fakeBuildClient so the
+// noopClient defaults. Embedded by fakeRunClient so the
 // error shaping — in particular the errdefs.ErrNotFound wrapping that
 // ImageExists classification depends on — lives in one place.
 type preflightStub struct {
@@ -175,39 +165,6 @@ func (f *fakeRunClient) ContainerWait(_ context.Context, _ string, _ moby.Contai
 	errC := make(chan error, 1)
 	resultC <- container.WaitResponse{StatusCode: int64(f.ExitCode)}
 	return moby.ContainerWaitResult{Result: resultC, Error: errC}
-}
-
-// fakeBuildClient scripts Build, recording the ImageBuildOptions. Set PingErr
-// for daemon-down, ImageMissing/ImageErr for image errors.
-type fakeBuildClient struct {
-	preflightStub
-	ExitCode int   // non-zero → ImageBuild returns an error
-	Err      error // if non-nil, overrides ExitCode: ImageBuild returns this directly
-	// lastBuildOptions records the options from the most recent ImageBuild call.
-	lastBuildOptions moby.ImageBuildOptions
-}
-
-// newFakeBuildClient returns a fakeBuildClient; exitCode 0 means success.
-func newFakeBuildClient(exitCode int) *fakeBuildClient {
-	return &fakeBuildClient{ExitCode: exitCode}
-}
-
-func (f *fakeBuildClient) ImageBuild(_ context.Context, _ io.Reader, opts moby.ImageBuildOptions) (moby.ImageBuildResult, error) {
-	f.lastBuildOptions = opts
-	if f.Err != nil {
-		return moby.ImageBuildResult{}, f.Err
-	}
-	if f.ExitCode != 0 {
-		return moby.ImageBuildResult{}, fmt.Errorf("build exited with code %d", f.ExitCode)
-	}
-	// Return an empty body so renderBuildOutput completes cleanly.
-	return moby.ImageBuildResult{Body: io.NopCloser(bytes.NewReader(nil))}, nil
-}
-
-func (f *fakeBuildClient) DialHijack(_ context.Context, _, _ string, _ map[string][]string) (net.Conn, error) {
-	// Fail the session dialer deterministically. A pre-closed pipe would race:
-	// ImageBuild might not be reached before the session notices the broken pipe.
-	return nil, fmt.Errorf("DialHijack: not implemented in fakeBuildClient")
 }
 
 // newDockerWithClient builds a *Docker with the fake injected via WithClient and

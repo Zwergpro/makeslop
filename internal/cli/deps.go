@@ -2,19 +2,14 @@ package cli
 
 import (
 	"context"
-	"io"
 
 	"github.com/Zwergpro/makeslop/internal/docker"
 )
 
-// Consumer-side docker interfaces. *docker.Docker satisfies all four; tests
+// Consumer-side docker interfaces. *docker.Docker satisfies all three; tests
 // inject fakes via newRootCmdWithDeps.
 type containerRunner interface {
 	Run(ctx context.Context, s docker.Spec) error
-}
-
-type imageBuilder interface {
-	Build(ctx context.Context, o docker.BuildOptions, out io.Writer) error
 }
 
 type daemonChecker interface {
@@ -26,10 +21,9 @@ type imageChecker interface {
 }
 
 type dockerDeps struct {
-	runner  containerRunner
-	builder imageBuilder
-	daemon  daemonChecker
-	image   imageChecker
+	runner containerRunner
+	daemon daemonChecker
+	image  imageChecker
 }
 
 func (d dockerDeps) checkDaemonPreflight(ctx context.Context) error {
@@ -49,10 +43,7 @@ func (d dockerDeps) imageExistsPreflight(ctx context.Context, image string) (boo
 type dockerNewErrStub struct{ err error }
 
 func (s dockerNewErrStub) Run(_ context.Context, _ docker.Spec) error { return s.err }
-func (s dockerNewErrStub) Build(_ context.Context, _ docker.BuildOptions, _ io.Writer) error {
-	return s.err
-}
-func (s dockerNewErrStub) CheckDaemon(_ context.Context) error { return s.err }
+func (s dockerNewErrStub) CheckDaemon(_ context.Context) error        { return s.err }
 func (s dockerNewErrStub) ImageExists(_ context.Context, _ string) (bool, error) {
 	return false, s.err
 }

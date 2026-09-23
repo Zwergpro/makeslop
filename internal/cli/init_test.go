@@ -489,45 +489,6 @@ func TestInit_FreshSeed_StdoutIsBarePathOnly(t *testing.T) {
 	}
 }
 
-// Edge case: build's Bootstrap creates dirs + Dockerfile but no settings.json,
-// so a later init must treat the dir as fresh (stamp latest), not stale.
-func TestInit_AfterBuild_TreatedAsFresh(t *testing.T) {
-	setHomeToTestParent(t)
-	baseDir := t.TempDir()
-	pwd := t.TempDir()
-	t.Chdir(pwd)
-
-	if err := config.Bootstrap(baseDir); err != nil {
-		t.Fatalf("Bootstrap (simulating build): %v", err)
-	}
-
-	exists, err := config.BaseConfigExists(baseDir)
-	if err != nil {
-		t.Fatalf("BaseConfigExists: %v", err)
-	}
-	if exists {
-		t.Fatal("pre-condition failed: settings.json must not exist after Bootstrap alone")
-	}
-
-	_, stderr, err := runCmd(t, baseDir, "init")
-	if err != nil {
-		t.Fatalf("init after build failed: %v; stderr=%q", err, stderr)
-	}
-
-	s, loadErr := config.Load(baseDir)
-	if loadErr != nil {
-		t.Fatalf("load settings after init: %v", loadErr)
-	}
-	if s.Version != config.ConfigVersion {
-		t.Errorf("Version = %d after build+init, want %d (ConfigVersion); stderr was %q",
-			s.Version, config.ConfigVersion, stderr)
-	}
-
-	if strings.Contains(stderr, "note: your base config is") {
-		t.Errorf("stale-config nudge must not appear after build+init (fresh seed); stderr=%q", stderr)
-	}
-}
-
 // An up-to-date config must not emit the stale-config nudge.
 func TestInit_UpToDateConfig_NoNudge(t *testing.T) {
 	setHomeToTestParent(t)
@@ -636,7 +597,6 @@ func TestGlobalOnly_RejectedOnNonInitCommands(t *testing.T) {
 		{"run", "--global-only"},
 		{"version", "--global-only"},
 		{"migrate", "--global-only"},
-		{"build", "--global-only"},
 		{"config", "--global-only"},
 		{"status", "--global-only"},
 	} {

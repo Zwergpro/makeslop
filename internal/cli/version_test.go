@@ -71,7 +71,6 @@ func TestOutOfHome_RejectedOnVersion(t *testing.T) {
 	for _, cmd := range [][]string{
 		{"version", "--out-of-home"},
 		{"migrate", "--out-of-home"},
-		{"build", "--out-of-home"},
 		{"config", "--out-of-home"},
 		{"status", "--out-of-home"},
 	} {
