@@ -6,11 +6,11 @@ agent-facing notes live in `CLAUDE.md`; this file is a self-contained human-read
 
 ## Table of Contents
 
+- [Package layout](#package-layout)
 - [Pure/impure split](#pureimpure-split)
 - [Mount groups and cache overlays](#mount-groups-and-cache-overlays)
 - [apiClient seam and fake clients](#apiclient-seam-and-fake-clients)
-- [newSidecarFn seam](#newsidecarfn-seam)
-- [Socat sidecar lifecycle](#socat-sidecar-lifecycle)
+- [cli dependency injection](#cli-dependency-injection)
 - [Image resolution](#image-resolution)
 - [Preflight helpers](#preflight-helpers)
 - [Preflight timeouts](#preflight-timeouts)
@@ -23,30 +23,55 @@ agent-facing notes live in `CLAUDE.md`; this file is a self-contained human-read
 
 ---
 
+## Package layout
+
+- `cmd/makeslop/main.go` — ~15 lines: `var version = "dev"` (the ldflags landing pad) and
+  `func main() { os.Exit(cli.Main(version, os.Args[1:])) }`.
+- `internal/cli` — cobra commands (`init`, `run`, `status`, `config`, `ls`, `remove`,
+  `version`). `root.go` holds `Main`, `runWithExitCode`, and the exit-code contract; `deps.go`
+  holds the consumer-side docker interfaces.
+- `internal/docker` — the `Docker` type wrapping the moby SDK: `spec.go` (pure), `run.go`,
+  `preflight.go`, `client.go`, `docker.go`.
+- `internal/config` — `~/.makeslop/settings.json`, config keys, settings locking.
+- `internal/projectconfig` — parses and scaffolds the per-project `.makeslop.yaml`.
+- `internal/workspace` — maps project roots to named workspaces and their cache dirs.
+- `internal/security` — secret scan (`filepath.WalkDir` over basename globs).
+
+---
+
 ## Pure/impure split
 
 Argv assembly (`internal/docker/spec.go`) is **pure** and fully table-tested. Side-effecting SDK
 calls live in `internal/docker/run.go`. Pure functions never touch the filesystem or exec
-anything.
+anything; filesystem checks that feed `BuildSpec` (e.g. `sandboxMountGates` in
+`internal/cli/run.go`) run in the caller.
 
 `spec.go` exposes two renderings of the same logical spec:
 
 - `Args()` / `ShellCommand()` — argv slices used for `--dry-run` output.
 - `ContainerConfig()` / `HostConfig()` — pure projections to SDK structs consumed by `Run`.
 
-A drift-guard test keeps both renderings honest. The "printed == executed" invariant holds: what
-`--dry-run` prints is what `run` passes to the Docker daemon.
+Drift-guard tests (`TestDriftGuard_*` in `spec_test.go`) keep both renderings honest. The
+"printed == executed" invariant holds: what `--dry-run` prints is what `run` passes to the Docker
+daemon.
 
 ---
 
 ## Mount groups and cache overlays
 
-`BuildSpec` in `internal/docker/spec.go` organises the 8 mounts into three logical groups:
+`BuildSpec` in `internal/docker/spec.go` emits mounts in a fixed order:
+
+**Project root** (always, position 0):
+- `<ProjectRoot>` → `/workspace/<name>`
 
 **Global** (always present — not configurable):
 - `~/.makeslop/.claude/` → `/home/user/.claude/`
 - `~/.makeslop/.claude.json` → `/home/user/.claude.json`
 - `~/.makeslop/.codex/` → `/home/user/.codex/`
+
+**Sandbox policy** (gated by `Options.ProtectProjectConfig` / `Options.MaskGitHooks`):
+- `<ProjectRoot>/.makeslop.yaml` → `/workspace/<name>/.makeslop.yaml` (read-only bind)
+- tmpfs → `/workspace/<name>/.git/hooks`
 
 **Agent-state cache overlay** (gated by `Options.MountAgentCache`):
 - `workspaceHost/.claude/` → `/workspace/<name>/.claude/`
@@ -56,106 +81,82 @@ A drift-guard test keeps both renderings honest. The "printed == executed" invar
 - `workspaceHost/docs/` → `/workspace/<name>/docs/`
 - `workspaceHost/CLAUDE.md` → `/workspace/<name>/CLAUDE.md`
 
-When a group is disabled (`false`), its mounts are **omitted** from the spec (never reordered).
-The project source root is always mounted at position 0. Secret masking (masked files `/dev/null`,
-masked dirs tmpfs) appends after all group mounts, so a masked path under `docs/` still wins even
-when the content group is disabled.
+**Secret masks** (last): `MaskedFiles` as `/dev/null` binds, then `MaskedDirs` as tmpfs mounts.
 
-The two booleans originate from the project `cache:` block in `.makeslop.yaml`, resolved by
-`projectconfig.Load`. Absent block ⇒ both `true` ⇒ identical to pre-feature behavior. The
-`init --global-only` flag scaffolds the YAML with both groups set to `false`.
+When a group is disabled (`false`), its mounts are **omitted** from the spec (never reordered).
+Masks come after all group mounts, so a masked path under `docs/` still wins even when the content
+group is disabled. One exception: when `ProtectProjectConfig` is set, a `/dev/null` mask for
+`.makeslop.yaml` itself (e.g. from a broad `*.yaml` scan pattern) is filtered out, because it
+would otherwise replace the read-only bind.
+
+The sandbox-policy gates are computed by `sandboxMountGates` in `internal/cli/run.go`:
+`ProtectProjectConfig` only when `.makeslop.yaml` is a regular file (a missing bind source would
+fail container create), `MaskGitHooks` only when `.git` is a directory (gitfile worktrees and
+submodules are skipped).
+
+The cache booleans originate from the project `cache:` block in `.makeslop.yaml`, resolved by
+`projectconfig.Load`. Absent block ⇒ both `true`. The `init --global-only` flag scaffolds the YAML
+with both groups set to `false`.
 
 **`Options.MountContentCache`** and **`Options.MountAgentCache`** both default to `false` in Go's
-zero-value; callers that want the traditional full-mount behavior must explicitly set them to
-`true`. `runRun` does this by reading the project config; tests that exercise full-mount behavior
-must set them on their `sampleOptions()` or equivalent fixture.
+zero-value; callers that want the full-mount behavior must explicitly set them to `true`. `runRun`
+(`internal/cli/run.go`) does this by reading the project config; tests that exercise full-mount
+behavior must set them on their `sampleOptions()` or equivalent fixture.
 
 ---
 
 ## apiClient seam and fake clients
 
-`internal/docker/client.go` declares a narrow unexported `apiClient` interface covering all SDK
-methods used by `Run`, `Ping`, `ImageInspect`, and the socat sidecar lifecycle. A
-package-level `newClientFn` (defaulting to `newClient`, which calls `client.New(client.FromEnv)`)
-constructs the live client. A compile-time assertion `var _ apiClient = (*moby.Client)(nil)` guards
-against signature drift.
+`internal/docker/client.go` declares a narrow unexported `apiClient` interface covering the SDK
+methods used by `Run`, `CheckDaemon`, and `ImageExists`: `ContainerCreate`, `ContainerAttach`,
+`ContainerStart`, `ContainerWait`, `ContainerResize`, `ContainerRemove`, `Ping`, `ImageInspect`,
+`Close`. A compile-time assertion `var _ apiClient = (*moby.Client)(nil)` guards against signature
+drift. Adding an SDK call means extending `apiClient` and the fakes.
 
-`SetClientForTest(c apiClient) (restore func())` (in `internal/docker/testing.go`) replaces
-`newClientFn` for the duration of a test.
+`internal/docker` uses constructor dependency injection. `docker.New(opts ...Option)` builds a
+real moby client from the environment (`moby.New(moby.FromEnv)`; the connection is lazy). Options:
 
-**Note on testing.go in the production binary:** `internal/docker/testing.go` is compiled into the
-production binary — it is not a `_test.go` file. This is intentional: `cmd/makeslop/main_test.go`
-is in `package main`, not `package docker_test`, so it cannot reach unexported symbols via an
-`export_test.go` bridge. Shipping the test helpers into the production binary is the accepted
-trade-off for testability; the binary size impact is negligible.
+- `WithClient(c apiClient)` — inject a fake (same-package `_test.go` only, since `apiClient` is
+  unexported); suppresses the real client construction.
+- `WithTTYCheck(fn)` — override the stdin+stdout TTY predicate used by `Run`.
+- `WithRawMode(fn)` — override `term.MakeRaw`.
+- `WithStreams(in, out)` — redirect container stdin/stdout data copies.
 
-Ready-made fakes live in `testing.go`:
+There is no package-level client factory variable and no test-helper code in the production
+binary. Test fakes live in `_test.go` files:
 
-- **`FakeRunClient`** — simulates the `Run` container lifecycle with a scripted exit code. Supports
-  `PingErr` (daemon-down), `ImageMissing` (absent image), `SidecarExited`, and `SocatImageMissing`
-  toggles. Records created/removed volumes and models the create→start→inspect exec handshake.
+- **`noopClient`** (`internal/docker/fakes_test.go`) — every method succeeds; embed it to
+  override only what a test needs.
+- **`fakeRunClient`** (`internal/docker/fakes_test.go`) — simulates the preflight/`Run` lifecycle
+  with a scripted exit code. Supports `PingErr`, `ImageMissing`, `ImageErr`,
+  `ContainerCreateErr`, `ContainerStartErr`, `BlockPing`, and `BlockImageInspect` fields.
+- **`fakeClient`** (`internal/docker/run_test.go`) — the `Run`-lifecycle fake used by
+  `run_test.go`; has `attachPayload` to script container output.
 
-  ```go
-  t.Cleanup(docker.SetClientForTest(docker.NewFakeRunClient(0))) // exit 0
-  ```
-
-This replaces the old shell-shim machinery. There are no shell shims, no `dockerBinary` global, no
-`executableTempDir`.
+There are no shell shims, no `dockerBinary` global, no `executableTempDir`.
 
 ---
 
-## newSidecarFn seam
+## cli dependency injection
 
-`cmd/makeslop/main.go` has a package-level seam that mirrors the `docker.newClientFn` pattern:
-
-**`newSidecarFn`** defaults to a closure that calls `docker.NewSidecar(quiet, stderr)` and returns
-a `sidecarRunner`. Tests swap it via `setSidecarFnForTest(t)`, which returns a `fakeSidecar` that
-records `(upstream, volumeName)` passed to `Start`. To simulate a `Start` failure, set
-`cap.startErr` before calling `runCmd`.
+Commands in `internal/cli` depend on consumer-side interfaces declared in `internal/cli/deps.go`,
+not on `*docker.Docker` directly:
 
 ```go
-cap := setSidecarFnForTest(t)
-// ... run command ...
-// cap.upstream, cap.volumeName, cap.called are available
+type containerRunner interface { Run(ctx context.Context, s docker.Spec) error }
+type daemonChecker   interface { CheckDaemon(ctx context.Context) error }
+type imageChecker    interface { ImageExists(ctx context.Context, image string) (bool, error) }
 ```
 
-The `sidecarRunner` interface has `Start(ctx context.Context, upstream string, volumeName string) error`
-and `Close() error`, satisfied by `*docker.Sidecar`.
+`dockerDeps` bundles one of each. `newRootCmd` (in `root.go`) calls `docker.New()` once and uses
+the same `*docker.Docker` for all three fields, closing it after the command finishes. If
+`docker.New()` fails, every field is a `dockerNewErrStub` that returns the construction error, so
+non-docker commands (`init`, `config`, `ls`, `remove`, `version`) still work while docker commands
+fail clearly.
 
-The seam is used in proxy-wiring tests where a real sidecar container would be unnecessary or would
-race with test teardown.
-
----
-
-## Socat sidecar lifecycle
-
-`internal/docker/sidecar.go` manages an `alpine/socat` container that exposes a unix socket on a
-Docker volume and connects it to a remote upstream address. This is used in proxy mode to give
-`--network none` app containers a controlled egress path.
-
-`Sidecar.Start(ctx, upstream, volumeName)`:
-
-1. `ImageInspect` to check presence; if absent, `ImagePull` with a one-line notice (suppressed by
-   `--quiet`); pull failure is fatal with a registry hint.
-2. `VolumeCreate` (per-run name, `managed-by: makeslop` label).
-3. `ContainerCreate` — detached socat container on bridge networking, volume mounted **read-write**
-   at `/sockets`. Socat args:
-   `UNIX-LISTEN:/sockets/proxy.sock,fork,mode=0666 TCP-CONNECT:<upstream>,reuseaddr`.
-4. `ContainerStart` — starts the created container.
-5. Readiness poll (~5 s, 100 ms intervals): `ContainerInspect` (early-exit detection) →
-   `ExecCreate` / `ExecStart` / `ExecInspect` (`test -S /sockets/proxy.sock`, exit 0 = ready).
-
-`Sidecar.Close()` — `ContainerRemove(Force:true)` then `VolumeRemove`; best-effort, idempotent.
-
-**Orphan containers:** there is no proactive stale-sweep (`VolumeList`/`ContainerList`). Orphans
-from killed runs are tolerated (unique per-run volume names) and prunable with:
-
-```
-docker volume prune --filter label=managed-by=makeslop
-```
-
-The socat image is pinned by digest (`const SocatImage = "alpine/socat@sha256:..."`); `status`
-checks its presence via `docker.ImageExists(docker.SocatImage)`.
+Tests build the command tree with `newRootCmdWithDeps(baseDir, deps)` and a `fakeDocker`
+(`internal/cli/main_test.go`) that satisfies all three interfaces; helpers `runCmd` /
+`runCmdWithDeps` execute it and capture stdout/stderr.
 
 ---
 
@@ -163,7 +164,7 @@ checks its presence via `docker.ImageExists(docker.SocatImage)`.
 
 makeslop does not build or pull images, and `image` in `settings.json` has no default
 (`config.Load` leaves an empty value empty). `run` and `status` pick the image with a single
-resolver in the cli package:
+resolver in the cli package (`internal/cli/image.go`):
 
 ```go
 func resolveImage(flagVal, settingsImage string) (string, error)
@@ -187,16 +188,17 @@ strings rather than `*config.Settings`, so callers need no nil-settings special 
 
 ## Preflight helpers
 
-`internal/docker/preflight.go` provides two shared helpers used by both `run` and `status`:
+`internal/docker/preflight.go` provides two methods on `*Docker`, used by both `run` and `status`:
 
-- **`CheckDaemon(ctx context.Context) error`** — pings the daemon via `newClientFn`; returns
-  `ErrDaemonUnreachable` on failure.
-- **`ImageExists(ctx context.Context, image string) (bool, error)`** — calls `ImageInspect`;
-  returns `(true, nil)` when found, `(false, nil)` only when `cerrdefs.IsNotFound(err)`, and
-  `(false, err)` for any other error (so a dead daemon is never misreported as "image absent").
+- **`CheckDaemon(ctx context.Context) error`** — pings the daemon via the shared `d.client`;
+  returns `*ErrDaemonUnreachable` on failure.
+- **`ImageExists(ctx context.Context, image string) (bool, error)`** — calls `ImageInspect` on
+  `d.client`; returns `(true, nil)` when found, `(false, nil)` only when
+  `cerrdefs.IsNotFound(err)`, and `(false, err)` for any other error (so a dead daemon is never
+  misreported as "image absent").
 
-Both helpers build and close their own client (two constructions per `status` run — accepted for
-simplicity).
+Both methods share the `*Docker`'s single long-lived client — no per-call client construction or
+close. The client is closed once by the cleanup func returned from `newRootCmd`.
 
 ---
 
@@ -206,35 +208,42 @@ Daemon-ping and image-inspect calls are bounded by `const preflightTimeout = 10 
 (declared in `internal/docker/preflight.go`). `WithPreflightTimeout(parent context.Context)`
 returns a derived context with this deadline and a cancel func.
 
-Call sites in `runRun` (main.go) and `runStatus` (status.go) wrap each blocking preflight call:
+Commands never call the checkers directly; they go through two `dockerDeps` wrappers in
+`internal/cli/deps.go`, which own the deadline:
 
 ```go
-pfCtx, pfCancel := docker.WithPreflightTimeout(ctx)
-err := docker.CheckDaemon(pfCtx)
-pfCancel()
+func (d dockerDeps) checkDaemonPreflight(ctx context.Context) error {
+	pfCtx, pfCancel := docker.WithPreflightTimeout(ctx)
+	defer pfCancel()
+	return d.daemon.CheckDaemon(pfCtx)
+}
 ```
 
-`pfCancel()` is called **immediately after** the synchronous blocking call — not deferred — so the
-deadline is released as soon as the preflight step completes. The long-running `docker.Run` uses
-the original (signal-cancellable) parent context with no artificial deadline.
+`imageExistsPreflight` has the same shape. Because each wrapper returns as soon as its single
+blocking call completes, the deferred cancel releases the deadline immediately. `runRun`
+(`internal/cli/run.go`) and `runStatus` (`internal/cli/status.go`) use these wrappers. The
+long-running `Run` receives the original (signal-cancellable) `cmd.Context()` with no artificial
+deadline.
 
 ---
 
 ## Signal-cancellable root context
 
-`runWithExitCode` (in `cmd/makeslop/main.go`) creates a signal-cancellable context and calls
-`cmd.ExecuteContext(ctx)`:
+`runWithExitCode` (in `internal/cli/root.go`) creates a signal-cancellable context and executes
+the command tree with it:
 
 ```go
 ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 defer stop()
-if err := cmd.ExecuteContext(ctx); err != nil { ... }
+...
+return exitCodeFromError(cmd.ExecuteContext(ctx), stderr)
 ```
 
 Every subcommand receives this context via `cmd.Context()`. Ctrl-C or SIGTERM cancels the context,
-which propagates to Docker SDK calls and preflight checks.
+which propagates to Docker SDK calls, preflight checks, and the secret scan.
 
-`main()` itself is unchanged — it just calls `os.Exit(runWithExitCode())`.
+`cli.Main` resolves `~/.makeslop` (through `filepath.EvalSymlinks` when it exists) and calls
+`runWithExitCode`; `main()` just calls `os.Exit(cli.Main(version, os.Args[1:]))`.
 
 ---
 
@@ -244,14 +253,20 @@ which propagates to Docker SDK calls and preflight checks.
 lost updates when multiple `makeslop` processes write `settings.json` concurrently.
 
 It uses a two-level lock:
-- **Intra-process:** a `sync.Mutex` keyed on `baseDir` (protects goroutines in the same process —
-  necessary because Linux `flock(2)` is per-process, not per-file-descriptor within the same PID).
+- **Intra-process:** a package-level `sync.Mutex` (protects goroutines in the same process —
+  necessary because Linux `flock(2)` does not serialize separate file descriptors within the same
+  process).
 - **Cross-process:** `syscall.Flock(fd, LOCK_EX)` on `<baseDir>/.settings.lock` (serializes
   distinct `makeslop` invocations).
 
-**No-nesting invariant:** `WithLock` MUST NOT be nested on the same goroutine — same-process
-re-entry self-deadlocks on the `sync.Mutex`. Each Load→mutate→Save site takes its own short-lived
-sequential `WithLock`; no caller wraps another `WithLock`-protected call.
+`config.Update(baseDir, mutate)` wraps the common Load→mutate→Save sequence in `WithLock`; when
+`mutate` returns an error, the save is skipped. `Save` itself writes via temp file + rename, so a
+crash mid-write never leaves a half-written `settings.json`.
+
+**No-nesting invariant:** `WithLock` MUST NOT be nested on the same goroutine — including inside
+an `Update` mutate func — because same-process re-entry self-deadlocks on the `sync.Mutex`. Each
+Load→mutate→Save site takes its own short-lived sequential lock; no caller wraps another
+`WithLock`-protected call.
 
 **Lock file:** `<baseDir>/.settings.lock` is created on first use and never deleted. It carries no
 data — its role is purely advisory.
@@ -259,7 +274,7 @@ data — its role is purely advisory.
 **Callers:**
 - `workspace.Init` — registers a new workspace.
 - `workspace.Remove` — unregisters a workspace.
-- `configSetCmd` RunE (via `config.Update`) — writes a config key.
+- `config set` RunE (via `config.Update`) — writes a config key.
 
 ---
 
@@ -267,36 +282,51 @@ data — its role is purely advisory.
 
 `internal/security.Scan` uses a native Go `filepath.WalkDir` walk — there is no `fd`/`fdfind`
 dependency. Patterns (basename globs) and skip-dirs are passed in at call time; the engine has no
-hardcoded defaults. If `patterns` is empty, `Scan` returns `nil` immediately (no walk).
+hardcoded defaults. If `patterns` is empty, `Scan` returns `(nil, nil, nil)` immediately (no walk).
+Symlinks whose basename matches a pattern are returned in the second slice (`symlinkMatches`)
+rather than the first — WalkDir does not follow symlinks, so they are not masked; `run` warns the
+user. These symlink warnings bypass `--quiet` (degraded protection is never treated as cosmetic).
 
 Walk errors (e.g. unreadable subdirectories) are propagated immediately and abort `runRun` before
-`docker.Run`. This "fail-loud" invariant ensures makeslop never silently skips a directory it
-cannot prove is secret-free — consistent with the no-`.env`-leak contract.
+the container starts. This "fail-loud" invariant ensures makeslop never silently skips a directory
+it cannot prove is secret-free — consistent with the no-`.env`-leak contract.
 
 The defaults live as active values in the `Scaffold` stub seeded by `makeslop init`. Pre-existing
 project `.makeslop.yaml` files are never auto-migrated; users with an old stub must manually add an
 `exclude.scan` block.
 
+`.makeslop.yaml` itself is decoded in strict mode (`KnownFields(true)`), so unknown keys — including
+the `network:` block from older versions — are hard errors.
+
 ---
 
 ## POSIX-only invariant
 
-makeslop targets POSIX systems only. Tests that rely on TTY/signal behavior call `SkipNonPOSIX` at
-the top. Do not add Windows compatibility paths.
+makeslop targets POSIX systems only. Tests that rely on TTY/signal behavior call a
+`skipNonPOSIX(t, why)` helper defined locally in each test package (unexported, not shared across
+packages). Do not add Windows compatibility paths.
 
 ---
 
 ## Exit-code contract
 
 `docker.ExitError{Code int}` (in `run.go`) is the only exit-code error. `Run` returns it when
-`ContainerWait` reports a non-zero `StatusCode`. `runWithExitCode` in `main.go` does:
+`ContainerWait` reports a non-zero `StatusCode`. `exitCodeFromError` in `internal/cli/root.go`
+maps the command's error to the process exit code:
 
 ```go
-var ee *docker.ExitError
-if errors.As(err, &ee) {
-    return ee.Code
+var de *docker.ExitError
+if errors.As(err, &de) {
+    return de.Code
 }
+if !errors.Is(err, errSilent) {
+    fmt.Fprintf(stderr, "makeslop: %v\n", err)
+}
+return 1
 ```
+
+`errSilent` means the command already printed a tailored message: exit 1 without reprinting. Any
+other error is printed as `makeslop: <err>` and exits 1.
 
 Signal-killed containers (e.g. SIGKILL) are reported by the daemon as `StatusCode=137`; that value
 is passed through verbatim. There is no OS `WaitStatus` / `exec.ExitError` handling — makeslop
@@ -308,14 +338,15 @@ does not fork the docker binary.
 
 ```
 go build ./cmd/makeslop
-go test ./...
+go test -timeout=100s ./...
+golangci-lint run
 ```
 
-Tests do not use shell shims, so there is no `noexec`/`GOTMPDIR` constraint. The `GOTMPDIR`
-prefix (`GOTMPDIR=/home/user go test ./...`) remains harmless if you have it in muscle memory, but
-is no longer required.
+Tests do not use shell shims or a live Docker daemon, so there is no `noexec`/`GOTMPDIR`
+constraint.
 
-The version string is stamped at build time:
+The version string is stamped at build time (`make build` does this and installs to
+`~/.local/bin`):
 
 ```
 go build -ldflags "-X main.version=$(git describe --tags --always --dirty)" ./cmd/makeslop
