@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -1664,6 +1665,137 @@ func TestRun_NoEnvironmentsBlock_NoEnvFlags(t *testing.T) {
 			t.Errorf("--dry-run output must not contain -e flags when environments: block is absent\nstdout:\n%s", stdout)
 			break
 		}
+	}
+}
+
+func TestResolveEnv(t *testing.T) {
+	hostEnv := map[string]string{
+		"SET_VAR":   "val",
+		"EMPTY_VAR": "",
+		"PEM_KEY":   "line1\nline2\n",
+		"AAA_FIRST": "1",
+	}
+	lookup := func(name string) (string, bool) {
+		v, ok := hostEnv[name]
+		return v, ok
+	}
+
+	tests := []struct {
+		name string
+		env  projectconfig.Env
+		want []string
+	}{
+		{name: "empty env", env: projectconfig.Env{}, want: nil},
+		{name: "only unset host names", env: projectconfig.Env{Host: []string{"UNSET_A", "UNSET_B"}}, want: nil},
+		{name: "set host var", env: projectconfig.Env{Host: []string{"SET_VAR"}}, want: []string{"SET_VAR=val"}},
+		{name: "set-empty host var", env: projectconfig.Env{Host: []string{"EMPTY_VAR"}}, want: []string{"EMPTY_VAR="}},
+		{name: "unset host var skipped", env: projectconfig.Env{Host: []string{"SET_VAR", "UNSET_VAR"}}, want: []string{"SET_VAR=val"}},
+		{name: "static only", env: projectconfig.Env{Static: []string{"A=1", "B=2"}}, want: []string{"A=1", "B=2"}},
+		{
+			name: "sorted merge across static and host",
+			env:  projectconfig.Env{Static: []string{"MID=m", "ZED=z"}, Host: []string{"AAA_FIRST", "SET_VAR"}},
+			want: []string{"AAA_FIRST=1", "MID=m", "SET_VAR=val", "ZED=z"},
+		},
+		{
+			name: "host value with newline passed verbatim",
+			env:  projectconfig.Env{Host: []string{"PEM_KEY"}},
+			want: []string{"PEM_KEY=line1\nline2\n"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := resolveEnv(tc.env, lookup)
+			if tc.want == nil {
+				if got != nil {
+					t.Fatalf("resolveEnv = %#v, want nil", got)
+				}
+				return
+			}
+			if !slices.Equal(got, tc.want) {
+				t.Fatalf("resolveEnv = %#v, want %#v", got, tc.want)
+			}
+		})
+	}
+}
+
+// environments.host names are resolved from the host environment and printed in --dry-run.
+func TestRun_EnvironmentsHost_DryRunResolvesValues(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	initWithImage(t, baseDir)
+	resolvedPwd := evalSymlinks(t, pwd)
+
+	const unsetName = "MAKESLOP_TEST_UNSET_VAR_7F3A"
+	t.Setenv("MAKESLOP_TEST_SET_VAR", "val")
+	t.Setenv("MAKESLOP_TEST_EMPTY_VAR", "")
+	t.Setenv(unsetName, "") // registers restore; t.Setenv cannot unset by itself
+	if err := os.Unsetenv(unsetName); err != nil {
+		t.Fatalf("unsetenv: %v", err)
+	}
+
+	yamlContent := "exclude:\n  dirs: []\n  files: []\n  scan:\n    patterns: []\n" +
+		"environments:\n  static:\n    MAKESLOP_TEST_STATIC: s\n  host:\n" +
+		"    - MAKESLOP_TEST_SET_VAR\n    - " + unsetName + "\n    - MAKESLOP_TEST_EMPTY_VAR\n"
+	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(yamlContent), 0o644); err != nil {
+		t.Fatalf("write yaml: %v", err)
+	}
+
+	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
+	if err != nil {
+		t.Fatalf("--dry-run failed: %v; stderr=%q", err, stderr)
+	}
+
+	// Sorted: EMPTY < SET < STATIC.
+	wantOrder := []string{
+		"-e MAKESLOP_TEST_EMPTY_VAR= \\\n",
+		"-e MAKESLOP_TEST_SET_VAR=val",
+		"-e MAKESLOP_TEST_STATIC=s",
+	}
+	prev := -1
+	for _, want := range wantOrder {
+		idx := strings.Index(stdout, want)
+		if idx < 0 {
+			t.Fatalf("--dry-run stdout missing %q\nstdout:\n%s", want, stdout)
+		}
+		if idx < prev {
+			t.Errorf("--dry-run env flags not sorted: %q appears too early\nstdout:\n%s", want, stdout)
+		}
+		prev = idx
+	}
+	if strings.Contains(stdout, unsetName) {
+		t.Errorf("--dry-run stdout must not mention unset host var %q\nstdout:\n%s", unsetName, stdout)
+	}
+}
+
+// Old flat environments: form fails run with the migration hint before the container starts.
+func TestRun_EnvironmentsFlatForm_FailsWithHint(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	initWithImage(t, baseDir)
+	resolvedPwd := evalSymlinks(t, pwd)
+
+	yamlContent := "exclude:\n  dirs: []\n  files: []\n  scan:\n    patterns: []\nenvironments:\n  NODE_ENV: production\n"
+	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(yamlContent), 0o644); err != nil {
+		t.Fatalf("write yaml: %v", err)
+	}
+
+	fc := newFakeDocker(0, true)
+	_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fc), "run")
+	if err == nil {
+		t.Fatalf("run succeeded with flat environments form; stderr=%q", stderr)
+	}
+	const wantHint = `flat "KEY: value" form is no longer supported; move entries under environments.static`
+	if !strings.Contains(err.Error(), wantHint) {
+		t.Errorf("run error = %q, want it to contain %q", err.Error(), wantHint)
+	}
+	if fc.Started {
+		t.Error("docker.Run must not be invoked when .makeslop.yaml is invalid")
 	}
 }
 

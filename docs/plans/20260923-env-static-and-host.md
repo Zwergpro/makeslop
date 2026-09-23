@@ -168,30 +168,30 @@
 - Modify: `internal/cli/run.go`
 - Modify: `internal/cli/run_test.go`
 
-- [ ] add `resolveEnv(env projectconfig.Env, lookup func(string) (string, bool)) []string` in `run.go`; it merges static and resolved host pairs, sorted, and returns `nil` when empty
-- [ ] wire it in: `opts.Env = resolveEnv(env, os.LookupEnv)`
+- [x] add `resolveEnv(env projectconfig.Env, lookup func(string) (string, bool)) []string` in `run.go`; it merges static and resolved host pairs, sorted, and returns `nil` when empty
+- [x] wire it in: `opts.Env = resolveEnv(env, os.LookupEnv)`
 - [x] update `TestRun_EnvironmentsBlock_ProducesEnvFlags` to the `static:` form (done in task 1)
-- [ ] add unit tests for `resolveEnv` with a fake lookup:
+- [x] add unit tests for `resolveEnv` with a fake lookup:
   - set, set-empty (`NAME=`), unset (skipped)
   - sorted merge across static and host
   - empty → nil
   - host value containing a newline is passed verbatim
-- [ ] add a dry-run integration test using `t.Setenv` (set + empty). For the unset case use a unique name such as `MAKESLOP_TEST_UNSET_<rand>`, or call `t.Setenv(name, "")` then `os.Unsetenv(name)`: `t.Setenv` cannot unset a variable by itself:
+- [x] add a dry-run integration test using `t.Setenv` (set + empty). For the unset case use a unique name such as `MAKESLOP_TEST_UNSET_<rand>`, or call `t.Setenv(name, "")` then `os.Unsetenv(name)`: `t.Setenv` cannot unset a variable by itself:
   - output contains `-e SET_VAR=val` and `-e EMPTY_VAR=`
   - output lacks the unset name
   - order is sorted
-- [ ] add a test that the old flat form makes `run` fail with the hint and never calls the runner. `checkDaemonPreflight` runs before `Load`, so use `--dry-run` or a `fakeDocker` whose daemon check passes, and assert the fake runner was not called.
-- [ ] run `go test -timeout=100s ./...` - must pass before task 3
+- [x] add a test that the old flat form makes `run` fail with the hint and never calls the runner. `checkDaemonPreflight` runs before `Load`, so use `--dry-run` or a `fakeDocker` whose daemon check passes, and assert the fake runner was not called.
+- [x] run `go test -timeout=100s ./...` - must pass before task 3 (only the two known chmod-000 environment failures remain)
 
 ### Task 3: Verify acceptance criteria
-- [ ] verify:
-  - both kinds work
-  - flat form fails loudly with the hint
-  - unset host vars are skipped
-  - dry-run shows resolved values
-  - `internal/docker` is untouched
-- [ ] run full test suite: `go test -timeout=100s ./...`
-- [ ] run linter: `golangci-lint run`
+- [x] verify:
+  - both kinds work (`TestValidateEnvironments_Success`, `TestRun_EnvironmentsHost_DryRunResolvesValues`)
+  - flat form fails loudly with the hint (`TestRun_EnvironmentsFlatForm_FailsWithHint`, `TestStatus_Check5_FlatEnvironmentsShowsWarnWithHint`)
+  - unset host vars are skipped (`TestResolveEnv`, dry-run test)
+  - dry-run shows resolved values (`TestRun_EnvironmentsHost_DryRunResolvesValues`)
+  - `internal/docker` is untouched (`git diff main...HEAD --stat -- internal/docker` is empty)
+- [x] run full test suite: `go test -timeout=100s ./...` (only the two known chmod-000 environment failures)
+- [x] run linter: `golangci-lint run` (0 issues)
 
 ### Task 4: [Final] Update documentation
 - [ ] `docs/reference.md`: rewrite the "Environment variables" section. Cover:

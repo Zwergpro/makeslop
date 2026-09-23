@@ -37,6 +37,24 @@ func mergeUniqueSorted(a, b []string) []string {
 	return out
 }
 
+// resolveEnv merges env.Static with host-resolved env.Host pairs, sorted.
+// Unset host names are skipped; set-but-empty yields "NAME=". Host values pass
+// verbatim (newlines included). Returns nil when empty so no -e flags appear.
+func resolveEnv(env projectconfig.Env, lookup func(string) (string, bool)) []string {
+	out := make([]string, 0, len(env.Static)+len(env.Host))
+	out = append(out, env.Static...)
+	for _, name := range env.Host {
+		if v, ok := lookup(name); ok {
+			out = append(out, name+"="+v)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	sort.Strings(out)
+	return out
+}
+
 // sandboxMountGates resolves filesystem state at workspaceRoot and returns the
 // two sandbox-policy flags. BuildSpec owns the mount-ordering consequences
 // (dropping the /dev/null mask that would shadow the read-only config bind).
@@ -144,7 +162,7 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir, imageFlag str
 		MaskedDirs:           yamlExcludes.Dirs,
 		MountContentCache:    cacheCfg.Content,
 		MountAgentCache:      cacheCfg.Agent,
-		Env:                  env.Static,
+		Env:                  resolveEnv(env, os.LookupEnv),
 		ProtectProjectConfig: protectProjectConfig,
 		MaskGitHooks:         maskGitHooks,
 	}
