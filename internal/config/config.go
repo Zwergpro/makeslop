@@ -169,13 +169,6 @@ var bootstrapDirs = []string{
 	WorkspacesDir,
 }
 
-var bootstrapFiles = []struct {
-	name    string
-	content []byte
-}{
-	{".claude.json", []byte("{}\n")},
-}
-
 // BaseConfigExists reports whether <baseDir>/settings.json exists. Returns
 // (false, nil) when absent and (false, err) for any other stat failure, so
 // callers can distinguish "not initialised" from "unreadable".
@@ -200,11 +193,5 @@ func Bootstrap(baseDir string) error {
 			return fmt.Errorf("create dir %s: %w", dir, err)
 		}
 	}
-	for _, f := range bootstrapFiles {
-		path := filepath.Join(baseDir, f.name)
-		if err := bootstrapFile(path, f.content); err != nil {
-			return err
-		}
-	}
-	return nil
+	return bootstrapFile(filepath.Join(baseDir, ".claude.json"), []byte("{}\n"))
 }

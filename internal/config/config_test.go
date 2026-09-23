@@ -443,6 +443,11 @@ func TestBootstrap_CreatesDirsAndClaudeJSON(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(base, SettingsFile)); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("Bootstrap must not create settings.json; stat err=%v", err)
 	}
+
+	// The Dockerfile is no longer seeded (images are user-built).
+	if _, err := os.Stat(filepath.Join(base, "Dockerfile")); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("Bootstrap must not create Dockerfile; stat err=%v", err)
+	}
 }
 
 func TestBootstrap_Idempotent(t *testing.T) {

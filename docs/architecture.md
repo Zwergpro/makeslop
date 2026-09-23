@@ -175,7 +175,7 @@ strings rather than `*config.Settings`, so callers need no nil-settings special 
 
 - `run` resolves right after loading settings, before workspace lookup and any daemon call, so a
   missing image fails fast (also on `--dry-run`). If the resolved image is absent locally, the
-  image-exists preflight fails with `image "X" not found locally — run 'docker pull X'`.
+  image-exists preflight fails with `image "X" not found locally — build or pull it (e.g. 'docker pull X')`.
 - `status` reports the image check in this order: an explicit `-i` skips the settings steps;
   corrupt settings → `cannot check — settings unreadable`; `errNoImage` → `no image configured`;
   daemon down → `cannot check — daemon unreachable`; otherwise inspect the image.

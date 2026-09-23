@@ -456,6 +456,26 @@ func TestInit_ImageSet_NoNote(t *testing.T) {
 	}
 }
 
+// A hand-edited whitespace-only image counts as unset, so init still prints the note.
+func TestInit_WhitespaceImage_PrintsNote(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	t.Chdir(t.TempDir())
+
+	if _, stderr, err := runCmd(t, baseDir, "init"); err != nil {
+		t.Fatalf("init failed: %v; stderr=%q", err, stderr)
+	}
+	writeWhitespaceImage(t, baseDir)
+
+	_, stderr, err := runCmd(t, baseDir, "init")
+	if err != nil {
+		t.Fatalf("second init failed: %v; stderr=%q", err, stderr)
+	}
+	if !strings.Contains(stderr, "note: no image configured") {
+		t.Errorf("whitespace-only image must trigger the note; stderr=%q", stderr)
+	}
+}
+
 // init stdout is the bare workspace path only (no labels, no extra lines).
 func TestInit_FreshSeed_StdoutIsBarePathOnly(t *testing.T) {
 	setHomeToTestParent(t)

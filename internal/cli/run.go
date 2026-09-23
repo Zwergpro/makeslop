@@ -162,8 +162,7 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir, imageFlag str
 		return errSilent
 	}
 	if !imageFound {
-		fmt.Fprintf(cmd.ErrOrStderr(),
-			"makeslop: image %q not found locally — run 'docker pull %s'\n", image, image)
+		fmt.Fprintln(cmd.ErrOrStderr(), "makeslop: "+imageNotFoundHint(image))
 		return errSilent
 	}
 

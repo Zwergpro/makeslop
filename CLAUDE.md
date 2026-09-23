@@ -3,9 +3,10 @@
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 makeslop is a Go CLI that runs Claude Code / Codex inside a per-project Docker container
-(user-supplied image; makeslop never builds or pulls) with controlled mounts and secret masking. It talks to the daemon through the
-moby/moby Go SDK; the `docker` CLI binary is not used. User-facing docs live in `docs/`
-(`reference.md`, `security.md`, `architecture.md`); this file is agent-facing notes only.
+(user-supplied image; makeslop never builds or pulls) with controlled mounts and secret masking.
+It talks to the daemon through the moby/moby Go SDK; the `docker` CLI binary is not used.
+User-facing docs live in `docs/` (`reference.md`, `security.md`, `architecture.md`); this file is
+agent-facing notes only.
 
 ## Commands
 
@@ -22,7 +23,8 @@ which just calls `cli.Main(version, args)`.
 
 ## Layout
 
-- `internal/cli` — cobra commands (`init`, `run`, `status`, `config`, `ls`, `remove`, `version`). `root.go` holds `Main`, `runWithExitCode`, and the exit-code contract.
+- `internal/cli` — cobra commands (`init`, `run`, `status`, `config`, `ls`, `remove`,
+  `version`). `root.go` holds `Main`, `runWithExitCode`, and the exit-code contract.
 - `internal/docker` — `Docker` type wrapping the SDK: `spec.go` (pure), `run.go`,
   `preflight.go`, `client.go`.
 - `internal/config` — `~/.makeslop/settings.json`, bootstrap of `~/.makeslop/`, settings locking.
@@ -52,8 +54,10 @@ Mount order in `BuildSpec`: project root first, then global mounts (`~/.makeslop
   extending `apiClient` and the fakes in `internal/docker/fakes_test.go`.
 - **cli package:** commands depend on consumer-side interfaces in `internal/cli/deps.go`
   (`containerRunner`, `daemonChecker`, `imageChecker`). Tests build the tree with
-  `newRootCmdWithDeps(baseDir, deps)` and a `fakeDocker` (see `internal/cli/main_test.go`). If
-  `docker.New()` fails, `dockerNewErrStub` defers the error so non-docker commands still work.
+  `newRootCmdWithDeps(baseDir, deps)` and a `fakeDocker` (see `internal/cli/main_test.go`).
+  `run`/`status` tests that need an image seed with `initWithImage(t, baseDir)`;
+  unregistered-workspace tests pass `-i test-img` so resolution succeeds and they reach `ws.Lookup`.
+  If `docker.New()` fails, `dockerNewErrStub` defers the error so non-docker commands still work.
 
 ### Context, timeouts, exit codes
 - `runWithExitCode` wraps execution in `signal.NotifyContext(SIGINT, SIGTERM)`; every `RunE` must
@@ -70,7 +74,7 @@ Mount order in `BuildSpec`: project root first, then global mounts (`~/.makeslop
 - `image` is never defaulted; commands resolve it via `resolveImage` (flag > settings >
   `errNoImage`) in `internal/cli/image.go`. `-i/--image` exists on `run` and `status` only. `run`
   resolves before `ws.Lookup` so config errors fail fast; `init` prints a non-blocking note when
-  the image is unset. A missing local image fails with a `docker pull` hint (no auto-pull).
+  the image is unset. A missing local image fails with a "build or pull it" hint (no auto-pull).
 - `Load` still defaults `Shell` and `TmpDirSize`. There is no version stamp or migration step:
   obsolete keys (`version`, `migrated_version`) are ignored and dropped on the next `Save`.
 - Every `settings.json` read-modify-write goes through `config.Update` / `config.WithLock`: an

@@ -84,7 +84,7 @@ groups can be disabled via `cache.content` and `cache.agent` in `.makeslop.yaml`
   black-hole `DOCKER_HOST` is surfaced as an error rather than hanging indefinitely):
   1. Daemon reachability (`— is docker running?`)
   2. Image existence. makeslop never pulls or builds; a missing image fails with
-     `image "X" not found locally — run 'docker pull X'`.
+     `image "X" not found locally — build or pull it (e.g. 'docker pull X')`.
 - Ctrl-C / SIGTERM cancels the running container session cleanly.
 - `--dry-run` skips both pre-flight checks and the TTY check (printed == executed invariant).
 
@@ -108,7 +108,7 @@ Checks (in order); daemon and image checks are bounded by a 10-second preflight 
 2. Base config — **blocking**; `✗` when `settings.json` is absent or corrupt
 3. Image — **blocking**; `✗` when no image is configured (`no image configured — run 'makeslop
    config set image <ref>'`), when settings are unreadable, when the daemon is down, or when the
-   image is missing locally (`— run 'docker pull X'`). An `-i` value skips the settings steps, so
+   image is missing locally (`— build or pull it (e.g. 'docker pull X')`). An `-i` value skips the settings steps, so
    the check works even when `settings.json` is absent or corrupt.
 4. Workspace registration — **blocking**
 5. Secret scan summary — non-blocking
@@ -165,7 +165,7 @@ Normal first-run order: build or pull an image yourself → `config set image <r
 
 makeslop does not build or pull images. Any image you have locally works, as long as it provides
 the configured shell and the agent CLIs you want to run as uid 1000 (see [Host UID](#host-uid)).
-[`examples/claudebox/Dockerfile`](../examples/claudebox/Dockerfile) is a starting point:
+[`examples/claudebox/Dockerfile`](../examples/claudebox/Dockerfile) is a starting point. From a clone of this repo:
 
 ```
 docker build -t claudebox examples/claudebox
@@ -179,7 +179,7 @@ The image is resolved per invocation of `run` and `status`:
 3. otherwise an error: `no image configured — run 'makeslop config set image <ref>' or pass -i/--image`
 
 If the resolved image is not present locally, `run` fails with
-`image "X" not found locally — run 'docker pull X'` and `status` reports the same hint.
+`image "X" not found locally — build or pull it (e.g. 'docker pull X')` and `status` reports the same hint.
 
 ---
 

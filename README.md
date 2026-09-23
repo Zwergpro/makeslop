@@ -35,7 +35,8 @@ for each tagged version (built with [GoReleaser](https://goreleaser.com)).
 ## Quickstart
 
 ```
-# 1. Build or pull an image (the example Dockerfile is a starting point)
+# 1. Build or pull an image (the example Dockerfile is a starting point;
+#    run from a clone of this repo)
 docker build -t claudebox examples/claudebox
 
 # 2. Tell makeslop which image to use
@@ -51,7 +52,7 @@ makeslop run
 The image has no default. If none is configured, `run` fails, `status` reports ✗, and `init`
 prints a note — each pointing at `makeslop config set image <ref>`. Override the configured image
 for one invocation with `-i/--image` (`makeslop run -i myimage:dev`). makeslop never pulls images:
-a missing local image fails with a `docker pull <ref>` hint.
+a missing local image fails with a "build or pull it" hint (e.g. `docker pull <ref>`).
 
 ## How it works
 
@@ -133,6 +134,10 @@ See [docs/security.md](docs/security.md) for the full masking spec and home-dire
 **Breaking changes (recent):** path-style patterns (e.g. `secrets/*.pem`) now hard-error at load
 time — patterns must be basename globs only (e.g. `*.pem`). A symlinked `.makeslop.yaml` is also
 now rejected by `run`, `init`, and `status` — replace the symlink with a regular file to migrate.
+The `build` and `migrate` commands are removed and the image has no default: build your image
+yourself (e.g. from `examples/claudebox`, or from your old `~/.makeslop/Dockerfile`), then run
+`makeslop config set image <ref>`. `~/.makeslop/Dockerfile` and the `version` key in
+`settings.json` are no longer used (the key is dropped on the next settings write).
 
 ## Commands
 
@@ -142,6 +147,8 @@ now rejected by `run`, `init`, and `status` — replace the symlink with a regul
 | `makeslop run` | Launch an interactive agent container (TTY required) |
 | `makeslop status` | Ordered readiness check: daemon, config, image, workspace, secrets |
 | `makeslop config` | View or set global settings (`image`, `shell`, `tmp_dir_size`) |
+| `makeslop ls` | List registered workspaces |
+| `makeslop remove <name>` | Unregister a workspace and delete its cache directory |
 | `makeslop version` | Print the build version |
 
 `makeslop run --dry-run` prints the equivalent `docker run` command without launching.

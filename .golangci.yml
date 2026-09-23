@@ -12,7 +12,6 @@ linters:
         - fmt.Fprintln
         - fmt.Fprintf
         - (net.Conn).Close
-        - (net.Listener).Close
         - (*os.File).Close
         - os.Remove
         - (io.ReadCloser).Close

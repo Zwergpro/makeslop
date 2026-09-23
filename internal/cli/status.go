@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strings"
 	"unicode/utf8"
 
 	"github.com/spf13/cobra"
@@ -150,22 +149,26 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir, imageFlag 
 		cl.fail("daemon", "is docker running? — run 'docker info'")
 	}
 
-	// 2. Base config. loadedSettings is reused by checks 3 and 4;
-	// settingsCorrupt distinguishes an unreadable file from an absent one.
+	// 2. Base config. loadedSettings is reused by checks 3 and 4 (settingsImage
+	// is its image, empty when settings are absent or unreadable);
+	// settingsUnreadable distinguishes an unreadable/corrupt file from an absent one.
 	var loadedSettings *config.Settings
-	var settingsCorrupt bool
+	var settingsImage string
+	var settingsUnreadable bool
 	exists, err := config.BaseConfigExists(baseDir)
 	if err != nil {
+		settingsUnreadable = true
 		cl.fail("base config", fmt.Sprintf("cannot read settings: %v", err))
 	} else if !exists {
 		cl.fail("base config", "run 'makeslop init' to create ~/.makeslop")
 	} else {
 		s, loadErr := config.Load(baseDir)
 		if loadErr != nil {
-			settingsCorrupt = true
+			settingsUnreadable = true
 			cl.fail("base config", fmt.Sprintf("corrupt settings: %v", loadErr))
 		} else {
 			loadedSettings = s
+			settingsImage = s.Image
 			cl.ok("base config", "")
 		}
 	}
@@ -175,17 +178,12 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir, imageFlag 
 	// reported before daemon state: they don't need the daemon to diagnose.
 	// The inspect is skipped when the daemon is down (it would hit the same
 	// dead daemon and burn a second preflight timeout).
-	settingsImage := ""
-	if loadedSettings != nil {
-		settingsImage = loadedSettings.Image
-	}
 	imageName, resolveErr := resolveImage(imageFlag, settingsImage)
-	flagGiven := strings.TrimSpace(imageFlag) != ""
 	switch {
-	case !flagGiven && settingsCorrupt:
+	case !imageSet(imageFlag) && settingsUnreadable:
 		cl.fail("image", "cannot check — settings unreadable")
 	case resolveErr != nil:
-		cl.fail("image", "no image configured — run 'makeslop config set image <ref>'")
+		cl.fail("image", noImageHint)
 	case !daemonUp:
 		cl.fail("image", "cannot check — daemon unreachable")
 	default:
@@ -193,7 +191,7 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir, imageFlag 
 		if imageErr != nil {
 			cl.fail("image", fmt.Sprintf("error checking image %q: %v — is docker running?", imageName, imageErr))
 		} else if !imageFound {
-			cl.fail("image", fmt.Sprintf("image %q not found locally — run 'docker pull %s'", imageName, imageName))
+			cl.fail("image", imageNotFoundHint(imageName))
 		} else {
 			cl.ok("image", "")
 		}

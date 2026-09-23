@@ -84,3 +84,29 @@ func TestOutOfHome_RejectedOnVersion(t *testing.T) {
 		})
 	}
 }
+
+// -i/--image is registered only on run and status.
+func TestImageFlag_RejectedOnOtherCommands(t *testing.T) {
+	baseDir := t.TempDir()
+
+	for _, cmd := range [][]string{
+		{"init"},
+		{"ls"},
+		{"config"},
+		{"version"},
+		{"remove", "foo"},
+	} {
+		for _, flag := range []string{"-i", "--image"} {
+			t.Run(cmd[0]+flag, func(t *testing.T) {
+				args := append(append([]string{}, cmd...), flag, "x")
+				_, _, err := runCmd(t, baseDir, args...)
+				if err == nil {
+					t.Fatalf("%v should fail with unknown flag, got nil", args)
+				}
+				if !strings.Contains(err.Error(), "unknown shorthand flag") && !strings.Contains(err.Error(), "unknown flag") {
+					t.Errorf("%v: expected unknown flag/shorthand error; got: %v", args, err)
+				}
+			})
+		}
+	}
+}

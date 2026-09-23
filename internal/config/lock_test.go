@@ -10,7 +10,7 @@ import (
 )
 
 // Concurrent Update calls (Load→mutate→Save under the lock) must not lose updates.
-func TestWithLock_SerializesLoadSave(t *testing.T) {
+func TestUpdate_ConcurrentNoLostUpdates(t *testing.T) {
 	base := t.TempDir()
 
 	seed := &Settings{
@@ -35,6 +35,49 @@ func TestWithLock_SerializesLoadSave(t *testing.T) {
 			errs[i] = Update(base, func(s *Settings) error {
 				s.Workspaces[fmt.Sprint(i)] = Workspace{Name: fmt.Sprintf("ws-%d", i)}
 				return nil
+			})
+		}()
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("goroutine %d: Update error: %v", i, err)
+		}
+	}
+
+	final, err := Load(base)
+	if err != nil {
+		t.Fatalf("final Load: %v", err)
+	}
+	if len(final.Workspaces) != goroutines {
+		t.Errorf("len(Workspaces) = %d, want %d (lost update detected)",
+			len(final.Workspaces), goroutines)
+	}
+}
+
+// Explicit Load→mutate→Save inside WithLock must serialize concurrent writers.
+func TestWithLock_SerializesLoadSave(t *testing.T) {
+	base := t.TempDir()
+	if err := Save(base, &Settings{Workspaces: map[string]Workspace{}}); err != nil {
+		t.Fatalf("seed Save: %v", err)
+	}
+
+	const goroutines = 20
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	errs := make([]error, goroutines)
+
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			errs[i] = WithLock(base, func() error {
+				s, err := Load(base)
+				if err != nil {
+					return err
+				}
+				s.Workspaces[fmt.Sprint(i)] = Workspace{Name: fmt.Sprintf("ws-%d", i)}
+				return Save(base, s)
 			})
 		}()
 	}

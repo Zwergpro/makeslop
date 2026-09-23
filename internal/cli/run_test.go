@@ -1356,7 +1356,7 @@ func TestRun_ImageMissing_AbortsWithRemedy(t *testing.T) {
 	if !strings.Contains(stderr, `image "test-img" not found locally`) {
 		t.Errorf("stderr missing 'not found locally': %q", stderr)
 	}
-	if !strings.Contains(stderr, "docker pull test-img") {
+	if !strings.Contains(stderr, "build or pull it (e.g. 'docker pull test-img')") {
 		t.Errorf("stderr missing 'docker pull' remedy: %q", stderr)
 	}
 	if fc.Started {
@@ -2248,6 +2248,52 @@ func TestRun_ImageFlag_OverridesSettings(t *testing.T) {
 	}
 	if fc.ImageChecked != "flag-img:1" {
 		t.Errorf("image preflight checked %q, want %q", fc.ImageChecked, "flag-img:1")
+	}
+}
+
+// -i supplies the image when settings have none (plain init).
+func TestRun_ImageFlag_NoSettingsImage(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	if _, stderr, err := runCmd(t, baseDir, "init"); err != nil {
+		t.Fatalf("init failed: %v; stderr=%q", err, stderr)
+	}
+
+	fc := newFakeDocker(0, true)
+
+	_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fc), "run", "-i", "flag-img")
+	if err != nil {
+		t.Fatalf("run -i failed: %v; stderr=%q", err, stderr)
+	}
+	if fc.LastSpec.Image != "flag-img" {
+		t.Errorf("LastSpec.Image = %q, want %q", fc.LastSpec.Image, "flag-img")
+	}
+	if fc.ImageChecked != "flag-img" {
+		t.Errorf("image preflight checked %q, want %q", fc.ImageChecked, "flag-img")
+	}
+}
+
+// A whitespace-only settings image counts as unset.
+func TestRun_WhitespaceImage_TreatedAsUnset(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+
+	if _, stderr, err := runCmd(t, baseDir, "init"); err != nil {
+		t.Fatalf("init failed: %v; stderr=%q", err, stderr)
+	}
+	writeWhitespaceImage(t, baseDir)
+
+	fc := newFakeDocker(0, true)
+	if _, _, err := runCmdWithDeps(t, baseDir, depsFrom(fc), "run"); !errors.Is(err, errNoImage) {
+		t.Fatalf("expected errNoImage, got %v", err)
+	}
+	if fc.DaemonChecked || fc.Started {
+		t.Error("docker must not be called when the image is whitespace-only")
 	}
 }
 

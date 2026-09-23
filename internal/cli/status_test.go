@@ -99,7 +99,7 @@ func TestStatus_ImageMissing_ExitsNonZero(t *testing.T) {
 	if !strings.Contains(stderr, "not ready") {
 		t.Errorf("stderr missing 'not ready': %q", stderr)
 	}
-	if !strings.Contains(stderr, `image "test-img" not found locally — run 'docker pull test-img'`) {
+	if !strings.Contains(stderr, `image "test-img" not found locally — build or pull it (e.g. 'docker pull test-img')`) {
 		t.Errorf("stderr missing 'docker pull' hint: %q", stderr)
 	}
 }
@@ -560,7 +560,8 @@ func TestStatus_CorruptSettings_DaemonDown_ImageShowsSettingsUnreadable(t *testi
 		t.Fatalf("write corrupt settings: %v", err)
 	}
 
-	check, _ := statusJSONCheck(t, baseDir, newFakeStatusDeps(true, false), "image")
+	check, result, err := statusJSONCheck(t, baseDir, newFakeStatusDeps(true, false), "image")
+	assertNotReady(t, result, err)
 	if check.State != checkFail || check.Detail != "cannot check — settings unreadable" {
 		t.Errorf("image check = %+v, want settings-unreadable fail", check)
 	}
@@ -705,22 +706,33 @@ func TestStatus_RenderNotReadyVerdict(t *testing.T) {
 	}
 }
 
-// statusJSONCheck runs `status --json` with args and returns the named check
-// plus the parsed result.
-func statusJSONCheck(t *testing.T, baseDir string, deps dockerDeps, name string, args ...string) (statusCheck, statusResult) {
+// statusJSONCheck runs `status --json` with args and returns the named check,
+// the parsed result, and the command error (nil when ready, errSilent otherwise).
+func statusJSONCheck(t *testing.T, baseDir string, deps dockerDeps, name string, args ...string) (statusCheck, statusResult, error) {
 	t.Helper()
-	stdout, stderr, _ := runCmdWithDeps(t, baseDir, deps, append([]string{"status", "--json"}, args...)...)
+	stdout, stderr, cmdErr := runCmdWithDeps(t, baseDir, deps, append([]string{"status", "--json"}, args...)...)
 	var result statusResult
 	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
 		t.Fatalf("--json output is not valid JSON: %v\nstdout: %s\nstderr: %s", err, stdout, stderr)
 	}
 	for _, c := range result.Checks {
 		if c.Name == name {
-			return c, result
+			return c, result, cmdErr
 		}
 	}
 	t.Fatalf("--json missing %q check; got: %+v", name, result.Checks)
-	return statusCheck{}, result
+	return statusCheck{}, result, cmdErr
+}
+
+// assertNotReady checks the not-ready contract: errSilent and ready=false.
+func assertNotReady(t *testing.T, result statusResult, err error) {
+	t.Helper()
+	if !errors.Is(err, errSilent) {
+		t.Errorf("expected errSilent, got %v", err)
+	}
+	if result.Ready {
+		t.Errorf("ready must be false")
+	}
 }
 
 const noImageDetail = "no image configured — run 'makeslop config set image <ref>'"
@@ -741,7 +753,8 @@ func TestStatus_ImageUnset_FailsWithConfigSetHint(t *testing.T) {
 			if daemonDown {
 				fc.PingErr = errors.New("connection refused")
 			}
-			check, _ := statusJSONCheck(t, baseDir, depsFrom(fc), "image")
+			check, result, err := statusJSONCheck(t, baseDir, depsFrom(fc), "image")
+			assertNotReady(t, result, err)
 			if check.State != checkFail || check.Detail != noImageDetail {
 				t.Errorf("image check = %+v, want fail %q", check, noImageDetail)
 			}
@@ -761,10 +774,8 @@ func TestStatus_ImageUnset_JSONNotReady(t *testing.T) {
 		t.Fatalf("init failed: %v; stderr=%q", err, stderr)
 	}
 
-	check, result := statusJSONCheck(t, baseDir, newFakeStatusDeps(false, false), "image")
-	if result.Ready {
-		t.Errorf("ready must be false when no image is configured")
-	}
+	check, result, err := statusJSONCheck(t, baseDir, newFakeStatusDeps(false, false), "image")
+	assertNotReady(t, result, err)
 	if check.Detail != noImageDetail {
 		t.Errorf("image detail = %q, want %q", check.Detail, noImageDetail)
 	}
@@ -785,11 +796,9 @@ func TestStatus_ImageMissing_JSONPullHint(t *testing.T) {
 	t.Chdir(t.TempDir())
 	initWithImage(t, baseDir)
 
-	check, result := statusJSONCheck(t, baseDir, newFakeStatusDeps(false, true), "image")
-	if result.Ready {
-		t.Errorf("ready must be false when the image is missing")
-	}
-	want := `image "test-img" not found locally — run 'docker pull test-img'`
+	check, result, err := statusJSONCheck(t, baseDir, newFakeStatusDeps(false, true), "image")
+	assertNotReady(t, result, err)
+	want := `image "test-img" not found locally — build or pull it (e.g. 'docker pull test-img')`
 	if check.State != checkFail || check.Detail != want {
 		t.Errorf("image check = %+v, want fail %q", check, want)
 	}
@@ -805,7 +814,10 @@ func TestStatus_ImageFlag_OverridesSettings(t *testing.T) {
 			initWithImage(t, baseDir)
 
 			fc := newFakeDocker(0, false)
-			check, _ := statusJSONCheck(t, baseDir, depsFrom(fc), "image", flag, "other:tag")
+			check, result, err := statusJSONCheck(t, baseDir, depsFrom(fc), "image", flag, "other:tag")
+			if err != nil || !result.Ready {
+				t.Errorf("status must be fully ready: err=%v ready=%v checks=%+v", err, result.Ready, result.Checks)
+			}
 			if check.State != checkOK {
 				t.Errorf("image check = %+v, want ok", check)
 			}
@@ -824,7 +836,8 @@ func TestStatus_ImageFlag_SettingsAbsent(t *testing.T) {
 	t.Chdir(t.TempDir())
 
 	fc := newFakeDocker(0, false)
-	check, _ := statusJSONCheck(t, baseDir, depsFrom(fc), "image", "-i", "flag-img")
+	check, result, err := statusJSONCheck(t, baseDir, depsFrom(fc), "image", "-i", "flag-img")
+	assertNotReady(t, result, err) // base config still fails
 	if check.State != checkOK {
 		t.Errorf("image check = %+v, want ok", check)
 	}
@@ -845,8 +858,9 @@ func TestStatus_ImageFlag_SettingsCorrupt(t *testing.T) {
 
 	fc := newFakeDocker(0, false)
 	fc.ImageMissing = true
-	check, _ := statusJSONCheck(t, baseDir, depsFrom(fc), "image", "-i", "flag-img")
-	want := `image "flag-img" not found locally — run 'docker pull flag-img'`
+	check, result, err := statusJSONCheck(t, baseDir, depsFrom(fc), "image", "-i", "flag-img")
+	assertNotReady(t, result, err)
+	want := `image "flag-img" not found locally — build or pull it (e.g. 'docker pull flag-img')`
 	if check.State != checkFail || check.Detail != want {
 		t.Errorf("image check = %+v, want fail %q", check, want)
 	}
@@ -863,11 +877,72 @@ func TestStatus_ImageFlag_DaemonDown(t *testing.T) {
 
 	fc := newFakeDocker(0, false)
 	fc.PingErr = errors.New("connection refused")
-	check, _ := statusJSONCheck(t, baseDir, depsFrom(fc), "image", "-i", "flag-img")
+	check, result, err := statusJSONCheck(t, baseDir, depsFrom(fc), "image", "-i", "flag-img")
+	assertNotReady(t, result, err)
 	if check.State != checkFail || check.Detail != "cannot check — daemon unreachable" {
 		t.Errorf("image check = %+v, want daemon-unreachable fail", check)
 	}
 	if fc.ImageChecked != "" {
 		t.Errorf("ImageExists must not be called with the daemon down; got %q", fc.ImageChecked)
+	}
+}
+
+// settings.json absent and no -i → the image check reports the no-image hint.
+func TestStatus_SettingsAbsent_NoFlag_NoImageHint(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	t.Chdir(t.TempDir())
+
+	fc := newFakeDocker(0, false)
+	check, result, err := statusJSONCheck(t, baseDir, depsFrom(fc), "image")
+	assertNotReady(t, result, err)
+	if check.State != checkFail || check.Detail != noImageDetail {
+		t.Errorf("image check = %+v, want fail %q", check, noImageDetail)
+	}
+	if fc.ImageChecked != "" {
+		t.Errorf("ImageExists must not be called without an image; got %q", fc.ImageChecked)
+	}
+}
+
+// settings.json present but unstat-able (EACCES on baseDir) and no -i → the
+// image check reports unreadable settings, not "no image configured".
+func TestStatus_SettingsUnstatable_ImageShowsSettingsUnreadable(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses directory permissions")
+	}
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	t.Chdir(t.TempDir())
+	initWithImage(t, baseDir)
+	if err := os.Chmod(baseDir, 0o000); err != nil {
+		t.Fatalf("chmod baseDir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(baseDir, 0o755) })
+
+	fc := newFakeDocker(0, false)
+	check, result, err := statusJSONCheck(t, baseDir, depsFrom(fc), "image")
+	assertNotReady(t, result, err)
+	if check.State != checkFail || check.Detail != "cannot check — settings unreadable" {
+		t.Errorf("image check = %+v, want settings-unreadable fail", check)
+	}
+	if fc.ImageChecked != "" {
+		t.Errorf("ImageExists must not be called; got %q", fc.ImageChecked)
+	}
+}
+
+// Whitespace-only settings image counts as unset.
+func TestStatus_WhitespaceImage_TreatedAsUnset(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	t.Chdir(t.TempDir())
+	if _, stderr, err := runCmd(t, baseDir, "init"); err != nil {
+		t.Fatalf("init failed: %v; stderr=%q", err, stderr)
+	}
+	writeWhitespaceImage(t, baseDir)
+
+	check, result, err := statusJSONCheck(t, baseDir, newFakeStatusDeps(false, false), "image")
+	assertNotReady(t, result, err)
+	if check.State != checkFail || check.Detail != noImageDetail {
+		t.Errorf("image check = %+v, want fail %q", check, noImageDetail)
 	}
 }
