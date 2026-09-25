@@ -1,5 +1,9 @@
 name: release
 
+# Pushing a v* tag releases. If cmd/makeslop/main.go does not already carry the
+# tag's version, the workflow commits the bump on top of the tagged commit,
+# pushes it to main and moves the tag onto that commit, so `go install …@vX.Y.Z`
+# reports the right version. Then it publishes packages from the moved tag.
 on:
   push:
     tags:
@@ -11,14 +15,36 @@ permissions:
 jobs:
   goreleaser:
     runs-on: ubuntu-latest
+    env:
+      TAG: ${{ github.ref_name }}
     steps:
       - name: check out code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: set up go
         uses: actions/setup-go@v6
         with:
           go-version: "1.26"
+
+      - name: bump version, commit and move tag
+        run: |
+          sed -i -E "s/^var version = \".*\"$/var version = \"${TAG}\"/" cmd/makeslop/main.go
+          grep -qx "var version = \"${TAG}\"" cmd/makeslop/main.go
+          if git diff --quiet; then
+            echo "main.go already at $TAG, nothing to commit"
+            exit 0
+          fi
+          go build -o /dev/null ./cmd/makeslop
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "Release $TAG"
+          # Fast-forward only: fails if main has moved past the tagged commit.
+          git push origin HEAD:main
+          git tag -fa "$TAG" -m "Release $TAG"
+          git push -f origin "refs/tags/$TAG"
 
       - name: Import GPG key
         id: import_gpg

@@ -7,7 +7,8 @@ import (
 	"github.com/Zwergpro/makeslop/internal/cli"
 )
 
-// version is set at build time via -ldflags "-X main.version=…".
+// version is bumped by the release workflow (.github/workflows/release.yaml) so
+// `go install` builds report it; release builds also override it via -ldflags.
 var version = "v0.2.1"
 
 func main() {
