@@ -3281,6 +3281,41 @@ func TestRun_Join_DataDirRejected(t *testing.T) {
 	}
 }
 
+// Every host root must be disjoint: a join may not equal, sit inside or
+// contain the current project or another join. All of these fail before the
+// daemon preflight and start nothing.
+func TestRun_Join_OverlapsRejected(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"join is current", []string{"-j", "."}, `--join ".": is the current project`},
+		{"join inside current", []string{"-j", "inner"}, `--join "inner": is inside the current project`},
+		{"join contains current", []string{"-j", ".."}, `--join "..": contains the current project`},
+		{"join duplicates join", []string{"-j", "../lib", "-j", "../lib:ro"}, `--join "../lib:ro": overlaps --join "../lib"`},
+		{"join inside join", []string{"-j", "../lib", "-j", "../lib/sub"}, `--join "../lib/sub": overlaps --join "../lib"`},
+		{"join contains join", []string{"-j", "../lib/sub", "-j", "../lib"}, `--join "../lib": overlaps --join "../lib/sub"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := setupJoinRun(t, emptyExcludeYAML, emptyExcludeYAML)
+			writeFile(t, filepath.Join(f.app, "inner", projectconfig.Filename), emptyExcludeYAML)
+			writeFile(t, filepath.Join(f.lib, "sub", projectconfig.Filename), emptyExcludeYAML)
+			writeFile(t, filepath.Join(filepath.Dir(f.app), projectconfig.Filename), emptyExcludeYAML)
+
+			fc := newFakeDocker(0, true)
+			_, _, err := runCmdWithDeps(t, f.baseDir, depsFrom(fc), append([]string{"run"}, tc.args...)...)
+			if err == nil || err.Error() != tc.want {
+				t.Fatalf("err = %v, want %q", err, tc.want)
+			}
+			if fc.DaemonChecked || fc.Started {
+				t.Error("overlap must be rejected before the daemon preflight and nothing started")
+			}
+		})
+	}
+}
+
 func TestRun_Join_RelativeToCwdSubdir(t *testing.T) {
 	f := setupJoinRun(t, emptyExcludeYAML, emptyExcludeYAML)
 	sub := filepath.Join(f.app, "sub")
