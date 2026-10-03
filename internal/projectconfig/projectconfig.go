@@ -134,7 +134,7 @@ type yamlSchema struct {
 // defaults. Idempotent: EEXIST on a regular file is success and user edits are
 // never clobbered (c is a no-op on an existing file). A symlink at the path —
 // dangling or live — is rejected with a hard error: the project config must be
-// a regular file so ProtectProjectConfig and Load behave predictably. root must
+// a regular file so the read-only self-bind and Load behave predictably. root must
 // be absolute and EvalSymlinks-evaluated.
 func Scaffold(root string, c Cache) error {
 	path := filepath.Join(root, Filename)
@@ -199,6 +199,18 @@ func defaultConfig() Config {
 //
 // root must be absolute and EvalSymlinks-evaluated.
 func Load(root string) (Config, error) {
+	return load(root, false)
+}
+
+// LoadExisting is Load for a project whose config is required (a --join
+// target): a missing file is an error wrapping fs.ErrNotExist instead of the
+// default config, so a config deleted after an earlier existence check can
+// never silently yield "no masking".
+func LoadExisting(root string) (Config, error) {
+	return load(root, true)
+}
+
+func load(root string, required bool) (Config, error) {
 	path := filepath.Join(root, Filename)
 
 	// Lstat before ReadFile to detect symlinks. ReadFile follows symlinks, which
@@ -206,7 +218,7 @@ func Load(root string) (Config, error) {
 	// (treating it as "no config" — the silent data-loss case this check closes).
 	linfo, lstErr := os.Lstat(path)
 	if lstErr != nil {
-		if errors.Is(lstErr, fs.ErrNotExist) {
+		if errors.Is(lstErr, fs.ErrNotExist) && !required {
 			return defaultConfig(), nil
 		}
 		return Config{}, fmt.Errorf("projectconfig: read %s: %w", Filename, lstErr)

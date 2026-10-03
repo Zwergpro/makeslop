@@ -53,7 +53,9 @@ Mount order is per project: `Options.Projects[0]` is main (the order above); eac
 its own group: bind (`readonly` for `:ro`) → sandbox (rw only) → its own masks. An ro join keeps a
 `/dev/null` mask on its config (no self-bind to protect). `Spec.Sections` (set only with joins)
 marks each group's first mount; only `ShellCommand` reads it (`` `: '--- label ---'` `` lines),
-so `Args()`/SDK projections and the drift guards are unaffected.
+so `Args()`/SDK projections and the drift guards are unaffected. `Section.Start` relies on
+`Spec.Mounts` mapping 1:1 to `--mount` tokens in `Args()` (ShellCommand counts `--mount` flag
+tokens, skipping flag values); labels pass through `sanitizeLabel`.
 
 ### Dependency injection (no global test hooks)
 - **docker package:** `docker.New(opts ...Option)` with `WithClient`, `WithTTYCheck`,
@@ -102,8 +104,8 @@ so `Args()`/SDK projections and the drift guards are unaffected.
   and duplicate-key detection at both levels; its errors name keys or line numbers, never values
   (network errors, by contrast, quote names on purpose).
 - The file must be a regular file; a symlink is rejected. When it exists, it is mounted read-only
-  over itself in the container (`ProtectProjectConfig`), and `.git/hooks` is tmpfs-masked
-  (`MaskGitHooks`).
+  over itself in the container (`Project.ProtectConfig`), and `.git/hooks` is tmpfs-masked
+  (`Project.MaskGitHooks`); both are set per project (main and rw joins) by `sandboxMountGates`.
 - `Load` returns `(Config, error)` with `Config{Excludes, Cache, Env, Network}`. A missing
   `cache:` block means `{Content:true, Agent:true}`. `init --global-only` scaffolds
   `{false,false}`. `Scaffold` is idempotent and never overwrites an existing file.
@@ -128,7 +130,10 @@ so `Args()`/SDK projections and the drift guards are unaffected.
 - `resolveJoins` (`internal/cli/join.go`) does path checks only (suffix, `EvalSymlinks`, regular
   `.makeslop.yaml`, home guard, overlap, name collision) and runs right after `ws.Lookup`, before
   the daemon preflight. `loadProject` (`run.go`) parses and scans main, then joins in flag order,
-  after the preflight, so the daemon-first contract holds.
+  after the preflight, so the daemon-first contract holds. For a join it uses
+  `projectconfig.LoadExisting`, so a config deleted after `resolveJoins` fails ("not a makeslop
+  project") instead of loading as the default (no masks). Relative values resolve against the
+  physical cwd (`resolvePwd`), not `$PWD`.
 - Overlap = `filepath.Rel` + `IsLocal` in both directions, plus `os.SameFile` against every
   ancestor (catches case-insensitive and bind aliases). Checked join vs main, `baseDir`, and other
   joins. A join only contributes `exclude:`; main's `Config` alone supplies cache/env/network.
@@ -142,6 +147,8 @@ loud": never skip a directory we can't prove is secret-free).
 - The TTY requirement applies to `run` only. All other commands must stay CI/pipe-safe.
 - The home-directory guard (`internal/cli/guard.go`) applies to `run` and `init`. `--out-of-home`
   is registered only on those two; `--global-only` only on `init`.
+- `--join/-j` is registered on `run` only. The home guard also applies to each join (via
+  `isWithinHome`, with an inode fallback); one `--out-of-home` lifts it for main and all joins.
 - `--quiet` is a persistent flag. It suppresses stderr chrome (errors still print) and never
   touches stdout.
 - `status` runs ordered checks with `✓/✗/–/!` glyphs, supports `--json`, and exits non-zero if a

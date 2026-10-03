@@ -132,13 +132,14 @@ type Section struct {
 // disabled groups are omitted, never reordered.
 func BuildSpec(o Options) Spec {
 	main := o.Projects[0]
+	main.ReadOnly = false // the main project is always mounted rw
 	workspacePath := "/workspace/" + main.Name
 
 	// Main group: bind → global → sandbox → cache overlays → masks. Trailing
 	// slashes on directory mounts are intentional — they match the reference
 	// claude.sh, and coax docker into failing fast if the host path is
 	// unexpectedly a file.
-	mounts := []Mount{projectBind(main, false)}
+	mounts := []Mount{projectBind(main)}
 	mounts = append(mounts,
 		Mount{Host: filepath.Join(o.BaseDir, ".claude") + "/", Container: "/home/user/.claude/"},
 		Mount{Host: filepath.Join(o.BaseDir, ".claude.json"), Container: "/home/user/.claude.json"},
@@ -176,13 +177,11 @@ func BuildSpec(o Options) Spec {
 		// Section.Start indexes Spec.Mounts, which maps 1:1 to the --mount
 		// tokens in Args().
 		sections = append(sections, Section{Label: j.Label, Start: len(mounts)})
-		mounts = append(mounts, projectBind(j, j.ReadOnly))
-		configBound := false
+		mounts = append(mounts, projectBind(j))
 		if !j.ReadOnly {
 			mounts = append(mounts, projectSandbox(j)...)
-			configBound = j.ProtectConfig
 		}
-		mounts = append(mounts, projectMasks(j, configBound)...)
+		mounts = append(mounts, projectMasks(j, !j.ReadOnly && j.ProtectConfig)...)
 	}
 
 	return Spec{
@@ -202,9 +201,10 @@ func BuildSpec(o Options) Spec {
 	}
 }
 
-// projectBind returns the bind of p.Host at /workspace/<p.Name>.
-func projectBind(p Project, readOnly bool) Mount {
-	return Mount{Host: p.Host, Container: "/workspace/" + p.Name, ReadOnly: readOnly}
+// projectBind returns the bind of p.Host at /workspace/<p.Name>, read-only
+// when p.ReadOnly is set.
+func projectBind(p Project) Mount {
+	return Mount{Host: p.Host, Container: "/workspace/" + p.Name, ReadOnly: p.ReadOnly}
 }
 
 // projectSandbox returns p's sandbox-policy mounts: the read-only config

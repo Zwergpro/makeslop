@@ -240,8 +240,8 @@ projectconfig: .makeslop.yaml is a symlink — the project config must be a regu
 
 **Why:** a dangling symlink was previously treated as "no config present" (the follow of a broken
 link returned `ENOENT`), which silently dropped all scan patterns. Even a live symlink to a valid
-file is rejected because `ProtectProjectConfig` already refuses to create the read-only bind mount
-for a symlinked config (a symlink bind-mount does not protect the file contents). Consistent
+file is rejected because the sandbox-policy read-only bind is never created for a symlinked
+config (a symlink bind-mount does not protect the file contents). Consistent
 rejection at load time prevents a split-brain state where the file is loaded but not protected.
 
 **Migration:** replace the symlink with a regular file:
@@ -369,6 +369,9 @@ container is protected by its own policy:
 - **Ignored keys.** A join's `cache:`, `environments:`, `network_mode` and `networks` are ignored,
   so a join can never inject host environment variables or change the container's network.
 - **Home guard.** The [home-directory guard](#home-directory-guard) applies to every join.
+- **No implicit policy.** A join's `.makeslop.yaml` is required both when the flag is validated and
+  when it is parsed. If the file is removed in between, the launch fails; a join is never mounted
+  with the default (empty) policy.
 
 ---
 

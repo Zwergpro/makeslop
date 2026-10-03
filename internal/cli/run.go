@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -83,9 +84,13 @@ func sandboxMountGates(workspaceRoot string) (protect, maskHooks bool) {
 }
 
 // reportScanResults prints the masked count (chrome) and symlink warnings
-// (stderr, never quieted). in is "" for the main project and " in <host>" for a
-// join; prefix is "" for main and "join <host>: " for a join.
-func reportScanResults(stderr, chrome io.Writer, root, in, prefix string, masked, symlinkMatches []string) {
+// (stderr, never quieted). For a join, the count names root and each warning
+// is prefixed "join <root>: "; main-project text is unprefixed.
+func reportScanResults(stderr, chrome io.Writer, root string, join bool, masked, symlinkMatches []string) {
+	prefix, in := "", ""
+	if join {
+		prefix, in = "join "+root+": ", " in "+root
+	}
 	if len(masked) > 0 {
 		fmt.Fprintf(chrome, "makeslop: masked %d secret file(s)%s\n", len(masked), in)
 	}
@@ -101,22 +106,23 @@ func reportScanResults(stderr, chrome io.Writer, root, in, prefix string, masked
 
 // loadProject loads root's .makeslop.yaml, prints its warnings, scans for
 // secrets and returns the masking half of a docker.Project (Host, masks and
-// sandbox gates; the caller sets Name, Label and ReadOnly). For a join
-// (join=true) messages name the join's host, errors are wrapped "join <host>: ",
-// and settings other than exclude: are reported as ignored. The returned
-// Config is only meaningful for the main project.
+// sandbox gates; the caller sets Name, Label and ReadOnly) plus the parsed
+// Config. For a join, the config must exist (it is re-checked here, so one
+// deleted after resolveJoins fails instead of loading as "no masking"),
+// messages name root, and settings other than exclude: are reported as
+// ignored. Errors are returned unwrapped; the caller adds the join context.
 func loadProject(ctx context.Context, stderr, chrome io.Writer, root string, join bool) (docker.Project, projectconfig.Config, error) {
-	prefix, in := "", ""
-	wrap := func(err error) error { return err }
+	load, prefix := projectconfig.Load, ""
 	if join {
-		prefix = "join " + root + ": "
-		in = " in " + root
-		wrap = func(err error) error { return fmt.Errorf("join %s: %w", root, err) }
+		load, prefix = projectconfig.LoadExisting, "join "+root+": "
 	}
 
-	pcfg, err := projectconfig.Load(root)
+	pcfg, err := load(root)
+	if join && errors.Is(err, fs.ErrNotExist) {
+		return docker.Project{}, projectconfig.Config{}, fmt.Errorf("not a makeslop project (no %s)", projectconfig.Filename)
+	}
 	if err != nil {
-		return docker.Project{}, projectconfig.Config{}, wrap(err)
+		return docker.Project{}, projectconfig.Config{}, err
 	}
 
 	// Symlink warnings bypass --quiet: degraded protection is never treated as chrome.
@@ -132,9 +138,9 @@ func loadProject(ctx context.Context, stderr, chrome io.Writer, root string, joi
 
 	masked, symlinkMatches, err := security.Scan(ctx, root, pcfg.Excludes.Patterns, pcfg.Excludes.SkipDirs)
 	if err != nil {
-		return docker.Project{}, projectconfig.Config{}, wrap(err)
+		return docker.Project{}, projectconfig.Config{}, err
 	}
-	reportScanResults(stderr, chrome, root, in, prefix, masked, symlinkMatches)
+	reportScanResults(stderr, chrome, root, join, masked, symlinkMatches)
 
 	// BuildSpec is pure (no fs access); Lstat checks live here.
 	protect, maskHooks := sandboxMountGates(root)
@@ -209,7 +215,7 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir, imageFlag str
 	for _, j := range joins {
 		p, _, err := loadProject(cmd.Context(), cmd.ErrOrStderr(), chrome, j.Host, true)
 		if err != nil {
-			return err
+			return fmt.Errorf("join %s: %w", j.Host, err)
 		}
 		p.Name = j.Name
 		p.ReadOnly = j.ReadOnly

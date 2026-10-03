@@ -51,9 +51,12 @@ the printed flags match both SDK projections. With neither key set there is no f
 
 ## Mount groups and cache overlays
 
-`BuildSpec` in `internal/docker/spec.go` organises mounts into logical groups. With both sandbox
-policy mounts active (`ProtectProjectConfig` and `MaskGitHooks`) and both cache overlays enabled,
-the spec can include up to 10 mounts. The three logical groups are:
+`BuildSpec` in `internal/docker/spec.go` takes `Options.Projects []Project`: `Projects[0]` is the
+current (main) project, the rest are `--join` projects in flag order. Each `Project` carries its
+own host root, mount name, label, masks and sandbox gates (`Project.ProtectConfig`,
+`Project.MaskGitHooks`). The main project's mounts are organised into logical groups around its
+bind; the main bind is always rw (`Projects[0].ReadOnly` is ignored). Besides the project bind,
+its sandbox-policy mounts and its masks, there are three logical groups:
 
 **Global** (always present — not configurable):
 - `~/.makeslop/.claude/` → `/home/user/.claude/`
@@ -72,6 +75,23 @@ When a group is disabled (`false`), its mounts are **omitted** from the spec (ne
 The project source root is always mounted at position 0. Secret masking (masked files `/dev/null`,
 masked dirs tmpfs) appends after all group mounts, so a masked path under `docs/` still wins even
 when the content group is disabled.
+
+**Join groups.** After the main group, `BuildSpec` emits one group per join, in flag order, built
+with the same helpers as the main project (`projectBind`, `projectSandbox`, `projectMasks`):
+
+- the bind of the join root at `/workspace/<basename>` (`readonly` for a `:ro` join);
+- for an rw join only, its sandbox-policy mounts (read-only `.makeslop.yaml` self-bind,
+  `.git/hooks` tmpfs). An `:ro` join has neither, so a `/dev/null` mask matching its config is kept;
+- the join's own masks, targeted relative to the join root.
+
+Joins never get global or cache overlay mounts.
+
+**Sections.** With joins, `Spec.Sections` records where each project's mounts start (`Section.Start`
+indexes `Spec.Mounts`, which maps 1:1 to the `--mount` tokens in `Args()`). Without joins it is
+nil. Only `ShellCommand()` reads it, to print a `` `: '--- <label> ---'` `` separator line before
+each group (labels pass through `sanitizeLabel`). `Args()` and the SDK projections ignore it, so the
+printed command still equals the executed one; `TestDriftGuard_Joins` checks the mount lists of
+`Args()` and `HostConfig()` against each other for a spec with joins.
 
 The two booleans originate from the project `cache:` block in `.makeslop.yaml`, resolved by
 `projectconfig.Load`. Absent block ⇒ both `true` ⇒ identical to pre-feature behavior. The

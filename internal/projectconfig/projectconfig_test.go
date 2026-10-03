@@ -1,6 +1,8 @@
 package projectconfig
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -2137,5 +2139,26 @@ func TestStub_ParsesToZeroNetwork(t *testing.T) {
 	}
 	if !strings.Contains(string(Stub), `# network_mode: "container:proxy"`) {
 		t.Error(`Stub missing commented network_mode: "container:proxy" example`)
+	}
+}
+
+func TestLoadExisting_MissingIsError(t *testing.T) {
+	root := t.TempDir()
+	if _, err := LoadExisting(root); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("LoadExisting on missing config: err = %v, want fs.ErrNotExist", err)
+	}
+	if _, err := Load(root); err != nil {
+		t.Errorf("Load on missing config: %v, want default config", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(root, Filename), []byte("network_mode: host\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadExisting(root)
+	if err != nil {
+		t.Fatalf("LoadExisting: %v", err)
+	}
+	if cfg.Network.Mode != "host" {
+		t.Errorf("Network.Mode = %q, want host", cfg.Network.Mode)
 	}
 }

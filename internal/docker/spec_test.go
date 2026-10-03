@@ -2,6 +2,7 @@ package docker
 
 import (
 	"encoding/csv"
+	"os"
 	"os/exec"
 	"reflect"
 	"strings"
@@ -2391,11 +2392,19 @@ func TestShellCommand_HostileLabel_SingleLine(t *testing.T) {
 }
 
 // The rendered command must parse cleanly and pass exactly Args() to docker in
-// every shell the dry-run output may be pasted into.
+// every shell the dry-run output may be pasted into. One spec carries value
+// flags (-e, --network) whose values look like --mount, so separator placement
+// must count only --mount flag tokens.
 func TestShellCommand_Sections_PasteableInShells(t *testing.T) {
-	spec := joinSectionSpec("project: /home/me/app", hostileLabel)
-	script := "docker() { printf '%s\\n' \"$@\"; }\n" + spec.ShellCommand() + "\n"
-	want := strings.Join(spec.Args(), "\n") + "\n"
+	plain := joinSectionSpec("project: /home/me/app", hostileLabel)
+	withValues := joinSectionSpec("project: /home/me/app", "join: /home/me/lib (ro)")
+	withValues.Env = []string{"A=--mount", "B=x y"}
+	withValues.NetworkMode = "host"
+	if out := withValues.ShellCommand(); !strings.Contains(out,
+		"`: '--- join: /home/me/lib (ro) ---'` \\\n  --mount type=bind,source=/home/me/lib,") {
+		t.Fatalf("join separator not directly before the join bind:\n%s", out)
+	}
+
 	shells := [][]string{
 		{"bash", "--norc", "--noprofile", "-c"},
 		{"bash", "--posix", "-c"},
@@ -2403,24 +2412,59 @@ func TestShellCommand_Sections_PasteableInShells(t *testing.T) {
 		{"zsh", "-f", "-c"},
 		{"zsh", "-f", "-i", "-c"}, // interactive: # is not a comment here
 	}
-	for _, sh := range shells {
-		t.Run(strings.Join(sh, " "), func(t *testing.T) {
-			if _, err := exec.LookPath(sh[0]); err != nil {
-				t.Skipf("%s not installed", sh[0])
-			}
-			cmd := exec.Command(sh[0], append(sh[1:], script)...)
-			var stdout, stderr strings.Builder
-			cmd.Stdout, cmd.Stderr = &stdout, &stderr
-			cmd.Env = []string{"PATH=/usr/bin:/bin", "HOME=" + t.TempDir()}
-			if err := cmd.Run(); err != nil {
-				t.Fatalf("%v: %v\nstderr: %s", sh, err, stderr.String())
-			}
-			if stderr.Len() != 0 {
-				t.Errorf("stderr not empty: %q", stderr.String())
-			}
-			if stdout.String() != want {
-				t.Errorf("argv mismatch\ngot:\n%s\nwant:\n%s", stdout.String(), want)
-			}
-		})
+	specs := []struct {
+		name string
+		spec Spec
+	}{{"hostile label", plain}, {"value flags", withValues}}
+
+	for _, tc := range specs {
+		script := "docker() { printf '%s\\n' \"$@\"; }\n" + tc.spec.ShellCommand() + "\n"
+		want := strings.Join(tc.spec.Args(), "\n") + "\n"
+		for _, sh := range shells {
+			t.Run(tc.name+"/"+strings.Join(sh, " "), func(t *testing.T) {
+				if _, err := exec.LookPath(sh[0]); err != nil {
+					if os.Getenv("CI") != "" {
+						t.Fatalf("%s not installed (required in CI)", sh[0])
+					}
+					t.Skipf("%s not installed", sh[0])
+				}
+				cmd := exec.Command(sh[0], append(sh[1:], script)...)
+				var stdout, stderr strings.Builder
+				cmd.Stdout, cmd.Stderr = &stdout, &stderr
+				cmd.Env = []string{"PATH=/usr/bin:/bin", "HOME=" + t.TempDir()}
+				if err := cmd.Run(); err != nil {
+					t.Fatalf("%v: %v\nstderr: %s", sh, err, stderr.String())
+				}
+				if got := stripTTYNoise(stderr.String()); got != "" {
+					t.Errorf("stderr not empty: %q", got)
+				}
+				if stdout.String() != want {
+					t.Errorf("argv mismatch\ngot:\n%s\nwant:\n%s", stdout.String(), want)
+				}
+			})
+		}
 	}
+}
+
+// stripTTYNoise drops the job-control/terminal warnings an interactive shell
+// prints when it has no controlling terminal (CI runners, piped go test).
+func stripTTYNoise(stderr string) string {
+	noise := []string{"job control", "tty", "TTY", "terminal", "zle", "ioctl"}
+	var kept []string
+	for _, line := range strings.Split(stderr, "\n") {
+		if line == "" {
+			continue
+		}
+		isNoise := false
+		for _, n := range noise {
+			if strings.Contains(line, n) {
+				isNoise = true
+				break
+			}
+		}
+		if !isNoise {
+			kept = append(kept, line)
+		}
+	}
+	return strings.Join(kept, "\n")
 }

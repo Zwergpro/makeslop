@@ -23,6 +23,9 @@ jobs:
           mkdir -p "${{ github.workspace }}/gotmp"
           echo "GOTMPDIR=${{ github.workspace }}/gotmp" >> "$GITHUB_ENV"
 
+      - name: Install shells for dry-run paste tests
+        run: sudo apt-get update && sudo apt-get install -y zsh dash
+
       - name: Build
         run: go build ./cmd/makeslop
 

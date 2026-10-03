@@ -32,12 +32,13 @@ func resolveJoins(pwd, mainRoot, mainName, baseDir string, raw []string, outOfHo
 			return nil, err
 		}
 
+		in, out := containsDir(mainRoot, j.Host), containsDir(j.Host, mainRoot)
 		switch {
-		case sameDir(j.Host, mainRoot):
+		case in && out:
 			return nil, fmt.Errorf("--join %q: is the current project", r)
-		case containsDir(mainRoot, j.Host):
+		case in:
 			return nil, fmt.Errorf("--join %q: is inside the current project", r)
-		case containsDir(j.Host, mainRoot):
+		case out:
 			return nil, fmt.Errorf("--join %q: contains the current project", r)
 		case overlaps(j.Host, baseDir):
 			return nil, fmt.Errorf("--join %q: overlaps the makeslop data dir %s", r, baseDir)
@@ -61,7 +62,10 @@ func resolveJoins(pwd, mainRoot, mainName, baseDir string, raw []string, outOfHo
 }
 
 // resolveJoin handles a single value: suffix, path resolution, filesystem
-// checks, mount name and the home guard.
+// checks, mount name and the home guard. A relative path resolves against pwd,
+// the physical (symlink-resolved) working directory, not the shell's $PWD.
+// The .makeslop.yaml checks here only fail fast before the daemon preflight;
+// loadProject re-checks existence when it parses the config.
 func resolveJoin(pwd, raw string, outOfHome bool) (joinTarget, error) {
 	p, readOnly := parseJoinSuffix(raw)
 	if !filepath.IsAbs(p) {
@@ -100,9 +104,11 @@ func resolveJoin(pwd, raw string, outOfHome bool) (joinTarget, error) {
 	if !outOfHome {
 		ok, home, err := isWithinHome(host)
 		if err != nil {
-			return joinTarget{}, err
+			return joinTarget{}, fmt.Errorf("--join %q: %w", raw, err)
 		}
-		if !ok {
+		// Inode fallback: on a case-insensitive filesystem a differently
+		// cased spelling of a path under $HOME is still under $HOME.
+		if !ok && !hasSameFileAncestor(home, host) {
 			return joinTarget{}, fmt.Errorf("--join %q: outside %s — pass --out-of-home to override", raw, home)
 		}
 	}
@@ -129,16 +135,6 @@ func parseJoinSuffix(raw string) (path string, readOnly bool) {
 // overlaps reports whether a and b are the same directory or one contains the other.
 func overlaps(a, b string) bool {
 	return containsDir(a, b) || containsDir(b, a)
-}
-
-// sameDir reports whether a and b name the same directory, lexically or by inode.
-func sameDir(a, b string) bool {
-	if filepath.Clean(a) == filepath.Clean(b) {
-		return true
-	}
-	ai, aErr := os.Stat(a)
-	bi, bErr := os.Stat(b)
-	return aErr == nil && bErr == nil && os.SameFile(ai, bi)
 }
 
 // containsDir reports whether child is parent or lies below it. The lexical

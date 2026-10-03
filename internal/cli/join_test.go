@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -451,5 +453,84 @@ func TestIsWithinHome_UnresolvableHome(t *testing.T) {
 	t.Setenv("HOME", filepath.Join(t.TempDir(), "missing"))
 	if _, _, err := isWithinHome("/"); err == nil {
 		t.Error("expected error for nonexistent $HOME")
+	}
+}
+
+// Relative values resolve against pwd (the cwd), not the main project root.
+func TestResolveJoins_RelativeToCwdNotRoot(t *testing.T) {
+	f := newJoinFixture(t)
+	lib := makeProject(t, filepath.Join(f.home, "lib"))
+	sub := filepath.Join(f.main, "sub")
+	mkdirAll(t, sub)
+
+	got, err := resolveJoins(sub, f.main, "app", f.baseDir, []string{"../../lib"}, false)
+	if err != nil {
+		t.Fatalf("resolveJoins from sub: %v", err)
+	}
+	if len(got) != 1 || got[0].Host != lib {
+		t.Errorf("got %+v, want host %s", got, lib)
+	}
+
+	_, err = resolveJoins(sub, f.main, "app", f.baseDir, []string{".."}, false)
+	if want := `--join "..": is the current project`; err == nil || err.Error() != want {
+		t.Errorf("error = %v, want %q", err, want)
+	}
+}
+
+func TestResolveJoins_MissingDirWrapsNotExist(t *testing.T) {
+	f := newJoinFixture(t)
+	_, err := f.resolve("../nope")
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("error = %v, want fs.ErrNotExist wrapped", err)
+	}
+}
+
+func TestResolveJoins_ConfigLstatError(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	f := newJoinFixture(t)
+	lib := makeProject(t, filepath.Join(f.home, "lib"))
+	// Search permission removed: lib itself stats, its config does not.
+	if err := os.Chmod(lib, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(lib, 0o755) })
+
+	_, err := f.resolve("../lib")
+	if err == nil || !strings.HasPrefix(err.Error(), `--join "../lib": `) || !errors.Is(err, fs.ErrPermission) {
+		t.Errorf("error = %v, want wrapped permission error", err)
+	}
+}
+
+func TestResolveJoins_HomeResolveErrorWrapped(t *testing.T) {
+	f := newJoinFixture(t)
+	makeProject(t, filepath.Join(f.home, "lib"))
+	t.Setenv("HOME", filepath.Join(f.root, "missing-home"))
+
+	_, err := resolveJoins(f.main, f.main, "app", f.baseDir, []string{f.home + "/lib"}, false)
+	want := `--join "` + f.home + `/lib": evaluate symlinks for `
+	if err == nil || !strings.HasPrefix(err.Error(), want) {
+		t.Errorf("error = %v, want prefix %q", err, want)
+	}
+}
+
+// Join-vs-join overlap compares by inode too: an alias of an earlier join's
+// host is caught even when the paths differ lexically.
+func TestOverlaps_InodeAlias(t *testing.T) {
+	f := newJoinFixture(t)
+	lib := makeProject(t, filepath.Join(f.home, "lib"))
+	mkdirAll(t, filepath.Join(lib, "sub"))
+	alias := filepath.Join(f.home, "libalias")
+	symlink(t, lib, alias)
+
+	if !overlaps(alias, filepath.Join(lib, "sub")) {
+		t.Error("overlaps(alias, lib/sub) = false, want true")
+	}
+	if !overlaps(filepath.Join(lib, "sub"), alias) {
+		t.Error("overlaps(lib/sub, alias) = false, want true")
+	}
+	if overlaps(alias, f.main) {
+		t.Error("overlaps(alias, main) = true, want false")
 	}
 }

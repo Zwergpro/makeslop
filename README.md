@@ -176,6 +176,8 @@ yourself (e.g. from `examples/claudebox`, or from your old `~/.makeslop/Dockerfi
 
 `makeslop run --dry-run` prints the equivalent `docker run` command without launching.
 `run` and `status` accept `-i/--image <ref>` to override the configured image.
+`makeslop run -j <path>[:ro]` also mounts another makeslop project next to the current one; see
+[Joined projects](docs/reference.md#joined-projects---join).
 
 ## Documentation
 
