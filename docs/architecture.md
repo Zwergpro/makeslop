@@ -87,9 +87,9 @@ must set them on their `sampleOptions()` or equivalent fixture.
 ## apiClient seam and fake clients
 
 `internal/docker/client.go` declares a narrow unexported `apiClient` interface covering all SDK
-methods used by `Run`, `CheckDaemon`, `ImageExists`, `ContainerRunning`, and `NetworkExists`. A compile-time assertion
-`var _ apiClient = (*moby.Client)(nil)` guards against signature drift. Adding an SDK call means
-extending `apiClient` and the fakes below.
+methods used by `Run`, `CheckDaemon`, `ImageExists`, `ContainerRunning`, and `NetworkExists`. A
+compile-time assertion `var _ apiClient = (*moby.Client)(nil)` guards against signature drift.
+Adding an SDK call means extending `apiClient` and the fakes below.
 
 The interface covers: `ContainerCreate`, `ContainerAttach`, `ContainerStart`, `ContainerWait`,
 `ContainerResize`, `ContainerRemove`, `Ping`, `ImageInspect`, `ContainerInspect`,
@@ -147,13 +147,13 @@ In `internal/cli`, the calls go through `dockerDeps.checkDaemonPreflight` /
 black-hole `DOCKER_HOST` cannot hang `run` or `status`. `Run` itself gets no deadline.
 
 `networkPreflight(ctx, projectconfig.Network)` is a no-op for an unset config and the built-in
-modes (`bridge`, `host`, `none`, `default`), as decided by `Network.NeedsInspect()`. For `container:<x>` it calls `ContainerRunning`;
-for any other mode and every `networks` entry it calls `NetworkExists`. It returns the
-user-facing hint as an error: `run` returns it after the image check (printed as
-`makeslop: <hint>`)
-(skipped on `--dry-run`), and `status` puts it in the blocking `network` row. `status` reuses its
-single `projectconfig.Load` for both the secret-scan and network rows; a load error makes the
-network row `✗`.
+modes (`bridge`, `host`, `none`, `default`), as decided by `Network.NeedsInspect()`. For
+`container:<x>` it calls `ContainerRunning`; for any other mode and every `networks` entry it
+calls `NetworkExists`. It returns the user-facing hint as an error, prefixed with the key that
+named the target (`network_mode:` or `networks:`): `run` returns it after the image check (printed
+as `makeslop: <hint>`, skipped on `--dry-run`), and `status` puts it in the blocking `network`
+row. `status` reuses its single `projectconfig.Load` for both the secret-scan and network rows; a
+load error makes the network row `✗`.
 
 ---
 

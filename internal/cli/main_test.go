@@ -33,7 +33,7 @@ type fakeDocker struct {
 	ImageChecked  string // last ref passed to ImageExists
 
 	// Network state. Containers maps name → running; absent means not found.
-	// Networks lists existing network names. ContainerErr / NetworkErr, when
+	// Networks is the set of existing network names. ContainerErr / NetworkErr, when
 	// set, are returned by the respective inspect.
 	Containers   map[string]bool
 	Networks     map[string]bool

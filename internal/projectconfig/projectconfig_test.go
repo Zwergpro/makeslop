@@ -2107,9 +2107,9 @@ func TestLoad_Network_Errors(t *testing.T) {
 	}
 }
 
-// validateNetwork normalises before checking exclusivity: an empty mode or an
-// empty list is unset.
-func TestValidateNetwork_Normalises(t *testing.T) {
+// An empty mode or an empty networks list counts as unset, so neither trips
+// the mutual-exclusion check.
+func TestValidateNetwork_EmptyListIsUnset(t *testing.T) {
 	got, err := validateNetwork("", []string{})
 	if err != nil {
 		t.Fatalf("validateNetwork: %v", err)

@@ -2671,7 +2671,7 @@ func TestRun_NetworkPreflight(t *testing.T) {
 			name:         "network missing",
 			yaml:         "networks: [a, b]\n",
 			networks:     map[string]bool{"a": true},
-			wantErr:      []string{`network "b" not found — create it with 'docker network create b'`, "<project>_", "docker network ls"},
+			wantErr:      []string{`networks: network "b" not found — create it with 'docker network create b'`, "<project>_", "docker network ls"},
 			wantNetworks: []string{"a", "b"},
 		},
 		{
@@ -2684,7 +2684,7 @@ func TestRun_NetworkPreflight(t *testing.T) {
 			name:         "network inspect error",
 			yaml:         "networks: [a]\n",
 			networkErr:   errors.New("boom"),
-			wantErr:      []string{`check network "a": boom`},
+			wantErr:      []string{`networks: check network "a": boom`},
 			wantNetworks: []string{"a"},
 		},
 		{
@@ -2696,7 +2696,7 @@ func TestRun_NetworkPreflight(t *testing.T) {
 		{
 			name:         "custom network_mode missing",
 			yaml:         "network_mode: myapp_default\n",
-			wantErr:      []string{`network "myapp_default" not found`},
+			wantErr:      []string{`network_mode: network "myapp_default" not found`},
 			wantNetworks: []string{"myapp_default"},
 		},
 		{name: "unset", yaml: ""},

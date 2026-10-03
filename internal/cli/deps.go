@@ -78,18 +78,18 @@ func (d dockerDeps) networkPreflight(ctx context.Context, n projectconfig.Networ
 		return nil
 	}
 
-	names := n.Networks
+	key, names := "networks", n.Networks
 	if n.Mode != "" {
-		names = []string{n.Mode}
+		key, names = "network_mode", []string{n.Mode}
 	}
 	for _, name := range names {
 		found, err := d.api.NetworkExists(pfCtx, name)
 		if err != nil {
-			return fmt.Errorf("check network %q: %w", name, err)
+			return fmt.Errorf("%s: check network %q: %w", key, name, err)
 		}
 		if !found {
-			return fmt.Errorf("network %[1]q not found — create it with 'docker network create %[1]s'; "+
-				"compose prefixes networks with <project>_ (check 'docker network ls')", name)
+			return fmt.Errorf("%[1]s: network %[2]q not found — create it with 'docker network create %[2]s'; "+
+				"compose prefixes networks with <project>_ (check 'docker network ls')", key, name)
 		}
 	}
 	return nil

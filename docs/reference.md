@@ -561,14 +561,17 @@ Failures (compose prefixes names, so the hints say how to find the real one):
 ```
 makeslop: network_mode: container "proxy" not found — start it first; compose names containers <project>-<service>-1 unless container_name is set (check 'docker ps')
 makeslop: network_mode: container "proxy" is not running (stopped, paused or restarting) — start or unpause it (check 'docker ps -a')
-makeslop: network "X" not found — create it with 'docker network create X'; compose prefixes networks with <project>_ (check 'docker network ls')
+makeslop: networks: network "X" not found — create it with 'docker network create X'; compose prefixes networks with <project>_ (check 'docker network ls')
 ```
+
+Each message starts with the key that named the target: a custom `network_mode: mynet` reports
+`network_mode: network "mynet" not found …`.
 
 Any other inspect error (permission denied, ambiguous name, timeout) is shown as-is:
 
 ```
 makeslop: network_mode: check container "proxy": <error>
-makeslop: check network "X": <error>
+makeslop: networks: check network "X": <error>
 ```
 
 Security implications (a cloned repository's config can pick `host` or join any container) are in

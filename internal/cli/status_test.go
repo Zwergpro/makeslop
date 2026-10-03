@@ -985,7 +985,7 @@ const (
 	netContainerMissingHint = `network_mode: container "proxy" not found — start it first; ` +
 		`compose names containers <project>-<service>-1 unless container_name is set (check 'docker ps')`
 	netContainerStoppedHint = `network_mode: container "proxy" is not running (stopped, paused or restarting) — start or unpause it (check 'docker ps -a')`
-	netNetworkMissingHint   = `network "b" not found — create it with 'docker network create b'; ` +
+	netNetworkMissingHint   = `networks: network "b" not found — create it with 'docker network create b'; ` +
 		`compose prefixes networks with <project>_ (check 'docker network ls')`
 )
 

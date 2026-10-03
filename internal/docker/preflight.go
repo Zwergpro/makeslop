@@ -54,8 +54,9 @@ func (d *Docker) ImageExists(ctx context.Context, image string) (bool, error) {
 // ContainerRunning reports whether the named container exists and is running.
 // A paused container counts as not running (it would stall traffic through a
 // shared network namespace), and so does a restarting (crash-looping) one,
-// whose namespace the daemon refuses to join although it reports Running. (false, false, nil) only for a classified
-// not-found; other errors return (false, false, err).
+// whose namespace the daemon refuses to join although it reports Running.
+// (false, false, nil) only for a classified not-found; other errors return
+// (false, false, err).
 func (d *Docker) ContainerRunning(ctx context.Context, name string) (exists, running bool, err error) {
 	res, err := d.client.ContainerInspect(ctx, name, moby.ContainerInspectOptions{})
 	if err != nil {

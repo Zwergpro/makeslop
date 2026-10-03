@@ -91,16 +91,16 @@ Mount order in `BuildSpec`: project root first, then global mounts (`~/.makeslop
 ### Project config (`.makeslop.yaml`)
 - Decoded in strict mode (`KnownFields(true)`), so unknown keys are hard errors. That includes the
   `network:` block from older versions. Exception: `environments:` and `networks:` are decoded as
-  raw `yaml.Node`s, which strict mode does not check. `validateEnvironments` does its own
-  unknown-key and duplicate-key detection at both levels; it and `decodeNetworks` follow aliases
-  by hand (`deref`). Its errors
-  name keys or line numbers, never values.
+  raw `yaml.Node`s, which strict mode does not check. Both `validateEnvironments` and
+  `decodeNetworks` follow aliases by hand (`deref`). `validateEnvironments` does its own unknown-key
+  and duplicate-key detection at both levels; its errors name keys or line numbers, never values
+  (network errors, by contrast, quote names on purpose).
 - The file must be a regular file; a symlink is rejected. When it exists, it is mounted read-only
   over itself in the container (`ProtectProjectConfig`), and `.git/hooks` is tmpfs-masked
   (`MaskGitHooks`).
 - `Load` returns `(Config, error)` with `Config{Excludes, Cache, Env, Network}`. A missing
-  `cache:` block means `{Content:true, Agent:true}`. `init --global-only` scaffolds `{false,false}`. `Scaffold` is
-  idempotent and never overwrites an existing file.
+  `cache:` block means `{Content:true, Agent:true}`. `init --global-only` scaffolds
+  `{false,false}`. `Scaffold` is idempotent and never overwrites an existing file.
 - `Env{Static, Host}` comes from `environments:`; `Load` never reads the process env. Host names
   are resolved in `run.go` (`resolveEnv` with `os.LookupEnv`); unset names are skipped.
   `resolveEnv` is the only place the final order (by key) is decided; `Env.Static` keeps file order.
@@ -112,8 +112,10 @@ Mount order in `BuildSpec`: project root first, then global mounts (`~/.makeslop
 - `networkPreflight` (`deps.go`, bounded by `preflightTimeout`) checks a `container:` target is
   running and named networks exist; `Network.NeedsInspect()` / `ContainerTarget()` (projectconfig)
   decide what to inspect, so built-ins (`bridge|host|none|default`) and unset skip the daemon.
-  Built-ins and `container:` are rejected inside `networks`. `run` calls it after the image check (not on `--dry-run`); `status` uses it for the
-  blocking `network` row, and an invalid `.makeslop.yaml` makes that row `✗`.
+  Built-ins and `container:` are rejected inside `networks`. Its hints are prefixed with the key
+  that named the target (`network_mode:` / `networks:`). `run` calls it after the image check (not
+  on `--dry-run`); `status` uses it for the blocking `network` row, and an invalid
+  `.makeslop.yaml` makes that row `✗`.
 - Existing project files are never auto-migrated.
 
 ### Secret scan
