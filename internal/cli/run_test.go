@@ -588,16 +588,19 @@ func TestRun_DryRun_StdoutEqualsBuildSpecShellCommand(t *testing.T) {
 	// init scaffolds .makeslop.yaml ⇒ ProtectProjectConfig true; both cache groups default to true.
 	// t.TempDir() has no .git directory — MaskGitHooks stays false.
 	want := docker.BuildSpec(docker.Options{
-		ProjectRoot:          resolvedPwd,
-		WorkspaceName:        filepath.Base(workspaceDir),
-		WorkspaceHost:        workspaceDir,
-		BaseDir:              baseDir,
-		Image:                s.Image,
-		Command:              s.Shell,
-		TmpDirSize:           s.TmpDirSize,
-		MountContentCache:    true,
-		MountAgentCache:      true,
-		ProtectProjectConfig: true,
+		Projects: []docker.Project{{
+			Host:          resolvedPwd,
+			Name:          filepath.Base(workspaceDir),
+			Label:         "project: " + resolvedPwd,
+			ProtectConfig: true,
+		}},
+		WorkspaceHost:     workspaceDir,
+		BaseDir:           baseDir,
+		Image:             s.Image,
+		Command:           s.Shell,
+		TmpDirSize:        s.TmpDirSize,
+		MountContentCache: true,
+		MountAgentCache:   true,
 	}).ShellCommand()
 
 	got := strings.TrimSuffix(stdout, "\n")
@@ -1020,8 +1023,11 @@ func TestRun_YamlAbsentIsBitIdenticalArgv(t *testing.T) {
 	}
 	// Absent yaml ⇒ both cache groups default to true.
 	want := docker.BuildSpec(docker.Options{
-		ProjectRoot:       resolvedPwd,
-		WorkspaceName:     filepath.Base(workspaceDir),
+		Projects: []docker.Project{{
+			Host:  resolvedPwd,
+			Name:  filepath.Base(workspaceDir),
+			Label: "project: " + resolvedPwd,
+		}},
 		WorkspaceHost:     workspaceDir,
 		BaseDir:           baseDir,
 		Image:             s.Image,
@@ -1273,8 +1279,11 @@ func TestRun_DryRun_DefaultIsBridge(t *testing.T) {
 		t.Fatalf("load settings: %v", loadErr)
 	}
 	want := docker.BuildSpec(docker.Options{
-		ProjectRoot:       resolvedPwd,
-		WorkspaceName:     filepath.Base(workspaceDir),
+		Projects: []docker.Project{{
+			Host:  resolvedPwd,
+			Name:  filepath.Base(workspaceDir),
+			Label: "project: " + resolvedPwd,
+		}},
 		WorkspaceHost:     workspaceDir,
 		BaseDir:           baseDir,
 		Image:             s.Image,

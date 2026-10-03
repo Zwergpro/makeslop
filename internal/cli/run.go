@@ -159,22 +159,25 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir, imageFlag str
 	protectProjectConfig, maskGitHooks := sandboxMountGates(workspaceRoot)
 
 	opts := docker.Options{
-		ProjectRoot:          workspaceRoot,
-		WorkspaceName:        filepath.Base(workspaceDir),
-		WorkspaceHost:        workspaceDir,
-		BaseDir:              baseDir,
-		Image:                image,
-		Command:              s.Shell,
-		TmpDirSize:           s.TmpDirSize,
-		MaskedFiles:          maskedFiles,
-		MaskedDirs:           pcfg.Excludes.Dirs,
-		MountContentCache:    pcfg.Cache.Content,
-		MountAgentCache:      pcfg.Cache.Agent,
-		Env:                  resolveEnv(pcfg.Env, os.LookupEnv),
-		ProtectProjectConfig: protectProjectConfig,
-		MaskGitHooks:         maskGitHooks,
-		NetworkMode:          pcfg.Network.Mode,
-		Networks:             pcfg.Network.Networks,
+		Projects: []docker.Project{{
+			Host:          workspaceRoot,
+			Name:          filepath.Base(workspaceDir),
+			Label:         "project: " + workspaceRoot,
+			MaskedFiles:   maskedFiles,
+			MaskedDirs:    pcfg.Excludes.Dirs,
+			ProtectConfig: protectProjectConfig,
+			MaskGitHooks:  maskGitHooks,
+		}},
+		WorkspaceHost:     workspaceDir,
+		BaseDir:           baseDir,
+		Image:             image,
+		Command:           s.Shell,
+		TmpDirSize:        s.TmpDirSize,
+		MountContentCache: pcfg.Cache.Content,
+		MountAgentCache:   pcfg.Cache.Agent,
+		Env:               resolveEnv(pcfg.Env, os.LookupEnv),
+		NetworkMode:       pcfg.Network.Mode,
+		Networks:          pcfg.Network.Networks,
 	}
 
 	spec := docker.BuildSpec(opts)

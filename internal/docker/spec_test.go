@@ -11,8 +11,7 @@ import (
 
 func sampleOptions() Options {
 	return Options{
-		ProjectRoot:       "/home/me/code/myproj",
-		WorkspaceName:     "myproj-abc123",
+		Projects:          []Project{{Host: "/home/me/code/myproj", Name: "myproj-abc123"}},
 		BaseDir:           "/home/me/.makeslop",
 		WorkspaceHost:     "/home/me/.makeslop/workspaces/myproj-abc123",
 		Image:             "claudebox",
@@ -202,7 +201,7 @@ func TestSpecArgs_MountArgsParseAsRFC4180CSV(t *testing.T) {
 
 func TestBuildSpec_MaskedFilesAppendDevNullMounts(t *testing.T) {
 	o := sampleOptions()
-	o.MaskedFiles = []string{
+	o.Projects[0].MaskedFiles = []string{
 		"/home/me/code/myproj/.env",
 		"/home/me/code/myproj/configs/env/local.env",
 	}
@@ -224,7 +223,7 @@ func TestBuildSpec_MaskedFilesAppendDevNullMounts(t *testing.T) {
 
 func TestSpecArgs_MaskedFilesProduceDevNullMountArgs(t *testing.T) {
 	o := sampleOptions()
-	o.MaskedFiles = []string{
+	o.Projects[0].MaskedFiles = []string{
 		"/home/me/code/myproj/.env",
 		"/home/me/code/myproj/configs/env/local.env",
 	}
@@ -253,7 +252,7 @@ func TestSpecArgs_MaskedFilesProduceDevNullMountArgs(t *testing.T) {
 
 func TestBuildSpec_MaskedDirsAppendTmpfsMounts(t *testing.T) {
 	o := sampleOptions()
-	o.MaskedDirs = []string{
+	o.Projects[0].MaskedDirs = []string{
 		"/home/me/code/myproj/node_modules",
 		"/home/me/code/myproj/secrets",
 	}
@@ -275,8 +274,8 @@ func TestBuildSpec_MaskedDirsAppendTmpfsMounts(t *testing.T) {
 
 func TestBuildSpec_MaskedFilesAndDirsInteract(t *testing.T) {
 	o := sampleOptions()
-	o.MaskedFiles = []string{"/home/me/code/myproj/.env"}
-	o.MaskedDirs = []string{"/home/me/code/myproj/node_modules"}
+	o.Projects[0].MaskedFiles = []string{"/home/me/code/myproj/.env"}
+	o.Projects[0].MaskedDirs = []string{"/home/me/code/myproj/node_modules"}
 	spec := BuildSpec(o)
 
 	n := len(spec.Mounts)
@@ -295,7 +294,7 @@ func TestBuildSpec_MaskedFilesAndDirsInteract(t *testing.T) {
 
 func TestSpecArgs_TmpfsMountFlagShape(t *testing.T) {
 	o := sampleOptions()
-	o.MaskedDirs = []string{"/home/me/code/myproj/node_modules"}
+	o.Projects[0].MaskedDirs = []string{"/home/me/code/myproj/node_modules"}
 	spec := BuildSpec(o)
 	args := spec.Args()
 
@@ -937,11 +936,11 @@ func TestHostConfig_MixedMountTypesOrder(t *testing.T) {
 // exercising masked files/dirs, env injection, and default security/network.
 func TestDriftGuard_ArgsAndSDKProjectionsAgree(t *testing.T) {
 	o := sampleOptions()
-	o.MaskedFiles = []string{
+	o.Projects[0].MaskedFiles = []string{
 		"/home/me/code/myproj/.env",
 		"/home/me/code/myproj/configs/secret.yaml",
 	}
-	o.MaskedDirs = []string{"/home/me/code/myproj/node_modules"}
+	o.Projects[0].MaskedDirs = []string{"/home/me/code/myproj/node_modules"}
 	o.Env = []string{"DEBUG=true", "PORT=8080"}
 
 	spec := BuildSpec(o)
@@ -1120,8 +1119,7 @@ func TestBuildSpec_CacheMountCombos(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			o := Options{
-				ProjectRoot:       "/home/me/code/myproj",
-				WorkspaceName:     "myproj-abc123",
+				Projects:          []Project{{Host: "/home/me/code/myproj", Name: "myproj-abc123"}},
 				BaseDir:           "/home/me/.makeslop",
 				WorkspaceHost:     "/home/me/.makeslop/workspaces/myproj-abc123",
 				Image:             "claudebox",
@@ -1187,8 +1185,7 @@ func TestBuildSpec_CacheMountCombos_Args(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			o := Options{
-				ProjectRoot:       "/home/me/code/myproj",
-				WorkspaceName:     "myproj-abc123",
+				Projects:          []Project{{Host: "/home/me/code/myproj", Name: "myproj-abc123"}},
 				BaseDir:           "/home/me/.makeslop",
 				WorkspaceHost:     "/home/me/.makeslop/workspaces/myproj-abc123",
 				Image:             "claudebox",
@@ -1393,21 +1390,21 @@ func TestBuildSpec_SandboxFlags_BothOff(t *testing.T) {
 
 	// Enabling each flag individually must increase the mount count by exactly 1.
 	oProtect := sampleOptions()
-	oProtect.ProtectProjectConfig = true
+	oProtect.Projects[0].ProtectConfig = true
 	if got, want := len(BuildSpec(oProtect).Mounts), wantBaseline+1; got != want {
 		t.Errorf("ProtectProjectConfig=true: mount count = %d, want %d (baseline+1)", got, want)
 	}
 
 	oHooks := sampleOptions()
-	oHooks.MaskGitHooks = true
+	oHooks.Projects[0].MaskGitHooks = true
 	if got, want := len(BuildSpec(oHooks).Mounts), wantBaseline+1; got != want {
 		t.Errorf("MaskGitHooks=true: mount count = %d, want %d (baseline+1)", got, want)
 	}
 
 	// Both on: exactly two extra mounts.
 	oBoth := sampleOptions()
-	oBoth.ProtectProjectConfig = true
-	oBoth.MaskGitHooks = true
+	oBoth.Projects[0].ProtectConfig = true
+	oBoth.Projects[0].MaskGitHooks = true
 	if got, want := len(BuildSpec(oBoth).Mounts), wantBaseline+2; got != want {
 		t.Errorf("both flags on: mount count = %d, want %d (baseline+2)", got, want)
 	}
@@ -1417,7 +1414,7 @@ func TestBuildSpec_SandboxFlags_BothOff(t *testing.T) {
 // (after the 4 base mounts and before any cache overlays).
 func TestBuildSpec_ProtectProjectConfig_MountPresent(t *testing.T) {
 	o := sampleOptions()
-	o.ProtectProjectConfig = true
+	o.Projects[0].ProtectConfig = true
 	spec := BuildSpec(o)
 
 	wantMount := Mount{
@@ -1446,8 +1443,8 @@ func TestBuildSpec_ProtectProjectConfig_DropsConfigMask(t *testing.T) {
 	otherHost := "/home/me/code/myproj/.env"
 
 	o := sampleOptions()
-	o.ProtectProjectConfig = true
-	o.MaskedFiles = []string{otherHost, configHost}
+	o.Projects[0].ProtectConfig = true
+	o.Projects[0].MaskedFiles = []string{otherHost, configHost}
 	spec := BuildSpec(o)
 
 	var sawConfigMask, sawOtherMask, sawReadOnlyBind bool
@@ -1473,7 +1470,7 @@ func TestBuildSpec_ProtectProjectConfig_DropsConfigMask(t *testing.T) {
 
 	// Flag off: the mask is emitted as usual.
 	o = sampleOptions()
-	o.MaskedFiles = []string{configHost}
+	o.Projects[0].MaskedFiles = []string{configHost}
 	spec = BuildSpec(o)
 	found := false
 	for _, m := range spec.Mounts {
@@ -1489,7 +1486,7 @@ func TestBuildSpec_ProtectProjectConfig_DropsConfigMask(t *testing.T) {
 // MaskGitHooks=true: .git/hooks tmpfs mount is present at a fixed position.
 func TestBuildSpec_MaskGitHooks_MountPresent(t *testing.T) {
 	o := sampleOptions()
-	o.MaskGitHooks = true
+	o.Projects[0].MaskGitHooks = true
 	spec := BuildSpec(o)
 
 	wantMount := Mount{
@@ -1510,8 +1507,8 @@ func TestBuildSpec_MaskGitHooks_MountPresent(t *testing.T) {
 // both before cache overlays.
 func TestBuildSpec_BothSandboxFlags_Order(t *testing.T) {
 	o := sampleOptions()
-	o.ProtectProjectConfig = true
-	o.MaskGitHooks = true
+	o.Projects[0].ProtectConfig = true
+	o.Projects[0].MaskGitHooks = true
 	spec := BuildSpec(o)
 
 	if len(spec.Mounts) < 6 {
@@ -1558,7 +1555,7 @@ func TestBuildSpec_BothSandboxFlags_Order(t *testing.T) {
 // ProtectProjectConfig: readonly=true must render as ",readonly" in Args() output.
 func TestArgs_ProtectProjectConfig_ReadonlySuffix(t *testing.T) {
 	o := sampleOptions()
-	o.ProtectProjectConfig = true
+	o.Projects[0].ProtectConfig = true
 	spec := BuildSpec(o)
 	args := spec.Args()
 
@@ -1581,7 +1578,7 @@ func TestArgs_ProtectProjectConfig_ReadonlySuffix(t *testing.T) {
 // MaskGitHooks: tmpfs mount for .git/hooks must render correctly in Args().
 func TestArgs_MaskGitHooks_TmpfsMountShape(t *testing.T) {
 	o := sampleOptions()
-	o.MaskGitHooks = true
+	o.Projects[0].MaskGitHooks = true
 	spec := BuildSpec(o)
 	args := spec.Args()
 
@@ -1605,7 +1602,7 @@ func TestArgs_MaskGitHooks_TmpfsMountShape(t *testing.T) {
 // before the first cache overlay mount.
 func TestBuildSpec_ProtectProjectConfig_PositionAfterBase_BeforeCache(t *testing.T) {
 	o := sampleOptions() // both cache flags true
-	o.ProtectProjectConfig = true
+	o.Projects[0].ProtectConfig = true
 	spec := BuildSpec(o)
 
 	// Find the index of the .makeslop.yaml mount.
@@ -1641,7 +1638,7 @@ func TestBuildSpec_ProtectProjectConfig_PositionAfterBase_BeforeCache(t *testing
 // MaskGitHooks: verify the HostConfig translation produces a proper tmpfs mount.
 func TestHostConfig_MaskGitHooks_TmpfsMount(t *testing.T) {
 	o := sampleOptions()
-	o.MaskGitHooks = true
+	o.Projects[0].MaskGitHooks = true
 	spec := BuildSpec(o)
 	hc := spec.HostConfig()
 
@@ -1665,7 +1662,7 @@ func TestHostConfig_MaskGitHooks_TmpfsMount(t *testing.T) {
 // ProtectProjectConfig: verify the HostConfig translation produces a read-only bind mount.
 func TestHostConfig_ProtectProjectConfig_ReadOnlyBind(t *testing.T) {
 	o := sampleOptions()
-	o.ProtectProjectConfig = true
+	o.Projects[0].ProtectConfig = true
 	spec := BuildSpec(o)
 	hc := spec.HostConfig()
 
@@ -1705,8 +1702,8 @@ func TestDriftGuard_SandboxFlags(t *testing.T) {
 	for _, c := range combos {
 		t.Run(c.name, func(t *testing.T) {
 			o := sampleOptions()
-			o.ProtectProjectConfig = c.protectProjectConfig
-			o.MaskGitHooks = c.maskGitHooks
+			o.Projects[0].ProtectConfig = c.protectProjectConfig
+			o.Projects[0].MaskGitHooks = c.maskGitHooks
 
 			spec := BuildSpec(o)
 			args := spec.Args()
@@ -1989,4 +1986,18 @@ func collectFlagValues(args []string, flag string) []string {
 		}
 	}
 	return out
+}
+
+// Projects[0] is always bound read-write: ReadOnly applies to joins only.
+func TestBuildSpec_MainProjectReadOnlyIgnored(t *testing.T) {
+	o := sampleOptions()
+	o.Projects[0].ReadOnly = true
+	spec := BuildSpec(o)
+	want := Mount{Host: "/home/me/code/myproj", Container: "/workspace/myproj-abc123"}
+	if spec.Mounts[0] != want {
+		t.Errorf("mounts[0] = %+v, want %+v", spec.Mounts[0], want)
+	}
+	if !reflect.DeepEqual(spec.Mounts, BuildSpec(sampleOptions()).Mounts) {
+		t.Errorf("ReadOnly on Projects[0] must not change mounts")
+	}
 }

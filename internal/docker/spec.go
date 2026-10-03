@@ -10,22 +10,47 @@ import (
 	"github.com/moby/moby/api/types/network"
 )
 
+// Project is one host project tree mounted into the container. Projects[0] in
+// Options is the main project; the rest are joined projects. Path fields must
+// be absolute and EvalSymlinks-evaluated.
+type Project struct {
+	Host     string // host root, mounted at /workspace/<Name>
+	Name     string // mount name under /workspace, e.g. "makeslop-ab12cd"
+	Label    string // dry-run section separator text
+	ReadOnly bool   // joins only; ignored for Projects[0]
+
+	// MaskedFiles: absolute host paths under Host to shadow with /dev/null.
+	MaskedFiles []string
+	// MaskedDirs: absolute host paths under Host to replace with tmpfs.
+	MaskedDirs []string
+
+	// ProtectConfig mounts <Host>/.makeslop.yaml read-only over itself inside
+	// the container, preventing the agent from rewriting the sandbox policy.
+	// Only set when the file actually exists on the host (a missing bind
+	// source would fail container create).
+	ProtectConfig bool
+
+	// MaskGitHooks overlays /workspace/<Name>/.git/hooks with a tmpfs,
+	// preventing the agent from planting hooks that execute on the host. Only
+	// set when <Host>/.git is a directory (worktrees/submodule gitfiles are
+	// skipped — their hooks directory lives outside the workspace).
+	MaskGitHooks bool
+}
+
 // Options is the caller-supplied input to BuildSpec. Path fields must be
 // absolute and EvalSymlinks-evaluated.
 type Options struct {
-	ProjectRoot   string // host path mounted at /workspace/<WorkspaceName>
-	WorkspaceName string // e.g. "makeslop-ab12cd"
-	BaseDir       string // ~/.makeslop
+	// Projects lists the mounted project trees; Projects[0] is the main
+	// project (workdir, cache overlays). Caller guarantees len >= 1, unique
+	// Names and non-overlapping Hosts.
+	Projects []Project
+	BaseDir  string // ~/.makeslop
 	// WorkspaceHost is the per-workspace cache directory on the host
-	// (e.g. ~/.makeslop/workspaces/<WorkspaceName>). Caller computes this;
+	// (e.g. ~/.makeslop/workspaces/<Projects[0].Name>). Caller computes this;
 	// BuildSpec uses it directly for cache overlay mounts.
 	WorkspaceHost string
 	Image         string
 	Command       string // shell to exec inside the container
-	// MaskedFiles: absolute host paths under ProjectRoot to shadow with /dev/null.
-	MaskedFiles []string
-	// MaskedDirs: absolute host paths under ProjectRoot to replace with tmpfs.
-	MaskedDirs []string
 
 	// TmpDirSize is passed verbatim to --tmpfs /tmp:size=<TmpDirSize>; config.Load
 	// owns the default, BuildSpec does not re-default.
@@ -42,18 +67,6 @@ type Options struct {
 	// MountContentCache gates the per-workspace content cache overlays
 	// (workspaceHost/docs/, CLAUDE.md); false lets the project's own files show.
 	MountContentCache bool
-
-	// ProtectProjectConfig mounts <ProjectRoot>/.makeslop.yaml read-only over
-	// itself inside the container, preventing the agent from rewriting the sandbox
-	// policy. Only set when the file actually exists on the host (a missing bind
-	// source would fail container create).
-	ProtectProjectConfig bool
-
-	// MaskGitHooks overlays <workspacePath>/.git/hooks with a tmpfs, preventing
-	// the agent from planting hooks that execute on the host. Only set when
-	// <ProjectRoot>/.git is a directory (worktrees/submodule gitfiles are skipped
-	// — their hooks directory lives outside the workspace).
-	MaskGitHooks bool
 
 	// NetworkMode is passed verbatim as --network / HostConfig.NetworkMode
 	// (bridge, host, none, container:<x>, or a network name). Empty means the
@@ -106,40 +119,23 @@ type Spec struct {
 // directory bind they shadow so docker's argv-order evaluation makes them win;
 // disabled groups are omitted, never reordered.
 func BuildSpec(o Options) Spec {
-	workspacePath := "/workspace/" + o.WorkspaceName
+	main := o.Projects[0]
+	workspacePath := "/workspace/" + main.Name
 
-	// Trailing slashes on directory mounts are intentional — they match the
-	// reference claude.sh, and coax docker into failing fast if the host path
-	// is unexpectedly a file.
-	mounts := []Mount{
-		{Host: o.ProjectRoot, Container: workspacePath},
-		{Host: filepath.Join(o.BaseDir, ".claude") + "/", Container: "/home/user/.claude/"},
-		{Host: filepath.Join(o.BaseDir, ".claude.json"), Container: "/home/user/.claude.json"},
-		{Host: filepath.Join(o.BaseDir, ".codex") + "/", Container: "/home/user/.codex/"},
-	}
+	// Main group: bind → global → sandbox → cache overlays → masks. Trailing
+	// slashes on directory mounts are intentional — they match the reference
+	// claude.sh, and coax docker into failing fast if the host path is
+	// unexpectedly a file.
+	mounts := []Mount{projectBind(main, false)}
+	mounts = append(mounts,
+		Mount{Host: filepath.Join(o.BaseDir, ".claude") + "/", Container: "/home/user/.claude/"},
+		Mount{Host: filepath.Join(o.BaseDir, ".claude.json"), Container: "/home/user/.claude.json"},
+		Mount{Host: filepath.Join(o.BaseDir, ".codex") + "/", Container: "/home/user/.codex/"},
+	)
 
-	// Sandbox-policy mounts: inserted at a fixed point after the 4 base mounts
-	// and before any cache overlays. This ensures the overlay wins over the rw
-	// project bind regardless of cache flag state.
-	maskedFiles := o.MaskedFiles
-	if o.ProtectProjectConfig {
-		configHost := filepath.Join(o.ProjectRoot, ".makeslop.yaml")
-		mounts = append(mounts, Mount{
-			Host:      configHost,
-			Container: workspacePath + "/.makeslop.yaml",
-			ReadOnly:  true,
-		})
-		// Docker applies mounts last-write-wins: a /dev/null mask emitted below
-		// for the config file (e.g. a broad scan pattern like "*.yaml") would
-		// silently override the read-only self-bind, so drop it here.
-		maskedFiles = filterOut(maskedFiles, configHost)
-	}
-	if o.MaskGitHooks {
-		mounts = append(mounts, Mount{
-			Type:      "tmpfs",
-			Container: workspacePath + "/.git/hooks",
-		})
-	}
+	// Sandbox-policy mounts come after the global mounts and before any cache
+	// overlays, so they win over the rw project bind regardless of cache flags.
+	mounts = append(mounts, projectSandbox(main)...)
 
 	if o.MountAgentCache {
 		mounts = append(mounts,
@@ -155,23 +151,7 @@ func BuildSpec(o Options) Spec {
 		)
 	}
 
-	for _, host := range maskedFiles {
-		// Caller guarantees host is under ProjectRoot; Rel never errors on POSIX.
-		rel, _ := filepath.Rel(o.ProjectRoot, host)
-		mounts = append(mounts, Mount{
-			Host:      "/dev/null",
-			Container: workspacePath + "/" + filepath.ToSlash(rel),
-		})
-	}
-
-	for _, host := range o.MaskedDirs {
-		// Caller guarantees host is under ProjectRoot; Rel never errors on POSIX.
-		rel, _ := filepath.Rel(o.ProjectRoot, host)
-		mounts = append(mounts, Mount{
-			Type:      "tmpfs",
-			Container: workspacePath + "/" + filepath.ToSlash(rel),
-		})
-	}
+	mounts = append(mounts, projectMasks(main, main.ProtectConfig)...)
 
 	return Spec{
 		Image:   o.Image,
@@ -186,6 +166,64 @@ func BuildSpec(o Options) Spec {
 		NetworkMode: o.NetworkMode,
 		Networks:    o.Networks,
 	}
+}
+
+// projectBind returns the bind of p.Host at /workspace/<p.Name>.
+func projectBind(p Project, readOnly bool) Mount {
+	return Mount{Host: p.Host, Container: "/workspace/" + p.Name, ReadOnly: readOnly}
+}
+
+// projectSandbox returns p's sandbox-policy mounts: the read-only config
+// self-bind (ProtectConfig) and the .git/hooks tmpfs (MaskGitHooks).
+func projectSandbox(p Project) []Mount {
+	var mounts []Mount
+	workspacePath := "/workspace/" + p.Name
+	if p.ProtectConfig {
+		mounts = append(mounts, Mount{
+			Host:      filepath.Join(p.Host, ".makeslop.yaml"),
+			Container: workspacePath + "/.makeslop.yaml",
+			ReadOnly:  true,
+		})
+	}
+	if p.MaskGitHooks {
+		mounts = append(mounts, Mount{
+			Type:      "tmpfs",
+			Container: workspacePath + "/.git/hooks",
+		})
+	}
+	return mounts
+}
+
+// projectMasks returns p's /dev/null file masks followed by its tmpfs dir
+// masks, each targeted relative to p.Host. When configBound is set, a mask on
+// p's own .makeslop.yaml is dropped: docker applies mounts last-write-wins, so
+// it would silently override the read-only self-bind (e.g. a broad scan
+// pattern like "*.yaml").
+func projectMasks(p Project, configBound bool) []Mount {
+	workspacePath := "/workspace/" + p.Name
+	maskedFiles := p.MaskedFiles
+	if configBound {
+		maskedFiles = filterOut(maskedFiles, filepath.Join(p.Host, ".makeslop.yaml"))
+	}
+
+	var mounts []Mount
+	for _, host := range maskedFiles {
+		// Caller guarantees host is under p.Host; Rel never errors on POSIX.
+		rel, _ := filepath.Rel(p.Host, host)
+		mounts = append(mounts, Mount{
+			Host:      "/dev/null",
+			Container: workspacePath + "/" + filepath.ToSlash(rel),
+		})
+	}
+	for _, host := range p.MaskedDirs {
+		// Caller guarantees host is under p.Host; Rel never errors on POSIX.
+		rel, _ := filepath.Rel(p.Host, host)
+		mounts = append(mounts, Mount{
+			Type:      "tmpfs",
+			Container: workspacePath + "/" + filepath.ToSlash(rel),
+		})
+	}
+	return mounts
 }
 
 // Args returns argv starting with "run". Mount source/target fields use RFC 4180

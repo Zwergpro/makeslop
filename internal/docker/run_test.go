@@ -19,11 +19,10 @@ import (
 
 func sampleSpec() Spec {
 	return BuildSpec(Options{
-		ProjectRoot:   "/host/project",
-		WorkspaceName: "demo-abc123",
-		BaseDir:       "/host/.makeslop",
-		Image:         "claudebox",
-		Command:       "/bin/zsh",
+		Projects: []Project{{Host: "/host/project", Name: "demo-abc123"}},
+		BaseDir:  "/host/.makeslop",
+		Image:    "claudebox",
+		Command:  "/bin/zsh",
 	})
 }
 

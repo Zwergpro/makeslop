@@ -128,11 +128,11 @@
 
 Approach B was chosen deliberately in brainstorm, even though it means about 88 reference updates. Mitigation: port tests mechanically and keep every expected `Mounts`/argv literal unchanged. A diff of expectation literals must show zero changes.
 
-- [ ] add `docker.Project`, replace the per-project `Options` fields with `Projects []Project`, and update the field docs
-- [ ] extract a per-project mount helper (bind, sandbox, masks) and have `BuildSpec` emit `Projects[0]` in exactly the current order (global and cache mounts inserted between sandbox and masks)
-- [ ] update `runRun` to build `Projects: []docker.Project{{…main…}}` with `Label: "project: " + workspaceRoot`
-- [ ] port all existing `spec_test.go` / `run_test.go` / cli `run_test.go` / `status_test.go` cases to the new shape, keeping the expected `Mounts` / argv identical
-- [ ] run tests; they must pass with unchanged expectations before Task 2
+- [x] add `docker.Project`, replace the per-project `Options` fields with `Projects []Project`, and update the field docs
+- [x] extract a per-project mount helper (bind, sandbox, masks) and have `BuildSpec` emit `Projects[0]` in exactly the current order (global and cache mounts inserted between sandbox and masks)
+- [x] update `runRun` to build `Projects: []docker.Project{{…main…}}` with `Label: "project: " + workspaceRoot`
+- [x] port all existing `spec_test.go` / `run_test.go` / cli `run_test.go` / `status_test.go` cases to the new shape (status_test.go had no Options references; nothing to port), keeping the expected `Mounts` / argv identical
+- [x] run tests; they must pass with unchanged expectations before Task 2
 
 ### Task 2: Join mount groups and `Spec.Sections` in `BuildSpec`
 
