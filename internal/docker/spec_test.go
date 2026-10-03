@@ -713,8 +713,8 @@ func TestHostConfig_AutoRemoveCapDropSecOpt(t *testing.T) {
 	}
 }
 
-// Empty NetworkMode resolves to bridge networking.
-func TestHostConfig_NetworkModeIsAlwaysBridge(t *testing.T) {
+// With no network settings, NetworkMode is empty (Docker default bridge).
+func TestHostConfig_NetworkModeDefaultsToEmpty(t *testing.T) {
 	spec := Spec{Image: "img", Command: "sh", Workdir: "/wd"}
 	hc := spec.HostConfig()
 	if hc.NetworkMode != "" {
@@ -1802,4 +1802,191 @@ func TestDriftGuard_CacheMountCombos(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestBuildSpec_Network(t *testing.T) {
+	cases := []struct {
+		name        string
+		mode        string
+		networks    []string
+		wantFlags   []string // --network values in Args() order
+		wantHCMode  string
+		wantEPNames []string // nil → NetworkingConfig must be nil
+	}{
+		{name: "unset"},
+		{name: "container_proxy", mode: "container:proxy",
+			wantFlags: []string{"container:proxy"}, wantHCMode: "container:proxy"},
+		{name: "host", mode: "host", wantFlags: []string{"host"}, wantHCMode: "host"},
+		{name: "single_network", networks: []string{"myapp_default"},
+			wantFlags: []string{"myapp_default"}, wantHCMode: "myapp_default",
+			wantEPNames: []string{"myapp_default"}},
+		{name: "multiple_ordered", networks: []string{"b_net", "a_net", "c_net"},
+			wantFlags: []string{"b_net", "a_net", "c_net"}, wantHCMode: "b_net",
+			wantEPNames: []string{"b_net", "a_net", "c_net"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			o := sampleOptions()
+			o.NetworkMode = c.mode
+			o.Networks = c.networks
+			spec := BuildSpec(o)
+
+			if spec.NetworkMode != c.mode {
+				t.Errorf("Spec.NetworkMode = %q, want %q", spec.NetworkMode, c.mode)
+			}
+			if !reflect.DeepEqual(spec.Networks, c.networks) {
+				t.Errorf("Spec.Networks = %v, want %v", spec.Networks, c.networks)
+			}
+			if got := collectFlagValues(spec.Args(), "--network"); !reflect.DeepEqual(got, c.wantFlags) {
+				t.Errorf("--network values = %v, want %v", got, c.wantFlags)
+			}
+			if got := string(spec.HostConfig().NetworkMode); got != c.wantHCMode {
+				t.Errorf("HostConfig.NetworkMode = %q, want %q", got, c.wantHCMode)
+			}
+			nc := spec.NetworkingConfig()
+			if c.wantEPNames == nil {
+				if nc != nil {
+					t.Errorf("NetworkingConfig = %+v, want nil", nc)
+				}
+				return
+			}
+			if nc == nil {
+				t.Fatal("NetworkingConfig = nil, want endpoints")
+			}
+			if len(nc.EndpointsConfig) != len(c.wantEPNames) {
+				t.Errorf("EndpointsConfig has %d entries, want %d", len(nc.EndpointsConfig), len(c.wantEPNames))
+			}
+			for _, n := range c.wantEPNames {
+				if ep, ok := nc.EndpointsConfig[n]; !ok || ep == nil {
+					t.Errorf("EndpointsConfig missing non-nil entry for %q", n)
+				}
+			}
+		})
+	}
+}
+
+// --network is emitted after --security-opt and before -e / --mount.
+func TestArgs_NetworkFlagPosition(t *testing.T) {
+	o := sampleOptions()
+	o.NetworkMode = "container:proxy"
+	o.Env = []string{"A=1"}
+	args := BuildSpec(o).Args()
+	idx := func(flag string) int {
+		for i, a := range args {
+			if a == flag {
+				return i
+			}
+		}
+		return -1
+	}
+	sec, net, env, mnt := idx("--security-opt"), idx("--network"), idx("-e"), idx("--mount")
+	if sec < 0 || net < 0 || env < 0 || mnt < 0 {
+		t.Fatalf("missing flag in args: %v", args)
+	}
+	if sec >= net || net >= env || env >= mnt {
+		t.Errorf("order: --security-opt=%d --network=%d -e=%d --mount=%d; want ascending", sec, net, env, mnt)
+	}
+}
+
+func TestShellCommand_NetworkLines(t *testing.T) {
+	cases := []struct {
+		name     string
+		mode     string
+		networks []string
+		want     []string
+	}{
+		{name: "mode", mode: "container:proxy", want: []string{"  --network container:proxy \\"}},
+		{name: "networks", networks: []string{"a", "b"},
+			want: []string{"  --network a \\", "  --network b \\"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			spec := Spec{Image: "img", Command: "sh", Workdir: "/wd", NetworkMode: c.mode, Networks: c.networks}
+			out := spec.ShellCommand()
+			lines := strings.Split(out, "\n")
+			var got []string
+			for _, l := range lines {
+				if strings.HasPrefix(l, "  --network") {
+					got = append(got, l)
+				}
+			}
+			if !reflect.DeepEqual(got, c.want) {
+				t.Errorf("network lines = %q, want %q\nfull:\n%s", got, c.want, out)
+			}
+		})
+	}
+}
+
+func TestShellCommand_NoNetworkLineWhenUnset(t *testing.T) {
+	if out := BuildSpec(sampleOptions()).ShellCommand(); strings.Contains(out, "--network") {
+		t.Errorf("unexpected --network in default ShellCommand:\n%s", out)
+	}
+}
+
+// Drift-guard: --network values in Args() match HostConfig.NetworkMode and the
+// NetworkingConfig endpoint keys.
+func TestDriftGuard_Network(t *testing.T) {
+	cases := []struct {
+		name     string
+		mode     string
+		networks []string
+	}{
+		{"unset", "", nil},
+		{"bridge", "bridge", nil},
+		{"none", "none", nil},
+		{"container", "container:proxy", nil},
+		{"custom_mode", "myapp_default", nil},
+		{"one_network", "", []string{"n1"}},
+		{"two_networks", "", []string{"n2", "n1"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			o := sampleOptions()
+			o.NetworkMode = c.mode
+			o.Networks = c.networks
+			spec := BuildSpec(o)
+			flags := collectFlagValues(spec.Args(), "--network")
+			hc := spec.HostConfig()
+			nc := spec.NetworkingConfig()
+
+			if len(flags) == 0 {
+				if hc.NetworkMode != "" || nc != nil {
+					t.Errorf("no --network flag but HostConfig.NetworkMode=%q NetworkingConfig=%v", hc.NetworkMode, nc)
+				}
+				return
+			}
+			if string(hc.NetworkMode) != flags[0] {
+				t.Errorf("HostConfig.NetworkMode = %q, first --network = %q", hc.NetworkMode, flags[0])
+			}
+			if len(c.networks) == 0 {
+				if nc != nil {
+					t.Errorf("network_mode only: NetworkingConfig = %v, want nil", nc)
+				}
+				if len(flags) != 1 {
+					t.Errorf("network_mode only: %d --network flags, want 1", len(flags))
+				}
+				return
+			}
+			if nc == nil || len(nc.EndpointsConfig) != len(flags) {
+				t.Fatalf("NetworkingConfig endpoints %v do not match --network flags %v", nc, flags)
+			}
+			for _, f := range flags {
+				if _, ok := nc.EndpointsConfig[f]; !ok {
+					t.Errorf("--network %q has no NetworkingConfig endpoint", f)
+				}
+			}
+		})
+	}
+}
+
+// collectFlagValues returns the values following each occurrence of flag in args.
+func collectFlagValues(args []string, flag string) []string {
+	var out []string
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == flag {
+			out = append(out, args[i+1])
+			i++
+		}
+	}
+	return out
 }

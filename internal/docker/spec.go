@@ -7,6 +7,7 @@ import (
 
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/mount"
+	"github.com/moby/moby/api/types/network"
 )
 
 // Options is the caller-supplied input to BuildSpec. Path fields must be
@@ -53,6 +54,15 @@ type Options struct {
 	// <ProjectRoot>/.git is a directory (worktrees/submodule gitfiles are skipped
 	// — their hooks directory lives outside the workspace).
 	MaskGitHooks bool
+
+	// NetworkMode is passed verbatim as --network / HostConfig.NetworkMode
+	// (bridge, host, none, container:<x>, or a network name). Empty means the
+	// Docker default. Mutually exclusive with Networks (projectconfig enforces).
+	NetworkMode string
+
+	// Networks lists networks to attach at create time, in order; the first is
+	// the primary (HostConfig.NetworkMode). Copied verbatim.
+	Networks []string
 }
 
 // filterOut returns s without the first occurrence of exclude; the input is
@@ -87,6 +97,9 @@ type Spec struct {
 	Tmpfs   []string
 	CapDrop []string
 	SecOpt  []string
+
+	NetworkMode string   // "" → no --network flag, Docker default bridge
+	Networks    []string // one --network per entry; first is primary
 }
 
 // BuildSpec is pure: same Options → same Spec. Mask overlays must follow the
@@ -169,6 +182,9 @@ func BuildSpec(o Options) Spec {
 		Tmpfs:   []string{"/tmp:size=" + o.TmpDirSize},
 		CapDrop: []string{"ALL"},
 		SecOpt:  []string{"no-new-privileges"},
+
+		NetworkMode: o.NetworkMode,
+		Networks:    o.Networks,
 	}
 }
 
@@ -186,6 +202,12 @@ func (s Spec) Args() []string {
 	}
 	for _, so := range s.SecOpt {
 		args = append(args, "--security-opt", so)
+	}
+	if s.NetworkMode != "" {
+		args = append(args, "--network", s.NetworkMode)
+	}
+	for _, n := range s.Networks {
+		args = append(args, "--network", n)
 	}
 	for _, e := range s.Env {
 		args = append(args, "-e", e)
@@ -235,7 +257,7 @@ func (s Spec) ShellCommand() string {
 	for i < len(args)-2 {
 		tok := args[i]
 		switch tok {
-		case "--workdir", "--tmpfs", "--cap-drop", "--security-opt", "--mount", "-e":
+		case "--workdir", "--tmpfs", "--cap-drop", "--security-opt", "--network", "--mount", "-e":
 			lines = append(lines, "  "+shellQuote(tok)+" "+shellQuote(args[i+1]))
 			i += 2
 		default:
@@ -281,7 +303,34 @@ func (s Spec) HostConfig() *container.HostConfig {
 		SecurityOpt: s.SecOpt,
 		Tmpfs:       tmpfsMap(s.Tmpfs),
 		Mounts:      mountsFor(s.Mounts),
+		NetworkMode: container.NetworkMode(s.primaryNetwork()),
 	}
+}
+
+// primaryNetwork is the value for HostConfig.NetworkMode: NetworkMode when set,
+// else the first of Networks, else "" (Docker default).
+func (s Spec) primaryNetwork() string {
+	if s.NetworkMode != "" {
+		return s.NetworkMode
+	}
+	if len(s.Networks) > 0 {
+		return s.Networks[0]
+	}
+	return ""
+}
+
+// NetworkingConfig returns the SDK endpoint config attaching every entry of
+// Networks at create time, or nil when Networks is empty (NetworkMode alone
+// is carried by HostConfig). Multiple endpoints need daemon API >= 1.44.
+func (s Spec) NetworkingConfig() *network.NetworkingConfig {
+	if len(s.Networks) == 0 {
+		return nil
+	}
+	eps := make(map[string]*network.EndpointSettings, len(s.Networks))
+	for _, n := range s.Networks {
+		eps[n] = &network.EndpointSettings{}
+	}
+	return &network.NetworkingConfig{EndpointsConfig: eps}
 }
 
 // tmpfsMap converts "target:opts" (or bare "target") entries into the

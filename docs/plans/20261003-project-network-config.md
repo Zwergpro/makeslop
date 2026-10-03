@@ -136,15 +136,15 @@
 - Modify: `internal/docker/run.go`
 - Modify: `internal/docker/run_test.go`
 
-- [ ] add `NetworkMode`/`Networks` to `Options` and `Spec`; copy them in `BuildSpec`
-- [ ] emit `--network` in `Args()`; add `--network` to the `ShellCommand` paired-flag cases
-- [ ] set `HostConfig().NetworkMode`; add `Spec.NetworkingConfig()`
-- [ ] pass `NetworkingConfig` in `Run`'s `ContainerCreate` call
-- [ ] write spec table tests: unset (no flag, nil NetworkingConfig, empty NetworkMode), `container:proxy`, `host`, single network, multiple ordered networks; `ShellCommand` line output
-- [ ] rename `TestHostConfig_NetworkModeIsAlwaysBridge` (spec_test.go:717) to `...DefaultsToEmpty`; leave the default assertions in `TestSpecArgs_DefaultArgvHasNoNetworkOrEnv` and `TestDriftGuard_ArgsAndSDKProjectionsAgree` as they are
-- [ ] add a new `TestDriftGuard_Network`: `--network` values in `Args()` match `HostConfig.NetworkMode` and the `NetworkingConfig` keys
-- [ ] in `run_test`, assert that `fakeRunClient.LastContainerCreateOpts.NetworkingConfig` is set (the recording already exists)
-- [ ] run tests - must pass before next task
+- [x] add `NetworkMode`/`Networks` to `Options` and `Spec`; copy them in `BuildSpec`
+- [x] emit `--network` in `Args()`; add `--network` to the `ShellCommand` paired-flag cases
+- [x] set `HostConfig().NetworkMode`; add `Spec.NetworkingConfig()`
+- [x] pass `NetworkingConfig` in `Run`'s `ContainerCreate` call
+- [x] write spec table tests: unset (no flag, nil NetworkingConfig, empty NetworkMode), `container:proxy`, `host`, single network, multiple ordered networks; `ShellCommand` line output
+- [x] rename `TestHostConfig_NetworkModeIsAlwaysBridge` (spec_test.go:717) to `...DefaultsToEmpty`; leave the default assertions in `TestSpecArgs_DefaultArgvHasNoNetworkOrEnv` and `TestDriftGuard_ArgsAndSDKProjectionsAgree` as they are
+- [x] add a new `TestDriftGuard_Network`: `--network` values in `Args()` match `HostConfig.NetworkMode` and the `NetworkingConfig` keys
+- [x] in `run_test`, assert that `fakeRunClient.LastContainerCreateOpts.NetworkingConfig` is set (the recording already exists)
+- [x] run tests - must pass before next task
 
 ### Task 4: Docker-level container and network checks
 
