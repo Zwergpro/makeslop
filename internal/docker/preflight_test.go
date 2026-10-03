@@ -230,6 +230,7 @@ func TestContainerRunning(t *testing.T) {
 		{"running", func(f *fakeRunClient) { f.ContainerState = &container.State{Running: true} }, true, true, nil},
 		{"stopped", func(f *fakeRunClient) { f.ContainerState = &container.State{Running: false} }, true, false, nil},
 		{"paused", func(f *fakeRunClient) { f.ContainerState = &container.State{Running: true, Paused: true} }, true, false, nil},
+		{"restarting", func(f *fakeRunClient) { f.ContainerState = &container.State{Running: true, Restarting: true} }, true, false, nil},
 		{"nil state", func(f *fakeRunClient) { f.ContainerState = nil }, true, false, nil},
 		{"not found", func(f *fakeRunClient) { f.ContainerMissing = true }, false, false, nil},
 		{"other error", func(f *fakeRunClient) { f.ContainerErr = otherErr }, false, false, otherErr},

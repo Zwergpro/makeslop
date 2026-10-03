@@ -230,7 +230,8 @@ exclude:
 ### Breaking change: symlinked `.makeslop.yaml` rejected
 
 `makeslop run` and `makeslop init` now reject a `.makeslop.yaml` that is a symlink (dangling or
-live) with a hard error (`makeslop status` reports it as a non-blocking secret-scan warning):
+live) with a hard error (`makeslop status` shows it as a secret-scan warning and fails the blocking
+network row, so it reports not ready):
 
 ```
 projectconfig: .makeslop.yaml is a symlink — the project config must be a regular file
@@ -415,7 +416,7 @@ network_mode: "container:proxy"
 ```
 
 The agent has no network interface of its own; it sees the proxy container's interfaces and
-routes. If `proxy` is missing, stopped, or paused, `run` refuses to start and `status` reports
+routes. If `proxy` is missing, stopped, paused, or restarting, `run` refuses to start and `status` reports
 `✗`. Under compose, the container is named `<project>-<service>-1` unless `container_name` is set.
 
 ### Internal network plus an explicit proxy

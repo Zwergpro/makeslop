@@ -71,7 +71,10 @@ a missing local image fails with a "build or pull it" hint (e.g. `docker pull <r
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-The container has normal Docker bridge networking and full internet access.
+By default the container has normal Docker bridge networking and full internet access. Set
+`network_mode` or `networks` in `.makeslop.yaml` to change that (for example, route all traffic
+through a `container:proxy` sidecar); see [Configuration](#configuration) and
+[docs/reference.md](docs/reference.md#container-networking-network_mode--networks-in-makeslopyaml).
 
 ## Configuration
 
@@ -120,6 +123,19 @@ environments:
 
 Static values must be scalars; numbers and booleans are coerced to strings. Host names are copied under the same name; unset ones are skipped. The old flat `environments: {KEY: value}` form is rejected — move entries under `static:`. Absent block = no `-e` flags. See [docs/reference.md](docs/reference.md#environment-variables-environments-block-in-makeslopyaml) for the full spec.
 
+Choose the container's network with `network_mode` or `networks` (compose names; set one, not both):
+
+```yaml
+network_mode: "container:proxy"   # bridge | host | none | container:<name|id> | <network>
+# or:
+networks: [myapp_default]
+```
+
+makeslop only attaches: it never creates networks or containers. A missing network, or a
+`container:` target that is missing or not running, fails `run`'s pre-flight and the `status`
+network row. Absent keys = Docker's default bridge. See
+[docs/reference.md](docs/reference.md#container-networking-network_mode--networks-in-makeslopyaml).
+
 Global settings (`~/.makeslop/settings.json`) control the image (required, no default), shell, and `/tmp` size:
 ```
 makeslop config set image claudebox
@@ -136,8 +152,9 @@ See [docs/security.md](docs/security.md) for the full masking spec and home-dire
 
 **Breaking changes (recent):** path-style patterns (e.g. `secrets/*.pem`) now hard-error at load
 time — patterns must be basename globs only (e.g. `*.pem`). A symlinked `.makeslop.yaml` is also
-now rejected by `run` and `init` (`status` reports it as a warning) — replace the symlink with a
-regular file to migrate.
+now rejected by `run` and `init` (`status` shows the error as a secret-scan warning and fails the
+blocking network row, so it reports not ready) — replace the symlink with a regular file to
+migrate.
 The `build` and `migrate` commands are removed and the image has no default: build your image
 yourself (e.g. from `examples/claudebox`, or from your old `~/.makeslop/Dockerfile`), then run
 `makeslop config set image <ref>`. `~/.makeslop/Dockerfile` and the `version` key in
@@ -149,7 +166,7 @@ yourself (e.g. from `examples/claudebox`, or from your old `~/.makeslop/Dockerfi
 |---|---|
 | `makeslop init` | Register project, seed `~/.makeslop/` |
 | `makeslop run` | Launch an interactive agent container (TTY required) |
-| `makeslop status` | Ordered readiness check: daemon, config, image, workspace, secrets |
+| `makeslop status` | Ordered readiness check: daemon, config, image, workspace, secrets, network |
 | `makeslop config` | View or set global settings (`image`, `shell`, `tmp_dir_size`) |
 | `makeslop ls` | List registered workspaces |
 | `makeslop remove <name>` | Unregister a workspace and delete its cache directory |

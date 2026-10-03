@@ -45,10 +45,10 @@ func Main(v string, args []string) int {
 func newRootCmd(baseDir string) (*cobra.Command, func()) {
 	d, newErr := docker.New()
 	if newErr != nil {
-		deps := newDockerDeps(dockerNewErrStub{newErr})
+		deps := dockerDeps{api: dockerNewErrStub{newErr}}
 		return newRootCmdWithDeps(baseDir, deps), func() {}
 	}
-	deps := newDockerDeps(d)
+	deps := dockerDeps{api: d}
 	return newRootCmdWithDeps(baseDir, deps), func() { _ = d.Close() }
 }
 

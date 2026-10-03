@@ -2,9 +2,11 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -2635,24 +2637,21 @@ func TestRun_NetworkPreflight(t *testing.T) {
 		networks       map[string]bool
 		containerErr   error
 		networkErr     error
-		wantErr        bool
-		wantStderr     []string
+		wantErr        []string // substrings of the returned error; nil = success
 		wantContainers []string
 		wantNetworks   []string
 	}{
 		{
 			name:           "container missing",
 			yaml:           "network_mode: \"container:proxy\"\n",
-			wantErr:        true,
-			wantStderr:     []string{`makeslop: network_mode: container "proxy" not found — start it first`, "compose names containers", "docker ps"},
+			wantErr:        []string{`network_mode: container "proxy" not found — start it first`, "compose names containers", "docker ps"},
 			wantContainers: []string{"proxy"},
 		},
 		{
 			name:           "container stopped",
 			yaml:           "network_mode: \"container:proxy\"\n",
 			containers:     map[string]bool{"proxy": false},
-			wantErr:        true,
-			wantStderr:     []string{`makeslop: network_mode: container "proxy" is not running — start it first`},
+			wantErr:        []string{`network_mode: container "proxy" is not running (stopped, paused or restarting) — start or unpause it`},
 			wantContainers: []string{"proxy"},
 		},
 		{
@@ -2665,16 +2664,14 @@ func TestRun_NetworkPreflight(t *testing.T) {
 			name:           "container inspect error",
 			yaml:           "network_mode: \"container:proxy\"\n",
 			containerErr:   errors.New("boom"),
-			wantErr:        true,
-			wantStderr:     []string{`check container "proxy": boom`, "is docker running?"},
+			wantErr:        []string{`network_mode: check container "proxy": boom`},
 			wantContainers: []string{"proxy"},
 		},
 		{
 			name:         "network missing",
 			yaml:         "networks: [a, b]\n",
 			networks:     map[string]bool{"a": true},
-			wantErr:      true,
-			wantStderr:   []string{`makeslop: network "b" not found — create it with 'docker network create b'`, "<project>_", "docker network ls"},
+			wantErr:      []string{`network "b" not found — create it with 'docker network create b'`, "<project>_", "docker network ls"},
 			wantNetworks: []string{"a", "b"},
 		},
 		{
@@ -2687,8 +2684,7 @@ func TestRun_NetworkPreflight(t *testing.T) {
 			name:         "network inspect error",
 			yaml:         "networks: [a]\n",
 			networkErr:   errors.New("boom"),
-			wantErr:      true,
-			wantStderr:   []string{`check network "a": boom`, "is docker running?"},
+			wantErr:      []string{`check network "a": boom`},
 			wantNetworks: []string{"a"},
 		},
 		{
@@ -2700,8 +2696,7 @@ func TestRun_NetworkPreflight(t *testing.T) {
 		{
 			name:         "custom network_mode missing",
 			yaml:         "network_mode: myapp_default\n",
-			wantErr:      true,
-			wantStderr:   []string{`network "myapp_default" not found`},
+			wantErr:      []string{`network "myapp_default" not found`},
 			wantNetworks: []string{"myapp_default"},
 		},
 		{name: "unset", yaml: ""},
@@ -2720,9 +2715,17 @@ func TestRun_NetworkPreflight(t *testing.T) {
 			fc.NetworkErr = tt.networkErr
 
 			_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fc), "run")
-			if tt.wantErr {
-				if !errors.Is(err, errSilent) {
-					t.Fatalf("want errSilent, got %v; stderr=%q", err, stderr)
+			if tt.wantErr != nil {
+				if err == nil || errors.Is(err, errSilent) {
+					t.Fatalf("want a printable error, got %v; stderr=%q", err, stderr)
+				}
+				for _, s := range tt.wantErr {
+					if !strings.Contains(err.Error(), s) {
+						t.Errorf("error missing %q: %v", s, err)
+					}
+				}
+				if strings.Contains(err.Error(), "is docker running?") {
+					t.Errorf("inspect errors must not blame the daemon: %v", err)
 				}
 				if fc.Started {
 					t.Error("container must not start when network preflight fails")
@@ -2735,10 +2738,8 @@ func TestRun_NetworkPreflight(t *testing.T) {
 					t.Error("container must start when network preflight passes")
 				}
 			}
-			for _, s := range tt.wantStderr {
-				if !strings.Contains(stderr, s) {
-					t.Errorf("stderr missing %q:\n%s", s, stderr)
-				}
+			if fc.NetworkCtxNoDeadline {
+				t.Error("network inspects must run under the preflight timeout")
 			}
 			if !slices.Equal(fc.ContainersInspected, tt.wantContainers) {
 				t.Errorf("containers inspected = %q, want %q", fc.ContainersInspected, tt.wantContainers)
@@ -2776,8 +2777,13 @@ func TestRun_NetworkContainerProxy_DryRunMatchesExecuted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("--dry-run failed: %v; stderr=%q", err, stderr)
 	}
-	if !strings.Contains(stdout, "--network container:proxy") {
-		t.Errorf("dry-run stdout missing --network container:proxy:\n%s", stdout)
+	m := regexp.MustCompile(`--network (\S+)`).FindAllStringSubmatch(stdout, -1)
+	if len(m) != 1 {
+		t.Fatalf("dry-run stdout: want exactly one --network flag, got %d:\n%s", len(m), stdout)
+	}
+	printed := m[0][1]
+	if printed != "container:proxy" {
+		t.Errorf("printed --network %q, want container:proxy", printed)
 	}
 
 	fc := newFakeDocker(0, true)
@@ -2785,8 +2791,8 @@ func TestRun_NetworkContainerProxy_DryRunMatchesExecuted(t *testing.T) {
 	if _, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fc), "run"); err != nil {
 		t.Fatalf("run failed: %v; stderr=%q", err, stderr)
 	}
-	if got := string(fc.LastSpec.HostConfig().NetworkMode); got != "container:proxy" {
-		t.Errorf("HostConfig.NetworkMode = %q, want container:proxy", got)
+	if got := string(fc.LastSpec.HostConfig().NetworkMode); got != printed {
+		t.Errorf("executed HostConfig.NetworkMode = %q, printed --network %q", got, printed)
 	}
 	if nc := fc.LastSpec.NetworkingConfig(); nc != nil {
 		t.Errorf("NetworkingConfig = %v, want nil for container mode", nc)
@@ -2836,9 +2842,46 @@ func TestRun_NetworkPreflight_AfterImageCheck(t *testing.T) {
 	}
 }
 
-func TestNewDockerDeps_FillsEveryField(t *testing.T) {
-	d := newDockerDeps(dockerNewErrStub{errors.New("x")})
-	if d.runner == nil || d.daemon == nil || d.image == nil || d.network == nil {
-		t.Errorf("newDockerDeps left a nil field: %+v", d)
+// Invalid network config fails run with the validation error before any
+// container is started.
+func TestRun_InvalidNetworkConfig(t *testing.T) {
+	tests := []struct {
+		name    string
+		yaml    string
+		wantSub string
+	}{
+		{"both keys", "network_mode: host\nnetworks: [a]\n", "set either network_mode or networks, not both"},
+		{"mapping-form networks", "networks:\n  a: {}\n", "per-network options are not supported"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			baseDir := setupNetworkRun(t, tt.yaml)
+			fc := newFakeDocker(0, true)
+
+			_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fc), "run")
+			if err == nil || errors.Is(err, errSilent) {
+				t.Fatalf("want a printable error, got %v; stderr=%q", err, stderr)
+			}
+			if !strings.Contains(err.Error(), tt.wantSub) {
+				t.Errorf("error %q missing %q", err, tt.wantSub)
+			}
+			if fc.Started || len(fc.ContainersInspected) > 0 || len(fc.NetworksInspected) > 0 {
+				t.Error("container must not run and network preflight must not start on invalid config")
+			}
+		})
+	}
+}
+
+// With docker.New() failed, the network preflight surfaces that error.
+func TestNetworkPreflight_DockerNewErrStub(t *testing.T) {
+	newErr := errors.New("docker client init failed")
+	deps := dockerDeps{api: dockerNewErrStub{newErr}}
+	for _, n := range []projectconfig.Network{
+		{Mode: "container:proxy"},
+		{Networks: []string{"a"}},
+	} {
+		if err := deps.networkPreflight(context.Background(), n); !errors.Is(err, newErr) {
+			t.Errorf("%+v: err = %v, want wrapping %v", n, err, newErr)
+		}
 	}
 }

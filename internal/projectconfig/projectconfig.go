@@ -308,17 +308,42 @@ func Load(root string) (Config, error) {
 	}, nil
 }
 
-// networkNameRe is Docker's network/container name charset. Container IDs
-// (hex) match too.
+// networkNameRe is a permissive network/container name check (Docker's own
+// container-name pattern also requires at least two characters; anything this
+// accepts that Docker does not is reported as not found by the preflight).
+// Container IDs (hex) match too.
 var networkNameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`)
 
 // containerPrefix marks a network_mode that joins another container's
 // network namespace.
 const containerPrefix = "container:"
 
-// decodeNetworks turns the networks: node into raw entries. An absent or null
-// node yields nil. The compose mapping form gets a targeted error; entries must
-// be scalars (a null entry becomes "" and is rejected by validateNetwork).
+// builtinModes are daemon built-in network modes with no network object to
+// inspect; "default" is a bridge alias. None of them may appear in networks.
+var builtinModes = map[string]bool{
+	"bridge":  true,
+	"host":    true,
+	"none":    true,
+	"default": true,
+}
+
+// ContainerTarget returns the container name of a container:<name> mode.
+func (n Network) ContainerTarget() (string, bool) {
+	return strings.CutPrefix(n.Mode, containerPrefix)
+}
+
+// NeedsInspect reports whether n references a container or network the daemon
+// must be asked about (false for unset and built-in modes).
+func (n Network) NeedsInspect() bool {
+	if len(n.Networks) > 0 {
+		return true
+	}
+	return n.Mode != "" && !builtinModes[n.Mode]
+}
+
+// decodeNetworks turns the networks: node into raw entries. An absent, null or
+// empty list yields nil. The compose mapping form gets a targeted error;
+// entries must be non-null scalars.
 func decodeNetworks(node *yaml.Node) ([]string, error) {
 	n := deref(node)
 	if n.Kind == 0 || isNull(n) {
@@ -331,15 +356,17 @@ func decodeNetworks(node *yaml.Node) ([]string, error) {
 	default:
 		return nil, errors.New("projectconfig: networks must be a list of names")
 	}
+	if len(n.Content) == 0 {
+		return nil, nil
+	}
 	out := make([]string, 0, len(n.Content))
 	for _, e := range n.Content {
 		e = deref(e)
 		if e.Kind != yaml.ScalarNode {
 			return nil, fmt.Errorf("projectconfig: networks entry at line %d must be a network name", e.Line)
 		}
-		if isNull(e) {
-			out = append(out, "")
-			continue
+		if isNull(e) || e.Value == "" {
+			return nil, fmt.Errorf("projectconfig: empty entry in networks at line %d", e.Line)
 		}
 		out = append(out, e.Value)
 	}
@@ -349,13 +376,12 @@ func decodeNetworks(node *yaml.Node) ([]string, error) {
 // validateNetwork validates network_mode / networks into a Network. An empty
 // mode and an empty networks list both mean unset; setting both is an error.
 // No mode list is hard-coded: any name-shaped mode is passed to the daemon,
-// which decides. Messages quote the offending name (network and container
-// names are not secret).
+// which decides. Built-in modes (bridge/host/none/default) and container:
+// are rejected in networks: the docker CLI refuses to mix them with
+// user-defined networks. Messages quote the offending name (network and
+// container names are not secret).
 func validateNetwork(mode string, nets []string) (Network, error) {
-	if len(nets) == 0 {
-		nets = nil
-	}
-	if mode != "" && nets != nil {
+	if mode != "" && len(nets) > 0 {
 		return Network{}, errors.New("projectconfig: set either network_mode or networks, not both")
 	}
 	if mode != "" {
@@ -371,13 +397,15 @@ func validateNetwork(mode string, nets []string) (Network, error) {
 		}
 		return Network{Mode: mode}, nil
 	}
+	if len(nets) == 0 {
+		return Network{}, nil
+	}
 	seen := make(map[string]struct{}, len(nets))
 	for _, name := range nets {
-		if name == "" {
-			return Network{}, errors.New("projectconfig: empty entry in networks")
-		}
 		switch {
-		case name == "host", name == "none", name == "default", strings.HasPrefix(name, containerPrefix):
+		case name == "":
+			return Network{}, errors.New("projectconfig: empty entry in networks")
+		case builtinModes[name], strings.HasPrefix(name, containerPrefix):
 			return Network{}, fmt.Errorf("projectconfig: networks entry %q is a network_mode, not a network", name)
 		case !networkNameRe.MatchString(name):
 			return Network{}, fmt.Errorf("projectconfig: invalid network name %q in networks", name)

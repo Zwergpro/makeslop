@@ -132,9 +132,11 @@ Checks (in order):
 6. Network — **blocking**. `–` when the workspace is unresolved or neither `network_mode` nor
    `networks` is set; `✓` without a daemon call for the built-in modes (`bridge`, `host`, `none`,
    `default`). Otherwise the `container:` target or named networks are checked like `run` does,
-   and a failure shows the same hint. `✗ cannot check — daemon unreachable` when the daemon is
-   down. An invalid `.makeslop.yaml` gives `✗ cannot check — .makeslop.yaml invalid`, so `status`
-   is not ready on a config that `run` would reject.
+   and a failure shows the same hint; when such a target needs checking and the daemon is down,
+   the row is `✗ cannot check — daemon unreachable`. A `.makeslop.yaml` that fails to load (any
+   load error, including a symlink; the cause is in the secret-scan row) gives
+   `✗ cannot check — .makeslop.yaml not loaded (see secret scan)`, so `status` is not ready on a
+   config that `run` would reject.
 
 Each check emits one aligned line with a glyph (`✓ ✗ ! –`). A final verdict line names the next
 action. Exit code is 0 when all blocking checks pass.
@@ -520,23 +522,28 @@ the `--network` flags.
 
 ### Validation errors
 
-Names must match `^[a-zA-Z0-9][a-zA-Z0-9_.-]*$` (Docker's charset; container IDs match too).
-Errors quote the offending name and abort `run` before Docker is contacted (printed with a
-`makeslop: ` prefix):
+Names must match `^[a-zA-Z0-9][a-zA-Z0-9_.-]*$` (a permissive check; container IDs match too, and
+a name Docker itself would reject is reported as not found by the pre-flight). Errors quote the
+offending name, or give a line number, and abort `run` before the container is created (printed
+with a `makeslop: ` prefix):
 
 ```
 projectconfig: set either network_mode or networks, not both
 projectconfig: network_mode "container:" has no container name
 projectconfig: network_mode "container:a b": invalid container name "a b"
 projectconfig: invalid network_mode "a b"
-projectconfig: empty entry in networks
+projectconfig: empty entry in networks at line 3
 projectconfig: networks entry "host" is a network_mode, not a network
 projectconfig: invalid network name "a b" in networks
 projectconfig: duplicate network "a" in networks
 projectconfig: networks must be a list of names; per-network options are not supported
+projectconfig: networks must be a list of names
+projectconfig: networks entry at line 2 must be a network name
 ```
 
-`host`, `none`, `default`, and any `container:` value are rejected inside `networks`. Compose's
+The built-in modes (`bridge`, `host`, `none`, `default`) and any `container:` value are rejected
+inside `networks` (the docker CLI refuses to mix built-in modes with user-defined networks); use
+`network_mode` for them. Compose's
 mapping form (`networks: {a: {}}`) is not supported.
 
 ### Pre-flight checks
@@ -545,16 +552,23 @@ mapping form (`networks: {a: {}}`) is not supported.
 pre-flight timeout:
 
 - `bridge`, `host`, `none`, `default`, or unset: nothing to check.
-- `container:<x>`: the container must exist and be running. A paused container counts as not
-  running.
+- `container:<x>`: the container must exist and be running. A paused or restarting
+  (crash-looping) container counts as not running.
 - any other `network_mode`, and every `networks` entry: the network must exist.
 
 Failures (compose prefixes names, so the hints say how to find the real one):
 
 ```
 makeslop: network_mode: container "proxy" not found — start it first; compose names containers <project>-<service>-1 unless container_name is set (check 'docker ps')
-makeslop: network_mode: container "proxy" is not running — start it first
+makeslop: network_mode: container "proxy" is not running (stopped, paused or restarting) — start or unpause it (check 'docker ps -a')
 makeslop: network "X" not found — create it with 'docker network create X'; compose prefixes networks with <project>_ (check 'docker network ls')
+```
+
+Any other inspect error (permission denied, ambiguous name, timeout) is shown as-is:
+
+```
+makeslop: network_mode: check container "proxy": <error>
+makeslop: check network "X": <error>
 ```
 
 Security implications (a cloned repository's config can pick `host` or join any container) are in

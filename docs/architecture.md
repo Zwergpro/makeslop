@@ -112,9 +112,9 @@ Test fakes live in `_test.go` files (compiled only during `go test`):
   `run_test.go`; distinct from `fakeRunClient`. Has `attachPayload` to script delayed output.
 
 `internal/cli` depends on consumer-side interfaces in `internal/cli/deps.go` (`containerRunner`,
-`daemonChecker`, `imageChecker`, `networkChecker`), bundled in `dockerDeps`. `dockerDeps` is
-always built with `newDockerDeps(x allDocker)`, where `allDocker` embeds all four interfaces, so
-a newly added field cannot be left nil at a construction site. Tests build the command tree with
+`daemonChecker`, `imageChecker`, `networkChecker`), combined in `dockerAPI`. `dockerDeps` holds a
+single `dockerAPI` implementation (`dockerDeps{api: x}`), so no capability can be left nil at a
+construction site. Tests build the command tree with
 `newRootCmdWithDeps(baseDir, deps)` and the `fakeDocker` boundary fake in
 `internal/cli/main_test.go`. If `docker.New()` fails, `dockerNewErrStub` defers the error to the
 first Docker call so non-Docker commands (`config`, `ls`, `version`, …) still work.
@@ -134,8 +134,9 @@ There are no shell shims, no `dockerBinary` global, no `executableTempDir`.
   `cerrdefs.IsNotFound(err)`, and `(false, err)` for any other error (so a dead daemon is never
   misreported as "image absent").
 - **`ContainerRunning(ctx, name) (exists, running bool, err error)`** — `ContainerInspect`;
-  `running` requires a non-nil `State` that is running and not paused (a paused proxy would stall
-  traffic through a shared namespace). Same not-found contract.
+  `running` requires a non-nil `State` that is running, not paused (a paused proxy would stall
+  traffic through a shared namespace) and not restarting (the daemon refuses to join a
+  crash-looping container's namespace). Same not-found contract.
 - **`NetworkExists(ctx, name) (bool, error)`** — `NetworkInspect`; same not-found contract.
 
 All methods share the `*Docker`'s single long-lived client — no per-call client construction or
@@ -146,9 +147,10 @@ In `internal/cli`, the calls go through `dockerDeps.checkDaemonPreflight` /
 black-hole `DOCKER_HOST` cannot hang `run` or `status`. `Run` itself gets no deadline.
 
 `networkPreflight(ctx, projectconfig.Network)` is a no-op for an unset config and the built-in
-modes (`bridge`, `host`, `none`, `default`). For `container:<x>` it calls `ContainerRunning`;
+modes (`bridge`, `host`, `none`, `default`), as decided by `Network.NeedsInspect()`. For `container:<x>` it calls `ContainerRunning`;
 for any other mode and every `networks` entry it calls `NetworkExists`. It returns the
-user-facing hint as an error: `run` prints it as `makeslop: <hint>` after the image check
+user-facing hint as an error: `run` returns it after the image check (printed as
+`makeslop: <hint>`)
 (skipped on `--dry-run`), and `status` puts it in the blocking `network` row. `status` reuses its
 single `projectconfig.Load` for both the secret-scan and network rows; a load error makes the
 network row `✗`.

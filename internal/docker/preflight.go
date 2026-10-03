@@ -53,7 +53,8 @@ func (d *Docker) ImageExists(ctx context.Context, image string) (bool, error) {
 
 // ContainerRunning reports whether the named container exists and is running.
 // A paused container counts as not running (it would stall traffic through a
-// shared network namespace). (false, false, nil) only for a classified
+// shared network namespace), and so does a restarting (crash-looping) one,
+// whose namespace the daemon refuses to join although it reports Running. (false, false, nil) only for a classified
 // not-found; other errors return (false, false, err).
 func (d *Docker) ContainerRunning(ctx context.Context, name string) (exists, running bool, err error) {
 	res, err := d.client.ContainerInspect(ctx, name, moby.ContainerInspectOptions{})
@@ -64,7 +65,7 @@ func (d *Docker) ContainerRunning(ctx context.Context, name string) (exists, run
 		return false, false, err
 	}
 	st := res.Container.State
-	return true, st != nil && st.Running && !st.Paused, nil
+	return true, st != nil && st.Running && !st.Paused && !st.Restarting, nil
 }
 
 // NetworkExists reports whether the named network exists. (false, nil) only

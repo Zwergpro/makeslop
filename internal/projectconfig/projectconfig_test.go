@@ -2039,6 +2039,11 @@ func TestLoad_Network_Valid(t *testing.T) {
 		{"empty mode plus networks", "network_mode: \"\"\nnetworks: [a]\n", Network{Networks: []string{"a"}}},
 		{"mode plus empty networks", "network_mode: x\nnetworks: []\n", Network{Mode: "x"}},
 		{"mode plus null networks", "network_mode: x\nnetworks:\n", Network{Mode: "x"}},
+		{"networks via alias", "exclude:\n  dirs: &nets [a, b]\nnetworks: *nets\n", Network{Networks: []string{"a", "b"}}},
+		{"networks entry via alias", "exclude:\n  dirs: [&n egress]\nnetworks: [*n]\n", Network{Networks: []string{"egress"}}},
+		// A numeric mode is coerced to its string form by yaml; Docker allows
+		// all-digit network names, so it is accepted and left to the preflight.
+		{"numeric mode coerced", "network_mode: 123\n", Network{Mode: "123"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -2068,7 +2073,13 @@ func TestLoad_Network_Errors(t *testing.T) {
 		{"mode leading whitespace", "network_mode: \" host\"\n", `invalid network_mode " host"`},
 		{"mode invalid chars", "network_mode: \"net/1\"\n", `invalid network_mode "net/1"`},
 		{"empty entry", "networks: [\"\"]\n", "empty entry in networks"},
-		{"null entry", "networks:\n  - a\n  -\n", "empty entry in networks"},
+		{"null entry", "networks:\n  - a\n  -\n", "empty entry in networks at line 3"},
+		{"tilde entry", "networks:\n  - a\n  - ~\n", "empty entry in networks at line 3"},
+		{"whitespace entry", "networks: [\" \"]\n", `invalid network name " " in networks`},
+		{"bridge in networks", "networks: [bridge]\n", `networks entry "bridge" is a network_mode, not a network`},
+		{"bridge mixed in networks", "networks: [bridge, foo]\n", `networks entry "bridge" is a network_mode, not a network`},
+		{"sequence mode", "network_mode: [a]\n", "cannot unmarshal !!seq into string"},
+		{"mapping mode", "network_mode: {}\n", "cannot unmarshal !!map into string"},
 		{"duplicate entry", "networks: [a, b, a]\n", `duplicate network "a" in networks`},
 		{"invalid entry", "networks: [\"a b\"]\n", `invalid network name "a b" in networks`},
 		{"host in networks", "networks: [host]\n", `networks entry "host" is a network_mode, not a network`},
@@ -2078,7 +2089,7 @@ func TestLoad_Network_Errors(t *testing.T) {
 		{"mapping form", "networks:\n  a: {}\n", "networks must be a list of names; per-network options are not supported"},
 		{"scalar form", "networks: a\n", "networks must be a list of names"},
 		{"nested entry", "networks:\n  - [a]\n", "networks entry at line 2 must be a network name"},
-		{"old network block", "network:\n  proxy:\n    address: \"\"\n", "network"},
+		{"old network block", "network:\n  proxy:\n    address: \"\"\n", "field network not found"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

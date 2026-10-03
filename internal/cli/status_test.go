@@ -424,7 +424,7 @@ func TestStatus_Check5_PCErrShowsWarn(t *testing.T) {
 	if !errors.Is(err, errSilent) {
 		t.Errorf("invalid .makeslop.yaml must make status not ready; err=%v stderr=%q", err, stderr)
 	}
-	if !strings.Contains(stderr, "cannot check — .makeslop.yaml invalid") {
+	if !strings.Contains(stderr, "cannot check — .makeslop.yaml not loaded (see secret scan)") {
 		t.Errorf("stderr missing network invalid-config detail: %q", stderr)
 	}
 	if !strings.Contains(stderr, "secret scan") {
@@ -457,7 +457,7 @@ func TestStatus_Check5_FlatEnvironmentsShowsWarnWithHint(t *testing.T) {
 	if !errors.Is(err, errSilent) {
 		t.Errorf("invalid .makeslop.yaml must make status not ready; err=%v stderr=%q", err, stderr)
 	}
-	if !strings.Contains(stderr, "cannot check — .makeslop.yaml invalid") {
+	if !strings.Contains(stderr, "cannot check — .makeslop.yaml not loaded (see secret scan)") {
 		t.Errorf("stderr missing network invalid-config detail: %q", stderr)
 	}
 	if !strings.Contains(stderr, "cannot read .makeslop.yaml") {
@@ -984,7 +984,7 @@ func TestStatus_WhitespaceImage_TreatedAsUnset(t *testing.T) {
 const (
 	netContainerMissingHint = `network_mode: container "proxy" not found — start it first; ` +
 		`compose names containers <project>-<service>-1 unless container_name is set (check 'docker ps')`
-	netContainerStoppedHint = `network_mode: container "proxy" is not running — start it first`
+	netContainerStoppedHint = `network_mode: container "proxy" is not running (stopped, paused or restarting) — start or unpause it (check 'docker ps -a')`
 	netNetworkMissingHint   = `network "b" not found — create it with 'docker network create b'; ` +
 		`compose prefixes networks with <project>_ (check 'docker network ls')`
 )
@@ -1022,7 +1022,7 @@ func TestStatus_NetworkRow(t *testing.T) {
 		{
 			name: "container inspect error", yaml: "network_mode: \"container:proxy\"\n",
 			setup: func(f *fakeDocker) { f.ContainerErr = errors.New("boom") },
-			state: checkFail, detail: `network_mode: check container "proxy": boom — is docker running?`,
+			state: checkFail, detail: `network_mode: check container "proxy": boom`,
 			containers: []string{"proxy"},
 		},
 		{
@@ -1042,7 +1042,7 @@ func TestStatus_NetworkRow(t *testing.T) {
 		},
 		{
 			name: "invalid yaml", yaml: "network_mode: host\nnetworks: [a]\n",
-			state: checkFail, detail: "cannot check — .makeslop.yaml invalid",
+			state: checkFail, detail: "cannot check — .makeslop.yaml not loaded (see secret scan)",
 		},
 	}
 	for _, tc := range tests {
@@ -1135,10 +1135,12 @@ func TestStatus_NetworkRow_DaemonDown(t *testing.T) {
 			}
 			fc := newFakeDocker(0, false)
 			fc.PingErr = errors.New("connection refused")
-			check, _, _ := statusJSONCheck(t, baseDir, depsFrom(fc), "network")
+			check, result, err := statusJSONCheck(t, baseDir, depsFrom(fc), "network")
 			if check.State != tc.state || check.Detail != tc.detail {
 				t.Errorf("network check = %+v, want %s %q", check, tc.state, tc.detail)
 			}
+			// The daemon row itself fails, so status is never ready here.
+			assertNotReady(t, result, err)
 			if len(fc.ContainersInspected)+len(fc.NetworksInspected) != 0 {
 				t.Errorf("no inspect calls expected with daemon down; got %v %v", fc.ContainersInspected, fc.NetworksInspected)
 			}
@@ -1155,8 +1157,10 @@ func TestStatus_NetworkRow_WorkspaceUnresolved(t *testing.T) {
 		t.Fatalf("init failed: %v; stderr=%q", err, stderr)
 	}
 	t.Chdir(t.TempDir()) // an unregistered directory
-	check, _, _ := statusJSONCheck(t, baseDir, newFakeStatusDeps(false, false), "network")
+	check, result, err := statusJSONCheck(t, baseDir, newFakeStatusDeps(false, false), "network")
 	if check.State != checkInfo || check.Detail != "" {
 		t.Errorf("network check = %+v, want info", check)
 	}
+	// The workspace row fails, so status is not ready.
+	assertNotReady(t, result, err)
 }

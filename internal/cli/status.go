@@ -227,10 +227,9 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir, imageFlag 
 		if pcErr != nil {
 			cl.warn("secret scan", fmt.Sprintf("cannot read .makeslop.yaml: %v", pcErr))
 			// run fails hard on the same file, so status must not report ready.
-			cl.fail("network", "cannot check — .makeslop.yaml invalid")
+			cl.fail("network", "cannot check — .makeslop.yaml not loaded (see secret scan)")
 		} else {
-			yamlExcludes := pcfg.Excludes
-			masked, _, scanErr := security.Scan(ctx, workspaceRoot, yamlExcludes.Patterns, yamlExcludes.SkipDirs)
+			masked, _, scanErr := security.Scan(ctx, workspaceRoot, pcfg.Excludes.Patterns, pcfg.Excludes.SkipDirs)
 			if scanErr != nil {
 				cl.warn("secret scan", fmt.Sprintf("scan error: %v", scanErr))
 			} else if len(masked) > 0 {
@@ -273,7 +272,7 @@ func checkNetwork(ctx context.Context, cl *checkList, deps dockerDeps, daemonUp 
 	switch {
 	case detail == "":
 		cl.info("network")
-	case !networkNeedsInspect(n):
+	case !n.NeedsInspect():
 		cl.ok("network", detail)
 	case !daemonUp:
 		cl.fail("network", "cannot check — daemon unreachable")
