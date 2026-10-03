@@ -31,16 +31,12 @@ func seedWorkspace(t *testing.T, baseDir, path, name string) string {
 	return cacheDir
 }
 
-// TestRemove_ExistingWorkspace_RemovesEntryAndCacheDir verifies that removing
-// a known workspace deletes both the settings entry and the cache dir, and that
-// "removed <name>" appears on stderr.
 func TestRemove_ExistingWorkspace_RemovesEntryAndCacheDir(t *testing.T) {
 	baseDir := t.TempDir()
 
 	name := "myproject-abc123"
 	cacheDir := seedWorkspace(t, baseDir, "/home/user/myproject", name)
 
-	// Confirm cache dir exists before removal.
 	if _, err := os.Stat(cacheDir); err != nil {
 		t.Fatalf("cache dir should exist before remove: %v", err)
 	}
@@ -53,12 +49,10 @@ func TestRemove_ExistingWorkspace_RemovesEntryAndCacheDir(t *testing.T) {
 		t.Errorf("expected empty stdout; got %q", stdout)
 	}
 
-	// "removed <name>" must appear on stderr.
 	if !strings.Contains(stderr, "removed "+name) {
 		t.Errorf("stderr missing 'removed %s'; got %q", name, stderr)
 	}
 
-	// Settings entry must be gone.
 	s, err := config.Load(baseDir)
 	if err != nil {
 		t.Fatalf("load settings after remove: %v", err)
@@ -69,14 +63,11 @@ func TestRemove_ExistingWorkspace_RemovesEntryAndCacheDir(t *testing.T) {
 		}
 	}
 
-	// Cache dir must be gone.
 	if _, err := os.Stat(cacheDir); !os.IsNotExist(err) {
 		t.Errorf("cache dir %q should not exist after remove; err=%v", cacheDir, err)
 	}
 }
 
-// TestRemove_ExistingWorkspace_QuietSuppressesNotice verifies that --quiet
-// suppresses the "removed <name>" stderr notice.
 func TestRemove_ExistingWorkspace_QuietSuppressesNotice(t *testing.T) {
 	baseDir := t.TempDir()
 

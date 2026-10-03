@@ -14,15 +14,6 @@ Sends all egress traffic of selected Docker containers (TCP, UDP, DNS, QUIC) thr
 └──────────────────────────────────────────┘      └──────────────────────────────────┘
 ```
 
-| Name | Value |
-|---|---|
-| VM WireGuard interface | `wg7`, `10.66.0.1/24`, UDP `57777` |
-| Client WireGuard interface | `wg0`, `10.66.0.2/32` (inside the container) |
-| Client container | `vpn-proxy` |
-| Docker network | `vpn-proxy-net`, `172.30.0.0/24` |
-
----
-
 ## 1. VM (server)
 
 Run all of section 1 in **one root shell** (`sudo -i`): later steps use variables set earlier.
@@ -33,7 +24,7 @@ Run all of section 1 in **one root shell** (`sudo -i`): later steps use variable
 apt install -y wireguard iptables
 ```
 
-Newer Debian releases ship nftables without the `iptables` command. Without the `iptables` package, wg-quick fails in PostUp with `iptables: command not found`.
+`wg-quick` needs the `iptables` command used below.
 
 ### 1.2 IP forwarding
 
@@ -74,8 +65,7 @@ cat > /etc/wireguard/wg7.conf <<EOF
 Address    = 10.66.0.1/24
 ListenPort = $WG_PORT
 PrivateKey = $(cat /etc/wireguard/server.key)
-# NAT client traffic out of $EXIT_IF; forwarded traffic may leave only via $EXIT_IF,
-# so if that interface is down it is rejected instead of taking another route
+# Reject forwarding if the chosen exit interface goes down.
 PostUp   = iptables -t nat -A POSTROUTING -s 10.66.0.0/24 -o $EXIT_IF -j MASQUERADE; iptables -I FORWARD -i %i -j ACCEPT; iptables -I FORWARD -o %i -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT; iptables -I FORWARD -i %i ! -o $EXIT_IF -j REJECT
 PostDown = iptables -t nat -D POSTROUTING -s 10.66.0.0/24 -o $EXIT_IF -j MASQUERADE; iptables -D FORWARD -i %i -j ACCEPT; iptables -D FORWARD -o %i -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT; iptables -D FORWARD -i %i ! -o $EXIT_IF -j REJECT
 
@@ -87,7 +77,7 @@ chmod 600 /etc/wireguard/wg7.conf
 cat /etc/wireguard/wg7.conf    # check: real keys and interface filled in
 ```
 
-The `! -o $EXIT_IF -j REJECT` rule matters when `EXIT_IF` is an upstream VPN. If that VPN goes down and the VM falls back to `eth0`, client traffic is rejected instead of leaking out with the VM's real IP.
+The `! -o $EXIT_IF -j REJECT` rule prevents fallback to the VM's real IP if an upstream VPN fails.
 
 ### 1.6 Client config
 

@@ -28,7 +28,7 @@ type Project struct {
 	MaskGitHooks bool
 }
 
-// Options is the caller-supplied input to BuildSpec.
+// Options must be resolved before BuildSpec; it performs no I/O.
 type Options struct {
 	// The caller guarantees a main project at index 0, unique names and disjoint roots.
 	Projects []Project
@@ -66,8 +66,6 @@ type Options struct {
 	Networks []string
 }
 
-// filterOut returns s without the first occurrence of exclude; the input is
-// returned unmodified when exclude is absent.
 func filterOut(s []string, exclude string) []string {
 	for i, v := range s {
 		if v == exclude {
@@ -80,15 +78,14 @@ func filterOut(s []string, exclude string) []string {
 	return s
 }
 
-// Mount is a single docker mount entry. Type "" or "bind" → bind; "tmpfs" →
-// tmpfs (Host ignored); "volume" → volume (Host is the volume name).
+// Mount keeps the same representation for CLI and SDK projections.
 type Mount struct {
 	Type            string
 	Host, Container string
 	ReadOnly        bool
 }
 
-// Spec is the deterministic shape of a `docker run` invocation.
+// Spec is shared by dry-run output and the SDK call to prevent drift.
 type Spec struct {
 	Image   string
 	Command string
@@ -111,9 +108,7 @@ type Section struct {
 	Start int // index into Spec.Mounts
 }
 
-// BuildSpec is pure: same Options → same Spec. Mask overlays must follow the
-// directory bind they shadow so docker's argv-order evaluation makes them win;
-// disabled groups are omitted, never reordered.
+// BuildSpec preserves mount order because later masks must shadow earlier binds.
 func BuildSpec(o Options) Spec {
 	main := o.Projects[0]
 	main.ReadOnly = false
@@ -236,8 +231,7 @@ func projectMasks(p Project, configBound bool) []Mount {
 	return mounts
 }
 
-// Args returns argv starting with "run". Mount source/target fields use RFC 4180
-// CSV quoting so paths containing ',' or '"' parse unambiguously.
+// Args uses CSV quoting so Docker can parse mount paths containing ',' or '"'.
 func (s Spec) Args() []string {
 	var args []string
 	args = append(args, "run", "--rm", "-it")
@@ -304,8 +298,8 @@ func sanitizeLabel(label string) string {
 	}, label)
 }
 
-// ShellCommand renders a readable docker command. Section comments break shell
-// continuation, so output with joins is not pasteable as one command.
+// ShellCommand labels join sections for inspection. With joins, those labels
+// break shell continuation, so the result cannot be pasted as one command.
 func (s Spec) ShellCommand() string {
 	args := s.Args() // starts with "run", not "docker"
 
@@ -361,7 +355,6 @@ func (s Spec) ShellCommand() string {
 	return strings.TrimSuffix(sb.String(), "\n")
 }
 
-// ContainerConfig returns the SDK container.Config for this Spec.
 func (s Spec) ContainerConfig() *container.Config {
 	return &container.Config{
 		Image:        s.Image,
@@ -376,7 +369,6 @@ func (s Spec) ContainerConfig() *container.Config {
 	}
 }
 
-// HostConfig returns the SDK container.HostConfig for this Spec.
 func (s Spec) HostConfig() *container.HostConfig {
 	return &container.HostConfig{
 		AutoRemove:  true,
@@ -432,7 +424,6 @@ func tmpfsMap(entries []string) map[string]string {
 	return m
 }
 
-// mountsFor translates []Mount into the SDK []mount.Mount form.
 func mountsFor(mounts []Mount) []mount.Mount {
 	if len(mounts) == 0 {
 		return nil

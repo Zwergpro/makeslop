@@ -18,25 +18,21 @@ type Docker struct {
 	resizeGoroutineHook func() // called at end of resize goroutine body; nil in production
 }
 
-// Option is a functional option for New.
 type Option func(*Docker)
 
-// WithClient injects a pre-built apiClient. Same-package _test.go only
-// (apiClient is unexported).
+// WithClient lets same-package tests avoid a real daemon client.
 func WithClient(c apiClient) Option {
 	return func(d *Docker) {
 		d.client = c
 	}
 }
 
-// WithTTYCheck overrides the TTY-detection predicate used by Run.
 func WithTTYCheck(fn func() bool) Option {
 	return func(d *Docker) {
 		d.isTTYFn = fn
 	}
 }
 
-// WithRawMode overrides the terminal raw-mode function used by Run.
 func WithRawMode(fn func(int) (*term.State, error)) Option {
 	return func(d *Docker) {
 		d.makeRaw = fn
@@ -53,10 +49,8 @@ func WithStreams(in io.Reader, out io.Writer) Option {
 	}
 }
 
-// New constructs a Docker with real defaults: an environment-built moby client,
-// stdin+stdout TTY detection, and term.MakeRaw. Options apply before client
-// construction so WithClient can suppress the real newClient() call (avoiding an
-// orphaned transport when a test injects a fake).
+// New applies options before creating the client so test injection cannot
+// leave an unused transport behind.
 func New(opts ...Option) (*Docker, error) {
 	d := &Docker{
 		isTTYFn: func() bool { return isTTY(os.Stdin) && isTTY(os.Stdout) },
@@ -77,7 +71,6 @@ func New(opts ...Option) (*Docker, error) {
 	return d, nil
 }
 
-// Close releases the underlying Docker client connection.
 func (d *Docker) Close() error {
 	return d.client.Close()
 }

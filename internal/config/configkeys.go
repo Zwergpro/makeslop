@@ -12,14 +12,12 @@ import (
 // single k/K/m/M/g/G suffix (a bare number is bytes).
 var tmpDirSizeRe = regexp.MustCompile(`^[0-9]+[kKmMgG]?$`)
 
-// configKey describes a single settable configuration key.
 type configKey struct {
 	name string
 	get  func(*Settings) string
 	set  func(*Settings, string) error
 }
 
-// ConfigEntry is a key/value pair returned by ConfigList.
 type ConfigEntry struct {
 	Name  string
 	Value string
@@ -91,7 +89,6 @@ func setTmpDirSize(s *Settings, v string) error {
 	return nil
 }
 
-// ConfigGet returns the stored value for key, or ("", false) for unknown keys.
 func ConfigGet(s *Settings, key string) (string, bool) {
 	for _, ck := range configKeys {
 		if ck.name == key {
@@ -101,7 +98,7 @@ func ConfigGet(s *Settings, key string) (string, bool) {
 	return "", false
 }
 
-// ConfigList returns the current value of every settable key in registry order.
+// ConfigList follows registry order so output remains stable.
 func ConfigList(s *Settings) []ConfigEntry {
 	entries := make([]ConfigEntry, len(configKeys))
 	for i, ck := range configKeys {
@@ -110,8 +107,7 @@ func ConfigList(s *Settings) []ConfigEntry {
 	return entries
 }
 
-// ConfigSet validates and applies a key=value update to s.
-// Returns an error for unknown keys or invalid values; s is not mutated on error.
+// ConfigSet validates before mutation so invalid values leave settings intact.
 func ConfigSet(s *Settings, key, val string) error {
 	for _, ck := range configKeys {
 		if ck.name == key {

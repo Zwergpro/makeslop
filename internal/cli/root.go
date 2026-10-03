@@ -18,11 +18,8 @@ import (
 	"github.com/Zwergpro/makeslop/internal/workspace"
 )
 
-// version is set by Main; "dev" otherwise.
 var version = "dev"
 
-// Main is the single exported entry point: sets version, resolves baseDir,
-// delegates to runWithExitCode.
 func Main(v string, args []string) int {
 	version = v
 	baseDir, err := config.DefaultBaseDir()
@@ -52,7 +49,6 @@ func newRootCmd(baseDir string) (*cobra.Command, func()) {
 	return newRootCmdWithDeps(baseDir, deps), func() { _ = d.Close() }
 }
 
-// newRootCmdWithDeps is the injection point for production and tests.
 func newRootCmdWithDeps(baseDir string, deps dockerDeps) *cobra.Command {
 	ws := workspace.New(baseDir)
 
@@ -78,10 +74,8 @@ func newRootCmdWithDeps(baseDir string, deps dockerDeps) *cobra.Command {
 	return rootCmd
 }
 
-// runWithExitCode maps ExecuteContext errors to exit codes: docker.ExitError
-// passes Code through; errSilent → 1 no reprint; others → 1 with "makeslop: ".
-// contextObserver, when non-nil, is called with the signal-cancellable context
-// so tests can assert it is not context.Background().
+// runWithExitCode passes a signal-cancellable context through every command.
+// contextObserver lets tests check that contract.
 func runWithExitCode(baseDir string, stdout, stderr io.Writer, args []string, contextObserver func(context.Context)) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -97,8 +91,8 @@ func runWithExitCode(baseDir string, stdout, stderr io.Writer, args []string, co
 	return exitCodeFromError(cmd.ExecuteContext(ctx), stderr)
 }
 
-// exitCodeFromError is the exit-code contract: docker.ExitError passes Code
-// through; errSilent → 1 with no reprint; other errors → 1 with "makeslop: ".
+// exitCodeFromError preserves container status and avoids printing errSilent
+// after a command has already written its tailored message.
 func exitCodeFromError(err error, stderr io.Writer) int {
 	if err == nil {
 		return 0

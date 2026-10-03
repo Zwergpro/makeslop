@@ -12,13 +12,11 @@ import (
 // Bound daemon probes so an unreachable DOCKER_HOST cannot hang the CLI.
 const preflightTimeout = 10 * time.Second
 
-// WithPreflightTimeout wraps parent with a preflightTimeout deadline; callers
-// must defer the returned cancel.
+// WithPreflightTimeout prevents an unreachable daemon from hanging a CLI check.
 func WithPreflightTimeout(parent context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(parent, preflightTimeout)
 }
 
-// ErrDaemonUnreachable is returned by CheckDaemon when the daemon cannot be reached.
 type ErrDaemonUnreachable struct {
 	Cause error
 }
@@ -29,7 +27,6 @@ func (e *ErrDaemonUnreachable) Error() string {
 
 func (e *ErrDaemonUnreachable) Unwrap() error { return e.Cause }
 
-// CheckDaemon pings the daemon, returning *ErrDaemonUnreachable on failure.
 func (d *Docker) CheckDaemon(ctx context.Context) error {
 	_, err := d.client.Ping(ctx, moby.PingOptions{})
 	if err != nil {
@@ -38,8 +35,7 @@ func (d *Docker) CheckDaemon(ctx context.Context) error {
 	return nil
 }
 
-// ImageExists reports whether the named image tag exists locally. (false, nil)
-// only for a classified not-found; other errors return (false, err).
+// ImageExists distinguishes a missing image from a failed daemon request.
 func (d *Docker) ImageExists(ctx context.Context, image string) (bool, error) {
 	_, err := d.client.ImageInspect(ctx, image)
 	if err == nil {
@@ -51,12 +47,9 @@ func (d *Docker) ImageExists(ctx context.Context, image string) (bool, error) {
 	return false, err
 }
 
-// ContainerRunning reports whether the named container exists and is running.
-// A paused container counts as not running (it would stall traffic through a
-// shared network namespace), and so does a restarting (crash-looping) one,
-// whose namespace the daemon refuses to join although it reports Running.
-// (false, false, nil) only for a classified not-found; other errors return
-// (false, false, err).
+// ContainerRunning rejects paused containers, which would stall shared-network
+// traffic, and restarting containers, whose namespace Docker refuses to join.
+// Only a classified not-found returns no error.
 func (d *Docker) ContainerRunning(ctx context.Context, name string) (exists, running bool, err error) {
 	res, err := d.client.ContainerInspect(ctx, name, moby.ContainerInspectOptions{})
 	if err != nil {
@@ -69,8 +62,7 @@ func (d *Docker) ContainerRunning(ctx context.Context, name string) (exists, run
 	return true, st != nil && st.Running && !st.Paused && !st.Restarting, nil
 }
 
-// NetworkExists reports whether the named network exists. (false, nil) only
-// for a classified not-found; other errors return (false, err).
+// NetworkExists preserves daemon errors instead of misreporting them as absence.
 func (d *Docker) NetworkExists(ctx context.Context, name string) (bool, error) {
 	_, err := d.client.NetworkInspect(ctx, name, moby.NetworkInspectOptions{})
 	if err == nil {

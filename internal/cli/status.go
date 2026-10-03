@@ -28,12 +28,10 @@ const (
 	checkInfo checkState = "info"
 )
 
-// checkList accumulates status checks.
 type checkList struct {
 	checks []statusCheck
 }
 
-// ready reports whether no blocking (fail) check has been recorded.
 func (c *checkList) ready() bool {
 	for _, ch := range c.checks {
 		if ch.State == checkFail {
@@ -77,7 +75,6 @@ type statusResult struct {
 	Ready  bool          `json:"ready"`
 }
 
-// isTTYFunc gates color/glyph output; tests inject a stub returning false.
 type isTTYFunc func(w io.Writer) bool
 
 func defaultIsTTY(w io.Writer) bool {
@@ -126,7 +123,7 @@ func renderChecks(w io.Writer, checks []statusCheck, ready bool, tty bool) {
 	if ready {
 		fmt.Fprintln(w, "  ready")
 	} else {
-		// Next action is the first failing check's remedy.
+		// Preserve check order when choosing the next action.
 		for _, c := range checks {
 			if c.State == checkFail {
 				fmt.Fprintf(w, "  not ready — %s\n", c.Detail)
@@ -143,7 +140,6 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir, imageFlag 
 
 	cl := &checkList{}
 
-	// 1. Daemon.
 	daemonUp := deps.checkDaemonPreflight(ctx) == nil
 	if daemonUp {
 		cl.ok("daemon", "")
@@ -196,8 +192,7 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir, imageFlag 
 		}
 	}
 
-	// 4. Workspace — nil loadedSettings when settings unreadable; Lookup treats nil
-	// as ErrNotRegistered, avoiding a duplicate parse-error detail here.
+	// Nil settings avoid repeating the parse error in the workspace row.
 	var workspaceRoot string
 	pwd, pwdErr := resolvePwd()
 	if pwdErr != nil {
@@ -220,8 +215,7 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir, imageFlag 
 		}
 	}
 
-	// 5. Secret scan summary (non-blocking) and 6. network (blocking), only
-	// when the workspace resolved; both share one projectconfig.Load.
+	// Share the config load so scan and network report the same file state.
 	if workspaceRoot != "" {
 		pcfg, pcErr := projectconfig.Load(workspaceRoot)
 		if pcErr != nil {
@@ -262,8 +256,7 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir, imageFlag 
 	return nil
 }
 
-// checkNetwork records the network row. Unset → info; built-in modes → ok
-// without inspection; anything else is inspected via networkPreflight.
+// checkNetwork skips daemon inspection for unset and built-in modes.
 func checkNetwork(ctx context.Context, cl *checkList, deps dockerDeps, daemonUp bool, n projectconfig.Network) {
 	detail := n.Mode
 	if len(n.Networks) > 0 {

@@ -1,275 +1,59 @@
-# makeslop — Architecture and Internals
-
-This document is for contributors and anyone who wants to understand how makeslop works under the
-hood. It covers the key design patterns, module boundaries, and invariants. The authoritative
-agent-facing notes live in `CLAUDE.md`; this file is a self-contained human-readable companion.
-
-## Table of Contents
+# Architecture
 
-- [Pure/impure split](#pureimpure-split)
-- [Mount groups and cache overlays](#mount-groups-and-cache-overlays)
-- [apiClient seam and fake clients](#apiclient-seam-and-fake-clients)
-- [Preflight helpers](#preflight-helpers)
-- [Image resolution](#image-resolution)
-- [Config-driven scan engine](#config-driven-scan-engine)
-- [Settings schema](#settings-schema)
-- [POSIX-only invariant](#posix-only-invariant)
-- [Exit-code contract](#exit-code-contract)
-- [Contributing / Build](#contributing--build)
-
----
-
-## Pure/impure split
-
-Argv assembly (`internal/docker/spec.go`) is **pure** and fully table-tested. Side-effecting SDK
-calls live in `internal/docker/run.go` and `internal/docker/preflight.go`. Pure functions never touch
-the filesystem or exec anything.
-
-`spec.go` exposes two renderings of the same logical spec:
-
-- `Args()` / `ShellCommand()` — argv slices used for `--dry-run` output.
-- `ContainerConfig()` / `HostConfig()` — pure projections to SDK structs consumed by `Run`.
-
-A drift-guard test keeps both renderings honest. The "printed == executed" invariant holds: what
-`--dry-run` prints is what `run` passes to the Docker daemon.
-
-Container environment follows the same split. `projectconfig.Load` returns the `environments:`
-block as names and static pairs and never reads the process environment. `runRun` resolves it with
-`resolveEnv(env, os.LookupEnv)` into sorted `KEY=VALUE` pairs and passes them as `Options.Env`.
-`BuildSpec` only receives resolved pairs, so `--dry-run` prints exactly what is executed, resolved
-`host` values included.
+The CLI lives in `internal/cli`. It loads settings and project configuration, checks Docker prerequisites, then builds and runs a container spec. `cmd/makeslop/main.go` passes the build version and arguments to `cli.Main`.
 
-Networking follows it too. `projectconfig.Load` validates `network_mode` / `networks` into
-`Config.Network`, and `runRun` copies them to `Options.NetworkMode` / `Options.Networks`.
-`Args()` renders `--network <mode>` or one `--network <name>` per entry. `HostConfig().NetworkMode`
-gets the mode or the first network, and `NetworkingConfig()` (nil when `Networks` is empty) lists
-every network as an endpoint, passed to `ContainerCreate`. `TestDriftGuard_Network` checks that
-the printed flags match both SDK projections. With neither key set there is no flag and an empty
-`NetworkMode` (Docker default bridge).
-
----
-
-## Mount groups and cache overlays
-
-`BuildSpec` takes `Options.Projects`: index 0 is the writable current project and later
-entries are joins in flag order. Each project has its own bind, policy mounts, and masks. The
-main project also receives the following global and cache mounts:
-
-**Global** (always present — not configurable):
-- `~/.makeslop/.claude/` → `/home/user/.claude/`
-- `~/.makeslop/.claude.json` → `/home/user/.claude.json`
-- `~/.makeslop/.codex/` → `/home/user/.codex/`
-
-**Agent-state cache overlay** (gated by `Options.MountAgentCache`):
-- `workspaceHost/.claude/` → `/workspace/<name>/.claude/`
-- `workspaceHost/.codex/` → `/workspace/<name>/.codex/`
-
-**Content cache overlay** (gated by `Options.MountContentCache`):
-- `workspaceHost/docs/` → `/workspace/<name>/docs/`
-- `workspaceHost/CLAUDE.md` → `/workspace/<name>/CLAUDE.md`
-
-When a group is disabled (`false`), its mounts are **omitted** from the spec (never reordered).
-The project source root is always mounted at position 0. Secret masking (masked files `/dev/null`,
-masked dirs tmpfs) appends after all group mounts, so a masked path under `docs/` still wins even
-when the content group is disabled.
-
-**Join groups.** Each join adds its root bind at `/workspace/<basename>`, then policy mounts
-for writable joins, then its own masks. The policy mounts protect `.makeslop.yaml` and mask
-`.git/hooks` when `.git` is a directory. Read-only joins need neither policy mount; their
-config can still be masked.
-Global and cache overlays apply only to the main project.
-
-With joins, `Spec.Sections` records the first mount of each group for readable `ShellCommand`
-labels. It does not affect `Args()` or SDK mounts. The labels break shell continuation, so joined
-dry-run output is for inspection rather than pasting.
-
-The two booleans originate from the project `cache:` block in `.makeslop.yaml`, resolved by
-`projectconfig.Load`. Absent block ⇒ both `true`. The
-`init --global-only` flag scaffolds the YAML with both groups set to `false`.
-
-**`Options.MountContentCache`** and **`Options.MountAgentCache`** both default to `false` in Go's
-zero-value; callers that want full-mount behavior must explicitly set them to
-`true`. `runRun` does this by reading the project config; tests that exercise full-mount behavior
-must set them on their `sampleOptions()` or equivalent fixture.
-
----
-
-## apiClient seam and fake clients
-
-`internal/docker/client.go` declares a narrow unexported `apiClient` interface covering all SDK
-methods used by `Run`, `CheckDaemon`, `ImageExists`, `ContainerRunning`, and `NetworkExists`. A
-compile-time assertion `var _ apiClient = (*moby.Client)(nil)` guards against signature drift.
-Adding an SDK call means extending `apiClient` and the fakes below.
-
-The interface covers: `ContainerCreate`, `ContainerAttach`, `ContainerStart`, `ContainerWait`,
-`ContainerResize`, `ContainerRemove`, `Ping`, `ImageInspect`, `ContainerInspect`,
-`NetworkInspect`, `Close`.
-
-`internal/docker` uses constructor dependency injection. `docker.New(opts ...Option)` builds a
-real moby client from the environment; `WithClient(c apiClient)` (same-package `_test.go` only)
-injects a fake. There is no `testing.go` production file, no `SetClientForTest`, no
-`newClientFn` package-level variable, and no exported `FakeRunClient` type.
-
-Test fakes live in `_test.go` files (compiled only during `go test`):
-
-- **`noopClient`** (`internal/docker/fakes_test.go`) — zero-behavior implementation of every
-  `apiClient` method; embedded by the fakes so each only overrides what it scripts.
-- **`fakeRunClient`** (`internal/docker/fakes_test.go`) — simulates the preflight/`Run` lifecycle
-  with a scripted exit code. Supports `PingErr`, `ImageMissing`, `ImageErr`, `BlockPing`,
-  `BlockImageInspect` fields, plus `ContainerMissing`/`ContainerErr`/`ContainerState` and
-  `NetworkMissing`/`NetworkErr` for the inspect calls.
-- **`fakeClient`** (`internal/docker/run_test.go`) — the `Run`-lifecycle fake used by
-  `run_test.go`; distinct from `fakeRunClient`. Has `attachPayload` to script delayed output.
-
-`internal/cli` depends on consumer-side interfaces in `internal/cli/deps.go` (`containerRunner`,
-`daemonChecker`, `imageChecker`, `networkChecker`), combined in `dockerAPI`. `dockerDeps` holds a
-single `dockerAPI` implementation (`dockerDeps{api: x}`), so no capability can be left nil at a
-construction site. Tests build the command tree with
-`newRootCmdWithDeps(baseDir, deps)` and the `fakeDocker` boundary fake in
-`internal/cli/main_test.go`. If `docker.New()` fails, `dockerNewErrStub` defers the error to the
-first Docker call so non-Docker commands (`config`, `ls`, `version`, …) still work.
-
-There are no shell shims, no `dockerBinary` global, no `executableTempDir`.
-
----
-
-## Preflight helpers
-
-`internal/docker/preflight.go` provides shared helpers used by both `run` and `status`:
-
-- **`CheckDaemon(ctx context.Context) error`** — pings the daemon via the shared `d.client`;
-  returns `*ErrDaemonUnreachable` on failure.
-- **`ImageExists(ctx context.Context, image string) (bool, error)`** — calls `ImageInspect` on
-  `d.client`; returns `(true, nil)` when found, `(false, nil)` only when
-  `cerrdefs.IsNotFound(err)`, and `(false, err)` for any other error (so a dead daemon is never
-  misreported as "image absent").
-- **`ContainerRunning(ctx, name) (exists, running bool, err error)`** — `ContainerInspect`;
-  `running` requires a non-nil `State` that is running, not paused (a paused proxy would stall
-  traffic through a shared namespace) and not restarting (the daemon refuses to join a
-  crash-looping container's namespace). Same not-found contract.
-- **`NetworkExists(ctx, name) (bool, error)`** — `NetworkInspect`; same not-found contract.
-
-All methods share the `*Docker`'s single long-lived client — no per-call client construction or
-close. `cmd` callers must `defer d.Close()` once after construction to release the connection.
-
-In `internal/cli`, the calls go through `dockerDeps.checkDaemonPreflight` /
-`imageExistsPreflight` / `networkPreflight`, which bound them with `preflightTimeout` (10s) so a
-black-hole `DOCKER_HOST` cannot hang `run` or `status`. `Run` itself gets no deadline.
-
-`networkPreflight(ctx, projectconfig.Network)` is a no-op for an unset config and the built-in
-modes (`bridge`, `host`, `none`, `default`), as decided by `Network.NeedsInspect()`. For
-`container:<x>` it calls `ContainerRunning`; for any other mode and every `networks` entry it
-calls `NetworkExists`. It returns the user-facing hint as an error, prefixed with the key that
-named the target (`network_mode:` or `networks:`): `run` returns it after the image check (printed
-as `makeslop: <hint>`, skipped on `--dry-run`), and `status` puts it in the blocking `network`
-row. `status` reuses its single `projectconfig.Load` for both the secret-scan and network rows; a
-load error makes the network row `✗`.
+## Spec and runtime
 
----
+`internal/docker/spec.go` builds a pure `Spec` from resolved `Options`. `Args()` and `ShellCommand()` render the dry run; `ContainerConfig()`, `HostConfig()`, and `NetworkingConfig()` render the SDK request. Drift tests keep printed flags and daemon settings aligned. Filesystem checks, host environment lookup, and SDK calls happen before or after spec construction, never inside it.
 
-## Image resolution
+`projectconfig.Load` parses `environments:` without reading host variables. `internal/cli/run.go` resolves them and sorts the final `KEY=VALUE` pairs before building the spec. Network settings follow the same path: project config to `Options`, then to both CLI and SDK projections.
 
-makeslop has no embedded image, no build step, and no default image. `resolveImage` in
-`internal/cli/image.go` picks the image for `run` and `status`: the `-i/--image` flag wins, then
-the `image` setting; both empty (after trimming) yields `errNoImage`. The chosen value goes through
-`config.NormalizeImage` (also used by `config set image`), which rejects anything that isn't a
-valid docker reference, including a leading `-` that `--dry-run` would otherwise print as a flag.
-The `-i/--image` flag is
-registered on those two commands only.
+### Mount order
 
-- `run` resolves the image **before** `ws.Lookup`, so a config error fails fast (and `--dry-run`
-  also needs an image, since the printed command must equal the executed one).
-- `status` resolves it in its image check. An explicit `-i` bypasses the settings, so the check
-  works even when `settings.json` is absent or corrupt.
-- `init` never fails on a missing image; it prints a non-blocking note built from the same
-  `noImageHint` text.
-- A resolved image missing from the local daemon fails with `imageNotFoundHint` ("build or pull
-  it"). There is no auto-pull.
+`Options.Projects[0]` is the writable main project; joins follow in flag order. Mounts are added in this order:
 
----
+1. Project root, then the global `~/.makeslop` agent config mounts.
+2. Main-project policy mounts: a read-only `.makeslop.yaml` bind and a `.git/hooks` tmpfs when applicable.
+3. Per-workspace agent and content overlays, controlled by `MountAgentCache` and `MountContentCache`.
+4. Main-project secret masks.
+5. Each join's root, writable policy mounts, and masks.
 
-## Config-driven scan engine
+Masks must follow the mounts they cover. A `/dev/null` mask for `.makeslop.yaml` is dropped when it would hide the read-only config bind. Read-only joins need no policy mounts, though their config may still be masked. Global and cache mounts apply only to the main project.
 
-`internal/security.Scan` uses a native Go `filepath.WalkDir` walk — there is no `fd`/`fdfind`
-dependency. Patterns (basename globs) and skip-dirs are passed in at call time; the engine has no
-hardcoded defaults. If `patterns` is empty, `Scan` returns `(nil, nil, nil)` immediately (no walk). Symlinks whose
-basename matches a pattern are returned in the second slice (`symlinkMatches`) rather than the
-first — WalkDir does not follow symlinks, so they are not masked; callers should warn the user.
-These symlink warnings bypass `--quiet` (degraded protection is never treated as cosmetic).
+Absent `cache:` config enables both overlay groups. Go's zero-value flags disable them, so direct `BuildSpec` callers must opt in. Joined dry runs include group labels for inspection; those labels make the output unsuitable for pasting into a shell.
 
-Walk errors (e.g. unreadable subdirectories) are propagated immediately and abort `runRun` before
-`docker.Run`. This "fail-loud" invariant ensures makeslop never silently skips a directory it
-cannot prove is secret-free — consistent with the no-`.env`-leak contract.
+## Docker boundary
 
-The defaults live as active values in the `Scaffold` stub seeded by `makeslop init`. Existing
-project `.makeslop.yaml` files are never rewritten; a file without an `exclude.scan` block gets no
-secret scan.
+`internal/docker/client.go` defines the narrow `apiClient` subset of the moby SDK. Its compile-time assertion catches signature drift. `docker.New` uses an environment-configured client; tests inject fakes through `WithClient`. When adding an SDK method, update `apiClient` and the fakes in `internal/docker/fakes_test.go` and `run_test.go`.
 
----
+The CLI uses the consumer-side `dockerAPI` interface in `internal/cli/deps.go`. `dockerDeps` holds one implementation, and tests inject `fakeDocker` through `newRootCmdWithDeps`. If client construction fails, `dockerNewErrStub` defers the error until a Docker command runs, leaving commands such as `config` and `ls` usable.
 
-## Settings schema
+`Run` creates, attaches, starts, streams, and waits for the container. It registers the wait before start so a fast, auto-removed container still yields an exit status. Details of terminal cleanup and input handling are documented beside the code in `internal/docker/run.go`.
 
-`~/.makeslop/settings.json` has no version stamp. `config.Load` defaults `Shell` and `TmpDirSize`
-when they are empty; `Image` is never defaulted (empty means unset). Keys without a `Settings`
-field are ignored on load and dropped on the next `Save`.
+## Preflight and errors
 
-Schema changes must therefore stay backward compatible: add fields with `omitempty` plus
-load-time defaulting rather than renaming or repurposing existing keys.
+`CheckDaemon`, `ImageExists`, `ContainerRunning`, and `NetworkExists` share one client. Inspect helpers return `false, nil` only for a classified not-found error; transport and daemon errors propagate. A container must be running, unpaused, and not restarting before another container can join its network namespace.
 
-`config.Bootstrap` seeds only the agent directories (`.claude/`, `.codex/`, `workspaces/`) and an
-empty `.claude.json`, never overwriting existing files. There are no embedded assets.
+CLI preflight calls have a 10-second timeout; interactive `Run` has no deadline. `networkPreflight` skips unset and built-in modes, inspects `container:` targets and named networks, and reports errors under the corresponding YAML key. Dry runs skip daemon preflight.
 
-Every read-modify-write of `settings.json` goes through `config.Update` / `config.WithLock`
-(in-process mutex plus `flock` on `<baseDir>/.settings.lock`). Never nest `WithLock`, including
-inside an `Update` mutate func: the nested call self-deadlocks.
+`resolveImage` chooses `-i/--image` before the saved image. There is no default or automatic pull. It validates the reference before workspace lookup so an invalid setting fails consistently, including in dry runs.
 
----
+`runWithExitCode` passes through `docker.ExitError.Code`, including signal-derived codes such as 137. Other errors exit 1; `errSilent` avoids printing a message already shown by the command.
 
-## POSIX-only invariant
+## Configuration and scanning
 
-makeslop targets POSIX systems only. Tests that rely on TTY/signal behavior call an inline
-`skipNonPOSIX` helper defined locally in each test package (unexported, not shared across
-packages). Do not add Windows compatibility paths.
+`~/.makeslop/settings.json` has no schema version. `config.Load` defaults the shell and tmpfs size, while the image remains unset. Unknown keys disappear on the next save, so schema changes should add compatible fields and load-time defaults. Read-modify-write operations use `config.Update` and `config.WithLock`; nesting `WithLock` deadlocks.
 
----
+`internal/security.Scan` walks the project with basename globs from `.makeslop.yaml`. Empty patterns skip the walk. Matching symlinks are reported but cannot be masked because `WalkDir` does not follow them. Walk errors abort the launch so unreadable paths cannot silently bypass masking. `init` seeds scan defaults; existing project files are never rewritten.
 
-## Exit-code contract
+The project targets POSIX systems. TTY and signal tests use package-local `skipNonPOSIX` helpers.
 
-`docker.ExitError{Code int}` (in `run.go`) is the only exit-code error. `Run` returns it when
-`ContainerWait` reports a non-zero `StatusCode`. `runWithExitCode` in `internal/cli/root.go` does:
+## Build
 
-```go
-var ee *docker.ExitError
-if errors.As(err, &ee) {
-    return ee.Code
-}
-```
-
-Signal-killed containers (e.g. SIGKILL) are reported by the daemon as `StatusCode=137`; that value
-is passed through verbatim. There is no OS `WaitStatus` / `exec.ExitError` handling — makeslop
-does not fork the docker binary.
-
----
-
-## Contributing / Build
-
-The CLI lives in `internal/cli` (package `cli`). `cli.Main(version string, args []string) int` is
-the single exported entry point. `cmd/makeslop/main.go` is ~10 lines: `var version = "dev"` (the
-ldflags landing pad) and `func main() { os.Exit(cli.Main(version, os.Args[1:])) }`.
-
-```
+```sh
 go build ./cmd/makeslop
 go test -timeout=100s ./...
 golangci-lint run
 ```
 
-Tests do not use shell shims, so there is no `noexec`/`GOTMPDIR` constraint, and none of them
-need a live Docker daemon.
-
-The version string is stamped at build time:
-
-```
-go build -ldflags "-X main.version=$(git describe --tags --always --dirty)" ./cmd/makeslop
-```
-
-A plain `go build` without ldflags prints `dev` for the version.
+Builds without an injected version print `dev`. Release builds set `main.version` with `-ldflags`. Tests use fake Docker clients and need no live daemon.

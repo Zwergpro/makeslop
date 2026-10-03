@@ -34,35 +34,18 @@ func (e *ExitError) Error() string {
 	return fmt.Sprintf("container exited with code %d", e.Code)
 }
 
-// pollableStdin holds a closeable handle to stdin that unblocks pending reads
-// when closed. If the handle is backed by a poller-managed fresh open of the
-// terminal, closing it causes the Go runtime poller to unblock a pending Read.
+// pollableStdin lets Run stop a pending stdin read before returning.
 type pollableStdin struct {
 	handle io.Reader // read side; may be a *os.File (fresh tty open) or the original reader
 	closer io.Closer // handle's close method (nil if the reader is not closeable)
 }
 
-// newPollableStdin tries to create a pollable, closeable handle for reading
-// stdin. For the real os.Stdin it opens /dev/tty with O_NONBLOCK. The fresh
-// open is the load-bearing detail: O_NONBLOCK lives in the open file
-// description, and a terminal session's fd 0/1/2 are dups of a single
-// description — so flipping the flag on fd 0 itself would silently make
-// os.Stdout non-blocking too. Go treats os.Stdout as a blocking fd, so the
-// first output burst that fills the pty buffer (any TUI redraw) would make the
-// stdout pump die on EAGAIN and freeze the session.
-//
-// The fresh handle is used only when it refers to the same character device as
-// fd 0 and the runtime poller accepted it (probed via SetReadDeadline — some
-// platforms cannot poll /dev/tty, e.g. kqueue on macOS, and os then reverts
-// the file to blocking mode, where Close would no longer unblock Read).
-//
-// Falls back gracefully: on any failure, returns an unconverted reference to
-// stdinReader with ps.closer == nil. Callers check ps.closer != nil to
-// determine joinability and must tolerate the fallback goroutine-leak path
-// (documented on Run).
+// newPollableStdin opens a fresh /dev/tty handle because O_NONBLOCK on fd 0
+// would also affect stdout: terminal fds may share an open file description.
+// The fresh handle must match stdin's device and support poller deadlines;
+// otherwise Close cannot reliably unblock Read, so Run uses the original reader.
 func newPollableStdin(stdinReader io.Reader) pollableStdin {
-	// Only attempt the tty open if the injected reader is actually os.Stdin.
-	// Injected test readers that implement io.Closer are handled directly.
+	// Test readers need no tty open and may already be closeable.
 	if stdinReader != os.Stdin {
 		if c, isCloser := stdinReader.(io.Closer); isCloser {
 			return pollableStdin{handle: stdinReader, closer: c}
@@ -92,9 +75,7 @@ func newPollableStdin(stdinReader io.Reader) pollableStdin {
 	return pollableStdin{handle: tty, closer: tty}
 }
 
-// sameCharDevice reports whether a and b refer to the same device. Both are
-// inspected via SyscallConn so neither pollable fd is switched back to blocking
-// mode (which (*os.File).Fd may do).
+// sameCharDevice uses SyscallConn because File.Fd may restore blocking mode.
 func sameCharDevice(a, b *os.File) bool {
 	var sa, sb syscall.Stat_t
 	rca, err := a.SyscallConn()
@@ -116,31 +97,10 @@ func sameCharDevice(a, b *os.File) bool {
 	return sa.Rdev == sb.Rdev
 }
 
-// Run launches s interactively using the struct's injected apiClient, TTY
-// predicate, raw-mode function, and I/O streams. Returns ErrNoTTY unless both
-// stdin and stdout are TTYs, and *ExitError on non-zero container exit.
-//
-// Lifecycle order (avoids the AutoRemove + wait-before-start race, output
-// truncation, and a stdin goroutine leak):
-//
-//	Create → Attach → raw mode → ContainerWait(next-exit) → ContainerStart →
-//	  stream copies → drain stdout → close stdin handle → join stdin copy →
-//	  map StatusCode → ExitError
-//
-// Registering the wait before start guarantees the daemon delivers the exit
-// status even when the container exits and is auto-removed within milliseconds.
-//
-// Stdin-goroutine join: production path opens /dev/tty as a fresh O_NONBLOCK
-// file description (never altering fd 0's shared flags — see newPollableStdin).
-// Closing it unblocks the pending Read via the Go runtime poller. If the open
-// or poller registration fails, the goroutine is leaked — this is the
-// documented fallback, matching what the docker CLI does.
-// Injected test readers implementing io.Closer (e.g. os.Pipe read-end) are
-// treated identically to the pollable dup path and the goroutine is always joined.
-//
-// d.resizeGoroutineHook, when non-nil, is called at the end of the resize
-// goroutine body (before closing resizeDone). Tests inject a hook to verify the
-// goroutine was joined before Run returned; nil in production.
+// Run starts the wait before the container so fast auto-removed exits retain
+// their status. It drains output and joins closeable stdin readers before return
+// to avoid lost output and goroutine leaks. If stdin cannot be made closeable,
+// its blocked copy goroutine may outlive Run.
 func (d *Docker) Run(ctx context.Context, s Spec) error {
 	cli := d.client
 	if !d.isTTYFn() {
@@ -228,7 +188,7 @@ func (d *Docker) Run(ctx context.Context, s Spec) error {
 		})
 	}
 
-	// Forward terminal resize events. SIGWINCH is POSIX-only (absent on Windows).
+	// A pending resize must finish before Run returns.
 	if runtime.GOOS != "windows" {
 		winchCh := make(chan os.Signal, 1)
 		signal.Notify(winchCh, syscall.SIGWINCH)
@@ -247,8 +207,7 @@ func (d *Docker) Run(ctx context.Context, s Spec) error {
 				d.resizeGoroutineHook()
 			}
 		}()
-		// signal.Stop guarantees no further sends to winchCh, so close is race-free.
-		// <-resizeDone then guarantees no ContainerResize is in flight when we return.
+		// Stop sends before closing; then wait for any in-flight resize.
 		defer func() {
 			signal.Stop(winchCh)
 			close(winchCh)
@@ -256,27 +215,15 @@ func (d *Docker) Run(ctx context.Context, s Spec) error {
 		}()
 	}
 
-	// Container uses a TTY, so the stream is NOT multiplexed.
-	// stdout copy goroutine: closes outputDone when EOF'd so we can drain before
-	// mapping the exit status (avoids an output truncation race).
+	// TTY output is not multiplexed. Drain it before reporting exit status.
 	outputDone := make(chan struct{})
 	go func() {
 		_, _ = io.Copy(d.stdout, att.Reader) //nolint:errcheck
 		close(outputDone)
 	}()
 
-	// stdin copy goroutine: reads from the pollable handle (ps.handle) and writes
-	// into the attach connection. If ps.closer != nil, closing ps.closer after
-	// the output drain will unblock this Read and allow the goroutine to exit.
-	// If ps.closer == nil (fallback: dup/fcntl failed and reader has no
-	// io.Closer), the goroutine is leaked — this is the documented fallback path.
-	//
-	// After the copy ends (stdin EOF or error), signal stdin EOF to the container
-	// by calling att.CloseWrite(). HijackedResponse.CloseWrite is a no-op when
-	// the underlying connection does not implement CloseWriter; on real TCP
-	// connections it sends a FIN to the container's stdin fd, allowing containers
-	// that read stdin to EOF (e.g. "cat", "wc -l") to detect end-of-input and
-	// exit cleanly instead of hanging.
+	// CloseWrite lets programs waiting for stdin EOF exit. A closeable ps.handle
+	// also lets drainAndJoin stop this copy after container output ends.
 	stdinDone := make(chan struct{})
 	go func() {
 		_, _ = io.Copy(att.Conn, ps.handle) //nolint:errcheck
@@ -286,13 +233,8 @@ func (d *Docker) Run(ctx context.Context, s Spec) error {
 
 	select {
 	case err := <-wr.Error:
-		// Force-remove the container BEFORE draining outputDone. The remove kills
-		// the container → the attach stream EOFs → io.Copy in the output goroutine
-		// returns → outputDone is closed. Without this the drain blocks until the
-		// container exits on its own, and the deferred force-remove at the top of
-		// Run never fires (startedCleanly is true and ctx.Err() is nil),
-		// leaving a running container behind.
-		// Use context.Background() because the parent ctx may already be cancelled.
+		// Remove before draining: a failed wait may leave a running container and
+		// an open attach stream. The parent context may already be cancelled.
 		_, _ = cli.ContainerRemove(context.Background(), id, moby.ContainerRemoveOptions{Force: true})
 		drainAndJoin(ctx, outputDone, stdinDone, &ps)
 		return fmt.Errorf("container wait: %w", err)
@@ -301,35 +243,21 @@ func (d *Docker) Run(ctx context.Context, s Spec) error {
 			drainAndJoin(ctx, outputDone, stdinDone, &ps)
 			return fmt.Errorf("container wait error: %s", res.Error.Message)
 		}
-		// Drain stdout before reporting the exit status so tail output is not lost.
-		// Safety net: ctx.Done() unblocks if the attach stream never closes
-		// (e.g. daemon misbehaviour). In normal operation, a TTY attach EOFs on
-		// container exit.
-		//
-		// Join ordering: drainAndJoin closes ps.closer INLINE so the stdin goroutine
-		// exits before the deferred att.Conn.Close fires — the goroutine writes into
-		// att.Conn, so it must finish before the conn is closed.
+		// Drain tail output and finish stdin writes before the deferred conn close.
 		drainAndJoin(ctx, outputDone, stdinDone, &ps)
 		if res.StatusCode != 0 {
 			return &ExitError{Code: int(res.StatusCode)}
 		}
 		return nil
 	case <-ctx.Done():
-		// Context is already cancelled; ctx.Done() in drainAndJoin's select fallbacks
-		// fires immediately, giving each goroutine one cycle to exit before we proceed.
+		// Cancellation prevents a stalled attach stream from blocking cleanup.
 		drainAndJoin(ctx, outputDone, stdinDone, &ps)
 		return ctx.Err()
 	}
 }
 
-// drainAndJoin waits for the output goroutine to finish (outputDone) and then
-// joins the stdin goroutine (stdinDone). It closes ps.closer to unblock the
-// stdin goroutine's pending read when the closer is non-nil. ctx.Done() is used
-// as a fallback escape hatch so neither wait blocks indefinitely on a
-// misbehaving daemon.
-//
-// After drainAndJoin returns, ps.closer is nil — the caller's deferred cleanup
-// checks ps.closer != nil, so it does not fire a second time.
+// drainAndJoin closes stdin after output drains, so a pending read cannot keep
+// Run alive. Cancellation bounds both waits if the daemon leaves a stream open.
 func drainAndJoin(ctx context.Context, outputDone, stdinDone <-chan struct{}, ps *pollableStdin) {
 	select {
 	case <-outputDone:

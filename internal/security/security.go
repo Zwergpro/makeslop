@@ -7,17 +7,10 @@ import (
 	"sort"
 )
 
-// Scan returns two sorted slices and an error:
-//   - paths: absolute paths of regular files whose basename matches a pattern.
-//   - symlinkMatches: absolute paths of symlinks whose basename matches a pattern
-//     (these are NOT masked — WalkDir does not follow symlinks — callers should
-//     warn the user that protection is incomplete).
-//
-// Directories named in skipDirs (bare name) are pruned. Empty patterns returns
-// (nil, nil, nil) without walking.
-//
-// Precondition: root absolute and EvalSymlinks-evaluated; patterns valid
-// filepath.Match patterns (validated by projectconfig.Load).
+// Scan returns sorted regular-file matches and symlink matches separately.
+// WalkDir does not follow symlinks, so callers must warn that they remain
+// unmasked. Empty patterns skip the walk. root must be absolute and resolved;
+// patterns must be valid filepath.Match globs.
 func Scan(ctx context.Context, root string, patterns, skipDirs []string) (paths, symlinkMatches []string, err error) {
 	if len(patterns) == 0 {
 		return nil, nil, nil
@@ -47,8 +40,7 @@ func Scan(ctx context.Context, root string, patterns, skipDirs []string) (paths,
 
 		isSymlink := d.Type()&fs.ModeSymlink != 0
 
-		// Skip sockets, pipes, device nodes, etc. (but not symlinks — we want to
-		// check their names against patterns before dropping them).
+		// Symlinks still need a warning when their names match.
 		if !isSymlink && !d.Type().IsRegular() {
 			return nil
 		}
