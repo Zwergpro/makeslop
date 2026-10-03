@@ -435,8 +435,8 @@ func TestStatus_Check5_PCErrShowsWarn(t *testing.T) {
 	}
 }
 
-// An old flat environments: block warns with the migration hint on the
-// secret-scan row and fails the network row (not ready).
+// A KEY: value entry directly under environments: warns with the static: hint
+// on the secret-scan row and fails the network row (not ready).
 func TestStatus_Check5_FlatEnvironmentsShowsWarnWithHint(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -463,8 +463,8 @@ func TestStatus_Check5_FlatEnvironmentsShowsWarnWithHint(t *testing.T) {
 	if !strings.Contains(stderr, "cannot read .makeslop.yaml") {
 		t.Errorf("stderr missing 'cannot read .makeslop.yaml' warn: %q", stderr)
 	}
-	if !strings.Contains(stderr, "move entries under environments.static") {
-		t.Errorf("stderr missing migration hint: %q", stderr)
+	if !strings.Contains(stderr, "variables must be listed under environments.static") {
+		t.Errorf("stderr missing environments.static hint: %q", stderr)
 	}
 }
 

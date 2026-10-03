@@ -123,7 +123,7 @@ environments:
     - GITHUB_TOKEN
 ```
 
-Static values must be scalars; numbers and booleans are coerced to strings. Host names are copied under the same name; unset ones are skipped. The old flat `environments: {KEY: value}` form is rejected — move entries under `static:`. Absent block = no `-e` flags. See [docs/reference.md](docs/reference.md#environment-variables-environments-block-in-makeslopyaml) for the full spec.
+Static values must be scalars; numbers and booleans are coerced to strings. Host names are copied under the same name; unset ones are skipped. Absent block = no `-e` flags. See [docs/reference.md](docs/reference.md#environment-variables-environments-block-in-makeslopyaml) for the full spec.
 
 Choose the container's network with `network_mode` or `networks` (compose names; set one, not both):
 
@@ -152,15 +152,10 @@ files are overlaid with `/dev/null` so the agent sees a zero-byte file instead o
 Walk errors are fatal — if makeslop cannot prove a directory is secret-free it refuses to launch.
 See [docs/security.md](docs/security.md) for the full masking spec and home-directory guard.
 
-**Breaking changes (recent):** path-style patterns (e.g. `secrets/*.pem`) now hard-error at load
-time — patterns must be basename globs only (e.g. `*.pem`). A symlinked `.makeslop.yaml` is also
-now rejected by `run` and `init` (`status` shows the error as a secret-scan warning and fails the
-blocking network row, so it reports not ready) — replace the symlink with a regular file to
-migrate.
-The `build` and `migrate` commands are removed and the image has no default: build your image
-yourself (e.g. from `examples/claudebox`, or from your old `~/.makeslop/Dockerfile`), then run
-`makeslop config set image <ref>`. `~/.makeslop/Dockerfile` and the `version` key in
-`settings.json` are no longer used (the key is dropped on the next settings write).
+Scan patterns must be basename globs (e.g. `*.pem`); a pattern containing `/` (e.g.
+`secrets/*.pem`) is a hard error at load time. `.makeslop.yaml` must be a regular file: a symlink
+is rejected by `run` and `init` (`status` shows the error as a secret-scan warning and fails the
+blocking network row, so it reports not ready).
 
 ## Commands
 

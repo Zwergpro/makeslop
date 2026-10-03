@@ -283,9 +283,9 @@ func TestLoad_ValidationRules(t *testing.T) {
 		// One environments row proves walker errors reach Load; the walker's
 		// rules are covered by TestValidateEnvironments_Errors.
 		{
-			name:        "environments old flat form",
+			name:        "environments variable outside static",
 			yaml:        "environments:\n  NODE_ENV: production\n",
-			wantErrFrag: "move entries under environments.static",
+			wantErrFrag: "variables must be listed under environments.static",
 		},
 	}
 
@@ -721,8 +721,7 @@ func TestLoad_ReturnsAbsoluteSortedPaths(t *testing.T) {
 	}
 }
 
-// A stale "network:" block (from a prior proxy-egress makeslop version) must be
-// rejected by strict decode — the intended loud break for old config files.
+// A "network:" block is an unknown key and must be rejected by strict decode.
 func TestLoad_Network_BlockRejected(t *testing.T) {
 	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 
@@ -844,7 +843,7 @@ func TestLoad_Scan_InvalidPatterns(t *testing.T) {
 		},
 		// Path-separator patterns: security.Scan matches basenames only, so a
 		// pattern with '/' can never match anything — fail-loud instead of
-		// silently dropping all matches (finding #1).
+		// silently dropping all matches.
 		{
 			name:        "path separator secrets/*.pem",
 			yaml:        "exclude:\n  scan:\n    patterns:\n      - \"secrets/*.pem\"\n    skip-dirs: []\n  dirs: []\n  files: []\n",
@@ -883,7 +882,7 @@ func TestLoad_Scan_InvalidPatterns(t *testing.T) {
 }
 
 // TestLoad_Scan_PathStylePattern_LoadLevel verifies that a .makeslop.yaml with a
-// path-style pattern fails Load with a clear error (finding #1: path-style
+// path-style pattern fails Load with a clear error (path-style
 // patterns can never match basenames, so they would silently lose masking).
 func TestLoad_Scan_PathStylePattern_LoadLevel(t *testing.T) {
 	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
@@ -977,7 +976,7 @@ func TestLoad_Scan_UnknownKeyRejected(t *testing.T) {
 	}
 }
 
-// An absent cache: block defaults both fields to true (backward-compatible).
+// An absent cache: block defaults both fields to true.
 func TestLoad_Cache_AbsentBlock(t *testing.T) {
 	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
@@ -1397,21 +1396,21 @@ func TestValidateEnvironments_AliasedBlocks(t *testing.T) {
 		})
 	}
 
-	// An aliased scalar under an unknown key is still the old flat form.
+	// An aliased scalar under an unknown key is still a misplaced KEY: value entry.
 	_, err := validateEnvironments(envFromDoc(t, "v: &v production\nenvironments:\n  NODE_ENV: *v\n"))
-	const flatForm = `projectconfig: environments: flat "KEY: value" form is no longer supported; move entries under environments.static`
+	const flatForm = `projectconfig: environments: variables must be listed under environments.static, not directly under environments`
 	if err == nil || err.Error() != flatForm {
-		t.Errorf("aliased flat form: err = %v, want %q", err, flatForm)
+		t.Errorf("aliased variable directly under environments: err = %v, want %q", err, flatForm)
 	}
 }
 
 func TestValidateEnvironments_Errors(t *testing.T) {
 	const (
 		notMapping = `projectconfig: environments must be a mapping with optional "static" and "host" keys`
-		flatForm   = `projectconfig: environments: flat "KEY: value" form is no longer supported; move entries under environments.static`
+		flatForm   = `projectconfig: environments: variables must be listed under environments.static, not directly under environments`
 		staticMap  = "projectconfig: environments.static must be a mapping of KEY: value"
 		hostList   = "projectconfig: environments.host must be a list of variable names"
-		hint       = " (if this was the old flat form, move entries under environments.static)"
+		hint       = " (variables belong under environments.static)"
 	)
 	cases := []struct {
 		name    string
@@ -1420,9 +1419,9 @@ func TestValidateEnvironments_Errors(t *testing.T) {
 	}{
 		{name: "environments as a list", snippet: "[A]", wantErr: notMapping},
 		{name: "environments as a scalar", snippet: "FOO", wantErr: notMapping},
-		{name: "old flat form", snippet: "NODE_ENV: production\n", wantErr: flatForm},
-		{name: "old flat form with null value", snippet: "NODE_ENV:\n", wantErr: flatForm},
-		{name: "old flat form, uppercase HOST variable", snippet: "HOST: db.local\n", wantErr: flatForm},
+		{name: "variable directly under environments", snippet: "NODE_ENV: production\n", wantErr: flatForm},
+		{name: "variable directly under environments with null value", snippet: "NODE_ENV:\n", wantErr: flatForm},
+		{name: "uppercase HOST variable directly under environments", snippet: "HOST: db.local\n", wantErr: flatForm},
 		{
 			name:    "unknown key with non-scalar value",
 			snippet: "hosts: [A]\n",
@@ -1461,7 +1460,7 @@ func TestValidateEnvironments_Errors(t *testing.T) {
 		{name: "scalar under static", snippet: "static: FOO\n", wantErr: staticMap + hint},
 		{name: "sequence under static", snippet: "static: [A]\n", wantErr: staticMap},
 		{name: "host as scalar", snippet: "host: GITHUB_TOKEN\n", wantErr: hostList + hint},
-		{name: "old flat form variable named host", snippet: "host: db.local\n", wantErr: hostList + hint},
+		{name: "variable named host directly under environments", snippet: "host: db.local\n", wantErr: hostList + hint},
 		{name: "host as mapping", snippet: "host:\n  GITHUB_TOKEN: x\n", wantErr: hostList},
 		{
 			name:    "duplicate static block",
@@ -1828,7 +1827,7 @@ func TestLoad_TypoInEnvironments_StrictModeRejects(t *testing.T) {
 }
 
 // TestScaffold_DanglingSymlink verifies that Scaffold rejects a dangling symlink
-// at the .makeslop.yaml path with a hard error (finding #2).
+// at the .makeslop.yaml path with a hard error.
 func TestScaffold_DanglingSymlink(t *testing.T) {
 	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
@@ -1855,7 +1854,7 @@ func TestScaffold_DanglingSymlink(t *testing.T) {
 }
 
 // TestScaffold_LiveSymlink verifies that Scaffold rejects a live symlink pointing
-// to a valid config file (finding #2).
+// to a valid config file.
 func TestScaffold_LiveSymlink(t *testing.T) {
 	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
@@ -1887,8 +1886,8 @@ func TestScaffold_LiveSymlink(t *testing.T) {
 }
 
 // TestScaffold_RegularFile_Idempotent confirms that EEXIST on a regular file
-// (not a symlink) still returns nil — idempotency is preserved (finding #2:
-// only symlinks are rejected, regular-file EEXIST stays success).
+// (not a symlink) still returns nil — idempotency is preserved (only
+// symlinks are rejected, regular-file EEXIST stays success).
 func TestScaffold_RegularFile_Idempotent_SymlinkCheck(t *testing.T) {
 	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
@@ -1915,7 +1914,7 @@ func TestScaffold_RegularFile_Idempotent_SymlinkCheck(t *testing.T) {
 
 // TestLoad_DanglingSymlink verifies that Load rejects a dangling symlink at
 // the .makeslop.yaml path with a hard error instead of silently returning empty
-// defaults (finding #2).
+// defaults.
 func TestLoad_DanglingSymlink(t *testing.T) {
 	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
@@ -1941,7 +1940,7 @@ func TestLoad_DanglingSymlink(t *testing.T) {
 }
 
 // TestLoad_LiveSymlink verifies that Load rejects a live symlink pointing to a
-// valid config file (finding #2).
+// valid config file.
 func TestLoad_LiveSymlink(t *testing.T) {
 	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
@@ -1973,8 +1972,8 @@ func TestLoad_LiveSymlink(t *testing.T) {
 }
 
 // TestLoad_MissingFile_ReturnsDefaultsNotError confirms that a truly absent
-// .makeslop.yaml (no symlink, no file) still returns empty defaults — regression
-// guard for the Lstat-before-ReadFile change (finding #2).
+// .makeslop.yaml (no symlink, no file) still returns empty defaults even though Load
+// checks with Lstat before ReadFile.
 func TestLoad_MissingFile_NoSymlink_ReturnsDefaults(t *testing.T) {
 	root := evalSymlinks(t, t.TempDir())
 

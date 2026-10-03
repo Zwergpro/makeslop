@@ -97,7 +97,7 @@ func TestRun_AfterInit_LaunchesDocker(t *testing.T) {
 		t.Fatalf("root failed: %v; stderr=%q", err, stderr)
 	}
 	if stdout != "" {
-		t.Errorf("makeslop go must not print on stdout (milestone-1 path was removed); got %q", stdout)
+		t.Errorf("makeslop run must not print on stdout; got %q", stdout)
 	}
 	snapAfter := snapshotTree(t, baseDir)
 	assertSnapshotsEqual(t, snapBefore, snapAfter)
@@ -1095,9 +1095,9 @@ func TestRun_YamlMalformedAbortsBeforeDocker(t *testing.T) {
 	}{
 		{name: "malformed yaml", yaml: "exclude:\n  dirs: [unclosed\n"},
 		{
-			name:     "old flat environments form",
+			name:     "variable directly under environments",
 			yaml:     "environments:\n  NODE_ENV: production\n",
-			wantFrag: `flat "KEY: value" form is no longer supported; move entries under environments.static`,
+			wantFrag: `variables must be listed under environments.static, not directly under environments`,
 		},
 	}
 	for _, tc := range cases {
@@ -1194,8 +1194,7 @@ func TestRun_YamlDirAndFileDupAborts(t *testing.T) {
 	}
 }
 
-// A stale "network:" block (from the removed proxy feature) must abort `run` —
-// the intended loud break forcing users to drop it on upgrade.
+// A "network:" block is an unknown key and must abort `run` before docker.
 func TestRun_StaleNetworkBlockAbortsBeforeDocker(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -2170,7 +2169,7 @@ func TestRun_QuietContract_BothWarningSources(t *testing.T) {
 	}
 }
 
-// .makeslop.yaml-as-symlink: Load now rejects symlinks fail-loud (finding #2),
+// .makeslop.yaml-as-symlink: Load rejects symlinks fail-loud,
 // so makeslop run must fail with a clear "is a symlink" error — docker.Run is
 // never invoked (the symlink is caught before the daemon is contacted).
 func TestRun_ConfigAsSymlink_FailsLoud(t *testing.T) {

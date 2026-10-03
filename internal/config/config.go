@@ -42,7 +42,7 @@ func DefaultBaseDir() (string, error) {
 	return filepath.Join(home, ".makeslop"), nil
 }
 
-// Load defaults legacy shell and tmpfs settings; an unset image still requires
+// Load defaults empty shell and tmpfs settings; an unset image still requires
 // an explicit choice from the user.
 func Load(baseDir string) (*Settings, error) {
 	path := filepath.Join(baseDir, SettingsFile)

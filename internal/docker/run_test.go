@@ -28,7 +28,7 @@ func sampleSpec() Spec {
 
 // closeWriteConn wraps a net.Conn and implements CloseWriter, recording whether
 // CloseWrite was called. It is used by fakeClient to assert that the stdin
-// goroutine propagates stdin EOF to the container (finding #3 fix).
+// goroutine propagates stdin EOF to the container.
 // The pointer to closeWriteCalled is owned by fakeClient.
 type closeWriteConn struct {
 	net.Conn
@@ -54,7 +54,7 @@ type fakeClient struct {
 	closeWriteCalled bool   // set when CloseWrite() is called on the attach conn
 
 	// waitCtx is the context captured by ContainerWait. Tests use it to verify
-	// that the wait context is cancelled on early-return paths (finding #4 fix).
+	// that the wait context is cancelled on early-return paths.
 	waitCtx context.Context
 
 	// delayedPayload, when non-empty, is output delivered AFTER the wait result.
@@ -80,15 +80,15 @@ type fakeClient struct {
 	waitAfterAttachCh chan struct{}
 
 	// attachPW is the write end of the net.Pipe used by ContainerAttach. When set,
-	// ContainerRemove closes it so the post-remove outputDone drain can complete
-	// (finding #5 fix). Without this, the drain would block forever waiting for the
-	// attach stream to EOF, since the fake never kills the container on remove.
+	// ContainerRemove closes it so the post-remove outputDone drain can complete.
+	// Without this, the drain would block forever waiting for the attach stream
+	// to EOF, since the fake never kills the container on remove.
 	attachPW net.Conn
 
 	// keepAttachOpen, when true, prevents ContainerAttach's goroutine from closing
 	// pw automatically. The pipe writer stays open until ContainerRemove calls
 	// attachPW.Close(). Used by tests that need the attach stream to stay open until
-	// a force-remove is observed, to verify the finding #5 fix.
+	// a force-remove is observed.
 	keepAttachOpen bool
 
 	created     bool
@@ -121,8 +121,8 @@ func (f *fakeClient) ContainerAttach(_ context.Context, _ string, _ moby.Contain
 	pr, pw := net.Pipe()
 
 	// Store pw so ContainerRemove can close it, simulating the daemon killing the
-	// container (which causes the attach stream to EOF). Required for finding #5:
-	// without this, the post-remove outputDone drain would block forever.
+	// container (which causes the attach stream to EOF). Without this, the
+	// post-remove outputDone drain would block forever.
 	f.attachPW = pw
 
 	// Wrap pr with a CloseWriter so att.CloseWrite() calls are recorded.
@@ -165,7 +165,7 @@ func (f *fakeClient) ContainerAttach(_ context.Context, _ string, _ moby.Contain
 	} else {
 		// Write the scripted payload then close the write side so the pump goroutine ends.
 		// When keepAttachOpen is true, leave pw open — only ContainerRemove will close it.
-		// This lets tests verify the finding #5 fix: force-remove → attach EOF → drain done.
+		// This lets tests verify force-remove → attach EOF → drain done.
 		keepOpen := f.keepAttachOpen
 		go func() {
 			if f.attachPayload != "" {
@@ -192,7 +192,7 @@ func (f *fakeClient) ContainerStart(_ context.Context, _ string, _ moby.Containe
 
 func (f *fakeClient) ContainerWait(ctx context.Context, _ string, _ moby.ContainerWaitOptions) moby.ContainerWaitResult {
 	f.callOrder = append(f.callOrder, "ContainerWait")
-	f.waitCtx = ctx // capture for test assertions (finding #4)
+	f.waitCtx = ctx // capture for test assertions
 	resultC := make(chan container.WaitResponse, 1)
 	errC := make(chan error, 1)
 	waitAfterAttachCh := f.waitAfterAttachCh
@@ -224,7 +224,7 @@ func (f *fakeClient) ContainerRemove(_ context.Context, _ string, opts moby.Cont
 	f.removed = true
 	// Close the attach pipe writer to simulate the daemon killing the container on
 	// remove. This causes the attach stream (read by the output goroutine) to EOF,
-	// which allows the post-remove outputDone drain to complete (finding #5).
+	// which allows the post-remove outputDone drain to complete.
 	// Idempotent: net.Conn.Close() on an already-closed pipe returns an error that
 	// is intentionally ignored here — the second remove call (from the deferred
 	// force-remove after the wr.Error path) is harmless.
@@ -468,7 +468,7 @@ func TestRun_WaitBeforeStart(t *testing.T) {
 }
 
 // TestRun_OutputDrain proves that tail output written after the wait result is
-// delivered is still present when Run returns (fixes finding #1 — truncation race).
+// delivered is still present when Run returns (no truncation race).
 //
 // Ordering is enforced without time.Sleep:
 //  1. Attach goroutine writes "early-line\n", closes attachReadyCh.
@@ -646,7 +646,7 @@ func (t *trackingReadCloser) Close() error {
 }
 
 // TestRun_StdinJoin verifies that the stdin copy goroutine is joined before Run
-// returns (fixing finding #3 — goroutine leak). The test uses a pipe-backed
+// returns (no goroutine leak). The test uses a pipe-backed
 // stdin (implements io.Closer) injected via WithStreams. The pipe read side blocks
 // indefinitely — the only way Run can return is if it closes the reader (unblocking
 // the copy goroutine) and then waits for stdinDone.
@@ -690,11 +690,10 @@ func TestRun_StdinJoin(t *testing.T) {
 	}
 }
 
-// TestNewPollableStdin_DoesNotAlterFd0 is the regression test for the
-// frozen-TUI bug: the previous implementation set O_NONBLOCK on fd 0, which —
-// because a terminal's fd 0/1/2 share one open file description — silently
-// made os.Stdout non-blocking and killed the output pump with EAGAIN on the
-// first full-screen redraw. Whatever path newPollableStdin takes (fresh
+// TestNewPollableStdin_DoesNotAlterFd0 guards against a frozen TUI: setting
+// O_NONBLOCK on fd 0 would — because a terminal's fd 0/1/2 share one open file
+// description — silently make os.Stdout non-blocking and kill the output pump
+// with EAGAIN on the first full-screen redraw. Whatever path newPollableStdin takes (fresh
 // /dev/tty handle, or any fallback), fd 0's flags must be untouched.
 func TestNewPollableStdin_DoesNotAlterFd0(t *testing.T) {
 	getFlags := func() int {
@@ -756,7 +755,7 @@ func TestRun_StdinFallback(t *testing.T) {
 }
 
 // TestRun_StdinCloseWrite verifies that att.CloseWrite() is called after the
-// stdin copy ends (fixing finding #3 — containers reading stdin to EOF hang).
+// stdin copy ends (containers reading stdin to EOF must not hang).
 // The test uses a pipe-backed stdin (implements io.Closer) injected via
 // WithStreams, so the stdin goroutine is joinable. The pipe write end is closed
 // immediately so stdin reaches EOF and the copy goroutine calls CloseWrite
@@ -797,7 +796,7 @@ func TestRun_StdinCloseWrite(t *testing.T) {
 }
 
 // TestRun_WaitCtx_CancelledOnStartFailure verifies that the wait context is
-// cancelled when ContainerStart fails (finding #4 fix). The fakeClient records
+// cancelled when ContainerStart fails. The fakeClient records
 // the context passed to ContainerWait; after Run returns the start error the
 // test checks that the captured context is Done.
 func TestRun_WaitCtx_CancelledOnStartFailure(t *testing.T) {
@@ -824,7 +823,7 @@ func TestRun_WaitCtx_CancelledOnStartFailure(t *testing.T) {
 	case <-fc.waitCtx.Done():
 		// expected: waitCancel() fired on start-failure return path
 	default:
-		t.Error("wait context was not cancelled after ContainerStart failure (finding #4)")
+		t.Error("wait context was not cancelled after ContainerStart failure")
 	}
 }
 
@@ -886,7 +885,7 @@ func TestRun_StdinCloseWrite_JoinPath(t *testing.T) {
 	}
 }
 
-// TestRun_WaitError_ForceRemoveAndReturn verifies finding #5 fix: when
+// TestRun_WaitError_ForceRemoveAndReturn verifies that when
 // ContainerWait delivers an error while the attach stream is still open (i.e.
 // the container is still running), Run must:
 //   - call ContainerRemove with Force: true (kills the container)
@@ -927,7 +926,7 @@ func TestRun_WaitError_ForceRemoveAndReturn(t *testing.T) {
 			t.Errorf("expected original error in message, got %v", err)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("Run did not return within 5s — drain likely blocked (finding #5 not fixed)")
+		t.Fatal("Run did not return within 5s — drain likely blocked")
 	}
 
 	if !fc.removed {
@@ -1073,7 +1072,7 @@ func TestRun_WaitError_StdinJoined(t *testing.T) {
 }
 
 // TestRun_SIGWINCHGoroutineJoined verifies that the SIGWINCH resize goroutine is
-// joined before Run returns (finding #6 fix). The test sends SIGWINCH
+// joined before Run returns. The test sends SIGWINCH
 // signals in a tight loop while Run is executing and checks:
 //  1. Run returns cleanly (no race-detected concurrent access).
 //  2. The resize goroutine completed before Run returned, even in CI where

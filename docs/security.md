@@ -9,8 +9,8 @@ This document covers makeslop's security-relevant behaviors: secret masking, net
 
 - [Secret masking](#secret-masking)
 - [Project-local exclusions](#project-local-exclusions)
-  - [Breaking change: path-style patterns rejected](#breaking-change-path-style-patterns-rejected)
-  - [Breaking change: symlinked `.makeslop.yaml` rejected](#breaking-change-symlinked-makeslopyaml-rejected)
+  - [Path-style patterns rejected](#path-style-patterns-rejected)
+  - [Symlinked `.makeslop.yaml` rejected](#symlinked-makeslopyaml-rejected)
 - [Sandbox-policy protection](#sandbox-policy-protection)
 - [Joined projects](#joined-projects)
 - [Host environment passthrough](#host-environment-passthrough)
@@ -96,17 +96,11 @@ why the scan is necessary.
 When at least one file is masked, `makeslop` prints `makeslop: masked N secret file(s)` to stderr.
 Zero hits are silent.
 
-**Pre-existing projects:** if your `.makeslop.yaml` predates the secret-masking feature, it will
-not contain an `exclude.scan` block — secret masking will not run. Copy the complete
-`exclude.scan` block (with both `patterns` and `skip-dirs`) from the generated template in
-[Project-local exclusions](#project-local-exclusions) below into your existing `.makeslop.yaml`
-to restore masking.
-
-**Updating scan patterns:** if your `.makeslop.yaml` has an `exclude.scan` block but was generated
-before the hardening pass (2026-06-10), it may be missing the 8 newer patterns (`*.p12`, `*.pfx`,
-`*.tfstate`, `.pypirc`, `.htpasswd`, `service-account*.json`, `kubeconfig`, `*.kubeconfig`). These
-are not added automatically (makeslop never rewrites a project-local config). Copy the missing
-entries from the template below into your `exclude.scan.patterns` list.
+**No `exclude.scan` block:** a `.makeslop.yaml` without an `exclude.scan` block runs no secret
+masking. Copy the complete `exclude.scan` block (with both `patterns` and `skip-dirs`) from the
+generated template in [Project-local exclusions](#project-local-exclusions) below to enable it.
+makeslop never rewrites a project-local config, so patterns added to the template are not added
+to existing files.
 
 ---
 
@@ -155,8 +149,8 @@ every `makeslop run` invocation:
 - Entries under `exclude.scan.patterns` are **basename globs only** — patterns must not contain a
   `/` path separator. `makeslop` matches each pattern against the file's *name* (e.g. `secret.pem`),
   not its full path (e.g. `secrets/secret.pem`). Path-style patterns such as `secrets/*.pem` or
-  `**/*.env` are now rejected with a hard error at startup (see
-  [Breaking change: path-style patterns rejected](#breaking-change-path-style-patterns-rejected)
+  `**/*.env` are rejected with a hard error at startup (see
+  [Path-style patterns rejected](#path-style-patterns-rejected)
   below). Use basename forms: `*.pem`, `*.env`.
   Remove all patterns to disable secret masking entirely.
 - Entries under `exclude.scan.skip-dirs` are bare directory names pruned during the walk.
@@ -183,9 +177,9 @@ The scan results and the `exclude.files` entries are merged; if the same path is
 and listed in `exclude.files`, only one overlay mount is emitted. A YAML parse error aborts the
 launch before docker is invoked.
 
-### Breaking change: path-style patterns rejected
+### Path-style patterns rejected
 
-Starting with this release, `exclude.scan.patterns` entries that contain a `/` are **rejected with a
+`exclude.scan.patterns` entries that contain a `/` are **rejected with a
 hard error** by `makeslop run` (`makeslop status` reports the same error as a secret-scan
 warning):
 
@@ -194,14 +188,13 @@ projectconfig: scan pattern "secrets/*.pem" contains a path separator — patter
 ```
 
 **Why:** `Scan` matches patterns against the file's *basename* using `filepath.Match`. A pattern
-like `secrets/*.pem` could never match because the basename `secret.pem` does not contain a slash.
-Previously such patterns were silently accepted and silently dropped — masking appeared configured
-but nothing was masked.
+like `secrets/*.pem` could never match because the basename `secret.pem` does not contain a slash,
+so accepting it would make masking appear configured while nothing is masked.
 
-**Migration:** change any path-style pattern to its basename equivalent:
+**Fix:** change any path-style pattern to its basename equivalent:
 
 ```yaml
-# Before (silently broken — never matched anything):
+# Rejected (path-style):
 exclude:
   scan:
     patterns:
@@ -209,7 +202,7 @@ exclude:
       - "**/*.env"
       - "config/credentials.json"
 
-# After (correct basename globs):
+# Accepted (basename globs):
 exclude:
   scan:
     patterns:
@@ -228,9 +221,9 @@ exclude:
     - config/credentials.json
 ```
 
-### Breaking change: symlinked `.makeslop.yaml` rejected
+### Symlinked `.makeslop.yaml` rejected
 
-`makeslop run` and `makeslop init` now reject a `.makeslop.yaml` that is a symlink (dangling or
+`makeslop run` and `makeslop init` reject a `.makeslop.yaml` that is a symlink (dangling or
 live) with a hard error (`makeslop status` shows it as a secret-scan warning and fails the blocking
 network row, so it reports not ready):
 
@@ -238,13 +231,13 @@ network row, so it reports not ready):
 projectconfig: .makeslop.yaml is a symlink — the project config must be a regular file
 ```
 
-**Why:** a dangling symlink was previously treated as "no config present" (the follow of a broken
-link returned `ENOENT`), which silently dropped all scan patterns. Even a live symlink to a valid
+**Why:** following a dangling symlink returns `ENOENT`, which would look like "no config present"
+and silently drop all scan patterns. Even a live symlink to a valid
 file is rejected because the sandbox-policy read-only bind is never created for a symlinked
 config (a symlink bind-mount does not protect the file contents). Consistent
 rejection at load time prevents a split-brain state where the file is loaded but not protected.
 
-**Migration:** replace the symlink with a regular file:
+**Fix:** replace the symlink with a regular file:
 
 ```sh
 cp --remove-destination "$(readlink .makeslop.yaml)" .makeslop.yaml
@@ -258,18 +251,9 @@ cp "$(readlink .makeslop.yaml)" .makeslop.yaml.tmp && mv .makeslop.yaml.tmp .mak
 
 ---
 
-**YAML parse errors are hard failures.** Any unknown field in `.makeslop.yaml` — including the now-removed
-`network:` block from earlier makeslop versions — causes a strict-decode error that aborts `makeslop run`
-before Docker is contacted. If you upgrade from a version that had proxy support and your `.makeslop.yaml`
-contains a `network:` block, remove it (use `network_mode` / `networks` instead, see
-[Network egress](#network-egress)):
-
-```yaml
-# Remove this block entirely if present:
-# network:
-#   proxy:
-#     address: 10.0.0.5:3128
-```
+**YAML parse errors are hard failures.** Any unknown field in `.makeslop.yaml` causes a
+strict-decode error that aborts `makeslop run` before Docker is contacted. Container networking is
+set with `network_mode` / `networks` (see [Network egress](#network-egress)).
 
 **Reserved paths.** The paths `.claude`, `.codex`, `docs`, `CLAUDE.md`, and `.makeslop.yaml` are
 already mounted by `makeslop run` (agent state or sandbox-policy mounts). Listing them in

@@ -560,7 +560,7 @@ func TestSpecArgs_VolumeNameWithComma(t *testing.T) {
 	}
 }
 
-// ReadOnly: false must render byte-identically to pre-ReadOnly behavior.
+// ReadOnly: false must render byte-identically to a mount without the field set.
 func TestMount_ReadOnlyFalseRendersIdentical(t *testing.T) {
 	spec := Spec{
 		Image:   "img",
@@ -1330,8 +1330,7 @@ func TestContainerConfig_EnvPropagated(t *testing.T) {
 	}
 }
 
-// Empty Env must emit no -e flags and produce output byte-identical to nil Env
-// (backward compatibility).
+// Empty Env must emit no -e flags and produce output byte-identical to nil Env.
 func TestArgs_EmptyEnv_NoEFlag(t *testing.T) {
 	oNil := sampleOptions() // Env nil by default
 	oEmpty := sampleOptions()

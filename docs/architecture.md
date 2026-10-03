@@ -84,11 +84,11 @@ labels. It does not affect `Args()` or SDK mounts. The labels break shell contin
 dry-run output is for inspection rather than pasting.
 
 The two booleans originate from the project `cache:` block in `.makeslop.yaml`, resolved by
-`projectconfig.Load`. Absent block ⇒ both `true` ⇒ identical to pre-feature behavior. The
+`projectconfig.Load`. Absent block ⇒ both `true`. The
 `init --global-only` flag scaffolds the YAML with both groups set to `false`.
 
 **`Options.MountContentCache`** and **`Options.MountAgentCache`** both default to `false` in Go's
-zero-value; callers that want the traditional full-mount behavior must explicitly set them to
+zero-value; callers that want full-mount behavior must explicitly set them to
 `true`. `runRun` does this by reading the project config; tests that exercise full-mount behavior
 must set them on their `sampleOptions()` or equivalent fixture.
 
@@ -201,18 +201,17 @@ Walk errors (e.g. unreadable subdirectories) are propagated immediately and abor
 `docker.Run`. This "fail-loud" invariant ensures makeslop never silently skips a directory it
 cannot prove is secret-free — consistent with the no-`.env`-leak contract.
 
-The defaults live as active values in the `Scaffold` stub seeded by `makeslop init`. Pre-existing
-project `.makeslop.yaml` files are never auto-migrated; users with an old stub must manually add an
-`exclude.scan` block.
+The defaults live as active values in the `Scaffold` stub seeded by `makeslop init`. Existing
+project `.makeslop.yaml` files are never rewritten; a file without an `exclude.scan` block gets no
+secret scan.
 
 ---
 
 ## Settings schema
 
-`~/.makeslop/settings.json` has no version stamp and no migration step. `config.Load` defaults
-`Shell` and `TmpDirSize` when they are empty; `Image` is never defaulted (empty means unset).
-Obsolete keys from older versions (`version`, `migrated_version`) are ignored on load and dropped
-on the next `Save`, because `Settings` no longer has fields for them.
+`~/.makeslop/settings.json` has no version stamp. `config.Load` defaults `Shell` and `TmpDirSize`
+when they are empty; `Image` is never defaulted (empty means unset). Keys without a `Settings`
+field are ignored on load and dropped on the next `Save`.
 
 Schema changes must therefore stay backward compatible: add fields with `omitempty` plus
 load-time defaulting rather than renaming or repurposing existing keys.

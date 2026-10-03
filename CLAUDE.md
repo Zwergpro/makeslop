@@ -88,15 +88,14 @@ paste-ready because the labels break shell continuation.
   `errNoImage`) in `internal/cli/image.go`. `-i/--image` exists on `run` and `status` only. `run`
   resolves before `ws.Lookup` so config errors fail fast; `init` prints a non-blocking note when
   the image is unset. A missing local image fails with a "build or pull it" hint (no auto-pull).
-- `Load` still defaults `Shell` and `TmpDirSize`. There is no version stamp or migration step:
-  obsolete keys (`version`, `migrated_version`) are ignored and dropped on the next `Save`.
+- `Load` defaults `Shell` and `TmpDirSize`. There is no version stamp: keys without a `Settings`
+  field are ignored and dropped on the next `Save`.
 - Every `settings.json` read-modify-write goes through `config.Update` / `config.WithLock`: an
   in-process mutex plus `flock` on `<baseDir>/.settings.lock`. **Never nest `WithLock`**, including
   inside an `Update` mutate func: the nested call self-deadlocks.
 
 ### Project config (`.makeslop.yaml`)
-- Decoded in strict mode (`KnownFields(true)`), so unknown keys are hard errors. That includes the
-  `network:` block from older versions. Exception: `environments:` and `networks:` are decoded as
+- Decoded in strict mode (`KnownFields(true)`), so unknown keys are hard errors. Exception: `environments:` and `networks:` are decoded as
   raw `yaml.Node`s, which strict mode does not check. Both `validateEnvironments` and
   `decodeNetworks` follow aliases by hand (`deref`). `validateEnvironments` does its own unknown-key
   and duplicate-key detection at both levels; its errors name keys or line numbers, never values
@@ -122,7 +121,7 @@ paste-ready because the labels break shell continuation.
   that named the target (`network_mode:` / `networks:`). `run` calls it after the image check (not
   on `--dry-run`); `status` uses it for the blocking `network` row, and an invalid
   `.makeslop.yaml` makes that row `✗`.
-- Existing project files are never auto-migrated.
+- Existing project files are never rewritten.
 
 ### Joins (`run --join`)
 `resolveJoins` checks paths and overlap before daemon preflight. `loadProject` then parses and
