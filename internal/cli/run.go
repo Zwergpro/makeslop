@@ -174,6 +174,8 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir, imageFlag str
 		Env:                  resolveEnv(env, os.LookupEnv),
 		ProtectProjectConfig: protectProjectConfig,
 		MaskGitHooks:         maskGitHooks,
+		NetworkMode:          pcfg.Network.Mode,
+		Networks:             pcfg.Network.Networks,
 	}
 
 	spec := docker.BuildSpec(opts)
@@ -191,6 +193,11 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir, imageFlag str
 	}
 	if !imageFound {
 		fmt.Fprintln(cmd.ErrOrStderr(), "makeslop: "+imageNotFoundHint(image))
+		return errSilent
+	}
+
+	if netErr := deps.networkPreflight(cmd.Context(), pcfg.Network); netErr != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "makeslop: %v\n", netErr)
 		return errSilent
 	}
 

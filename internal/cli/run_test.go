@@ -2585,3 +2585,209 @@ func TestRun_NoImage_Unregistered_ImageErrorWins(t *testing.T) {
 		t.Error("docker must not be touched")
 	}
 }
+
+// ── Network preflight tests ───────────────────────────────────────────────────
+
+// writeNetworkYaml writes a .makeslop.yaml in the (registered) cwd with the
+// given network lines appended to an empty exclude block.
+func writeNetworkYaml(t *testing.T, pwd, networkLines string) {
+	t.Helper()
+	content := "exclude:\n  dirs: []\n  files: []\n  scan:\n    patterns: []\n" + networkLines
+	if err := os.WriteFile(filepath.Join(evalSymlinks(t, pwd), projectconfig.Filename), []byte(content), 0o644); err != nil {
+		t.Fatalf("write yaml: %v", err)
+	}
+}
+
+func setupNetworkRun(t *testing.T, networkLines string) string {
+	t.Helper()
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	pwd := t.TempDir()
+	t.Chdir(pwd)
+	initWithImage(t, baseDir)
+	writeNetworkYaml(t, pwd, networkLines)
+	return baseDir
+}
+
+func TestRun_DryRun_NetworkContainer_NoDaemonCalls(t *testing.T) {
+	baseDir := setupNetworkRun(t, "network_mode: \"container:proxy\"\n")
+	fc := newFakeDocker(0, false)
+	fc.PingErr = errors.New("connection refused")
+
+	stdout, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fc), "run", "--dry-run")
+	if err != nil {
+		t.Fatalf("--dry-run failed: %v; stderr=%q", err, stderr)
+	}
+	if !strings.Contains(stdout, "--network container:proxy") {
+		t.Errorf("dry-run stdout missing --network container:proxy:\n%s", stdout)
+	}
+	if fc.DaemonChecked || fc.ImageChecked != "" || len(fc.ContainersInspected) > 0 || len(fc.NetworksInspected) > 0 {
+		t.Errorf("dry-run must make no daemon calls; daemon=%v image=%q containers=%v networks=%v",
+			fc.DaemonChecked, fc.ImageChecked, fc.ContainersInspected, fc.NetworksInspected)
+	}
+}
+
+func TestRun_NetworkPreflight(t *testing.T) {
+	tests := []struct {
+		name           string
+		yaml           string
+		containers     map[string]bool
+		networks       map[string]bool
+		containerErr   error
+		networkErr     error
+		wantErr        bool
+		wantStderr     []string
+		wantContainers []string
+		wantNetworks   []string
+	}{
+		{
+			name:           "container missing",
+			yaml:           "network_mode: \"container:proxy\"\n",
+			wantErr:        true,
+			wantStderr:     []string{`makeslop: network_mode: container "proxy" not found — start it first`, "compose names containers", "docker ps"},
+			wantContainers: []string{"proxy"},
+		},
+		{
+			name:           "container stopped",
+			yaml:           "network_mode: \"container:proxy\"\n",
+			containers:     map[string]bool{"proxy": false},
+			wantErr:        true,
+			wantStderr:     []string{`makeslop: network_mode: container "proxy" is not running — start it first`},
+			wantContainers: []string{"proxy"},
+		},
+		{
+			name:           "container running",
+			yaml:           "network_mode: \"container:proxy\"\n",
+			containers:     map[string]bool{"proxy": true},
+			wantContainers: []string{"proxy"},
+		},
+		{
+			name:           "container inspect error",
+			yaml:           "network_mode: \"container:proxy\"\n",
+			containerErr:   errors.New("boom"),
+			wantErr:        true,
+			wantStderr:     []string{`check container "proxy": boom`, "is docker running?"},
+			wantContainers: []string{"proxy"},
+		},
+		{
+			name:         "network missing",
+			yaml:         "networks: [a, b]\n",
+			networks:     map[string]bool{"a": true},
+			wantErr:      true,
+			wantStderr:   []string{`makeslop: network "b" not found — create it with 'docker network create b'`, "<project>_", "docker network ls"},
+			wantNetworks: []string{"a", "b"},
+		},
+		{
+			name:         "networks present",
+			yaml:         "networks: [a, b]\n",
+			networks:     map[string]bool{"a": true, "b": true},
+			wantNetworks: []string{"a", "b"},
+		},
+		{
+			name:         "network inspect error",
+			yaml:         "networks: [a]\n",
+			networkErr:   errors.New("boom"),
+			wantErr:      true,
+			wantStderr:   []string{`check network "a": boom`, "is docker running?"},
+			wantNetworks: []string{"a"},
+		},
+		{
+			name:         "custom network_mode inspected as network",
+			yaml:         "network_mode: myapp_default\n",
+			networks:     map[string]bool{"myapp_default": true},
+			wantNetworks: []string{"myapp_default"},
+		},
+		{
+			name:         "custom network_mode missing",
+			yaml:         "network_mode: myapp_default\n",
+			wantErr:      true,
+			wantStderr:   []string{`network "myapp_default" not found`},
+			wantNetworks: []string{"myapp_default"},
+		},
+		{name: "unset", yaml: ""},
+		{name: "bridge", yaml: "network_mode: bridge\n"},
+		{name: "host", yaml: "network_mode: host\n"},
+		{name: "none", yaml: "network_mode: none\n"},
+		{name: "default", yaml: "network_mode: default\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			baseDir := setupNetworkRun(t, tt.yaml)
+			fc := newFakeDocker(0, true)
+			fc.Containers = tt.containers
+			fc.Networks = tt.networks
+			fc.ContainerErr = tt.containerErr
+			fc.NetworkErr = tt.networkErr
+
+			_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fc), "run")
+			if tt.wantErr {
+				if !errors.Is(err, errSilent) {
+					t.Fatalf("want errSilent, got %v; stderr=%q", err, stderr)
+				}
+				if fc.Started {
+					t.Error("container must not start when network preflight fails")
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("run failed: %v; stderr=%q", err, stderr)
+				}
+				if !fc.Started {
+					t.Error("container must start when network preflight passes")
+				}
+			}
+			for _, s := range tt.wantStderr {
+				if !strings.Contains(stderr, s) {
+					t.Errorf("stderr missing %q:\n%s", s, stderr)
+				}
+			}
+			if !slices.Equal(fc.ContainersInspected, tt.wantContainers) {
+				t.Errorf("containers inspected = %q, want %q", fc.ContainersInspected, tt.wantContainers)
+			}
+			if !slices.Equal(fc.NetworksInspected, tt.wantNetworks) {
+				t.Errorf("networks inspected = %q, want %q", fc.NetworksInspected, tt.wantNetworks)
+			}
+		})
+	}
+}
+
+// The network settings flow from .makeslop.yaml into the executed Spec.
+func TestRun_NetworkFlowsIntoSpec(t *testing.T) {
+	baseDir := setupNetworkRun(t, "networks: [a, b]\n")
+	fc := newFakeDocker(0, true)
+	fc.Networks = map[string]bool{"a": true, "b": true}
+
+	if _, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fc), "run"); err != nil {
+		t.Fatalf("run failed: %v; stderr=%q", err, stderr)
+	}
+	if fc.LastSpec.NetworkMode != "" || !slices.Equal(fc.LastSpec.Networks, []string{"a", "b"}) {
+		t.Errorf("spec network = (%q, %q), want (\"\", [a b])", fc.LastSpec.NetworkMode, fc.LastSpec.Networks)
+	}
+	if got := string(fc.LastSpec.HostConfig().NetworkMode); got != "a" {
+		t.Errorf("HostConfig.NetworkMode = %q, want a", got)
+	}
+}
+
+// The image check runs before the network check.
+func TestRun_NetworkPreflight_AfterImageCheck(t *testing.T) {
+	baseDir := setupNetworkRun(t, "network_mode: \"container:proxy\"\n")
+	fc := newFakeDocker(0, true)
+	fc.ImageMissing = true
+
+	_, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fc), "run")
+	if !errors.Is(err, errSilent) {
+		t.Fatalf("want errSilent, got %v", err)
+	}
+	if !strings.Contains(stderr, "not found locally") {
+		t.Errorf("stderr missing image hint: %q", stderr)
+	}
+	if len(fc.ContainersInspected) > 0 {
+		t.Errorf("network preflight must not run when image is missing; inspected %q", fc.ContainersInspected)
+	}
+}
+
+func TestNewDockerDeps_FillsEveryField(t *testing.T) {
+	d := newDockerDeps(dockerNewErrStub{errors.New("x")})
+	if d.runner == nil || d.daemon == nil || d.image == nil || d.network == nil {
+		t.Errorf("newDockerDeps left a nil field: %+v", d)
+	}
+}

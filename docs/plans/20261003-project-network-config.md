@@ -168,13 +168,13 @@
 - Modify: `internal/cli/main_test.go`
 - Modify: `internal/cli/run_test.go`
 
-- [ ] add a `networkChecker` interface (`ContainerRunning`, `NetworkExists`) and a `network` field to `dockerDeps`, plus `dockerNewErrStub` methods
-- [ ] stop the nil-field bug: `dockerDeps` is built as keyed literals in `root.go:48` (stub), `root.go:55` (production), and `main_test.go:118` (`depsFrom`), so a forgotten field compiles and nil-panics only in prod. Add `newDockerDeps(x allDocker) dockerDeps`, where `allDocker` embeds all four interfaces, and use it at all three sites
-- [ ] add `networkPreflight(ctx, projectconfig.Network) error` to `deps.go`: bounded by `preflightTimeout`, returns the hint errors from Technical Details; a no-op for the zero `Network`
-- [ ] in `runRun`, pass `cfg.Network` into `docker.Options`; call the preflight after the image check (skipped on `--dry-run`), printing `makeslop: <hint>` and returning `errSilent`
-- [ ] extend `fakeDocker` with configurable container/network state
-- [ ] write tests: dry-run prints `--network container:proxy` with no daemon calls; container missing/stopped/running; network missing/present; inspect error; unset config and `bridge`/`host`/`none`/`default` make no inspect calls; a custom `network_mode` is inspected as a network
-- [ ] run tests - must pass before next task
+- [x] add a `networkChecker` interface (`ContainerRunning`, `NetworkExists`) and a `network` field to `dockerDeps`, plus `dockerNewErrStub` methods
+- [x] stop the nil-field bug: `dockerDeps` is built as keyed literals in `root.go:48` (stub), `root.go:55` (production), and `main_test.go:118` (`depsFrom`), so a forgotten field compiles and nil-panics only in prod. Add `newDockerDeps(x allDocker) dockerDeps`, where `allDocker` embeds all four interfaces, and use it at all three sites
+- [x] add `networkPreflight(ctx, projectconfig.Network) error` to `deps.go`: bounded by `preflightTimeout`, returns the hint errors from Technical Details; a no-op for the zero `Network`
+- [x] in `runRun`, pass `cfg.Network` into `docker.Options`; call the preflight after the image check (skipped on `--dry-run`), printing `makeslop: <hint>` and returning `errSilent`
+- [x] extend `fakeDocker` with configurable container/network state
+- [x] write tests: dry-run prints `--network container:proxy` with no daemon calls; container missing/stopped/running; network missing/present; inspect error; unset config and `bridge`/`host`/`none`/`default` make no inspect calls; a custom `network_mode` is inspected as a network
+- [x] run tests - must pass before next task
 
 ### Task 6: `network` row in `status`
 
