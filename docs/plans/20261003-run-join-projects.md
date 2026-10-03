@@ -190,21 +190,22 @@ Approach B was chosen deliberately in brainstorm, even though it means about 88 
 - Modify: `internal/cli/run.go`
 - Modify: `internal/cli/run_test.go`
 
-- [ ] register `--join` / `-j` (`StringArrayVarP`) on `run` with help text
-- [ ] extract `loadProject` from `runRun` (load, prefixed warnings, scan, report, merge, `sandboxMountGates` → `docker.Project`), with a join variant of the `reportScanResults` message
-- [ ] call `resolveJoins` right after `ws.Lookup`; load joins after main in flag order; main's `Config` still supplies Cache/Env/Network
-- [ ] write tests: `-n -j ../lib` prints both separators and the join mounts at `/workspace/lib`; `:ro` → readonly bind with no sandbox mounts
-- [ ] write tests: masking isolation (a main pattern doesn't mask a join file and vice versa; a join's `exclude.files`/`dirs` apply only to the join); a join's warnings are prefixed and bypass `--quiet`
-- [ ] write tests: an invalid join `.makeslop.yaml` aborts with no `Run` call and the error names the join; daemon down + bad join YAML reports the daemon error (daemon-first contract, same as main)
-- [ ] write tests: a join scan walk error aborts with no `Run` call; a join's `environments`/`network_mode` are ignored, with the one "ignored" chrome line
-- [ ] write tests: `-n -j` makes no daemon calls (mirror `TestRun_DryRun_NetworkContainer_NoDaemonCalls`); `--quiet` hides the join "masked N … in <host>" line but not its warnings; main's "masked N secret file(s)" text is unchanged; join symlink warnings are relative to the join root
-- [ ] run tests; they must pass before Task 6
+- [x] register `--join` / `-j` (`StringArrayVarP`) on `run` with help text
+- [x] extract `loadProject` from `runRun` (load, prefixed warnings, scan, report, merge, `sandboxMountGates` → `docker.Project`), with a join variant of the `reportScanResults` message
+- [x] call `resolveJoins` right after `ws.Lookup`; load joins after main in flag order; main's `Config` still supplies Cache/Env/Network
+- [x] write tests: `-n -j ../lib` prints both separators and the join mounts at `/workspace/lib`; `:ro` → readonly bind with no sandbox mounts
+- [x] write tests: masking isolation (a main pattern doesn't mask a join file and vice versa; a join's `exclude.files`/`dirs` apply only to the join); a join's warnings are prefixed and bypass `--quiet`
+- [x] write tests: an invalid join `.makeslop.yaml` aborts with no `Run` call and the error names the join; daemon down + bad join YAML reports the daemon error (daemon-first contract, same as main)
+- [x] write tests: a join scan walk error aborts with no `Run` call; a join's `environments`/`network_mode` are ignored, with the one "ignored" chrome line
+- [x] write tests: `-n -j` makes no daemon calls (mirror `TestRun_DryRun_NetworkContainer_NoDaemonCalls`); `--quiet` hides the join "masked N … in <host>" line but not its warnings; main's "masked N secret file(s)" text is unchanged; join symlink warnings are relative to the join root
+- [x] run tests; they must pass before Task 6 (golangci-lint not installed here; `go vet ./...` clean)
+- ➕ `reportScanResults` takes `in`/`prefix` args; a join's scan symlink warnings are prefixed `join <host>: ` like its config warnings. `loadProject` takes `join bool` instead of a prefix string (the caller sets Name/Label/ReadOnly)
 
 ### Task 6: Verify acceptance criteria
-- [ ] verify all requirements from Overview are implemented
-- [ ] verify that with no `--join`, `-n` output is byte-identical to `main` (compare built binaries on a sample project)
-- [ ] run the full test suite: `GOTMPDIR=$HOME/.cache/gotmp go test -timeout=100s ./...`
-- [ ] run `golangci-lint run` (or `go vet ./...`)
+- [x] verify all requirements from Overview are implemented (branch binary `-n -j ../lib:ro`: per-project separators, readonly join bind, join masked only by its own `exclude:`, "ignored" line for its `network_mode`)
+- [x] verify that with no `--join`, `-n` output is byte-identical to `main` (compare built binaries on a sample project) — stdout and stderr identical (`cmp`) on a project with scan patterns, `files:` and `dirs:` excludes
+- [x] run the full test suite: `GOTMPDIR=$HOME/.cache/gotmp go test -timeout=100s ./...`
+- [x] run `golangci-lint run` (or `go vet ./...`) (golangci-lint not installed; `go vet ./...` clean)
 
 ### Task 7: [Final] Update documentation
 - [ ] `docs/reference.md`: `--join` under `### run` (syntax, suffix, the `foo:ro:rw` escape, no `~` expansion with `--join=`, cwd-relative paths, the ignored keys, the not-a-project/overlap/collision errors, the home guard), the mount table for joins, and dry-run section separators

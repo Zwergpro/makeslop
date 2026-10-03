@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -81,9 +82,12 @@ func sandboxMountGates(workspaceRoot string) (protect, maskHooks bool) {
 	return protect, maskHooks
 }
 
-func reportScanResults(stderr, chrome io.Writer, root string, masked, symlinkMatches []string) {
+// reportScanResults prints the masked count (chrome) and symlink warnings
+// (stderr, never quieted). in is "" for the main project and " in <host>" for a
+// join; prefix is "" for main and "join <host>: " for a join.
+func reportScanResults(stderr, chrome io.Writer, root, in, prefix string, masked, symlinkMatches []string) {
 	if len(masked) > 0 {
-		fmt.Fprintf(chrome, "makeslop: masked %d secret file(s)\n", len(masked))
+		fmt.Fprintf(chrome, "makeslop: masked %d secret file(s)%s\n", len(masked), in)
 	}
 	for _, sym := range symlinkMatches {
 		rel, relErr := filepath.Rel(root, sym)
@@ -91,11 +95,60 @@ func reportScanResults(stderr, chrome io.Writer, root string, masked, symlinkMat
 			rel = sym
 		}
 		fmt.Fprintf(stderr,
-			"makeslop: warning: symlink %s matches a secret pattern but is NOT masked\n", rel)
+			"makeslop: warning: %ssymlink %s matches a secret pattern but is NOT masked\n", prefix, rel)
 	}
 }
 
-func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir, imageFlag string, outOfHome, dryRun, quiet bool, deps dockerDeps) error {
+// loadProject loads root's .makeslop.yaml, prints its warnings, scans for
+// secrets and returns the masking half of a docker.Project (Host, masks and
+// sandbox gates; the caller sets Name, Label and ReadOnly). For a join
+// (join=true) messages name the join's host, errors are wrapped "join <host>: ",
+// and settings other than exclude: are reported as ignored. The returned
+// Config is only meaningful for the main project.
+func loadProject(ctx context.Context, stderr, chrome io.Writer, root string, join bool) (docker.Project, projectconfig.Config, error) {
+	prefix, in := "", ""
+	wrap := func(err error) error { return err }
+	if join {
+		prefix = "join " + root + ": "
+		in = " in " + root
+		wrap = func(err error) error { return fmt.Errorf("join %s: %w", root, err) }
+	}
+
+	pcfg, err := projectconfig.Load(root)
+	if err != nil {
+		return docker.Project{}, projectconfig.Config{}, wrap(err)
+	}
+
+	// Symlink warnings bypass --quiet: degraded protection is never treated as chrome.
+	for _, w := range pcfg.Excludes.Warnings {
+		fmt.Fprintf(stderr, "makeslop: warning: %s%s\n", prefix, w)
+	}
+
+	// Only cheaply observable keys: cache: defaults to true, so it is not checked.
+	if join && (len(pcfg.Env.Static) > 0 || len(pcfg.Env.Host) > 0 ||
+		pcfg.Network.Mode != "" || len(pcfg.Network.Networks) > 0) {
+		fmt.Fprintf(chrome, "makeslop: %scache/environments/network settings ignored\n", prefix)
+	}
+
+	masked, symlinkMatches, err := security.Scan(ctx, root, pcfg.Excludes.Patterns, pcfg.Excludes.SkipDirs)
+	if err != nil {
+		return docker.Project{}, projectconfig.Config{}, wrap(err)
+	}
+	reportScanResults(stderr, chrome, root, in, prefix, masked, symlinkMatches)
+
+	// BuildSpec is pure (no fs access); Lstat checks live here.
+	protect, maskHooks := sandboxMountGates(root)
+
+	return docker.Project{
+		Host:          root,
+		MaskedFiles:   mergeUniqueSorted(masked, pcfg.Excludes.Files),
+		MaskedDirs:    pcfg.Excludes.Dirs,
+		ProtectConfig: protect,
+		MaskGitHooks:  maskHooks,
+	}, pcfg, nil
+}
+
+func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir, imageFlag string, joinFlags []string, outOfHome, dryRun, quiet bool, deps dockerDeps) error {
 	chrome := &quietWriter{w: cmd.ErrOrStderr(), quiet: quiet}
 	pwd, err := resolvePwd()
 	if err != nil {
@@ -129,6 +182,13 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir, imageFlag str
 		return err
 	}
 
+	// Path checks only; join configs are parsed after the daemon preflight.
+	mainName := filepath.Base(workspaceDir)
+	joins, err := resolveJoins(pwd, workspaceRoot, mainName, baseDir, joinFlags, outOfHome)
+	if err != nil {
+		return err
+	}
+
 	// Before the scan: a down daemon is reported immediately. Skipped on --dry-run.
 	if !dryRun {
 		if daemonErr := deps.checkDaemonPreflight(cmd.Context()); daemonErr != nil {
@@ -138,36 +198,31 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir, imageFlag str
 		}
 	}
 
-	pcfg, err := projectconfig.Load(workspaceRoot)
+	mainProj, pcfg, err := loadProject(cmd.Context(), cmd.ErrOrStderr(), chrome, workspaceRoot, false)
 	if err != nil {
 		return err
 	}
+	mainProj.Name = mainName
+	mainProj.Label = "project: " + workspaceRoot
+	projects := []docker.Project{mainProj}
 
-	// Symlink warnings bypass --quiet: degraded protection is never treated as chrome.
-	for _, w := range pcfg.Excludes.Warnings {
-		fmt.Fprintf(cmd.ErrOrStderr(), "makeslop: warning: %s\n", w)
+	for _, j := range joins {
+		p, _, err := loadProject(cmd.Context(), cmd.ErrOrStderr(), chrome, j.Host, true)
+		if err != nil {
+			return err
+		}
+		p.Name = j.Name
+		p.ReadOnly = j.ReadOnly
+		mode := "rw"
+		if j.ReadOnly {
+			mode = "ro"
+		}
+		p.Label = "join: " + j.Host + " (" + mode + ")"
+		projects = append(projects, p)
 	}
-
-	masked, symlinkMatches, err := security.Scan(cmd.Context(), workspaceRoot, pcfg.Excludes.Patterns, pcfg.Excludes.SkipDirs)
-	if err != nil {
-		return err
-	}
-	reportScanResults(cmd.ErrOrStderr(), chrome, workspaceRoot, masked, symlinkMatches)
-	maskedFiles := mergeUniqueSorted(masked, pcfg.Excludes.Files)
-
-	// BuildSpec is pure (no fs access); Lstat checks live here.
-	protectProjectConfig, maskGitHooks := sandboxMountGates(workspaceRoot)
 
 	opts := docker.Options{
-		Projects: []docker.Project{{
-			Host:          workspaceRoot,
-			Name:          filepath.Base(workspaceDir),
-			Label:         "project: " + workspaceRoot,
-			MaskedFiles:   maskedFiles,
-			MaskedDirs:    pcfg.Excludes.Dirs,
-			ProtectConfig: protectProjectConfig,
-			MaskGitHooks:  maskGitHooks,
-		}},
+		Projects:          projects,
 		WorkspaceHost:     workspaceDir,
 		BaseDir:           baseDir,
 		Image:             image,
@@ -217,6 +272,7 @@ func newRunCmd(ws *workspace.Workspaces, baseDir string, deps dockerDeps) *cobra
 	var outOfHome bool
 	var dryRun bool
 	var image string
+	var joins []string
 
 	cmd := &cobra.Command{
 		Use:          "run",
@@ -225,7 +281,7 @@ func newRunCmd(ws *workspace.Workspaces, baseDir string, deps dockerDeps) *cobra
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			quiet, _ := cmd.Flags().GetBool("quiet")
-			return runRun(cmd, ws, baseDir, image, outOfHome, dryRun, quiet, deps)
+			return runRun(cmd, ws, baseDir, image, joins, outOfHome, dryRun, quiet, deps)
 		},
 	}
 	cmd.Flags().BoolVarP(&dryRun, "dry-run", "n", false,
@@ -234,5 +290,7 @@ func newRunCmd(ws *workspace.Workspaces, baseDir string, deps dockerDeps) *cobra
 		"allow running outside the user's home directory")
 	cmd.Flags().StringVarP(&image, "image", "i", "",
 		"container image to run (overrides the settings image)")
+	cmd.Flags().StringArrayVarP(&joins, "join", "j", nil,
+		"mount another makeslop project at /workspace/<basename>; `path[:ro|:rw]`, repeatable (default rw)")
 	return cmd
 }

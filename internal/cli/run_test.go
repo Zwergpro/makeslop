@@ -2380,7 +2380,7 @@ func TestReportScanResults_TwoWriterContract(t *testing.T) {
 	var stderr, chrome bytes.Buffer
 	root := "/some/root"
 	masked := []string{"/some/root/a.env", "/some/root/b.env"}
-	reportScanResults(&stderr, &chrome, root, masked, nil)
+	reportScanResults(&stderr, &chrome, root, "", "", masked, nil)
 
 	if !strings.Contains(chrome.String(), "masked 2 secret file(s)") {
 		t.Errorf("chrome missing masked count: %q", chrome.String())
@@ -2394,7 +2394,7 @@ func TestReportScanResults_SymlinkWarningToStderr(t *testing.T) {
 	var stderr, chrome bytes.Buffer
 	root := "/some/root"
 	syms := []string{"/some/root/link.env"}
-	reportScanResults(&stderr, &chrome, root, nil, syms)
+	reportScanResults(&stderr, &chrome, root, "", "", nil, syms)
 
 	if chrome.String() != "" {
 		t.Errorf("chrome must be empty when no masked files: %q", chrome.String())
@@ -2414,7 +2414,7 @@ func TestReportScanResults_RelFallbackToAbsolute(t *testing.T) {
 	// POSIX), so the name still appears in the output.
 	root := "/a/b/c"
 	sym := "/x/y/z/link.env"
-	reportScanResults(&stderr, &chrome, root, nil, []string{sym})
+	reportScanResults(&stderr, &chrome, root, "", "", nil, []string{sym})
 
 	// Either the relative or absolute path must appear in the warning.
 	if !strings.Contains(stderr.String(), "link.env") {
@@ -2892,5 +2892,324 @@ func TestNetworkPreflight_DockerNewErrStub(t *testing.T) {
 		if err := deps.networkPreflight(context.Background(), n); !errors.Is(err, newErr) {
 			t.Errorf("%+v: err = %v, want wrapping %v", n, err, newErr)
 		}
+	}
+}
+
+// ── --join tests ──────────────────────────────────────────────────────────────
+
+const emptyExcludeYAML = "exclude:\n  dirs: []\n  files: []\n  scan:\n    patterns: []\n"
+
+// joinRunFixture is a registered main project <parent>/app (cwd) and a sibling
+// join project <parent>/lib, both with their own .makeslop.yaml.
+type joinRunFixture struct {
+	baseDir string
+	app     string // resolved main root
+	lib     string // resolved join root
+}
+
+func setupJoinRun(t *testing.T, appYAML, libYAML string) joinRunFixture {
+	t.Helper()
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	parent := evalSymlinks(t, t.TempDir())
+	app := filepath.Join(parent, "app")
+	lib := filepath.Join(parent, "lib")
+	for _, d := range []string{app, lib} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", d, err)
+		}
+	}
+	t.Chdir(app)
+	initWithImage(t, baseDir)
+	writeFile(t, filepath.Join(app, projectconfig.Filename), appYAML)
+	writeFile(t, filepath.Join(lib, projectconfig.Filename), libYAML)
+	return joinRunFixture{baseDir: baseDir, app: app, lib: lib}
+}
+
+func writeFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+func findMount(mounts []docker.Mount, container string) (docker.Mount, bool) {
+	for _, m := range mounts {
+		if m.Container == container {
+			return m, true
+		}
+	}
+	return docker.Mount{}, false
+}
+
+func TestRun_Join_DryRun_SeparatorsAndMounts_NoDaemonCalls(t *testing.T) {
+	f := setupJoinRun(t, emptyExcludeYAML, emptyExcludeYAML)
+	fc := newFakeDocker(0, false)
+	fc.PingErr = errors.New("connection refused")
+
+	stdout, stderr, err := runCmdWithDeps(t, f.baseDir, depsFrom(fc), "run", "-n", "-j", "../lib")
+	if err != nil {
+		t.Fatalf("run -n -j failed: %v; stderr=%q", err, stderr)
+	}
+	for _, want := range []string{
+		"`: '--- project: " + f.app + " ---'` \\\n",
+		"`: '--- join: " + f.lib + " (rw) ---'` \\\n",
+		"type=bind,source=" + f.lib + ",target=/workspace/lib",
+		"type=bind,source=" + filepath.Join(f.lib, projectconfig.Filename) + ",target=/workspace/lib/.makeslop.yaml,readonly",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("dry-run stdout missing %q\nstdout:\n%s", want, stdout)
+		}
+	}
+	if fc.DaemonChecked || fc.ImageChecked != "" || len(fc.ContainersInspected) > 0 || len(fc.NetworksInspected) > 0 {
+		t.Errorf("dry-run with joins must make no daemon calls; daemon=%v image=%q", fc.DaemonChecked, fc.ImageChecked)
+	}
+}
+
+func TestRun_Join_NoJoin_NoSeparators(t *testing.T) {
+	f := setupJoinRun(t, emptyExcludeYAML, emptyExcludeYAML)
+	stdout, stderr, err := runCmdWithDeps(t, f.baseDir, depsFrom(newFakeDocker(0, false)), "run", "-n")
+	if err != nil {
+		t.Fatalf("run -n failed: %v; stderr=%q", err, stderr)
+	}
+	if strings.Contains(stdout, "`: '") || strings.Contains(stdout, "/workspace/lib") {
+		t.Errorf("no --join: dry-run must have no separators or join mounts\nstdout:\n%s", stdout)
+	}
+}
+
+func TestRun_Join_ReadOnlyVsReadWrite(t *testing.T) {
+	tests := []struct {
+		name        string
+		flag        string
+		wantRO      bool
+		wantSandbox bool
+	}{
+		{name: "ro", flag: "../lib:ro", wantRO: true, wantSandbox: false},
+		{name: "rw suffix", flag: "../lib:rw", wantRO: false, wantSandbox: true},
+		{name: "no suffix", flag: "../lib", wantRO: false, wantSandbox: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			f := setupJoinRun(t, emptyExcludeYAML, emptyExcludeYAML)
+			if err := os.MkdirAll(filepath.Join(f.lib, ".git", "hooks"), 0o755); err != nil {
+				t.Fatalf("mkdir .git/hooks: %v", err)
+			}
+			fc := newFakeDocker(0, true)
+			_, stderr, err := runCmdWithDeps(t, f.baseDir, depsFrom(fc), "run", "-j", tc.flag)
+			if err != nil {
+				t.Fatalf("run -j failed: %v; stderr=%q", err, stderr)
+			}
+			bind, ok := findMount(fc.LastSpec.Mounts, "/workspace/lib")
+			if !ok {
+				t.Fatalf("join bind missing; mounts=%+v", fc.LastSpec.Mounts)
+			}
+			if bind.Host != f.lib || bind.ReadOnly != tc.wantRO {
+				t.Errorf("join bind = %+v, want host %s readonly=%v", bind, f.lib, tc.wantRO)
+			}
+			_, hasCfg := findMount(fc.LastSpec.Mounts, "/workspace/lib/.makeslop.yaml")
+			_, hasHooks := findMount(fc.LastSpec.Mounts, "/workspace/lib/.git/hooks")
+			if hasCfg != tc.wantSandbox || hasHooks != tc.wantSandbox {
+				t.Errorf("sandbox mounts: config=%v hooks=%v, want %v", hasCfg, hasHooks, tc.wantSandbox)
+			}
+			if len(fc.LastSpec.Sections) != 2 {
+				t.Errorf("Sections = %+v, want 2 entries", fc.LastSpec.Sections)
+			}
+			if fc.LastSpec.Workdir != "/workspace/"+filepath.Base(fc.LastSpec.Mounts[0].Container) {
+				t.Errorf("Workdir = %q must stay on the main project", fc.LastSpec.Workdir)
+			}
+		})
+	}
+}
+
+func TestRun_Join_MaskingIsolation(t *testing.T) {
+	appYAML := "exclude:\n  dirs: []\n  files: []\n  scan:\n    patterns: [\"*.env\"]\n"
+	libYAML := "exclude:\n  dirs: [private]\n  files: [secret.txt]\n  scan:\n    patterns: [\"*.key\"]\n"
+	f := setupJoinRun(t, appYAML, libYAML)
+	for _, p := range []string{
+		filepath.Join(f.app, "a.env"), filepath.Join(f.app, "c.key"),
+		filepath.Join(f.app, "secret.txt"), filepath.Join(f.app, "private", "x"),
+		filepath.Join(f.lib, "b.env"), filepath.Join(f.lib, "c.key"),
+		filepath.Join(f.lib, "secret.txt"), filepath.Join(f.lib, "private", "x"),
+	} {
+		writeFile(t, p, "S=1")
+	}
+
+	fc := newFakeDocker(0, true)
+	_, stderr, err := runCmdWithDeps(t, f.baseDir, depsFrom(fc), "run", "-j", "../lib")
+	if err != nil {
+		t.Fatalf("run -j failed: %v; stderr=%q", err, stderr)
+	}
+	mainPath := fc.LastSpec.Workdir
+	masked := func(container string) bool {
+		m, ok := findMount(fc.LastSpec.Mounts, container)
+		return ok && (m.Host == "/dev/null" || m.Type == "tmpfs")
+	}
+	want := map[string]bool{
+		mainPath + "/a.env":         true,  // main pattern on main
+		mainPath + "/c.key":         false, // join pattern never applies to main
+		mainPath + "/secret.txt":    false, // join exclude.files never applies to main
+		mainPath + "/private":       false, // join exclude.dirs never applies to main
+		"/workspace/lib/b.env":      false, // main pattern never applies to join
+		"/workspace/lib/c.key":      true,
+		"/workspace/lib/secret.txt": true,
+		"/workspace/lib/private":    true,
+	}
+	for target, w := range want {
+		if got := masked(target); got != w {
+			t.Errorf("masked(%s) = %v, want %v; mounts=%+v", target, got, w, fc.LastSpec.Mounts)
+		}
+	}
+	if !strings.Contains(stderr, "makeslop: masked 1 secret file(s)\n") {
+		t.Errorf("main masked line must be unchanged; stderr=%q", stderr)
+	}
+	if !strings.Contains(stderr, "makeslop: masked 1 secret file(s) in "+f.lib+"\n") {
+		t.Errorf("join masked line missing; stderr=%q", stderr)
+	}
+}
+
+func TestRun_Join_WarningsPrefixedAndQuiet(t *testing.T) {
+	skipNonPOSIX(t, "symlinks require POSIX")
+	libYAML := "exclude:\n  dirs: []\n  files: [link.key]\n  scan:\n    patterns: [\"*.env\"]\n"
+	f := setupJoinRun(t, emptyExcludeYAML, libYAML)
+	writeFile(t, filepath.Join(f.lib, "real.env"), "S=1")
+	writeFile(t, filepath.Join(f.lib, "real.key"), "K=1")
+	if err := os.MkdirAll(filepath.Join(f.lib, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../real.env", filepath.Join(f.lib, "sub", "link.env")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("real.key", filepath.Join(f.lib, "link.key")); err != nil {
+		t.Fatal(err)
+	}
+
+	prefix := "makeslop: warning: join " + f.lib + ": "
+	wantScanWarn := prefix + "symlink sub/link.env matches a secret pattern but is NOT masked"
+	wantCfgWarn := prefix + `path "link.key" is a symlink and is NOT masked`
+	maskedLine := "makeslop: masked 1 secret file(s) in " + f.lib
+
+	_, stderr, err := runCmd(t, f.baseDir, "run", "-n", "-j", "../lib")
+	if err != nil {
+		t.Fatalf("run failed: %v; stderr=%q", err, stderr)
+	}
+	for _, w := range []string{wantScanWarn, wantCfgWarn, maskedLine} {
+		if !strings.Contains(stderr, w) {
+			t.Errorf("stderr missing %q; got %q", w, stderr)
+		}
+	}
+
+	_, stderrQ, err := runCmd(t, f.baseDir, "--quiet", "run", "-n", "-j", "../lib")
+	if err != nil {
+		t.Fatalf("quiet run failed: %v; stderr=%q", err, stderrQ)
+	}
+	for _, w := range []string{wantScanWarn, wantCfgWarn} {
+		if !strings.Contains(stderrQ, w) {
+			t.Errorf("--quiet must keep join warning %q; got %q", w, stderrQ)
+		}
+	}
+	if strings.Contains(stderrQ, maskedLine) {
+		t.Errorf("--quiet must hide the join masked line; got %q", stderrQ)
+	}
+}
+
+func TestRun_Join_InvalidYAML_AbortsNamingJoin(t *testing.T) {
+	f := setupJoinRun(t, emptyExcludeYAML, "exclude:\n  dirs: [unclosed\n")
+	fc := newFakeDocker(0, true)
+	_, stderr, err := runCmdWithDeps(t, f.baseDir, depsFrom(fc), "run", "-j", "../lib")
+	if err == nil {
+		t.Fatalf("expected error for invalid join yaml; stderr=%q", stderr)
+	}
+	if !strings.HasPrefix(err.Error(), "join "+f.lib+": projectconfig: ") {
+		t.Errorf("error must name the join: %v", err)
+	}
+	if fc.Started {
+		t.Error("Run must not be called when a join config is invalid")
+	}
+}
+
+func TestRun_Join_DaemonCheckedBeforeJoinYAML(t *testing.T) {
+	f := setupJoinRun(t, emptyExcludeYAML, "exclude:\n  dirs: [unclosed\n")
+	fc := newFakeDocker(0, true)
+	fc.PingErr = errors.New("connection refused")
+	_, stderr, err := runCmdWithDeps(t, f.baseDir, depsFrom(fc), "run", "-j", "../lib")
+	if !errors.Is(err, errSilent) {
+		t.Fatalf("expected errSilent, got %v; stderr=%q", err, stderr)
+	}
+	if !strings.Contains(stderr, "is docker running") || strings.Contains(stderr, "projectconfig") {
+		t.Errorf("daemon error must be reported before the join yaml is parsed; stderr=%q", stderr)
+	}
+	if fc.Started {
+		t.Error("Run must not be called when the daemon is down")
+	}
+}
+
+func TestRun_Join_ScanWalkError_Aborts(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	libYAML := "exclude:\n  dirs: []\n  files: []\n  scan:\n    patterns: [\"*.env\"]\n"
+	f := setupJoinRun(t, emptyExcludeYAML, libYAML)
+	locked := filepath.Join(f.lib, "locked")
+	if err := os.MkdirAll(locked, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(locked, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+
+	fc := newFakeDocker(0, true)
+	_, stderr, err := runCmdWithDeps(t, f.baseDir, depsFrom(fc), "run", "-j", "../lib")
+	if err == nil {
+		t.Fatalf("expected walk error; stderr=%q", stderr)
+	}
+	if !strings.HasPrefix(err.Error(), "join "+f.lib+": ") {
+		t.Errorf("walk error must name the join: %v", err)
+	}
+	if fc.Started {
+		t.Error("Run must not be called after a join scan walk error")
+	}
+}
+
+func TestRun_Join_EnvAndNetworkIgnored(t *testing.T) {
+	libYAML := emptyExcludeYAML + "environments:\n  static:\n    JOIN_VAR: x\nnetwork_mode: host\n"
+	f := setupJoinRun(t, emptyExcludeYAML, libYAML)
+	fc := newFakeDocker(0, true)
+	_, stderr, err := runCmdWithDeps(t, f.baseDir, depsFrom(fc), "run", "-j", "../lib")
+	if err != nil {
+		t.Fatalf("run -j failed: %v; stderr=%q", err, stderr)
+	}
+	if fc.LastSpec.Env != nil || fc.LastSpec.NetworkMode != "" {
+		t.Errorf("join env/network must be ignored; Env=%v NetworkMode=%q", fc.LastSpec.Env, fc.LastSpec.NetworkMode)
+	}
+	line := "makeslop: join " + f.lib + ": cache/environments/network settings ignored\n"
+	if n := strings.Count(stderr, line); n != 1 {
+		t.Errorf("want exactly one ignored line %q, got %d; stderr=%q", line, n, stderr)
+	}
+}
+
+func TestRun_Join_NoIgnoredLineForPlainJoin(t *testing.T) {
+	f := setupJoinRun(t, emptyExcludeYAML, emptyExcludeYAML)
+	_, stderr, err := runCmdWithDeps(t, f.baseDir, depsFrom(newFakeDocker(0, true)), "run", "-j", "../lib")
+	if err != nil {
+		t.Fatalf("run -j failed: %v; stderr=%q", err, stderr)
+	}
+	if strings.Contains(stderr, "ignored") {
+		t.Errorf("plain join must not print the ignored line; stderr=%q", stderr)
+	}
+}
+
+func TestRun_Join_ResolveErrorBeforeDaemon(t *testing.T) {
+	f := setupJoinRun(t, emptyExcludeYAML, emptyExcludeYAML)
+	fc := newFakeDocker(0, true)
+	_, _, err := runCmdWithDeps(t, f.baseDir, depsFrom(fc), "run", "-j", "../missing")
+	if err == nil || !strings.Contains(err.Error(), `--join "../missing"`) {
+		t.Fatalf("expected --join resolve error, got %v", err)
+	}
+	if fc.DaemonChecked || fc.Started {
+		t.Errorf("join path errors must fire before the daemon preflight")
 	}
 }
