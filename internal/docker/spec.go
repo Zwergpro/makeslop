@@ -113,6 +113,17 @@ type Spec struct {
 
 	NetworkMode string   // "" → no --network flag, Docker default bridge
 	Networks    []string // one --network per entry; first is primary
+
+	// Sections marks where each project's mounts start; nil without joins.
+	// Read only by ShellCommand (dry-run separators); Args() and the SDK
+	// projections ignore it, so "printed == executed" is unaffected.
+	Sections []Section
+}
+
+// Section labels the group of mounts belonging to one project.
+type Section struct {
+	Label string
+	Start int // index into Spec.Mounts (1:1 with --mount tokens in Args())
 }
 
 // BuildSpec is pure: same Options → same Spec. Mask overlays must follow the
@@ -153,6 +164,26 @@ func BuildSpec(o Options) Spec {
 
 	mounts = append(mounts, projectMasks(main, main.ProtectConfig)...)
 
+	// Join groups: bind → sandbox (rw only) → masks. An ro join has no config
+	// self-bind (the whole tree is read-only), so a /dev/null mask over its
+	// config is kept.
+	var sections []Section
+	if len(o.Projects) > 1 {
+		sections = append(sections, Section{Label: main.Label, Start: 0})
+	}
+	for _, j := range o.Projects[1:] {
+		// Section.Start indexes Spec.Mounts, which maps 1:1 to the --mount
+		// tokens in Args().
+		sections = append(sections, Section{Label: j.Label, Start: len(mounts)})
+		mounts = append(mounts, projectBind(j, j.ReadOnly))
+		configBound := false
+		if !j.ReadOnly {
+			mounts = append(mounts, projectSandbox(j)...)
+			configBound = j.ProtectConfig
+		}
+		mounts = append(mounts, projectMasks(j, configBound)...)
+	}
+
 	return Spec{
 		Image:   o.Image,
 		Command: o.Command,
@@ -165,6 +196,8 @@ func BuildSpec(o Options) Spec {
 
 		NetworkMode: o.NetworkMode,
 		Networks:    o.Networks,
+
+		Sections: sections,
 	}
 }
 

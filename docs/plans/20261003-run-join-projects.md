@@ -140,17 +140,17 @@ Approach B was chosen deliberately in brainstorm, even though it means about 88 
 - Modify: `internal/docker/spec.go`
 - Modify: `internal/docker/spec_test.go`
 
-- [ ] emit a group for each `Projects[1:]` entry: bind (`ReadOnly`), sandbox mounts only when `!ReadOnly`, masks with a per-project `filterOut` of the config path
-- [ ] add `Section` / `Spec.Sections`, populated only when `len(Projects) > 1`
-- [ ] write tests:
+- [x] emit a group for each `Projects[1:]` entry: bind (`ReadOnly`), sandbox mounts only when `!ReadOnly`, masks with a per-project `filterOut` of the config path
+- [x] add `Section` / `Spec.Sections`, populated only when `len(Projects) > 1`
+- [x] write tests:
   - an rw join: bind + config ro + hooks tmpfs + masks
   - an ro join: readonly bind + masks, no sandbox; a config `/dev/null` mask is kept
   - two joins: order + Section `Start` indices
   - an rw join's config-file mask is filtered
   - join masks map to `/workspace/<join>/rel`, computed against the join `Host`, not the main root
   - no joins → `Sections == nil`
-- [ ] extend the drift guards with a joins case: `Args()` mounts == `HostConfig().Mounts` in count and order
-- [ ] run tests; they must pass before Task 3
+- [x] extend the drift guards with a joins case: `Args()` mounts == `HostConfig().Mounts` in count and order
+- [x] run tests; they must pass before Task 3
 
 ### Task 3: Render sections in `ShellCommand()`
 

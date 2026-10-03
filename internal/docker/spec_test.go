@@ -2001,3 +2001,247 @@ func TestBuildSpec_MainProjectReadOnlyIgnored(t *testing.T) {
 		t.Errorf("ReadOnly on Projects[0] must not change mounts")
 	}
 }
+
+// joinOptions returns sampleOptions with labels set on main; joins are
+// appended by the caller.
+func joinOptions(joins ...Project) Options {
+	o := sampleOptions()
+	o.Projects[0].Label = "project: /home/me/code/myproj"
+	o.Projects = append(o.Projects, joins...)
+	return o
+}
+
+// mainMountCount is the number of mounts sampleOptions emits for the main
+// project with both cache flags on and no sandbox/masks.
+const mainMountCount = 8
+
+func TestBuildSpec_Join_RW(t *testing.T) {
+	o := joinOptions(Project{
+		Host:          "/home/me/code/lib",
+		Name:          "lib",
+		Label:         "join: /home/me/code/lib (rw)",
+		MaskedFiles:   []string{"/home/me/code/lib/.env"},
+		MaskedDirs:    []string{"/home/me/code/lib/secrets"},
+		ProtectConfig: true,
+		MaskGitHooks:  true,
+	})
+	spec := BuildSpec(o)
+	got := spec.Mounts[mainMountCount:]
+	want := []Mount{
+		{Host: "/home/me/code/lib", Container: "/workspace/lib"},
+		{Host: "/home/me/code/lib/.makeslop.yaml", Container: "/workspace/lib/.makeslop.yaml", ReadOnly: true},
+		{Type: "tmpfs", Container: "/workspace/lib/.git/hooks"},
+		{Host: "/dev/null", Container: "/workspace/lib/.env"},
+		{Type: "tmpfs", Container: "/workspace/lib/secrets"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("join mounts =\n%+v\nwant\n%+v", got, want)
+	}
+	if !reflect.DeepEqual(spec.Mounts[:mainMountCount], BuildSpec(sampleOptions()).Mounts) {
+		t.Errorf("main group changed by join")
+	}
+	if spec.Workdir != "/workspace/myproj-abc123" {
+		t.Errorf("Workdir = %q, want main project", spec.Workdir)
+	}
+}
+
+func TestBuildSpec_Join_RO(t *testing.T) {
+	o := joinOptions(Project{
+		Host:          "/home/me/code/lib",
+		Name:          "lib",
+		ReadOnly:      true,
+		MaskedFiles:   []string{"/home/me/code/lib/.makeslop.yaml", "/home/me/code/lib/.env"},
+		ProtectConfig: true,
+		MaskGitHooks:  true,
+	})
+	got := BuildSpec(o).Mounts[mainMountCount:]
+	want := []Mount{
+		{Host: "/home/me/code/lib", Container: "/workspace/lib", ReadOnly: true},
+		{Host: "/dev/null", Container: "/workspace/lib/.makeslop.yaml"},
+		{Host: "/dev/null", Container: "/workspace/lib/.env"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ro join mounts =\n%+v\nwant\n%+v", got, want)
+	}
+}
+
+func TestBuildSpec_Join_RWConfigMaskFiltered(t *testing.T) {
+	o := joinOptions(Project{
+		Host:          "/home/me/code/lib",
+		Name:          "lib",
+		MaskedFiles:   []string{"/home/me/code/lib/.makeslop.yaml", "/home/me/code/lib/a.yaml"},
+		ProtectConfig: true,
+	})
+	got := BuildSpec(o).Mounts[mainMountCount:]
+	want := []Mount{
+		{Host: "/home/me/code/lib", Container: "/workspace/lib"},
+		{Host: "/home/me/code/lib/.makeslop.yaml", Container: "/workspace/lib/.makeslop.yaml", ReadOnly: true},
+		{Host: "/dev/null", Container: "/workspace/lib/a.yaml"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("rw join mounts =\n%+v\nwant\n%+v", got, want)
+	}
+}
+
+// A join without ProtectConfig keeps a mask on its config path: nothing binds it.
+func TestBuildSpec_Join_RWNoProtectKeepsConfigMask(t *testing.T) {
+	o := joinOptions(Project{
+		Host:        "/home/me/code/lib",
+		Name:        "lib",
+		MaskedFiles: []string{"/home/me/code/lib/.makeslop.yaml"},
+	})
+	got := BuildSpec(o).Mounts[mainMountCount:]
+	want := []Mount{
+		{Host: "/home/me/code/lib", Container: "/workspace/lib"},
+		{Host: "/dev/null", Container: "/workspace/lib/.makeslop.yaml"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("join mounts =\n%+v\nwant\n%+v", got, want)
+	}
+}
+
+// Join mask targets are relative to the join's Host, never the main root.
+func TestBuildSpec_Join_MaskTargetsRelativeToJoinHost(t *testing.T) {
+	o := joinOptions(Project{
+		Host:        "/srv/other/deep/lib",
+		Name:        "lib",
+		MaskedFiles: []string{"/srv/other/deep/lib/conf/prod.key"},
+		MaskedDirs:  []string{"/srv/other/deep/lib/a/b"},
+	})
+	got := BuildSpec(o).Mounts[mainMountCount:]
+	want := []Mount{
+		{Host: "/srv/other/deep/lib", Container: "/workspace/lib"},
+		{Host: "/dev/null", Container: "/workspace/lib/conf/prod.key"},
+		{Type: "tmpfs", Container: "/workspace/lib/a/b"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("join mounts =\n%+v\nwant\n%+v", got, want)
+	}
+}
+
+// Main masks stay under the main workspace and join masks under the join.
+func TestBuildSpec_Join_MasksIsolatedPerProject(t *testing.T) {
+	o := joinOptions(Project{
+		Host:        "/home/me/code/lib",
+		Name:        "lib",
+		MaskedFiles: []string{"/home/me/code/lib/.env"},
+	})
+	o.Projects[0].MaskedFiles = []string{"/home/me/code/myproj/.env"}
+	spec := BuildSpec(o)
+	var targets []string
+	for _, m := range spec.Mounts {
+		if m.Host == "/dev/null" {
+			targets = append(targets, m.Container)
+		}
+	}
+	want := []string{"/workspace/myproj-abc123/.env", "/workspace/lib/.env"}
+	if !reflect.DeepEqual(targets, want) {
+		t.Errorf("mask targets = %v, want %v", targets, want)
+	}
+}
+
+func TestBuildSpec_TwoJoins_OrderAndSections(t *testing.T) {
+	o := joinOptions(
+		Project{
+			Host: "/home/me/code/lib", Name: "lib", Label: "join: /home/me/code/lib (rw)",
+			MaskedFiles: []string{"/home/me/code/lib/.env"}, ProtectConfig: true, MaskGitHooks: true,
+		},
+		Project{
+			Host: "/home/me/code/util", Name: "util", Label: "join: /home/me/code/util (ro)",
+			ReadOnly: true, MaskedDirs: []string{"/home/me/code/util/keys"},
+		},
+	)
+	o.Projects[0].MaskedFiles = []string{"/home/me/code/myproj/.env"}
+	spec := BuildSpec(o)
+
+	wantSections := []Section{
+		{Label: "project: /home/me/code/myproj", Start: 0},
+		{Label: "join: /home/me/code/lib (rw)", Start: 9},
+		{Label: "join: /home/me/code/util (ro)", Start: 13},
+	}
+	if !reflect.DeepEqual(spec.Sections, wantSections) {
+		t.Errorf("Sections = %+v, want %+v", spec.Sections, wantSections)
+	}
+	wantTail := []Mount{
+		{Host: "/home/me/code/lib", Container: "/workspace/lib"},
+		{Host: "/home/me/code/lib/.makeslop.yaml", Container: "/workspace/lib/.makeslop.yaml", ReadOnly: true},
+		{Type: "tmpfs", Container: "/workspace/lib/.git/hooks"},
+		{Host: "/dev/null", Container: "/workspace/lib/.env"},
+		{Host: "/home/me/code/util", Container: "/workspace/util", ReadOnly: true},
+		{Type: "tmpfs", Container: "/workspace/util/keys"},
+	}
+	if got := spec.Mounts[9:]; !reflect.DeepEqual(got, wantTail) {
+		t.Errorf("join mounts =\n%+v\nwant\n%+v", got, wantTail)
+	}
+	for _, s := range spec.Sections {
+		if want := "/workspace/"; !strings.HasPrefix(spec.Mounts[s.Start].Container, want) ||
+			strings.Count(spec.Mounts[s.Start].Container, "/") != 2 {
+			t.Errorf("section %q Start=%d points at %+v, want a project bind", s.Label, s.Start, spec.Mounts[s.Start])
+		}
+	}
+}
+
+func TestBuildSpec_NoJoins_SectionsNil(t *testing.T) {
+	o := sampleOptions()
+	o.Projects[0].Label = "project: /home/me/code/myproj"
+	if s := BuildSpec(o).Sections; s != nil {
+		t.Errorf("Sections = %+v, want nil", s)
+	}
+}
+
+// parseMountArg splits a --mount value into its CSV key=value fields.
+func parseMountArg(t *testing.T, raw string) map[string]string {
+	t.Helper()
+	rec, err := csv.NewReader(strings.NewReader(raw)).Read()
+	if err != nil {
+		t.Fatalf("parse %q: %v", raw, err)
+	}
+	out := map[string]string{}
+	for _, f := range rec {
+		k, v, _ := strings.Cut(f, "=")
+		out[k] = v
+	}
+	return out
+}
+
+// With joins, Args() --mount tokens and HostConfig().Mounts agree in count,
+// order, type, source, target and readonly.
+func TestDriftGuard_Joins(t *testing.T) {
+	o := joinOptions(
+		Project{
+			Host: "/home/me/code/lib", Name: "lib", Label: "join: /home/me/code/lib (rw)",
+			MaskedFiles: []string{"/home/me/code/lib/.env"}, MaskedDirs: []string{"/home/me/code/lib/d"},
+			ProtectConfig: true, MaskGitHooks: true,
+		},
+		Project{
+			Host: "/home/me/code/util", Name: "util", Label: "join: /home/me/code/util (ro)",
+			ReadOnly: true, MaskedFiles: []string{"/home/me/code/util/.makeslop.yaml"},
+			ProtectConfig: true, MaskGitHooks: true,
+		},
+	)
+	o.Projects[0].ProtectConfig = true
+	o.Projects[0].MaskGitHooks = true
+	spec := BuildSpec(o)
+	argsMounts := collectMountArgs(spec.Args())
+	hc := spec.HostConfig()
+	if len(argsMounts) != len(hc.Mounts) || len(argsMounts) != len(spec.Mounts) {
+		t.Fatalf("mount count: Args=%d, HostConfig=%d, Spec=%d", len(argsMounts), len(hc.Mounts), len(spec.Mounts))
+	}
+	for i, raw := range argsMounts {
+		f := parseMountArg(t, raw)
+		m := hc.Mounts[i]
+		if f["type"] != string(m.Type) {
+			t.Errorf("[%d] type: Args=%q, HostConfig=%q", i, f["type"], m.Type)
+		}
+		if f["target"] != m.Target {
+			t.Errorf("[%d] target: Args=%q, HostConfig=%q", i, f["target"], m.Target)
+		}
+		if f["source"] != m.Source {
+			t.Errorf("[%d] source: Args=%q, HostConfig=%q", i, f["source"], m.Source)
+		}
+		_, ro := f["readonly"]
+		if ro != m.ReadOnly {
+			t.Errorf("[%d] readonly: Args=%v, HostConfig=%v", i, ro, m.ReadOnly)
+		}
+	}
+}
