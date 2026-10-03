@@ -108,11 +108,12 @@
 - Modify: `internal/projectconfig/projectconfig_test.go`
 - Modify: `internal/cli/run.go`
 - Modify: `internal/cli/status.go`
+- Modify: `internal/cli/init_test.go`, `internal/security/security_test.go` (➕ extra `Load` call sites in tests)
 
-- [ ] add `Config{Excludes, Cache, Env}` (Network comes in Task 2) and change `Load` to `(Config, error)`; update the doc comment
-- [ ] update the call sites in `run.go` and `status.go`
-- [ ] update existing `projectconfig` tests to the new signature (no behavior change)
-- [ ] run tests - must pass before next task
+- [x] add `Config{Excludes, Cache, Env}` (Network comes in Task 2) and change `Load` to `(Config, error)`; update the doc comment
+- [x] update the call sites in `run.go` and `status.go`
+- [x] update existing `projectconfig` tests to the new signature (no behavior change)
+- [x] run tests - must pass before next task
 
 ### Task 2: Parse and validate `network_mode` / `networks`
 

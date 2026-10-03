@@ -220,7 +220,8 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir, imageFlag 
 
 	// 5. Secret scan summary (non-blocking), only when workspace resolved.
 	if workspaceRoot != "" {
-		yamlExcludes, _, _, pcErr := projectconfig.Load(workspaceRoot)
+		pcfg, pcErr := projectconfig.Load(workspaceRoot)
+		yamlExcludes := pcfg.Excludes
 		if pcErr != nil {
 			cl.warn("secret scan", fmt.Sprintf("cannot read .makeslop.yaml: %v", pcErr))
 		} else {

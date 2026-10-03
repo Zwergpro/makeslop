@@ -73,7 +73,9 @@ func TestLoad_MissingFile(t *testing.T) {
 	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
-	excl, _, _, err := Load(root)
+	cfg, err := Load(root)
+
+	excl := cfg.Excludes
 	if err != nil {
 		t.Fatalf("Load on missing file: %v", err)
 	}
@@ -96,7 +98,11 @@ func TestLoad_DefaultStub_RoundTrips(t *testing.T) {
 		t.Fatalf("write stub: %v", err)
 	}
 
-	excl, cacheCfg, _, err := Load(root)
+	cfg, err := Load(root)
+
+	excl := cfg.Excludes
+
+	cacheCfg := cfg.Cache
 	if err != nil {
 		t.Fatalf("Load on default stub: %v", err)
 	}
@@ -155,7 +161,9 @@ func TestLoad_EmptyAndCommentOnlyFiles(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(root, Filename), tc.content, 0o644); err != nil {
 				t.Fatalf("write: %v", err)
 			}
-			excl, cacheCfg, _, err := Load(root)
+			cfg, err := Load(root)
+			excl := cfg.Excludes
+			cacheCfg := cfg.Cache
 			if err != nil {
 				t.Fatalf("Load returned error for %q: %v", tc.name, err)
 			}
@@ -186,7 +194,7 @@ func TestLoad_MalformedYAML(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, _, _, err := Load(root)
+	_, err := Load(root)
 	if err == nil {
 		t.Fatal("expected error for malformed YAML, got nil")
 	}
@@ -203,7 +211,7 @@ func TestLoad_UnknownField(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, _, _, err := Load(root)
+	_, err := Load(root)
 	if err == nil {
 		t.Fatal("expected error for unknown field, got nil")
 	}
@@ -285,7 +293,7 @@ func TestLoad_ValidationRules(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(root, Filename), []byte(tc.yaml), 0o644); err != nil {
 				t.Fatalf("write: %v", err)
 			}
-			_, _, _, err := Load(root)
+			_, err := Load(root)
 			if err == nil {
 				t.Fatalf("expected error containing %q, got nil", tc.wantErrFrag)
 			}
@@ -309,7 +317,7 @@ func TestLoad_ReservedPaths(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(root, Filename), []byte(content), 0o644); err != nil {
 				t.Fatalf("write: %v", err)
 			}
-			_, _, _, err := Load(root)
+			_, err := Load(root)
 			if err == nil {
 				t.Fatalf("expected collision error for %q in dirs, got nil", reserved)
 			}
@@ -323,7 +331,7 @@ func TestLoad_ReservedPaths(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(root, Filename), []byte(content), 0o644); err != nil {
 				t.Fatalf("write: %v", err)
 			}
-			_, _, _, err := Load(root)
+			_, err := Load(root)
 			if err == nil {
 				t.Fatalf("expected collision error for %q in files, got nil", reserved)
 			}
@@ -343,7 +351,7 @@ func TestLoad_CrossListDuplicate(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, _, _, err := Load(root)
+	_, err := Load(root)
 	if err == nil {
 		t.Fatal("expected error for cross-list duplicate, got nil")
 	}
@@ -363,7 +371,7 @@ func TestLoad_CrossListDuplicate_NoFileOnDisk(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, _, _, err := Load(root)
+	_, err := Load(root)
 	if err == nil {
 		t.Fatal("expected error for cross-list duplicate (path absent), got nil")
 	}
@@ -381,7 +389,9 @@ func TestLoad_SilentlyDropsMissingEntries(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	excl, _, _, err := Load(root)
+	cfg, err := Load(root)
+
+	excl := cfg.Excludes
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -407,7 +417,9 @@ func TestLoad_DropsWrongType(t *testing.T) {
 		t.Fatalf("write config: %v", err)
 	}
 
-	excl, _, _, err := Load(root)
+	cfg, err := Load(root)
+
+	excl := cfg.Excludes
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -449,7 +461,9 @@ func TestLoad_DropsSymlinks(t *testing.T) {
 		t.Fatalf("write config: %v", err)
 	}
 
-	excl, _, _, err := Load(root)
+	cfg, err := Load(root)
+
+	excl := cfg.Excludes
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -487,7 +501,9 @@ func TestLoad_SymlinkInFiles_Warning(t *testing.T) {
 		t.Fatalf("write config: %v", err)
 	}
 
-	excl, _, _, err := Load(root)
+	cfg, err := Load(root)
+
+	excl := cfg.Excludes
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -525,7 +541,9 @@ func TestLoad_SymlinkInDirs_Warning(t *testing.T) {
 		t.Fatalf("write config: %v", err)
 	}
 
-	excl, _, _, err := Load(root)
+	cfg, err := Load(root)
+
+	excl := cfg.Excludes
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -558,7 +576,9 @@ func TestLoad_WrongTypeDrop_NoWarning(t *testing.T) {
 		t.Fatalf("write config: %v", err)
 	}
 
-	excl, _, _, err := Load(root)
+	cfg, err := Load(root)
+
+	excl := cfg.Excludes
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -575,7 +595,9 @@ func TestLoad_WrongTypeDrop_NoWarning(t *testing.T) {
 func TestLoad_NoWarnings_AbsentFile(t *testing.T) {
 	root := evalSymlinks(t, t.TempDir())
 
-	excl, _, _, err := Load(root)
+	cfg, err := Load(root)
+
+	excl := cfg.Excludes
 	if err != nil {
 		t.Fatalf("Load on missing file: %v", err)
 	}
@@ -624,7 +646,9 @@ func TestLoad_DeduplicatesWithinLists(t *testing.T) {
 		t.Fatalf("write config: %v", err)
 	}
 
-	excl, _, _, err := Load(root)
+	cfg, err := Load(root)
+
+	excl := cfg.Excludes
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -660,7 +684,9 @@ func TestLoad_ReturnsAbsoluteSortedPaths(t *testing.T) {
 		t.Fatalf("write config: %v", err)
 	}
 
-	excl, _, _, err := Load(root)
+	cfg, err := Load(root)
+
+	excl := cfg.Excludes
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -723,7 +749,7 @@ func TestLoad_Network_BlockRejected(t *testing.T) {
 				t.Fatalf("write: %v", err)
 			}
 
-			_, _, _, err := Load(root)
+			_, err := Load(root)
 			if err == nil {
 				t.Fatal("expected error for stale network: block, got nil")
 			}
@@ -781,7 +807,8 @@ func TestLoad_Scan_ValidPatternsAndSkipDirs(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(root, Filename), []byte(tc.yaml), 0o644); err != nil {
 				t.Fatalf("write: %v", err)
 			}
-			excl, _, _, err := Load(root)
+			cfg, err := Load(root)
+			excl := cfg.Excludes
 			if err != nil {
 				t.Fatalf("Load returned error: %v", err)
 			}
@@ -839,7 +866,7 @@ func TestLoad_Scan_InvalidPatterns(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(root, Filename), []byte(tc.yaml), 0o644); err != nil {
 				t.Fatalf("write: %v", err)
 			}
-			_, _, _, err := Load(root)
+			_, err := Load(root)
 			if err == nil {
 				t.Fatalf("expected error containing %q, got nil", tc.wantErrFrag)
 			}
@@ -865,7 +892,7 @@ func TestLoad_Scan_PathStylePattern_LoadLevel(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, _, _, err := Load(root)
+	_, err := Load(root)
 	if err == nil {
 		t.Fatal("expected error for path-style scan pattern, got nil")
 	}
@@ -916,7 +943,7 @@ func TestLoad_Scan_InvalidSkipDirs(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(root, Filename), []byte(tc.yaml), 0o644); err != nil {
 				t.Fatalf("write: %v", err)
 			}
-			_, _, _, err := Load(root)
+			_, err := Load(root)
 			if err == nil {
 				t.Fatalf("expected error containing %q, got nil", tc.wantErrFrag)
 			}
@@ -939,7 +966,7 @@ func TestLoad_Scan_UnknownKeyRejected(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, _, _, err := Load(root)
+	_, err := Load(root)
 	if err == nil {
 		t.Fatal("expected error for unknown key under exclude.scan, got nil")
 	}
@@ -958,7 +985,9 @@ func TestLoad_Cache_AbsentBlock(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, cacheCfg, _, err := Load(root)
+	cfg, err := Load(root)
+
+	cacheCfg := cfg.Cache
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -974,7 +1003,9 @@ func TestLoad_Cache_MissingFile(t *testing.T) {
 	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
-	_, cacheCfg, _, err := Load(root)
+	cfg, err := Load(root)
+
+	cacheCfg := cfg.Cache
 	if err != nil {
 		t.Fatalf("Load on missing file: %v", err)
 	}
@@ -995,7 +1026,9 @@ func TestLoad_Cache_BothFalse(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, cacheCfg, _, err := Load(root)
+	cfg, err := Load(root)
+
+	cacheCfg := cfg.Cache
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -1016,7 +1049,9 @@ func TestLoad_Cache_BothTrue(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, cacheCfg, _, err := Load(root)
+	cfg, err := Load(root)
+
+	cacheCfg := cfg.Cache
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -1038,7 +1073,9 @@ func TestLoad_Cache_MixedContentFalseAgentAbsent(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, cacheCfg, _, err := Load(root)
+	cfg, err := Load(root)
+
+	cacheCfg := cfg.Cache
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -1060,7 +1097,9 @@ func TestLoad_Cache_MixedAgentFalseContentAbsent(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, cacheCfg, _, err := Load(root)
+	cfg, err := Load(root)
+
+	cacheCfg := cfg.Cache
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -1081,7 +1120,7 @@ func TestLoad_Cache_UnknownKeyRejected(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, _, _, err := Load(root)
+	_, err := Load(root)
 	if err == nil {
 		t.Fatal("expected error for unknown key under cache:, got nil")
 	}
@@ -1100,7 +1139,9 @@ func TestRenderStub_TrueTrue(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, cacheCfg, _, err := Load(root)
+	cfg, err := Load(root)
+
+	cacheCfg := cfg.Cache
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -1122,7 +1163,9 @@ func TestRenderStub_FalseFalse(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, cacheCfg, _, err := Load(root)
+	cfg, err := Load(root)
+
+	cacheCfg := cfg.Cache
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -1151,7 +1194,9 @@ func TestScaffold_CacheFalseFalse(t *testing.T) {
 		t.Errorf("file content mismatch:\ngot:  %q\nwant: %q", got, want)
 	}
 
-	_, cacheCfg, _, err := Load(root)
+	cfg, err := Load(root)
+
+	cacheCfg := cfg.Cache
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -1614,7 +1659,9 @@ cache:
 		t.Fatalf("write: %v", err)
 	}
 
-	_, _, env, err := Load(root)
+	cfg, err := Load(root)
+
+	env := cfg.Env
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -1641,7 +1688,8 @@ func TestLoad_EmptyAndWhitespaceFile_ZeroEnv(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(root, Filename), tc.content, 0o644); err != nil {
 				t.Fatalf("write: %v", err)
 			}
-			_, _, env, err := Load(root)
+			cfg, err := Load(root)
+			env := cfg.Env
 			if err != nil {
 				t.Fatalf("Load returned error for %q: %v", tc.name, err)
 			}
@@ -1670,7 +1718,9 @@ func TestLoad_EnvironmentsBlock_ReturnsPairs(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, _, env, err := Load(root)
+	cfg, err := Load(root)
+
+	env := cfg.Env
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -1696,7 +1746,8 @@ func TestLoad_EnvironmentsAliases(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(root, Filename), []byte(content), 0o644); err != nil {
 			t.Fatalf("write: %v", err)
 		}
-		_, _, env, err := Load(root)
+		cfg, err := Load(root)
+		env := cfg.Env
 		if err != nil {
 			t.Fatalf("Load returned error: %v", err)
 		}
@@ -1712,7 +1763,7 @@ func TestLoad_EnvironmentsAliases(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(root, Filename), []byte(content), 0o644); err != nil {
 			t.Fatalf("write: %v", err)
 		}
-		_, _, _, err := Load(root)
+		_, err := Load(root)
 		if err == nil || !strings.Contains(err.Error(), "field base not found") {
 			t.Errorf("err = %v, want strict-decode unknown field \"base\"", err)
 		}
@@ -1746,7 +1797,7 @@ func TestLoad_EnvironmentsDuplicateKeys(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(root, Filename), []byte(tc.content), 0o644); err != nil {
 				t.Fatalf("write: %v", err)
 			}
-			_, _, _, err := Load(root)
+			_, err := Load(root)
 			if err == nil || err.Error() != tc.wantErr {
 				t.Fatalf("err = %v, want %q", err, tc.wantErr)
 			}
@@ -1765,7 +1816,7 @@ func TestLoad_TypoInEnvironments_StrictModeRejects(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, _, _, err := Load(root)
+	_, err := Load(root)
 	if err == nil {
 		t.Fatal("expected error for typo in top-level key, got nil")
 	}
@@ -1872,7 +1923,7 @@ func TestLoad_DanglingSymlink(t *testing.T) {
 		t.Fatalf("symlink: %v", err)
 	}
 
-	_, _, _, err := Load(root)
+	_, err := Load(root)
 	if err == nil {
 		t.Fatal("expected error for dangling symlink, got nil (silently treats as missing — wrong)")
 	}
@@ -1904,7 +1955,7 @@ func TestLoad_LiveSymlink(t *testing.T) {
 		t.Fatalf("symlink: %v", err)
 	}
 
-	_, _, _, err := Load(root)
+	_, err := Load(root)
 	if err == nil {
 		t.Fatal("expected error for live symlink to valid config, got nil")
 	}
@@ -1925,7 +1976,11 @@ func TestLoad_LiveSymlink(t *testing.T) {
 func TestLoad_MissingFile_NoSymlink_ReturnsDefaults(t *testing.T) {
 	root := evalSymlinks(t, t.TempDir())
 
-	_, cacheCfg, env, err := Load(root)
+	cfg, err := Load(root)
+
+	cacheCfg := cfg.Cache
+
+	env := cfg.Env
 	if err != nil {
 		t.Fatalf("Load on truly missing file returned error: %v", err)
 	}

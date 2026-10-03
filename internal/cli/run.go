@@ -138,10 +138,11 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir, imageFlag str
 		}
 	}
 
-	yamlExcludes, cacheCfg, env, err := projectconfig.Load(workspaceRoot)
+	pcfg, err := projectconfig.Load(workspaceRoot)
 	if err != nil {
 		return err
 	}
+	yamlExcludes, cacheCfg, env := pcfg.Excludes, pcfg.Cache, pcfg.Env
 
 	// Symlink warnings bypass --quiet: degraded protection is never treated as chrome.
 	for _, w := range yamlExcludes.Warnings {

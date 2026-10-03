@@ -152,23 +152,35 @@ func Scaffold(root string, c Cache) error {
 	return nil
 }
 
-// Load parses <root>/.makeslop.yaml. The four-value return is:
-//   - Excludes: file/dir masks and scan patterns. Excludes.Warnings carries
-//     human-readable notices for symlinked entries (dropped with a warning);
-//     missing entries and non-symlink wrong-type drops stay silent.
-//   - Cache: per-workspace overlay settings; defaults to {true,true} when the
-//     cache: block (or the whole file) is absent.
-//   - Env: static "KEY=VALUE" pairs and host variable names from
-//     environments:; zero Env{} when the block is absent. Load never reads the
-//     process environment: callers resolve Env.Host themselves.
-//   - error: any parse, validation, or filesystem error, wrapped "projectconfig: ".
+// Config is the parsed, validated result of Load.
+type Config struct {
+	// Excludes holds file/dir masks and scan patterns. Excludes.Warnings
+	// carries human-readable notices for symlinked entries (dropped with a
+	// warning); missing entries and non-symlink wrong-type drops stay silent.
+	Excludes Excludes
+	// Cache holds per-workspace overlay settings; defaults to {true,true} when
+	// the cache: block (or the whole file) is absent.
+	Cache Cache
+	// Env holds static "KEY=VALUE" pairs and host variable names from
+	// environments:; zero Env{} when the block is absent. Load never reads the
+	// process environment: callers resolve Env.Host themselves.
+	Env Env
+}
+
+// defaultConfig is returned when .makeslop.yaml is absent or empty.
+func defaultConfig() Config {
+	return Config{Cache: Cache{Content: true, Agent: true}}
+}
+
+// Load parses <root>/.makeslop.yaml into a Config (see its field docs).
+// Any parse, validation, or filesystem error is returned wrapped "projectconfig: ".
 //
 // The file at root/.makeslop.yaml must be a regular file. A symlink — dangling
 // or live — is rejected with a hard error: masking and sandbox-policy behaviour
 // depend on the file being a real file on disk.
 //
 // root must be absolute and EvalSymlinks-evaluated.
-func Load(root string) (Excludes, Cache, Env, error) {
+func Load(root string) (Config, error) {
 	path := filepath.Join(root, Filename)
 
 	// Lstat before ReadFile to detect symlinks. ReadFile follows symlinks, which
@@ -177,17 +189,17 @@ func Load(root string) (Excludes, Cache, Env, error) {
 	linfo, lstErr := os.Lstat(path)
 	if lstErr != nil {
 		if errors.Is(lstErr, fs.ErrNotExist) {
-			return Excludes{}, Cache{Content: true, Agent: true}, Env{}, nil
+			return defaultConfig(), nil
 		}
-		return Excludes{}, Cache{}, Env{}, fmt.Errorf("projectconfig: read %s: %w", Filename, lstErr)
+		return Config{}, fmt.Errorf("projectconfig: read %s: %w", Filename, lstErr)
 	}
 	if linfo.Mode()&fs.ModeSymlink != 0 {
-		return Excludes{}, Cache{}, Env{}, fmt.Errorf("projectconfig: %s is a symlink — the project config must be a regular file", Filename)
+		return Config{}, fmt.Errorf("projectconfig: %s is a symlink — the project config must be a regular file", Filename)
 	}
 
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return Excludes{}, Cache{}, Env{}, fmt.Errorf("projectconfig: read %s: %w", Filename, err)
+		return Config{}, fmt.Errorf("projectconfig: read %s: %w", Filename, err)
 	}
 
 	// Strict mode: unknown fields error out, surfacing typos and stale
@@ -199,27 +211,27 @@ func Load(root string) (Excludes, Cache, Env, error) {
 	if err := dec.Decode(&schema); err != nil {
 		if errors.Is(err, io.EOF) {
 			// Empty, whitespace-only, or comment-only YAML: zero config.
-			return Excludes{}, Cache{Content: true, Agent: true}, Env{}, nil
+			return defaultConfig(), nil
 		}
-		return Excludes{}, Cache{}, Env{}, fmt.Errorf("projectconfig: parse %s: %w", Filename, err)
+		return Config{}, fmt.Errorf("projectconfig: parse %s: %w", Filename, err)
 	}
 
 	patterns, err := validatePatterns(schema.Exclude.Scan.Patterns)
 	if err != nil {
-		return Excludes{}, Cache{}, Env{}, err
+		return Config{}, err
 	}
 	skipDirs, err := validateSkipDirs(schema.Exclude.Scan.SkipDirs)
 	if err != nil {
-		return Excludes{}, Cache{}, Env{}, err
+		return Config{}, err
 	}
 
 	cleanedFiles, err := validateEntries(schema.Exclude.Files, "exclude.files")
 	if err != nil {
-		return Excludes{}, Cache{}, Env{}, err
+		return Config{}, err
 	}
 	cleanedDirs, err := validateEntries(schema.Exclude.Dirs, "exclude.dirs")
 	if err != nil {
-		return Excludes{}, Cache{}, Env{}, err
+		return Config{}, err
 	}
 
 	// A path in both lists is an error. Checked before stat-drop so the error is
@@ -230,17 +242,17 @@ func Load(root string) (Excludes, Cache, Env, error) {
 	}
 	for _, rel := range cleanedDirs {
 		if _, ok := seen[rel]; ok {
-			return Excludes{}, Cache{}, Env{}, fmt.Errorf("projectconfig: path %q listed in both exclude.files and exclude.dirs", rel)
+			return Config{}, fmt.Errorf("projectconfig: path %q listed in both exclude.files and exclude.dirs", rel)
 		}
 	}
 
 	files, fileWarnings, err := statFilter(root, cleanedFiles, func(info os.FileInfo) bool { return info.Mode().IsRegular() })
 	if err != nil {
-		return Excludes{}, Cache{}, Env{}, err
+		return Config{}, err
 	}
 	dirs, dirWarnings, err := statFilter(root, cleanedDirs, func(info os.FileInfo) bool { return info.IsDir() })
 	if err != nil {
-		return Excludes{}, Cache{}, Env{}, err
+		return Config{}, err
 	}
 
 	files = dedupSorted(files)
@@ -258,10 +270,14 @@ func Load(root string) (Excludes, Cache, Env, error) {
 
 	env, err := validateEnvironments(&schema.Environments)
 	if err != nil {
-		return Excludes{}, Cache{}, Env{}, err
+		return Config{}, err
 	}
 
-	return Excludes{Files: files, Dirs: dirs, Patterns: patterns, SkipDirs: skipDirs, Warnings: warnings}, cacheCfg, env, nil
+	return Config{
+		Excludes: Excludes{Files: files, Dirs: dirs, Patterns: patterns, SkipDirs: skipDirs, Warnings: warnings},
+		Cache:    cacheCfg,
+		Env:      env,
+	}, nil
 }
 
 // validateEntries cleans and validates relative paths, erroring on the first
