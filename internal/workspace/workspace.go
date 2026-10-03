@@ -36,12 +36,9 @@ func (w *Workspaces) findAncestor(s *config.Settings, pwd string) (matchedPath s
 	}
 }
 
-// Lookup returns the registered ancestor root (mount this, not pwd) and its
-// cache directory. pwd must be absolute and EvalSymlinks-evaluated.
-// The caller must supply a previously-loaded *config.Settings; Lookup does not
-// load settings itself, which lets callers load once and pass the result to
-// both Lookup and any subsequent settings-dependent logic.
-// A nil settings is treated as an empty settings (no workspaces registered).
+// Lookup returns the registered ancestor because mounting pwd would omit
+// parent project files. Callers pass loaded settings to avoid another read.
+// pwd must be absolute and resolved; nil settings mean no registrations.
 func (w *Workspaces) Lookup(s *config.Settings, pwd string) (matchedRoot, cacheDir string, err error) {
 	if s == nil {
 		return "", "", ErrNotRegistered
@@ -53,17 +50,14 @@ func (w *Workspaces) Lookup(s *config.Settings, pwd string) (matchedRoot, cacheD
 	return matched, w.cacheDir(ws.Name), nil
 }
 
-// Info is a presentation-ready registry entry: the path key joined with the
-// stored fields. Returned by List.
+// Info joins the registry path key with its stored fields for display.
 type Info struct {
 	Name      string
 	Path      string
 	CreatedAt time.Time
 }
 
-// List returns every registered workspace sorted by name. A nil settings
-// yields an empty slice. The path-keyed layout of s.Workspaces stays
-// encapsulated here so callers never iterate the registry map directly.
+// List sorts by name so CLI output is stable despite map iteration order.
 func (w *Workspaces) List(s *config.Settings) []Info {
 	if s == nil {
 		return nil
@@ -76,15 +70,12 @@ func (w *Workspaces) List(s *config.Settings) []Info {
 	return out
 }
 
-// cacheDir is the per-workspace cache directory under the base dir.
 func (w *Workspaces) cacheDir(name string) string {
 	return filepath.Join(w.baseDir, config.WorkspacesDir, name)
 }
 
-// Init registers pwd (absolute, EvalSymlinks-evaluated); registering an
-// already-known pwd or ancestor is a no-op. The Load→mutate→Save sequence runs
-// under config.WithLock so concurrent Init calls for distinct paths don't lose
-// updates.
+// Init locks the read-modify-write so concurrent registrations cannot lose
+// entries. pwd must be absolute and resolved.
 func (w *Workspaces) Init(pwd string) (string, error) {
 	var workspaceDir string
 	err := config.WithLock(w.baseDir, func() error {
@@ -114,29 +105,16 @@ func (w *Workspaces) Init(pwd string) (string, error) {
 	return workspaceDir, nil
 }
 
-// Remove unregisters the workspace identified by name from the settings file
-// and returns the cache directory path so the caller can delete it after the
-// lock is released. The entire Load→mutate→Save sequence runs under
-// config.WithLock (mirroring Init) so concurrent Remove calls are safe.
-//
-// config.WithLock is used instead of config.Update because:
-//   - the not-found path must return ErrNotRegistered without calling Save;
-//   - the success path must surface cacheDir, a value computed inside the lock.
-//
-// The reused ErrNotRegistered sentinel's path-flavoured wording
-// ("no workspace registered for path") is intentionally never surfaced —
-// the CLI layer matches it with errors.Is and prints its own message.
-//
-// The lock does not touch the filesystem: after Remove returns the caller owns
-// os.RemoveAll(cacheDir). Settings are mutated first (under the short lock) so
-// that if RemoveAll fails the entry is already gone and cannot be re-removed.
+// Remove updates the registry under lock and returns the cache path for
+// deletion afterward. WithLock skips Save on a miss and exposes the path
+// computed inside the lock. The CLI replaces ErrNotRegistered's generic text.
 func (w *Workspaces) Remove(name string) (cacheDir string, err error) {
 	err = config.WithLock(w.baseDir, func() error {
 		s, err := config.Load(w.baseDir)
 		if err != nil {
 			return err
 		}
-		// Scan for the entry whose .Name == name (map is keyed by path, not name).
+		// Registry keys are paths, while the CLI accepts names.
 		var foundKey string
 		for key, ws := range s.Workspaces {
 			if ws.Name == name {

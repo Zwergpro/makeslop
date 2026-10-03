@@ -1,44 +1,11 @@
 # makeslop — Command & Runtime Reference
 
-Complete reference for all `makeslop` commands, flags, runtime behavior, and configuration.
-
-## Table of Contents
-
-- [Requirements](#requirements)
-- [Commands](#commands)
-  - [init](#init)
-  - [run](#run)
-  - [status](#status)
-  - [ls](#ls)
-  - [remove](#remove)
-  - [config](#config)
-  - [version](#version)
-- [Setup flow](#setup-flow)
-- [Cache layout](#cache-layout)
-- [Container layout and mount table](#container-layout-and-mount-table)
-- [Joined projects (`--join`)](#joined-projects---join)
-- [Environment variables](#environment-variables-environments-block-in-makeslopyaml)
-- [Container networking](#container-networking-network_mode--networks-in-makeslopyaml)
-- [In-container security flags](#in-container-security-flags)
-- [Host UID](#host-uid)
-- [TTY policy](#tty-policy)
-- [Dry run](#dry-run)
-- [Exit codes](#exit-codes)
-- [Output conventions](#output-conventions)
-- [Path resolution](#path-resolution)
-- [Docker container settings (settings.json)](#docker-container-settings-settingsjson)
-- [Using a custom Docker image](#using-a-custom-docker-image)
-
----
+Commands, configuration, and runtime behavior.
 
 ## Requirements
 
-- A Docker **daemon** must be reachable (via `DOCKER_HOST` or the default Unix socket
-  `/var/run/docker.sock`). `makeslop` uses the moby/moby Go SDK directly; the `docker` CLI binary
-  is **not** required.
-- A container **image** present in the local daemon. makeslop never builds or pulls images; build
-  or pull one yourself and point makeslop at it (see
-  [Using a custom Docker image](#using-a-custom-docker-image)).
+- A reachable Docker daemon (`DOCKER_HOST` or `/var/run/docker.sock`). The Docker CLI is not required.
+- A local image. Build or pull one yourself; makeslop does neither. See [custom images](#using-a-custom-docker-image).
 
 ---
 
@@ -46,9 +13,8 @@ Complete reference for all `makeslop` commands, flags, runtime behavior, and con
 
 ### init
 
-Registers the current working directory as a workspace and seeds `~/.makeslop/` (the `.claude/`,
-`.codex/`, and `workspaces/` directories and an empty `.claude.json`). Seeding is idempotent and
-never overwrites existing files.
+Registers the current directory and seeds `~/.makeslop/` with `.claude/`, `.codex/`,
+`workspaces/`, and an empty `.claude.json`. Existing files are preserved.
 
 - If `pwd` is already a subdirectory of a registered workspace, the existing workspace's cache path
   is returned (idempotent, no mutation).
@@ -64,13 +30,8 @@ never overwrites existing files.
 
 **Flags:**
 - `--out-of-home` — bypass the home-directory guard (see [security.md](security.md#home-directory-guard))
-- `--global-only` — scaffold `.makeslop.yaml` with both per-workspace cache overlay groups disabled
-  (only the global `~/.makeslop` mounts remain). This only affects a **fresh** scaffold:
-  `Scaffold` is idempotent (EEXIST is success when the existing file is a regular file, never
-  clobbers existing user edits), so on an already-init'd project the flag is a no-op — a note is
-  not printed in that case, but the existing YAML is left unchanged. If `.makeslop.yaml` is a
-  symlink, `init` exits with an error (see
-  [security.md — symlinked .makeslop.yaml](security.md#symlinked-makeslopyaml-rejected)).
+- `--global-only` — disable both per-workspace cache overlays in a newly scaffolded
+  `.makeslop.yaml`. An existing regular file is preserved; a symlink is rejected.
 
 ---
 
@@ -422,61 +383,15 @@ A name listed in both `static` and `host` is an error:
 projectconfig: environment key "NAME" listed in both environments.static and environments.host
 ```
 
-### Errors
+### Validation and inspection
 
-Any error in the block aborts `makeslop run` before the container starts (`makeslop status` reports
-it as a non-blocking `cannot read .makeslop.yaml` secret-scan warning). Messages name keys or
-line numbers only, never values. The full list:
+`environments:` must contain only `static` (a mapping) and `host` (a list). Duplicate keys,
+unknown keys, malformed names, and YAML merge keys (`<<`) abort `run` before launch. YAML aliases
+are supported. Errors name keys or line numbers, never secret values. An absent or empty block
+adds no `-e` flags.
 
-- `environments` not a mapping: `projectconfig: environments must be a mapping with optional "static" and "host" keys`
-- `KEY: value` directly under `environments:` instead of under `static`: `projectconfig: environments: variables must be listed under environments.static, not directly under environments`
-- unknown key with a list or map value, or a misspelled `static`/`host` (other case or a trailing
-  `s`, e.g. `hosts:` or `Host:`): `projectconfig: unknown key "hosts" in environments (allowed: static, host)`.
-  All-uppercase keys such as `HOST:` count as `KEY: value` entries (the error above).
-- duplicate `static` or `host`: `projectconfig: duplicate key "static" in environments`
-- null or non-scalar key: `projectconfig: environments: key at line N must be a non-null scalar`
-  (inside `static`: `projectconfig: environments.static: key at line N must be a non-null scalar`)
-- merge key: `projectconfig: environments: merge keys (<<) are not supported` (inside `static`:
-  `projectconfig: environments.static: merge keys (<<) are not supported`)
-- `static` not a mapping: `projectconfig: environments.static must be a mapping of KEY: value`
-- `host` not a list: `projectconfig: environments.host must be a list of variable names`
-- when `static` or `host` holds a single scalar (e.g. `host: GITHUB_TOKEN`, or a variable
-  literally named `host` placed directly under `environments:`), the two messages above end with
-  ` (variables belong under environments.static)`
-- `static` keys: `projectconfig: empty key in environments.static`,
-  `projectconfig: environments.static: key at line N must not contain '='`,
-  `projectconfig: environments.static: key at line N must not contain newline, carriage-return, or tab characters`,
-  `projectconfig: duplicate key "KEY" in environments.static`
-- `static` values: `projectconfig: environments.static: key "KEY" must be a scalar value`,
-  `projectconfig: environments.static: key "KEY" has no value`,
-  `projectconfig: environments.static: key "KEY" value must not contain newline, carriage-return, or tab characters`
-- `host` entries: `projectconfig: environments.host entry at line N must be a variable name` (list
-  or map entry), `projectconfig: environments.host entry at line N has no name` (null or `""`),
-  `projectconfig: environments.host entry at line N must not contain '='`,
-  `projectconfig: environments.host entry at line N must not contain whitespace`
-- name in both lists: `projectconfig: environment key "NAME" listed in both environments.static and environments.host`
-
-YAML aliases (`*name`) work inside `environments:`: anchor a `static` value and reuse it in another
-`static` value or a `host` entry:
-
-```yaml
-environments:
-  static:
-    TOKEN_VAR: &tok GITHUB_TOKEN
-  host:
-    - *tok
-```
-
-The file is decoded strictly, so a top-level key added only to hold an anchor (e.g. `base: &e ...`
-followed by `environments: *e`) is rejected as an unknown field. YAML merge keys (`<<:`) are not
-expanded; they are rejected with the merge key error above.
-
-**Absent block:** When `environments:` is absent or empty, no `-e` flags are emitted.
-
-**Verification (`--dry-run`):** Use `makeslop run --dry-run` to see the exact `-e` flags before
-launching the container. **`--dry-run` prints resolved `host` values in full, secrets included** —
-do not paste its output into logs or issues without redacting them. See
-[security.md — Host environment passthrough](security.md#host-environment-passthrough).
+`makeslop run --dry-run` shows the resolved `-e` flags, including host secrets. Redact its output
+before sharing it. See [host environment security](security.md#host-environment-passthrough).
 
 ---
 
@@ -506,29 +421,10 @@ the `--network` flags.
 
 ### Validation errors
 
-Names must match `^[a-zA-Z0-9][a-zA-Z0-9_.-]*$` (a permissive check; container IDs match too, and
-a name Docker itself would reject is reported as not found by the pre-flight). Errors quote the
-offending name, or give a line number, and abort `run` before the container is created (printed
-with a `makeslop: ` prefix):
-
-```
-projectconfig: set either network_mode or networks, not both
-projectconfig: network_mode "container:" has no container name
-projectconfig: network_mode "container:a b": invalid container name "a b"
-projectconfig: invalid network_mode "a b"
-projectconfig: empty entry in networks at line 3
-projectconfig: networks entry "host" is a network_mode, not a network
-projectconfig: invalid network name "a b" in networks
-projectconfig: duplicate network "a" in networks
-projectconfig: networks must be a list of names; per-network options are not supported
-projectconfig: networks must be a list of names
-projectconfig: networks entry at line 2 must be a network name
-```
-
-The built-in modes (`bridge`, `host`, `none`, `default`) and any `container:` value are rejected
-inside `networks` (the docker CLI refuses to mix built-in modes with user-defined networks); use
-`network_mode` for them. Compose's
-mapping form (`networks: {a: {}}`) is not supported.
+Names must match `^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`. Empty or duplicate entries are rejected.
+Use `network_mode` for built-in modes (`bridge`, `host`, `none`, `default`) and `container:`;
+`networks` accepts only a list of named networks, not compose's mapping form. Invalid settings
+abort `run` before container creation, with the offending name or line number in the error.
 
 ### Pre-flight checks
 

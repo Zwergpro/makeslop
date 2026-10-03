@@ -20,7 +20,6 @@ import (
 	"github.com/Zwergpro/makeslop/internal/workspace"
 )
 
-// returns nil (not empty slice) when both inputs are empty
 func mergeUniqueSorted(a, b []string) []string {
 	seen := make(map[string]struct{}, len(a)+len(b))
 	for _, s := range a {
@@ -40,10 +39,8 @@ func mergeUniqueSorted(a, b []string) []string {
 	return out
 }
 
-// resolveEnv merges env.Static with host-resolved env.Host pairs, sorted by
-// key. This is the only place the final -e order is decided. Unset host names
-// are skipped; set-but-empty yields "NAME=". Host values pass verbatim
-// (newlines included). Returns nil when empty so no -e flags appear.
+// resolveEnv decides the final -e order after host lookup. Missing host names
+// are skipped; present values, including empty ones, pass through unchanged.
 func resolveEnv(env projectconfig.Env, lookup func(string) (string, bool)) []string {
 	out := make([]string, 0, len(env.Static)+len(env.Host))
 	out = append(out, env.Static...)
@@ -55,8 +52,7 @@ func resolveEnv(env projectconfig.Env, lookup func(string) (string, bool)) []str
 	if len(out) == 0 {
 		return nil
 	}
-	// Keys are unique (projectconfig rejects static/host overlap), so an
-	// unstable sort is deterministic.
+	// projectconfig rejects duplicate keys, making an unstable sort safe.
 	sort.Slice(out, func(i, j int) bool {
 		ki, _, _ := strings.Cut(out[i], "=")
 		kj, _, _ := strings.Cut(out[j], "=")
@@ -65,13 +61,11 @@ func resolveEnv(env projectconfig.Env, lookup func(string) (string, bool)) []str
 	return out
 }
 
-// sandboxMountGates resolves filesystem state at workspaceRoot and returns the
-// two sandbox-policy flags. BuildSpec owns the mount-ordering consequences
-// (dropping the /dev/null mask that would shadow the read-only config bind).
+// sandboxMountGates checks live paths before the pure BuildSpec call.
 func sandboxMountGates(workspaceRoot string) (protect, maskHooks bool) {
 	configPath := filepath.Join(workspaceRoot, projectconfig.Filename)
 	if fi, err := os.Lstat(configPath); err == nil {
-		// Regular file only: a missing bind source fails container create.
+		// A missing bind source would fail container creation.
 		protect = fi.Mode().IsRegular()
 	}
 
@@ -134,7 +128,6 @@ func loadProject(ctx context.Context, stderr, chrome io.Writer, root string, joi
 	}
 	reportScanResults(stderr, chrome, root, join, masked, symlinkMatches)
 
-	// BuildSpec is pure (no fs access); Lstat checks live here.
 	protect, maskHooks := sandboxMountGates(root)
 
 	return docker.Project{

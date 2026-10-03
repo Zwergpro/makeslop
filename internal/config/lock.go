@@ -15,19 +15,8 @@ const lockFile = ".settings.lock"
 // behavior), so this mutex covers goroutines within this binary.
 var inProcessMu sync.Mutex
 
-// WithLock calls fn while holding an exclusive advisory lock on
-// <baseDir>/.settings.lock, releasing it (and closing the fd) when fn returns.
-//
-// Two-level: inProcessMu serializes goroutines (flock doesn't on Linux); a
-// POSIX flock(LOCK_EX) guards against separate processes (e.g. two concurrent
-// `makeslop init` shells).
-//
-// NO-NESTING INVARIANT: WithLock MUST NOT be nested — a nested call in the same
-// goroutine self-deadlocks on inProcessMu. Each Load→mutate→Save site acquires
-// its own short-lived lock sequentially.
-// Update runs a locked Load→mutate→Save read-modify-write on settings.json.
-// When mutate returns an error the save is skipped and the error is returned
-// verbatim. The WithLock no-nesting invariant applies to mutate too.
+// Update skips Save when mutate fails, leaving settings intact. Its callback
+// must not call WithLock: the nested lock would deadlock on inProcessMu.
 func Update(baseDir string, mutate func(*Settings) error) error {
 	return WithLock(baseDir, func() error {
 		s, err := Load(baseDir)
@@ -41,6 +30,8 @@ func Update(baseDir string, mutate func(*Settings) error) error {
 	})
 }
 
+// WithLock guards settings across processes and goroutines. Never nest it;
+// inProcessMu is not reentrant.
 func WithLock(baseDir string, fn func() error) error {
 	if err := os.MkdirAll(baseDir, 0o755); err != nil {
 		return fmt.Errorf("create base dir %s: %w", baseDir, err)

@@ -133,12 +133,8 @@ type yamlSchema struct {
 	Networks yaml.Node `yaml:"networks"`
 }
 
-// Scaffold creates <root>/.makeslop.yaml with the stub for the given Cache
-// defaults. Idempotent: EEXIST on a regular file is success and user edits are
-// never clobbered (c is a no-op on an existing file). A symlink at the path —
-// dangling or live — is rejected with a hard error: the project config must be
-// a regular file so the read-only self-bind and Load behave predictably. root must
-// be absolute and EvalSymlinks-evaluated.
+// Scaffold preserves existing regular configs. Symlinks are rejected because
+// Load and the read-only self-bind require a real file. root must be resolved.
 func Scaffold(root string, c Cache) error {
 	path := filepath.Join(root, Filename)
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
@@ -193,14 +189,8 @@ func defaultConfig() Config {
 	return Config{Cache: Cache{Content: true, Agent: true}}
 }
 
-// Load parses <root>/.makeslop.yaml into a Config (see its field docs).
-// Any parse, validation, or filesystem error is returned wrapped "projectconfig: ".
-//
-// The file at root/.makeslop.yaml must be a regular file. A symlink — dangling
-// or live — is rejected with a hard error: masking and sandbox-policy behaviour
-// depend on the file being a real file on disk.
-//
-// root must be absolute and EvalSymlinks-evaluated.
+// Load parses the project config. It rejects symlinks because following one can
+// bypass masking or the read-only bind. root must be absolute and resolved.
 func Load(root string) (Config, error) {
 	return load(root, false)
 }
@@ -458,19 +448,14 @@ func validateEntries(entries []string, listName string) ([]string, error) {
 	return cleaned, nil
 }
 
-// validatePatterns validates exclude.scan.patterns basename globs, rejecting
-// empty entries, path separators, and invalid glob syntax. Returns deduplicated,
-// sorted patterns. Patterns are matched against basenames only (security.Scan
-// calls filepath.Match(p, d.Name())), so path-style patterns like
-// "secrets/*.pem" or "**/*.env" can never match and are rejected fail-loud.
+// validatePatterns rejects path globs because Scan matches basenames only;
+// accepting them would silently leave files unmasked.
 func validatePatterns(entries []string) ([]string, error) {
 	for _, p := range entries {
 		if p == "" {
 			return nil, fmt.Errorf("projectconfig: empty pattern in exclude.scan.patterns")
 		}
-		// Patterns are basename globs: a '/' can never match any basename, so
-		// a path-style pattern silently masks nothing. Reject early so the user
-		// gets a clear error instead of silent data loss.
+		// A path glob cannot match a basename.
 		if strings.Contains(p, "/") {
 			return nil, fmt.Errorf("projectconfig: scan pattern %q contains a path separator — patterns match basenames only", p)
 		}
@@ -502,32 +487,9 @@ func validateSkipDirs(entries []string) ([]string, error) {
 	return dedupSorted(entries), nil
 }
 
-// validateEnvironments walks the environments: node into an Env. Shape:
-//
-//	environments:
-//	  static: {KEY: value, ...}   # optional
-//	  host: [NAME, ...]           # optional
-//
-// A zero or null node (block absent or empty) yields Env{}; so does a null
-// static:/host: sub-key. Rules:
-//   - Aliases (*name) are followed at every level: a yaml.Node decode target
-//     keeps them unresolved. Merge keys (<<) are rejected, not expanded.
-//   - Keys at both levels must be non-null scalars. Duplicates are detected
-//     here: yaml.v3 skips its own duplicate-key check when decoding into a
-//     yaml.Node.
-//   - An unknown key with a scalar value is a KEY: value entry outside static:
-//     and gets a hint to move it there, unless it looks like a misspelled
-//     static/host (see isSubKeyTypo); any other unknown key is reported as
-//     unknown.
-//   - static: keys must be non-empty and free of '=' and newline,
-//     carriage-return, or tab; values must be non-null scalars without those
-//     characters. Explicit "" is accepted. Numbers/booleans coerce via
-//     node.Value. Pairs keep file order; run sorts the merged result.
-//   - host: entries must be non-null scalars, non-empty, and free of '=' and
-//     whitespace. Deduplicated silently and sorted.
-//   - A name in both static and host is an error.
-//
-// Error messages carry names or line numbers only, never values.
+// validateEnvironments parses static pairs and host names from raw YAML nodes.
+// Raw nodes need explicit duplicate-key and alias checks. Errors include names
+// or line numbers, never values, which may contain secrets.
 func validateEnvironments(node *yaml.Node) (Env, error) {
 	n := deref(node)
 	if n.Kind == 0 || isNull(n) {
@@ -600,8 +562,7 @@ func shapeErr(node *yaml.Node, msg string) error {
 	return errors.New(msg)
 }
 
-// validateStaticEnv validates environments.static into "KEY=VALUE" pairs in
-// file order. A nil or null node yields no pairs.
+// validateStaticEnv keeps file order; run sorts pairs after host lookup.
 func validateStaticEnv(node *yaml.Node) ([]string, error) {
 	if node == nil || isNull(node) {
 		return nil, nil
@@ -648,11 +609,8 @@ func validateStaticEnv(node *yaml.Node) ([]string, error) {
 	return result, nil
 }
 
-// validateHostEnv validates environments.host into sorted, deduplicated
-// variable names. Whitespace is rejected more strictly than for static keys: a
-// host name has to exist in the host environment. A nil or null node yields no
-// names. Entry errors cite the line, not the entry: a malformed entry may be a
-// pasted NAME=secret.
+// validateHostEnv rejects whitespace and cites lines rather than entries:
+// a malformed entry may contain a pasted NAME=secret.
 func validateHostEnv(node *yaml.Node) ([]string, error) {
 	if node == nil || isNull(node) {
 		return nil, nil
@@ -694,11 +652,7 @@ func isSubKeyTypo(k string) bool {
 	return false
 }
 
-// deref follows YAML aliases (*name) to the anchored node. Through Load the
-// practical case is an alias to a value anchored inside environments:.
-// Aliasing the whole block or static:/host: needs an anchor outside the block,
-// and strict decoding rejects an extra key added just to hold one, so those
-// paths are mainly exercised by direct validateEnvironments tests.
+// deref resolves aliases because decoding into yaml.Node leaves them intact.
 func deref(n *yaml.Node) *yaml.Node {
 	for n.Kind == yaml.AliasNode && n.Alias != nil {
 		n = n.Alias
@@ -716,10 +670,8 @@ func isNull(n *yaml.Node) bool {
 	return n.Kind == yaml.ScalarNode && n.ShortTag() == "!!null"
 }
 
-// statFilter Lstats each path under root. Symlinks are dropped with a warning
-// message in warnings (degraded protection is not silent). Missing entries and
-// non-symlink wrong-type drops are silently discarded. keep decides the
-// acceptable type (checked only after the symlink guard).
+// statFilter warns on symlinks because silently skipping one may expose its
+// target. Missing paths and wrong non-symlink types are ignored.
 func statFilter(root string, cleaned []string, keep func(os.FileInfo) bool) (result, warnings []string, err error) {
 	for _, rel := range cleaned {
 		abs := filepath.Join(root, rel)
@@ -730,9 +682,7 @@ func statFilter(root string, cleaned []string, keep func(os.FileInfo) bool) (res
 			}
 			return nil, nil, fmt.Errorf("projectconfig: stat %s: %w", rel, statErr)
 		}
-		// Symlinks are dropped with a visible warning: masking a symlink is
-		// ambiguous (the link or its target?), but silently skipping it could
-		// leave secrets unmasked. Callers must surface these warnings.
+		// Masking a link is ambiguous; warn rather than imply its target is safe.
 		if info.Mode()&os.ModeSymlink != 0 {
 			warnings = append(warnings, fmt.Sprintf("path %q is a symlink and is NOT masked", rel))
 			continue

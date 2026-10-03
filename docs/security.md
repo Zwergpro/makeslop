@@ -1,26 +1,6 @@
 # makeslop — Security
 
-This document covers makeslop's security-relevant behaviors: secret masking, network egress
-(`network_mode` / `networks`), and the home-directory guard. For in-container hardening flags (`--cap-drop ALL`,
-`no-new-privileges`, `--tmpfs`, bind-mount rationale), see
-[reference.md — In-container security flags](reference.md#in-container-security-flags).
-
-## Table of Contents
-
-- [Secret masking](#secret-masking)
-- [Project-local exclusions](#project-local-exclusions)
-  - [Path-style patterns rejected](#path-style-patterns-rejected)
-  - [Symlinked `.makeslop.yaml` rejected](#symlinked-makeslopyaml-rejected)
-- [Sandbox-policy protection](#sandbox-policy-protection)
-- [Joined projects](#joined-projects)
-- [Host environment passthrough](#host-environment-passthrough)
-- [Example image hardening](#example-image-hardening)
-- [Network egress](#network-egress)
-  - [Egress through a sidecar (`container:proxy`)](#egress-through-a-sidecar-containerproxy)
-  - [Internal network plus an explicit proxy](#internal-network-plus-an-explicit-proxy)
-- [Home-directory guard](#home-directory-guard)
-
----
+For container hardening flags, see the [runtime reference](reference.md#in-container-security-flags).
 
 ## Secret masking
 
@@ -29,51 +9,20 @@ native Go `filepath.WalkDir` walk driven entirely by the project's `.makeslop.ya
 file is overlaid with `/dev/null` inside the container — the agent sees a zero-byte file at that
 path instead of the real credential.
 
-Secret masking is **opt-in and config-driven**: if `exclude.scan` is absent (or `patterns` is
-empty) in `.makeslop.yaml`, no scan is performed and no pattern-matched files are masked (explicit
-`exclude.files` entries are still overlaid). `makeslop init` seeds the default patterns and
-skip-dirs as active values in the generated `.makeslop.yaml`, so new projects are safe by default.
+Scanning is configured by `exclude.scan` in `.makeslop.yaml`. Missing or empty patterns
+disable the scan; explicit `exclude.files` masks still apply. `makeslop init` writes active
+patterns and skip directories into new project configs. The full template appears under
+[Project-local exclusions](#project-local-exclusions).
 
-The default `exclude.scan.patterns` cover the common secret-file shapes:
-
-```yaml
-patterns:
-  - "*.env"
-  - ".env.*"
-  - "*.pem"
-  - "*.key"
-  - "*.p12"
-  - "*.pfx"
-  - "*.tfstate"
-  - "id_rsa*"
-  - "id_ed25519*"
-  - ".npmrc"
-  - ".netrc"
-  - ".git-credentials"
-  - ".pypirc"
-  - ".htpasswd"
-  - "service-account*.json"
-  - "kubeconfig"
-  - "*.kubeconfig"
-```
-
-The default `skip-dirs` are `.git`, `node_modules`, `vendor`, and `.venv`. See
-[Project-local exclusions](#project-local-exclusions) for the full generated `.makeslop.yaml`.
-
-Patterns are basename globs (`filepath.Match`). Regular files matching a pattern are masked.
-Symlinks matching a pattern are **not masked** (WalkDir does not follow symlinks), but
-`makeslop run` prints a warning to stderr for each such symlink so the gap is visible — this warning
-is **not suppressed by `--quiet`** (degraded protection is not silent chrome):
+Patterns are basename globs (`filepath.Match`). Matching symlinks remain unmasked because
+`WalkDir` does not follow them. `makeslop run` warns on stderr even with `--quiet`:
 
 ```
 makeslop: warning: symlink <rel-path> matches a secret pattern but is NOT masked
 ```
 
-Directories named in `skip-dirs` are pruned entirely during the walk.
-
-Walk errors (e.g. unreadable subdirectories) are propagated immediately and abort the launch. This
-matches the no-secret-leak invariant: if a directory cannot be read, we cannot prove it is
-secret-free.
+`skip-dirs` prunes entire directories. An unreadable path aborts launch because it cannot be
+checked for secrets.
 
 ### Trust assumptions
 
@@ -96,19 +45,13 @@ why the scan is necessary.
 When at least one file is masked, `makeslop` prints `makeslop: masked N secret file(s)` to stderr.
 Zero hits are silent.
 
-**No `exclude.scan` block:** a `.makeslop.yaml` without an `exclude.scan` block runs no secret
-masking. Copy the complete `exclude.scan` block (with both `patterns` and `skip-dirs`) from the
-generated template in [Project-local exclusions](#project-local-exclusions) below to enable it.
-makeslop never rewrites a project-local config, so patterns added to the template are not added
-to existing files.
+Existing project configs are never rewritten when template patterns change.
 
 ---
 
 ## Project-local exclusions
 
-`makeslop init` creates a `.makeslop.yaml` file at the project root. The generated file includes
-the default `exclude.scan` block (patterns + skip-dirs for the secret scan) and empty `files`/`dirs`
-lists:
+`makeslop init` creates this `.makeslop.yaml` at the project root:
 
 ```yaml
 exclude:

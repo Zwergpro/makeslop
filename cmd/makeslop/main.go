@@ -1,4 +1,3 @@
-// Command makeslop is the CLI entry point. Container `exit N` propagates as host `exit N`.
 package main
 
 import (
