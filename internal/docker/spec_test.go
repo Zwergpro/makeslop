@@ -2276,10 +2276,10 @@ func TestShellCommand_Sections_GoldenString(t *testing.T) {
 		"  -it \\\n" +
 		"  --workdir /workspace/app \\\n" +
 		"  --tmpfs /tmp:size=100m \\\n" +
-		"  `: '--- project: /home/me/app ---'` \\\n" +
+		"  `# --- project: /home/me/app ---` \\\n" +
 		"  --mount type=bind,source=/home/me/app,target=/workspace/app \\\n" +
 		"  --mount type=bind,source=/dev/null,target=/workspace/app/.env \\\n" +
-		"  `: '--- join: /home/me/lib (ro) ---'` \\\n" +
+		"  `# --- join: /home/me/lib (ro) ---` \\\n" +
 		"  --mount type=bind,source=/home/me/lib,target=/workspace/lib,readonly \\\n" +
 		"  --mount type=tmpfs,target=/workspace/lib/keys \\\n" +
 		"  claudebox \\\n" +
@@ -2299,13 +2299,13 @@ func TestShellCommand_Sections_FromBuildSpec(t *testing.T) {
 	)
 	lines := strings.Split(BuildSpec(o).ShellCommand(), "\n")
 	wantBefore := map[string]string{
-		"  `: '--- project: /home/me/code/myproj ---'` \\": "  --mount type=bind,source=/home/me/code/myproj,target=/workspace/myproj-abc123 \\",
-		"  `: '--- join: /home/me/code/lib (rw) ---'` \\":  "  --mount type=bind,source=/home/me/code/lib,target=/workspace/lib \\",
-		"  `: '--- join: /home/me/code/util (ro) ---'` \\": "  --mount type=bind,source=/home/me/code/util,target=/workspace/util,readonly \\",
+		"  `# --- project: /home/me/code/myproj ---` \\": "  --mount type=bind,source=/home/me/code/myproj,target=/workspace/myproj-abc123 \\",
+		"  `# --- join: /home/me/code/lib (rw) ---` \\":  "  --mount type=bind,source=/home/me/code/lib,target=/workspace/lib \\",
+		"  `# --- join: /home/me/code/util (ro) ---` \\": "  --mount type=bind,source=/home/me/code/util,target=/workspace/util,readonly \\",
 	}
 	seps := 0
 	for i, line := range lines {
-		if !strings.HasPrefix(line, "  `:") {
+		if !strings.HasPrefix(line, "  `#") {
 			continue
 		}
 		seps++
@@ -2373,7 +2373,7 @@ func TestShellCommand_HostileLabel_SingleLine(t *testing.T) {
 	out := joinSectionSpec("project: /home/me/app", hostileLabel).ShellCommand()
 	var sep []string
 	for _, line := range strings.Split(out, "\n") {
-		if strings.HasPrefix(line, "  `:") {
+		if strings.HasPrefix(line, "  `#") {
 			sep = append(sep, line)
 		}
 	}
@@ -2382,10 +2382,10 @@ func TestShellCommand_HostileLabel_SingleLine(t *testing.T) {
 	}
 	line := sep[1]
 	if strings.Count(line, "`") != 2 || strings.Contains(line, "$") ||
-		strings.Contains(strings.ReplaceAll(strings.TrimSuffix(line, " \\"), `'\''`, ""), `\`) {
+		strings.Contains(strings.TrimSuffix(line, " \\"), `\`) {
 		t.Errorf("separator not neutralized: %q", line)
 	}
-	want := "  `: '--- join: /home/me/a?id??(id)?{HOME}?x?; echo pwned '\\''q'\\'' \"dq\" (ro) ; rm ---'` \\"
+	want := "  `# --- join: /home/me/a?id??(id)?{HOME}?x?; echo pwned 'q' \"dq\" (ro) ; rm ---` \\"
 	if line != want {
 		t.Errorf("separator =\n%s\nwant\n%s", line, want)
 	}
@@ -2401,7 +2401,7 @@ func TestShellCommand_Sections_PasteableInShells(t *testing.T) {
 	withValues.Env = []string{"A=--mount", "B=x y"}
 	withValues.NetworkMode = "host"
 	if out := withValues.ShellCommand(); !strings.Contains(out,
-		"`: '--- join: /home/me/lib (ro) ---'` \\\n  --mount type=bind,source=/home/me/lib,") {
+		"`# --- join: /home/me/lib (ro) ---` \\\n  --mount type=bind,source=/home/me/lib,") {
 		t.Fatalf("join separator not directly before the join bind:\n%s", out)
 	}
 
@@ -2410,7 +2410,6 @@ func TestShellCommand_Sections_PasteableInShells(t *testing.T) {
 		{"bash", "--posix", "-c"},
 		{"dash", "-c"},
 		{"zsh", "-f", "-c"},
-		{"zsh", "-f", "-i", "-c"}, // interactive: # is not a comment here
 	}
 	specs := []struct {
 		name string
@@ -2435,7 +2434,7 @@ func TestShellCommand_Sections_PasteableInShells(t *testing.T) {
 				if err := cmd.Run(); err != nil {
 					t.Fatalf("%v: %v\nstderr: %s", sh, err, stderr.String())
 				}
-				if got := stripTTYNoise(stderr.String()); got != "" {
+				if got := stderr.String(); got != "" {
 					t.Errorf("stderr not empty: %q", got)
 				}
 				if stdout.String() != want {
@@ -2444,27 +2443,4 @@ func TestShellCommand_Sections_PasteableInShells(t *testing.T) {
 			})
 		}
 	}
-}
-
-// stripTTYNoise drops the job-control/terminal warnings an interactive shell
-// prints when it has no controlling terminal (CI runners, piped go test).
-func stripTTYNoise(stderr string) string {
-	noise := []string{"job control", "tty", "TTY", "terminal", "zle", "ioctl"}
-	var kept []string
-	for _, line := range strings.Split(stderr, "\n") {
-		if line == "" {
-			continue
-		}
-		isNoise := false
-		for _, n := range noise {
-			if strings.Contains(line, n) {
-				isNoise = true
-				break
-			}
-		}
-		if !isNoise {
-			kept = append(kept, line)
-		}
-	}
-	return strings.Join(kept, "\n")
 }

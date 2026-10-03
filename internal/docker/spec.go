@@ -360,9 +360,9 @@ func (s Spec) ShellCommand() string {
 		tok := args[i]
 		if tok == "--mount" {
 			if label, ok := sections[mountN]; ok {
-				// `: '…'` is a no-op command substitution: valid as a continued
-				// line in bash, dash and interactive zsh (where # is not a comment).
-				lines = append(lines, "  `: "+shellQuote("--- "+sanitizeLabel(label)+" ---")+"`")
+				// A backticked comment expands to nothing, so the line stays a
+				// valid continuation when the output is pasted into a shell.
+				lines = append(lines, "  `# --- "+sanitizeLabel(label)+" ---`")
 			}
 			mountN++
 		}

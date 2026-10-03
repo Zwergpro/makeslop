@@ -766,19 +766,20 @@ With `--join`, the mounts are grouped per project and each group is preceded by 
 ```
 docker run \
   ...
-  `: '--- project: /home/me/app ---'` \
+  `# --- project: /home/me/app ---` \
   --mount type=bind,source=/home/me/app,target=/workspace/app-ab12cd \
   ...
-  `: '--- join: /home/me/lib (ro) ---'` \
+  `# --- join: /home/me/lib (ro) ---` \
   --mount type=bind,source=/home/me/lib,target=/workspace/lib,readonly \
   --mount type=tmpfs,target=/workspace/lib/keys \
   claudebox \
   /bin/zsh
 ```
 
-The separator is an empty command substitution (`` `: '…'` ``). It expands to nothing, so the
-command still pastes into bash, dash and zsh, including interactive zsh, where `#` would not start a
-comment. Backticks, `$`, `\` and control characters in the label are replaced with `?`. Without
+The separator is a comment inside a command substitution (`` `# …` ``). It expands to nothing, so
+the command still pastes into bash, dash and zsh scripts. Interactive zsh does not treat `#` as a
+comment unless `setopt interactivecomments` is set, so pasting there prints an error for each
+separator line. Backticks, `$`, `\` and control characters in the label are replaced with `?`. Without
 `--join` no separator is printed and the output is unchanged.
 
 The output includes resolved `environments.host` values in full, secrets included. Do not keep it
