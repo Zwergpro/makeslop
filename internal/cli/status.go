@@ -1,11 +1,13 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"unicode/utf8"
 
 	"github.com/spf13/cobra"
@@ -218,13 +220,16 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir, imageFlag 
 		}
 	}
 
-	// 5. Secret scan summary (non-blocking), only when workspace resolved.
+	// 5. Secret scan summary (non-blocking) and 6. network (blocking), only
+	// when the workspace resolved; both share one projectconfig.Load.
 	if workspaceRoot != "" {
 		pcfg, pcErr := projectconfig.Load(workspaceRoot)
-		yamlExcludes := pcfg.Excludes
 		if pcErr != nil {
 			cl.warn("secret scan", fmt.Sprintf("cannot read .makeslop.yaml: %v", pcErr))
+			// run fails hard on the same file, so status must not report ready.
+			cl.fail("network", "cannot check — .makeslop.yaml invalid")
 		} else {
+			yamlExcludes := pcfg.Excludes
 			masked, _, scanErr := security.Scan(ctx, workspaceRoot, yamlExcludes.Patterns, yamlExcludes.SkipDirs)
 			if scanErr != nil {
 				cl.warn("secret scan", fmt.Sprintf("scan error: %v", scanErr))
@@ -233,9 +238,11 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir, imageFlag 
 			} else {
 				cl.info("secret scan")
 			}
+			checkNetwork(ctx, cl, deps, daemonUp, pcfg.Network)
 		}
 	} else {
 		cl.info("secret scan")
+		cl.info("network")
 	}
 
 	if jsonMode {
@@ -256,13 +263,36 @@ func runStatus(cmd *cobra.Command, ws *workspace.Workspaces, baseDir, imageFlag 
 	return nil
 }
 
+// checkNetwork records the network row. Unset → info; built-in modes → ok
+// without inspection; anything else is inspected via networkPreflight.
+func checkNetwork(ctx context.Context, cl *checkList, deps dockerDeps, daemonUp bool, n projectconfig.Network) {
+	detail := n.Mode
+	if len(n.Networks) > 0 {
+		detail = "networks: " + strings.Join(n.Networks, ", ")
+	}
+	switch {
+	case detail == "":
+		cl.info("network")
+	case !networkNeedsInspect(n):
+		cl.ok("network", detail)
+	case !daemonUp:
+		cl.fail("network", "cannot check — daemon unreachable")
+	default:
+		if err := deps.networkPreflight(ctx, n); err != nil {
+			cl.fail("network", err.Error())
+		} else {
+			cl.ok("network", detail)
+		}
+	}
+}
+
 func newStatusCmd(ws *workspace.Workspaces, baseDir string, ttyPred isTTYFunc, deps dockerDeps) *cobra.Command {
 	var jsonMode bool
 	var image string
 
 	cmd := &cobra.Command{
 		Use:          "status",
-		Short:        "Report readiness: daemon, image, workspace, scan",
+		Short:        "Report readiness: daemon, image, workspace, scan, network",
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {

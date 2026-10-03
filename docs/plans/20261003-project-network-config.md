@@ -182,12 +182,12 @@
 - Modify: `internal/cli/status.go`
 - Modify: `internal/cli/status_test.go`
 
-- [ ] after the workspace check, reuse the single `projectconfig.Load` result for both the secret-scan row and the new `network` row
-- [ ] row states: workspace unresolved → `–` (same as secret scan); unset or built-in mode → `–`/`✓` without inspection; daemon unreachable with an inspected target → `✗ cannot check — daemon unreachable` (mirrors the image row); OK → `✓ container:proxy` / `✓ networks: a, b`; missing/stopped → `✗` with the shared hint; `.makeslop.yaml` invalid → `✗ cannot check — .makeslop.yaml invalid` (`run` fails hard on the same file, so `status` must not report ready)
-- [ ] update the `Short` text (status.go:264) to mention network
-- [ ] make sure the row appears in `--json` output
-- [ ] write tests for each row state, in both text and `--json`, and check that a `✗` network makes `status` exit non-zero
-- [ ] run tests - must pass before next task
+- [x] after the workspace check, reuse the single `projectconfig.Load` result for both the secret-scan row and the new `network` row
+- [x] row states: workspace unresolved → `–` (same as secret scan); unset or built-in mode → `–`/`✓` without inspection; daemon unreachable with an inspected target → `✗ cannot check — daemon unreachable` (mirrors the image row); OK → `✓ container:proxy` / `✓ networks: a, b`; missing/stopped → `✗` with the shared hint; `.makeslop.yaml` invalid → `✗ cannot check — .makeslop.yaml invalid` (`run` fails hard on the same file, so `status` must not report ready)
+- [x] update the `Short` text (status.go:264) to mention network
+- [x] make sure the row appears in `--json` output
+- [x] write tests for each row state, in both text and `--json`, and check that a `✗` network makes `status` exit non-zero
+- [x] run tests - must pass before next task
 
 ### Task 7: Verify acceptance criteria
 - [ ] `network_mode: "container:proxy"` → dry-run shows `--network container:proxy`; the real run passes `HostConfig.NetworkMode=container:proxy`
