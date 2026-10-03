@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"unicode"
@@ -47,6 +48,9 @@ func renderStub(c Cache) []byte {
 cache:
   content: %t
   agent: %t
+# Container networking (compose names; makeslop attaches, never creates):
+# network_mode: "container:proxy"   # bridge | host | none | container:<name> | <network>
+# networks: [myapp_default]         # alternative to network_mode; not both
 `, c.Content, c.Agent))
 }
 
@@ -93,9 +97,16 @@ type Env struct {
 	Host   []string // sorted, deduped variable names to copy from the host
 }
 
+// Network is the parsed container networking configuration. The zero value
+// means Docker's default (bridge, no --network flag). At most one field is set.
+type Network struct {
+	Mode     string   // "" = Docker default; bridge|host|none|container:<x>|<network>
+	Networks []string // file order kept; the first is the primary network
+}
+
 // yamlSchema is the strict decode target. KnownFields(true) rejects any unknown
-// key — including a stale "network:" block from a prior makeslop version, the
-// intended loud break.
+// key — including the old "network:" block (proxy egress) from a prior makeslop
+// version, the intended loud break; network_mode/networks replace it.
 type yamlSchema struct {
 	Exclude struct {
 		Scan struct {
@@ -113,6 +124,10 @@ type yamlSchema struct {
 	// lenient scalar coercion (numbers/booleans become their string forms) and a
 	// targeted error for the old flat KEY: value form.
 	Environments yaml.Node `yaml:"environments"`
+	NetworkMode  string    `yaml:"network_mode"`
+	// Decoded as a raw yaml.Node so compose's mapping form gets a targeted
+	// error instead of a yaml type error (see decodeNetworks).
+	Networks yaml.Node `yaml:"networks"`
 }
 
 // Scaffold creates <root>/.makeslop.yaml with the stub for the given Cache
@@ -165,6 +180,9 @@ type Config struct {
 	// environments:; zero Env{} when the block is absent. Load never reads the
 	// process environment: callers resolve Env.Host themselves.
 	Env Env
+	// Network holds network_mode / networks; zero Network{} (Docker default)
+	// when both are absent or empty.
+	Network Network
 }
 
 // defaultConfig is returned when .makeslop.yaml is absent or empty.
@@ -202,8 +220,8 @@ func Load(root string) (Config, error) {
 		return Config{}, fmt.Errorf("projectconfig: read %s: %w", Filename, err)
 	}
 
-	// Strict mode: unknown fields error out, surfacing typos and stale
-	// "network:" blocks from prior makeslop versions.
+	// Strict mode: unknown fields error out, surfacing typos and the old
+	// "network:" block from prior makeslop versions.
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
 
@@ -273,11 +291,103 @@ func Load(root string) (Config, error) {
 		return Config{}, err
 	}
 
+	nets, err := decodeNetworks(&schema.Networks)
+	if err != nil {
+		return Config{}, err
+	}
+	netCfg, err := validateNetwork(schema.NetworkMode, nets)
+	if err != nil {
+		return Config{}, err
+	}
+
 	return Config{
 		Excludes: Excludes{Files: files, Dirs: dirs, Patterns: patterns, SkipDirs: skipDirs, Warnings: warnings},
 		Cache:    cacheCfg,
 		Env:      env,
+		Network:  netCfg,
 	}, nil
+}
+
+// networkNameRe is Docker's network/container name charset. Container IDs
+// (hex) match too.
+var networkNameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`)
+
+// containerPrefix marks a network_mode that joins another container's
+// network namespace.
+const containerPrefix = "container:"
+
+// decodeNetworks turns the networks: node into raw entries. An absent or null
+// node yields nil. The compose mapping form gets a targeted error; entries must
+// be scalars (a null entry becomes "" and is rejected by validateNetwork).
+func decodeNetworks(node *yaml.Node) ([]string, error) {
+	n := deref(node)
+	if n.Kind == 0 || isNull(n) {
+		return nil, nil
+	}
+	switch n.Kind {
+	case yaml.SequenceNode:
+	case yaml.MappingNode:
+		return nil, errors.New("projectconfig: networks must be a list of names; per-network options are not supported")
+	default:
+		return nil, errors.New("projectconfig: networks must be a list of names")
+	}
+	out := make([]string, 0, len(n.Content))
+	for _, e := range n.Content {
+		e = deref(e)
+		if e.Kind != yaml.ScalarNode {
+			return nil, fmt.Errorf("projectconfig: networks entry at line %d must be a network name", e.Line)
+		}
+		if isNull(e) {
+			out = append(out, "")
+			continue
+		}
+		out = append(out, e.Value)
+	}
+	return out, nil
+}
+
+// validateNetwork validates network_mode / networks into a Network. An empty
+// mode and an empty networks list both mean unset; setting both is an error.
+// No mode list is hard-coded: any name-shaped mode is passed to the daemon,
+// which decides. Messages quote the offending name (network and container
+// names are not secret).
+func validateNetwork(mode string, nets []string) (Network, error) {
+	if len(nets) == 0 {
+		nets = nil
+	}
+	if mode != "" && nets != nil {
+		return Network{}, errors.New("projectconfig: set either network_mode or networks, not both")
+	}
+	if mode != "" {
+		if target, ok := strings.CutPrefix(mode, containerPrefix); ok {
+			if target == "" {
+				return Network{}, fmt.Errorf("projectconfig: network_mode %q has no container name", mode)
+			}
+			if !networkNameRe.MatchString(target) {
+				return Network{}, fmt.Errorf("projectconfig: network_mode %q: invalid container name %q", mode, target)
+			}
+		} else if !networkNameRe.MatchString(mode) {
+			return Network{}, fmt.Errorf("projectconfig: invalid network_mode %q", mode)
+		}
+		return Network{Mode: mode}, nil
+	}
+	seen := make(map[string]struct{}, len(nets))
+	for _, name := range nets {
+		if name == "" {
+			return Network{}, errors.New("projectconfig: empty entry in networks")
+		}
+		switch {
+		case name == "host", name == "none", name == "default", strings.HasPrefix(name, containerPrefix):
+			return Network{}, fmt.Errorf("projectconfig: networks entry %q is a network_mode, not a network", name)
+		case !networkNameRe.MatchString(name):
+			return Network{}, fmt.Errorf("projectconfig: invalid network name %q in networks", name)
+		}
+		if _, dup := seen[name]; dup {
+			return Network{}, fmt.Errorf("projectconfig: duplicate network %q in networks", name)
+		}
+		seen[name] = struct{}{}
+	}
+	return Network{Networks: nets}, nil
 }
 
 // validateEntries cleans and validates relative paths, erroring on the first

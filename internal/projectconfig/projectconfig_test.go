@@ -2004,3 +2004,127 @@ func stringSlicesEqual(a, b []string) bool {
 	}
 	return true
 }
+
+// loadDoc writes content as .makeslop.yaml in a fresh root and loads it.
+func loadDoc(t *testing.T, content string) (Config, error) {
+	t.Helper()
+	root := evalSymlinks(t, t.TempDir())
+	if err := os.WriteFile(filepath.Join(root, Filename), []byte(content), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	return Load(root)
+}
+
+func TestLoad_Network_Valid(t *testing.T) {
+	skipNonPOSIX(t, "POSIX-only per CLAUDE.md")
+
+	cases := []struct {
+		name    string
+		content string
+		want    Network
+	}{
+		{"unset", "cache:\n  content: true\n", Network{}},
+		{"empty mode", "network_mode: \"\"\n", Network{}},
+		{"null mode", "network_mode:\n", Network{}},
+		{"bridge", "network_mode: bridge\n", Network{Mode: "bridge"}},
+		{"host", "network_mode: host\n", Network{Mode: "host"}},
+		{"none", "network_mode: none\n", Network{Mode: "none"}},
+		{"default", "network_mode: default\n", Network{Mode: "default"}},
+		{"container name", "network_mode: \"container:proxy\"\n", Network{Mode: "container:proxy"}},
+		{"container id", "network_mode: container:3f4e9a1b2c7d\n", Network{Mode: "container:3f4e9a1b2c7d"}},
+		{"custom network mode", "network_mode: myapp_default\n", Network{Mode: "myapp_default"}},
+		{"single network", "networks: [egress]\n", Network{Networks: []string{"egress"}}},
+		{"multiple networks keep order", "networks:\n  - zeta.net\n  - alpha-1\n  - myapp_default\n",
+			Network{Networks: []string{"zeta.net", "alpha-1", "myapp_default"}}},
+		{"empty mode plus networks", "network_mode: \"\"\nnetworks: [a]\n", Network{Networks: []string{"a"}}},
+		{"mode plus empty networks", "network_mode: x\nnetworks: []\n", Network{Mode: "x"}},
+		{"mode plus null networks", "network_mode: x\nnetworks:\n", Network{Mode: "x"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := loadDoc(t, tc.content)
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if !reflect.DeepEqual(cfg.Network, tc.want) {
+				t.Errorf("Network: got %#v, want %#v", cfg.Network, tc.want)
+			}
+		})
+	}
+}
+
+func TestLoad_Network_Errors(t *testing.T) {
+	skipNonPOSIX(t, "POSIX-only per CLAUDE.md")
+
+	cases := []struct {
+		name    string
+		content string
+		wantSub string
+	}{
+		{"both keys set", "network_mode: host\nnetworks: [a]\n", "set either network_mode or networks, not both"},
+		{"container empty name", "network_mode: \"container:\"\n", `network_mode "container:" has no container name`},
+		{"container invalid name", "network_mode: \"container:-bad\"\n", `invalid container name "-bad"`},
+		{"mode with space", "network_mode: \"my net\"\n", `invalid network_mode "my net"`},
+		{"mode leading whitespace", "network_mode: \" host\"\n", `invalid network_mode " host"`},
+		{"mode invalid chars", "network_mode: \"net/1\"\n", `invalid network_mode "net/1"`},
+		{"empty entry", "networks: [\"\"]\n", "empty entry in networks"},
+		{"null entry", "networks:\n  - a\n  -\n", "empty entry in networks"},
+		{"duplicate entry", "networks: [a, b, a]\n", `duplicate network "a" in networks`},
+		{"invalid entry", "networks: [\"a b\"]\n", `invalid network name "a b" in networks`},
+		{"host in networks", "networks: [host]\n", `networks entry "host" is a network_mode, not a network`},
+		{"none in networks", "networks: [none]\n", `networks entry "none" is a network_mode, not a network`},
+		{"default in networks", "networks: [default]\n", `networks entry "default" is a network_mode, not a network`},
+		{"container in networks", "networks: [\"container:x\"]\n", `networks entry "container:x" is a network_mode, not a network`},
+		{"mapping form", "networks:\n  a: {}\n", "networks must be a list of names; per-network options are not supported"},
+		{"scalar form", "networks: a\n", "networks must be a list of names"},
+		{"nested entry", "networks:\n  - [a]\n", "networks entry at line 2 must be a network name"},
+		{"old network block", "network:\n  proxy:\n    address: \"\"\n", "network"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := loadDoc(t, tc.content)
+			if err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !strings.HasPrefix(err.Error(), "projectconfig:") {
+				t.Errorf("error missing 'projectconfig:' prefix: %q", err.Error())
+			}
+			if !strings.Contains(err.Error(), tc.wantSub) {
+				t.Errorf("error %q does not contain %q", err.Error(), tc.wantSub)
+			}
+		})
+	}
+}
+
+// validateNetwork normalises before checking exclusivity: an empty mode or an
+// empty list is unset.
+func TestValidateNetwork_Normalises(t *testing.T) {
+	got, err := validateNetwork("", []string{})
+	if err != nil {
+		t.Fatalf("validateNetwork: %v", err)
+	}
+	if got.Mode != "" || got.Networks != nil {
+		t.Errorf("got %#v, want zero Network", got)
+	}
+	if _, err := validateNetwork("bridge", []string{}); err != nil {
+		t.Errorf("mode + empty list: unexpected error %v", err)
+	}
+}
+
+// Both stub variants carry only commented network examples, so they parse to
+// the zero Network.
+func TestStub_ParsesToZeroNetwork(t *testing.T) {
+	skipNonPOSIX(t, "POSIX-only per CLAUDE.md")
+	for _, c := range []Cache{{Content: true, Agent: true}, {}} {
+		cfg, err := loadDoc(t, string(renderStub(c)))
+		if err != nil {
+			t.Fatalf("Load stub %+v: %v", c, err)
+		}
+		if !reflect.DeepEqual(cfg.Network, Network{}) {
+			t.Errorf("stub %+v: Network = %#v, want zero", c, cfg.Network)
+		}
+	}
+	if !strings.Contains(string(Stub), `# network_mode: "container:proxy"`) {
+		t.Error(`Stub missing commented network_mode: "container:proxy" example`)
+	}
+}

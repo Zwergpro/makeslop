@@ -121,12 +121,12 @@
 - Modify: `internal/projectconfig/projectconfig.go`
 - Modify: `internal/projectconfig/projectconfig_test.go`
 
-- [ ] add the `NetworkMode`/`Networks` fields to `yamlSchema`, the `Network` type, and `Config.Network`
-- [ ] implement `validateNetwork(mode string, nets []string) (Network, error)` following the rules in Technical Details
-- [ ] add a commented `# network_mode: "container:proxy"` example to `renderStub`; reword the "stale network: block" comments (the old `network:` key is still unknown)
-- [ ] write tests for valid cases: unset, empty string, `bridge`/`host`/`none`/`default`, `container:proxy`, `container:<id>`, a custom network, a single and multiple ordered `networks`, `network_mode: ""` + `networks: [a]`, `network_mode: x` + `networks: []`
-- [ ] write tests for errors: both keys set, `container:` with an empty name, invalid chars or whitespace, empty entry, duplicate entry, `host`/`none`/`default`/`container:x` in `networks`, mapping-form `networks` (targeted message), old `network:` still rejected; check that the stub parses to zero `Network`
-- [ ] run tests - must pass before next task
+- [x] add the `NetworkMode`/`Networks` fields to `yamlSchema`, the `Network` type, and `Config.Network`
+- [x] implement `validateNetwork(mode string, nets []string) (Network, error)` following the rules in Technical Details
+- [x] add a commented `# network_mode: "container:proxy"` example to `renderStub`; reword the "stale network: block" comments (the old `network:` key is still unknown)
+- [x] write tests for valid cases: unset, empty string, `bridge`/`host`/`none`/`default`, `container:proxy`, `container:<id>`, a custom network, a single and multiple ordered `networks`, `network_mode: ""` + `networks: [a]`, `network_mode: x` + `networks: []`
+- [x] write tests for errors: both keys set, `container:` with an empty name, invalid chars or whitespace, empty entry, duplicate entry, `host`/`none`/`default`/`container:x` in `networks`, mapping-form `networks` (targeted message), old `network:` still rejected; check that the stub parses to zero `Network`
+- [x] run tests - must pass before next task
 
 ### Task 3: Render network settings in `Spec`
 
