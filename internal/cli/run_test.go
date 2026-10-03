@@ -2767,6 +2767,57 @@ func TestRun_NetworkFlowsIntoSpec(t *testing.T) {
 	}
 }
 
+// Acceptance: network_mode "container:proxy" reaches the executed HostConfig
+// with no NetworkingConfig, and matches what --dry-run prints.
+func TestRun_NetworkContainerProxy_DryRunMatchesExecuted(t *testing.T) {
+	baseDir := setupNetworkRun(t, "network_mode: \"container:proxy\"\n")
+
+	stdout, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(newFakeDocker(0, false)), "run", "--dry-run")
+	if err != nil {
+		t.Fatalf("--dry-run failed: %v; stderr=%q", err, stderr)
+	}
+	if !strings.Contains(stdout, "--network container:proxy") {
+		t.Errorf("dry-run stdout missing --network container:proxy:\n%s", stdout)
+	}
+
+	fc := newFakeDocker(0, true)
+	fc.Containers = map[string]bool{"proxy": true}
+	if _, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fc), "run"); err != nil {
+		t.Fatalf("run failed: %v; stderr=%q", err, stderr)
+	}
+	if got := string(fc.LastSpec.HostConfig().NetworkMode); got != "container:proxy" {
+		t.Errorf("HostConfig.NetworkMode = %q, want container:proxy", got)
+	}
+	if nc := fc.LastSpec.NetworkingConfig(); nc != nil {
+		t.Errorf("NetworkingConfig = %v, want nil for container mode", nc)
+	}
+}
+
+// Acceptance: with no network keys, dry-run carries no --network flag and the
+// executed spec leaves Docker's default network in place.
+func TestRun_NoNetworkKeys_NoNetworkFlag(t *testing.T) {
+	baseDir := setupNetworkRun(t, "")
+
+	stdout, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(newFakeDocker(0, false)), "run", "--dry-run")
+	if err != nil {
+		t.Fatalf("--dry-run failed: %v; stderr=%q", err, stderr)
+	}
+	if strings.Contains(stdout, "--network") {
+		t.Errorf("dry-run stdout must not contain --network with no keys:\n%s", stdout)
+	}
+
+	fc := newFakeDocker(0, true)
+	if _, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fc), "run"); err != nil {
+		t.Fatalf("run failed: %v; stderr=%q", err, stderr)
+	}
+	if got := fc.LastSpec.HostConfig().NetworkMode; got != "" {
+		t.Errorf("HostConfig.NetworkMode = %q, want empty", got)
+	}
+	if nc := fc.LastSpec.NetworkingConfig(); nc != nil {
+		t.Errorf("NetworkingConfig = %v, want nil", nc)
+	}
+}
+
 // The image check runs before the network check.
 func TestRun_NetworkPreflight_AfterImageCheck(t *testing.T) {
 	baseDir := setupNetworkRun(t, "network_mode: \"container:proxy\"\n")

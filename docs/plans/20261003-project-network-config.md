@@ -190,10 +190,10 @@
 - [x] run tests - must pass before next task
 
 ### Task 7: Verify acceptance criteria
-- [ ] `network_mode: "container:proxy"` → dry-run shows `--network container:proxy`; the real run passes `HostConfig.NetworkMode=container:proxy`
-- [ ] no keys → dry-run output identical to before (existing golden/spec tests unchanged)
-- [ ] run the full suite: `GOTMPDIR=$HOME/.cache/gotmp go test -timeout=100s ./...`
-- [ ] run the linter (`golangci-lint run` or `go vet ./... && staticcheck ./...`)
+- [x] `network_mode: "container:proxy"` → dry-run shows `--network container:proxy`; the real run passes `HostConfig.NetworkMode=container:proxy` (verified by `TestRun_NetworkContainerProxy_DryRunMatchesExecuted`)
+- [x] no keys → dry-run output identical to before (existing golden/spec tests unchanged; only the planned rename of `TestHostConfig_NetworkModeIsAlwaysBridge`; added `TestRun_NoNetworkKeys_NoNetworkFlag`)
+- [x] run the full suite: `GOTMPDIR=$HOME/.cache/gotmp go test -timeout=100s ./...`
+- [x] run the linter (`golangci-lint run` or `go vet ./... && staticcheck ./...`) (golangci-lint and staticcheck not installed; `go vet ./...` and `gofmt -l .` clean)
 
 ### Task 8: [Final] Update documentation
 - [ ] `docs/reference.md`: document `network_mode`/`networks` (values, mutual exclusion, attach-only, preflight hints, Engine 25+ for multiple networks); keep the "network: block removed" section with a pointer to the new keys; add the `status` network row
