@@ -171,17 +171,18 @@ Approach B was chosen deliberately in brainstorm, even though it means about 88 
 - Create: `internal/cli/join_test.go`
 - Modify: `internal/cli/guard.go` (extract `isWithinHome`)
 
-- [ ] implement `joinTarget` and `resolveJoins` (suffix parsing, cwd-relative resolution, `EvalSymlinks`, directory check, regular `.makeslop.yaml` check, per-join home guard)
-- [ ] implement the overlap and collision checks (join vs main in both directions, join vs join, duplicate, basename collision among joins and with the main mount name)
-- [ ] write tests for success cases: relative and absolute paths, `:ro` / `:rw` / no suffix, a path containing `:` without a valid suffix, a symlinked join dir resolved to its target
-- [ ] write tests for error cases:
+- [x] implement `joinTarget` and `resolveJoins` (suffix parsing, cwd-relative resolution, `EvalSymlinks`, directory check, regular `.makeslop.yaml` check, per-join home guard)
+- [x] implement the overlap and collision checks (join vs main in both directions, join vs join, duplicate, basename collision among joins and with the main mount name)
+- [x] write tests for success cases: relative and absolute paths, `:ro` / `:rw` / no suffix, a path containing `:` without a valid suffix, a symlinked join dir resolved to its target
+- [x] write tests for error cases:
   - path problems: missing dir, a file instead of a dir, missing `.makeslop.yaml`, symlinked `.makeslop.yaml`
   - overlaps: join == main, join inside main, main inside join, duplicate, nested joins, a join inside/containing `baseDir`
   - names: basename collision, a join of `/`, empty `-j ""` / `-j :ro` (resolves to pwd → current-project error)
   - home guard: outside `$HOME` with and without `outOfHome`, asserting the exact join message
-- [ ] write tests for the inode overlap check: the same dir reached through an alias path, and a direct `os.SameFile` ancestor helper test
-- [ ] write tests for `isWithinHome`; existing `ensureWithinHome` tests keep passing unchanged
-- [ ] run tests; they must pass before Task 5
+- [x] write tests for the inode overlap check: the same dir reached through an alias path, and a direct `os.SameFile` ancestor helper test
+- [x] write tests for `isWithinHome`; existing `ensureWithinHome` tests keep passing unchanged
+- [x] run tests; they must pass before Task 5 (golangci-lint not installed here; `go vet ./...` clean)
+- ➕ a collision with the main mount name reads `mount name %q collides with the current project`; the mount-name check runs before the `.makeslop.yaml` check so `-j /` gets the name error
 
 ### Task 5: Wire `--join` into `run` via the `loadProject` helper
 
