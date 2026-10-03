@@ -51,12 +51,9 @@ the printed flags match both SDK projections. With neither key set there is no f
 
 ## Mount groups and cache overlays
 
-`BuildSpec` in `internal/docker/spec.go` takes `Options.Projects []Project`: `Projects[0]` is the
-current (main) project, the rest are `--join` projects in flag order. Each `Project` carries its
-own host root, mount name, label, masks and sandbox gates (`Project.ProtectConfig`,
-`Project.MaskGitHooks`). The main project's mounts are organised into logical groups around its
-bind; the main bind is always rw (`Projects[0].ReadOnly` is ignored). Besides the project bind,
-its sandbox-policy mounts and its masks, there are three logical groups:
+`BuildSpec` takes `Options.Projects`: index 0 is the writable current project and later
+entries are joins in flag order. Each project has its own bind, policy mounts, and masks. The
+main project also receives the following global and cache mounts:
 
 **Global** (always present — not configurable):
 - `~/.makeslop/.claude/` → `/home/user/.claude/`
@@ -76,22 +73,15 @@ The project source root is always mounted at position 0. Secret masking (masked 
 masked dirs tmpfs) appends after all group mounts, so a masked path under `docs/` still wins even
 when the content group is disabled.
 
-**Join groups.** After the main group, `BuildSpec` emits one group per join, in flag order, built
-with the same helpers as the main project (`projectBind`, `projectSandbox`, `projectMasks`):
+**Join groups.** Each join adds its root bind at `/workspace/<basename>`, then policy mounts
+for writable joins, then its own masks. The policy mounts protect `.makeslop.yaml` and mask
+`.git/hooks` when `.git` is a directory. Read-only joins need neither policy mount; their
+config can still be masked.
+Global and cache overlays apply only to the main project.
 
-- the bind of the join root at `/workspace/<basename>` (`readonly` for a `:ro` join);
-- for an rw join only, its sandbox-policy mounts (read-only `.makeslop.yaml` self-bind,
-  `.git/hooks` tmpfs). An `:ro` join has neither, so a `/dev/null` mask matching its config is kept;
-- the join's own masks, targeted relative to the join root.
-
-Joins never get global or cache overlay mounts.
-
-**Sections.** With joins, `Spec.Sections` records where each project's mounts start (`Section.Start`
-indexes `Spec.Mounts`, which maps 1:1 to the `--mount` tokens in `Args()`). Without joins it is
-nil. Only `ShellCommand()` reads it, to print a blank line and a `# --- <label> ---` comment before
-each group (labels pass through `sanitizeLabel`). `Args()` and the SDK projections ignore it, so the
-printed command still equals the executed one; `TestDriftGuard_Joins` checks the mount lists of
-`Args()` and `HostConfig()` against each other for a spec with joins.
+With joins, `Spec.Sections` records the first mount of each group for readable `ShellCommand`
+labels. It does not affect `Args()` or SDK mounts. The labels break shell continuation, so joined
+dry-run output is for inspection rather than pasting.
 
 The two booleans originate from the project `cache:` block in `.makeslop.yaml`, resolved by
 `projectconfig.Load`. Absent block ⇒ both `true` ⇒ identical to pre-feature behavior. The

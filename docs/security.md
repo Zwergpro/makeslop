@@ -334,45 +334,22 @@ time you run git there. Review `.git/config` after a session if this matters to 
 
 ## Joined projects
 
-`makeslop run --join <path>[:ro|:rw]` mounts other makeslop projects next to the current one (see
-[reference.md — Joined projects](reference.md#joined-projects---join)). Each project in the
-container is protected by its own policy:
+A join uses only its own `.makeslop.yaml` `exclude:` rules. Scan failures abort the run;
+symlink matches warn without being masked, and skipped directories remain unscanned. A join
+without `exclude.scan` has no pattern masking, even if the current project has it. Config and
+symlink warnings are visible under `--quiet`.
 
-- **Per-project masking.** A join is scanned and masked using **only its own** `.makeslop.yaml`
-  `exclude:` block (scan patterns, skip-dirs, `files`, `dirs`). Those masks apply only inside the
-  join's tree. The main project's patterns are never applied to a join, so a join without an
-  `exclude.scan` block has no pattern masking at all, even when the main project has one. This is
-  why a join must have a `.makeslop.yaml`: there is no implicit policy to fall back on.
-- **Same rules as the main project.** The scan for a join behaves exactly as it does for the main
-  project: walk errors abort the launch, `skip-dirs` are mounted unscanned (see
-  [Trust assumptions](#trust-assumptions)), and symlinks matching a pattern or listed in `exclude:`
-  are not masked. Their warnings are prefixed `join <host>: ` and are not silenced by `--quiet`.
-  The reserved-path check also applies to a join's `exclude.files` / `exclude.dirs`, even though a
-  join gets no agent-state or content overlays. This is conservative: those entries are rejected
-  rather than silently allowed.
-- **Overlapping roots are rejected.** A join may not be, contain, or sit inside the current
-  project, the makeslop data dir (`~/.makeslop`), or another join. If two mounts overlapped, the
-  same file would be visible at two container paths with different mask sets, and a secret masked
-  in one view would be readable in the other. A join that overlapped the data dir would expose the
-  global agent credentials. Overlap is checked by path and by inode (each root's ancestors are
-  compared with the other root via `os.SameFile`), so a case-insensitive alias on APFS or a
-  bind-mounted alias of a root or one of its ancestors is caught. A bind mount whose source is a
-  *subdirectory* of another root, used as a join, is not detected; don't join such aliases.
-- **`:ro` joins.** The join is bind-mounted `readonly`. The agent cannot modify its
-  `.makeslop.yaml` or plant files in `.git/hooks`, so makeslop skips the config read-only bind and
-  the hooks tmpfs for it. Because there is no config bind to protect, a `/dev/null` mask that
-  matches the join's own `.makeslop.yaml` is kept.
-- **rw joins.** The join gets the same [sandbox-policy protection](#sandbox-policy-protection) as
-  the main project: its `.makeslop.yaml` is bound read-only over itself and, when `.git` is a
-  directory, `.git/hooks` is masked with a tmpfs. It also carries the same residual risks: the
-  worktree/submodule hooks gap and a writable `.git/config` (`core.hooksPath`, `core.fsmonitor`).
-  Use `:ro` unless the agent needs to edit the joined project.
-- **Ignored keys.** A join's `cache:`, `environments:`, `network_mode` and `networks` are ignored,
-  so a join can never inject host environment variables or change the container's network.
-- **Home guard.** The [home-directory guard](#home-directory-guard) applies to every join.
-- **No implicit policy.** A join's `.makeslop.yaml` is required both when the flag is validated and
-  when it is parsed. If the file is removed in between, the launch fails; a join is never mounted
-  with the default (empty) policy.
+Overlapping roots are rejected because different masks could expose the same file through two
+mount paths; overlap with `~/.makeslop` could expose global credentials. Path and inode checks
+catch case aliases and bind aliases of a root or its ancestors. They cannot detect a bind mount
+sourced from a subdirectory of another root. Avoid joining such aliases. A join's config is
+required again when loaded, so deleting it after validation cannot silently disable masking.
+
+A writable join protects its config with a read-only bind and masks `.git/hooks` when `.git` is a
+directory. It shares the main project's `.git/config` and worktree hook risks. Use `:ro` when
+edits are unnecessary: the root bind prevents changes, so no config or hooks overlay is needed.
+The join's `cache:`, `environments:`, and network settings cannot change the container, and the
+[home guard](#home-directory-guard) applies to every join.
 
 ---
 

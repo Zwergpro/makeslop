@@ -2905,12 +2905,10 @@ func TestNetworkPreflight_DockerNewErrStub(t *testing.T) {
 
 const emptyExcludeYAML = "exclude:\n  dirs: []\n  files: []\n  scan:\n    patterns: []\n"
 
-// joinRunFixture is a registered main project <parent>/app (cwd) and a sibling
-// join project <parent>/lib, both with their own .makeslop.yaml.
 type joinRunFixture struct {
 	baseDir string
-	app     string // resolved main root
-	lib     string // resolved join root
+	app     string
+	lib     string
 }
 
 func setupJoinRun(t *testing.T, appYAML, libYAML string) joinRunFixture {
@@ -3047,15 +3045,15 @@ func TestRun_Join_MaskingIsolation(t *testing.T) {
 		return ok && (m.Host == "/dev/null" || m.Type == "tmpfs")
 	}
 	want := map[string]bool{
-		mainPath + "/a.env":             true,  // main pattern on main
-		mainPath + "/c.key":             false, // join pattern never applies to main
-		mainPath + "/secret.txt":        false, // join exclude.files never applies to main
-		mainPath + "/private":           false, // join exclude.dirs never applies to main
+		mainPath + "/a.env":             true,
+		mainPath + "/c.key":             false,
+		mainPath + "/secret.txt":        false,
+		mainPath + "/private":           false,
 		mainPath + "/mainsecret.txt":    true,
 		mainPath + "/mainprivate":       true,
-		"/workspace/lib/b.env":          false, // main pattern never applies to join
-		"/workspace/lib/mainsecret.txt": false, // main exclude.files never applies to join
-		"/workspace/lib/mainprivate":    false, // main exclude.dirs never applies to join
+		"/workspace/lib/b.env":          false,
+		"/workspace/lib/mainsecret.txt": false,
+		"/workspace/lib/mainprivate":    false,
 		"/workspace/lib/c.key":          true,
 		"/workspace/lib/secret.txt":     true,
 		"/workspace/lib/private":        true,
@@ -3251,8 +3249,6 @@ func sectionLabels(secs []docker.Section) []string {
 	return out
 }
 
-// mainWorkspacePath is the container path of the main project registered at
-// root, derived from the workspace registry (its cache dir name).
 func mainWorkspacePath(t *testing.T, baseDir, root string) string {
 	t.Helper()
 	s, err := config.Load(baseDir)
@@ -3281,9 +3277,6 @@ func TestRun_Join_DataDirRejected(t *testing.T) {
 	}
 }
 
-// Every host root must be disjoint: a join may not equal, sit inside or
-// contain the current project or another join. All of these fail before the
-// daemon preflight and start nothing.
 func TestRun_Join_OverlapsRejected(t *testing.T) {
 	cases := []struct {
 		name string
@@ -3343,9 +3336,7 @@ func TestRun_Join_RelativeToCwdSubdir(t *testing.T) {
 	}
 }
 
-// The join's config is required at load time too: one deleted after
-// resolveJoins (e.g. during the daemon preflight) must fail the run rather
-// than mount the join with no masking.
+// A removed config must fail the run rather than silently disable masking.
 func TestRun_Join_ConfigDeletedAfterResolve(t *testing.T) {
 	f := setupJoinRun(t, emptyExcludeYAML, "exclude:\n  files: [secret.txt]\n")
 	fc := newFakeDocker(0, true)

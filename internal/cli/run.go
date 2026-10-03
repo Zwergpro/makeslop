@@ -83,9 +83,7 @@ func sandboxMountGates(workspaceRoot string) (protect, maskHooks bool) {
 	return protect, maskHooks
 }
 
-// reportScanResults prints the masked count (chrome) and symlink warnings
-// (stderr, never quieted). For a join, the count names root and each warning
-// is prefixed "join <root>: "; main-project text is unprefixed.
+// Symlink warnings bypass quietWriter because they signal incomplete masking.
 func reportScanResults(stderr, chrome io.Writer, root string, join bool, masked, symlinkMatches []string) {
 	prefix, in := "", ""
 	if join {
@@ -104,13 +102,8 @@ func reportScanResults(stderr, chrome io.Writer, root string, join bool, masked,
 	}
 }
 
-// loadProject loads root's .makeslop.yaml, prints its warnings, scans for
-// secrets and returns the masking half of a docker.Project (Host, masks and
-// sandbox gates; the caller sets Name, Label and ReadOnly) plus the parsed
-// Config. For a join, the config must exist (it is re-checked here, so one
-// deleted after resolveJoins fails instead of loading as "no masking"),
-// messages name root, and settings other than exclude: are reported as
-// ignored. Errors are returned unwrapped; the caller adds the join context.
+// Requiring a join's config again closes the gap between path validation and
+// loading: removal cannot silently disable its masks.
 func loadProject(ctx context.Context, stderr, chrome io.Writer, root string, join bool) (docker.Project, projectconfig.Config, error) {
 	load, prefix := projectconfig.Load, ""
 	if join {
@@ -125,13 +118,11 @@ func loadProject(ctx context.Context, stderr, chrome io.Writer, root string, joi
 		return docker.Project{}, projectconfig.Config{}, err
 	}
 
-	// Symlink warnings bypass --quiet: degraded protection is never treated as chrome.
 	for _, w := range pcfg.Excludes.Warnings {
 		fmt.Fprintf(stderr, "makeslop: warning: %s%s\n", prefix, w)
 	}
 
-	// Only cheaply observable keys. cache: defaults to true, so it cannot be
-	// detected and is always ignored for a join without a notice.
+	// Cache has no presence marker, so only observable ignored settings get a notice.
 	if join && (len(pcfg.Env.Static) > 0 || len(pcfg.Env.Host) > 0 ||
 		pcfg.Network.Mode != "" || len(pcfg.Network.Networks) > 0) {
 		fmt.Fprintf(chrome, "makeslop: %senvironments/network settings ignored\n", prefix)

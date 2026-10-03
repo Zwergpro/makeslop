@@ -20,12 +20,7 @@ func resolvePwd() (string, error) {
 	return resolved, nil
 }
 
-// isWithinHome reports whether path is $HOME or below it. $HOME is
-// EvalSymlinks-resolved; callers pass an already-resolved path so the
-// comparison is symmetric. When the lexical check fails it falls back to an
-// inode check (path or an ancestor is the same file as $HOME), so a
-// differently cased spelling on a case-insensitive filesystem still counts.
-// The resolved home is returned for messages.
+// The inode fallback accepts case aliases that lexical containment misses.
 func isWithinHome(path string) (ok bool, home string, err error) {
 	rawHome, err := os.UserHomeDir()
 	if err != nil {

@@ -49,13 +49,11 @@ Mount order in `BuildSpec`: project root first, then global mounts (`~/.makeslop
 `.makeslop.yaml` itself is dropped so it can't override the read-only bind. The two booleans default to
 `false` in Go, so tests wanting full mounts must set them.
 
-Mount order is per project: `Options.Projects[0]` is main (the order above); each join follows as
-its own group: bind (`readonly` for `:ro`) → sandbox (rw only) → its own masks. An ro join keeps a
-`/dev/null` mask on its config (no self-bind to protect). `Spec.Sections` (set only with joins)
-marks each group's first mount; only `ShellCommand` reads it (blank line + `# --- label ---`; breaks pasteability by design),
-so `Args()`/SDK projections and the drift guards are unaffected. `Section.Start` relies on
-`Spec.Mounts` mapping 1:1 to `--mount` tokens in `Args()` (ShellCommand counts `--mount` flag
-tokens, skipping flag values); labels pass through `sanitizeLabel`.
+`Options.Projects[0]` is the main project; joins follow in flag order. Each join emits its
+bind, writable policy mounts, then its own masks. A read-only join needs no policy self-bind, so
+its config mask remains. `Spec.Sections` adds readable group labels only to `ShellCommand`;
+`Args()` and SDK projections use the same mounts without labels. Joined dry-run output is not
+paste-ready because the labels break shell continuation.
 
 ### Dependency injection (no global test hooks)
 - **docker package:** `docker.New(opts ...Option)` with `WithClient`, `WithTTYCheck`,
@@ -127,18 +125,12 @@ tokens, skipping flag values); labels pass through `sanitizeLabel`.
 - Existing project files are never auto-migrated.
 
 ### Joins (`run --join`)
-- `resolveJoins` (`internal/cli/join.go`) does path checks only (suffix, `EvalSymlinks`, regular
-  `.makeslop.yaml`, home guard, overlap, name collision) and runs right after `ws.Lookup`, before
-  the daemon preflight. `loadProject` (`run.go`) parses and scans main, then joins in flag order,
-  after the preflight, so the daemon-first contract holds. For a join it uses
-  `projectconfig.LoadExisting`, so a config deleted after `resolveJoins` fails ("not a makeslop
-  project") instead of loading as the default (no masks). Relative values resolve against the
-  physical cwd (`resolvePwd`), not `$PWD`.
-- Overlap = `filepath.Rel` + `IsLocal` in both directions, plus `os.SameFile` against every
-  ancestor (catches case-insensitive and bind aliases of a root or its ancestors, not of a
-  subdirectory). Checked join vs main, `baseDir`, and other joins; an overlap with any earlier
-  join wins over a name collision. Shared messages: `errNotProject` (cli),
-  `projectconfig.ErrConfigSymlink`. A join only contributes `exclude:`; main's `Config` alone supplies cache/env/network.
+`resolveJoins` checks paths and overlap before daemon preflight. `loadProject` then parses and
+scans the main project and joins in flag order. Joins use `LoadExisting` so a config removed
+after validation cannot fall back to an unmasked default. Relative paths use physical cwd.
+Overlap uses lexical containment plus inode comparison of ancestors, catching case and bind
+aliases of roots; a bind alias sourced from a subdirectory is not detected. A join contributes
+only `exclude:`; the main project supplies cache, environment, and network settings.
 
 ### Secret scan
 `security.Scan` has no built-in defaults: patterns and skip-dirs come only from `.makeslop.yaml`,
@@ -147,12 +139,9 @@ loud": never skip a directory we can't prove is secret-free).
 
 ### Command-scope rules
 - The TTY requirement applies to `run` only. All other commands must stay CI/pipe-safe.
-- The home-directory guard (`internal/cli/guard.go`) applies to `run` and `init`. `--out-of-home`
-  is registered only on those two; `--global-only` only on `init`. One rule, `isWithinHome`:
-  lexical `Rel`/`IsLocal` against the resolved `$HOME`, then an inode fallback
-  (`hasSameFileAncestor`) for case-insensitive spellings.
-- `--join/-j` is registered on `run` only. The home guard also applies to each join via the same
-  `isWithinHome`; one `--out-of-home` lifts it for main and all joins.
+- The home guard applies to `run`, `init`, and every `run --join` root. It checks lexical
+  containment of resolved `$HOME`, then inode aliases. One `--out-of-home` covers all roots;
+  `--global-only` belongs to `init`, and `--join/-j` belongs to `run`.
 - `--quiet` is a persistent flag. It suppresses stderr chrome (errors still print) and never
   touches stdout.
 - `status` runs ordered checks with `✓/✗/–/!` glyphs, supports `--json`, and exits non-zero if a

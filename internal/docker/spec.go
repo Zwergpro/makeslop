@@ -11,39 +11,26 @@ import (
 	"github.com/moby/moby/api/types/network"
 )
 
-// Project is one host project tree mounted into the container. Projects[0] in
-// Options is the main project; the rest are joined projects. Path fields must
-// be absolute and EvalSymlinks-evaluated.
+// Project.Host must be absolute and symlink-resolved before BuildSpec.
 type Project struct {
-	Host     string // host root, mounted at /workspace/<Name>
-	Name     string // mount name under /workspace, e.g. "makeslop-ab12cd"
-	Label    string // dry-run section separator text
-	ReadOnly bool   // joins only; ignored for Projects[0]
+	Host     string
+	Name     string
+	Label    string
+	ReadOnly bool // ignored for Projects[0]
 
-	// MaskedFiles: absolute host paths under Host to shadow with /dev/null.
 	MaskedFiles []string
-	// MaskedDirs: absolute host paths under Host to replace with tmpfs.
-	MaskedDirs []string
+	MaskedDirs  []string
 
-	// ProtectConfig mounts <Host>/.makeslop.yaml read-only over itself inside
-	// the container, preventing the agent from rewriting the sandbox policy.
-	// Only set when the file actually exists on the host (a missing bind
-	// source would fail container create).
+	// Set only for an existing file; a missing bind source fails container creation.
 	ProtectConfig bool
 
-	// MaskGitHooks overlays /workspace/<Name>/.git/hooks with a tmpfs,
-	// preventing the agent from planting hooks that execute on the host. Only
-	// set when <Host>/.git is a directory (worktrees/submodule gitfiles are
-	// skipped — their hooks directory lives outside the workspace).
+	// Only directory-backed .git can have hooks masked within this mount.
 	MaskGitHooks bool
 }
 
-// Options is the caller-supplied input to BuildSpec. Path fields must be
-// absolute and EvalSymlinks-evaluated.
+// Options is the caller-supplied input to BuildSpec.
 type Options struct {
-	// Projects lists the mounted project trees; Projects[0] is the main
-	// project (workdir, cache overlays). Caller guarantees len >= 1, unique
-	// Names and non-overlapping Hosts.
+	// The caller guarantees a main project at index 0, unique names and disjoint roots.
 	Projects []Project
 	BaseDir  string // ~/.makeslop
 	// WorkspaceHost is the per-workspace cache directory on the host
@@ -115,16 +102,13 @@ type Spec struct {
 	NetworkMode string   // "" → no --network flag, Docker default bridge
 	Networks    []string // one --network per entry; first is primary
 
-	// Sections marks where each project's mounts start; nil without joins.
-	// Read only by ShellCommand (dry-run separators); Args() and the SDK
-	// projections ignore it, so "printed == executed" is unaffected.
+	// Presentation only; argv and SDK projections ignore these labels.
 	Sections []Section
 }
 
-// Section labels the group of mounts belonging to one project.
 type Section struct {
 	Label string
-	Start int // index into Spec.Mounts (1:1 with --mount tokens in Args())
+	Start int // index into Spec.Mounts
 }
 
 // BuildSpec is pure: same Options → same Spec. Mask overlays must follow the
@@ -132,13 +116,10 @@ type Section struct {
 // disabled groups are omitted, never reordered.
 func BuildSpec(o Options) Spec {
 	main := o.Projects[0]
-	main.ReadOnly = false // the main project is always mounted rw
+	main.ReadOnly = false
 	workspacePath := main.containerPath()
 
-	// Main group: bind → global → sandbox → cache overlays → masks. Trailing
-	// slashes on directory mounts are intentional — they match the reference
-	// claude.sh, and coax docker into failing fast if the host path is
-	// unexpectedly a file.
+	// Directory trailing slashes make Docker reject unexpected files early.
 	mounts := []Mount{projectBind(main)}
 	mounts = append(mounts,
 		Mount{Host: filepath.Join(o.BaseDir, ".claude") + "/", Container: "/home/user/.claude/"},
@@ -146,8 +127,7 @@ func BuildSpec(o Options) Spec {
 		Mount{Host: filepath.Join(o.BaseDir, ".codex") + "/", Container: "/home/user/.codex/"},
 	)
 
-	// Sandbox-policy mounts come after the global mounts and before any cache
-	// overlays, so they win over the rw project bind regardless of cache flags.
+	// The policy mounts must shadow the writable project bind.
 	mounts = append(mounts, projectSandbox(main)...)
 
 	if o.MountAgentCache {
@@ -166,16 +146,12 @@ func BuildSpec(o Options) Spec {
 
 	mounts = append(mounts, projectMasks(main, main.ProtectConfig)...)
 
-	// Join groups: bind → sandbox (rw only) → masks. An ro join has no config
-	// self-bind (the whole tree is read-only), so a /dev/null mask over its
-	// config is kept.
+	// An ro join needs no policy self-bind, so its config mask remains effective.
 	var sections []Section
 	if len(o.Projects) > 1 {
 		sections = append(sections, Section{Label: main.Label, Start: 0})
 	}
 	for _, j := range o.Projects[1:] {
-		// Section.Start indexes Spec.Mounts, which maps 1:1 to the --mount
-		// tokens in Args().
 		sections = append(sections, Section{Label: j.Label, Start: len(mounts)})
 		mounts = append(mounts, projectBind(j))
 		if !j.ReadOnly {
@@ -201,8 +177,6 @@ func BuildSpec(o Options) Spec {
 	}
 }
 
-// projectBind returns the bind of p.Host at /workspace/<p.Name>, read-only
-// when p.ReadOnly is set.
 func projectBind(p Project) Mount {
 	return Mount{Host: p.Host, Container: p.containerPath(), ReadOnly: p.ReadOnly}
 }
@@ -211,13 +185,10 @@ func projectBind(p Project) Mount {
 // projectconfig.
 const projectConfigFile = ".makeslop.yaml"
 
-// containerPath is where p.Host is mounted inside the container.
 func (p Project) containerPath() string {
 	return "/workspace/" + p.Name
 }
 
-// projectSandbox returns p's sandbox-policy mounts: the read-only config
-// self-bind (ProtectConfig) and the .git/hooks tmpfs (MaskGitHooks).
 func projectSandbox(p Project) []Mount {
 	var mounts []Mount
 	workspacePath := p.containerPath()
@@ -237,11 +208,8 @@ func projectSandbox(p Project) []Mount {
 	return mounts
 }
 
-// projectMasks returns p's /dev/null file masks followed by its tmpfs dir
-// masks, each targeted relative to p.Host. When configBound is set, a mask on
-// p's own .makeslop.yaml is dropped: docker applies mounts last-write-wins, so
-// it would silently override the read-only self-bind (e.g. a broad scan
-// pattern like "*.yaml").
+// A config mask would override the read-only policy bind because Docker applies
+// later mounts last.
 func projectMasks(p Project, configBound bool) []Mount {
 	workspacePath := p.containerPath()
 	maskedFiles := p.MaskedFiles
@@ -249,9 +217,9 @@ func projectMasks(p Project, configBound bool) []Mount {
 		maskedFiles = filterOut(maskedFiles, filepath.Join(p.Host, projectConfigFile))
 	}
 
+	// Validated mask paths are beneath Host, so Rel cannot fail on POSIX.
 	var mounts []Mount
 	for _, host := range maskedFiles {
-		// Caller guarantees host is under p.Host; Rel never errors on POSIX.
 		rel, _ := filepath.Rel(p.Host, host)
 		mounts = append(mounts, Mount{
 			Host:      "/dev/null",
@@ -259,7 +227,6 @@ func projectMasks(p Project, configBound bool) []Mount {
 		})
 	}
 	for _, host := range p.MaskedDirs {
-		// Caller guarantees host is under p.Host; Rel never errors on POSIX.
 		rel, _ := filepath.Rel(p.Host, host)
 		mounts = append(mounts, Mount{
 			Type:      "tmpfs",
@@ -327,8 +294,7 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
-// sanitizeLabel replaces control characters (including newlines) with '?', so
-// a separator label always renders as a single comment line.
+// Keep each label on one comment line, even for paths containing newlines.
 func sanitizeLabel(label string) string {
 	return strings.Map(func(r rune) rune {
 		if unicode.IsControl(r) {
@@ -338,20 +304,16 @@ func sanitizeLabel(label string) string {
 	}, label)
 }
 
-// ShellCommand renders s as a multi-line backslash-continued `docker run` command.
-// With Sections, each project's mounts are preceded by a blank line and a
-// "# --- <label> ---" comment; those lines are for reading only and break the
-// continuation, so such output is not pasteable as one command.
+// ShellCommand renders a readable docker command. Section comments break shell
+// continuation, so output with joins is not pasteable as one command.
 func (s Spec) ShellCommand() string {
 	args := s.Args() // starts with "run", not "docker"
 
 	var lines []string
 	lines = append(lines, "docker run")
-	// annotations marks blank/comment lines, which get no trailing backslash.
 	annotations := make(map[int]bool)
 
-	// sections maps a --mount ordinal to its separator label. Spec.Mounts maps
-	// 1:1 to --mount tokens in Args(), so Section.Start is that ordinal.
+	// Each mount emits one --mount token, so section indices match mount ordinals.
 	sections := make(map[int]string, len(s.Sections))
 	for _, sec := range s.Sections {
 		sections[sec.Start] = sec.Label

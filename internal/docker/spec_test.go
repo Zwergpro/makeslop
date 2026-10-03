@@ -1988,7 +1988,6 @@ func collectFlagValues(args []string, flag string) []string {
 	return out
 }
 
-// Projects[0] is always bound read-write: ReadOnly applies to joins only.
 func TestBuildSpec_MainProjectReadOnlyIgnored(t *testing.T) {
 	o := sampleOptions()
 	o.Projects[0].ReadOnly = true
@@ -2002,8 +2001,6 @@ func TestBuildSpec_MainProjectReadOnlyIgnored(t *testing.T) {
 	}
 }
 
-// joinOptions returns sampleOptions with labels set on main; joins are
-// appended by the caller.
 func joinOptions(joins ...Project) Options {
 	o := sampleOptions()
 	o.Projects[0].Label = "project: /home/me/code/myproj"
@@ -2011,8 +2008,6 @@ func joinOptions(joins ...Project) Options {
 	return o
 }
 
-// mainMountCount is the number of mounts sampleOptions emits for the main
-// project with both cache flags on and no sandbox/masks.
 const mainMountCount = 8
 
 func TestBuildSpec_Join_RW(t *testing.T) {

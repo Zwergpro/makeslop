@@ -359,113 +359,47 @@ An absent `cache:` block is equivalent to `{content: true, agent: true}` — beh
 to before this feature was added. The `init --global-only` flag is a convenience shortcut that
 scaffolds `.makeslop.yaml` with both groups disabled.
 
-Mounts are grouped per project, and each group is emitted in full before the next. The main
-project's group comes first, in the order above, with its secret masks (`/dev/null` files, tmpfs
-dirs) at the end. Then each `--join` gets a group, in flag order:
-
-| Host                                                  | Container                          | Present when       |
-| ----------------------------------------------------- | ---------------------------------- | ------------------ |
-| `<joinRoot>`                                          | `/workspace/<join>`                | always (`readonly` for `:ro`) |
-| `<joinRoot>/.makeslop.yaml`                           | `/workspace/<join>/.makeslop.yaml` | rw join only (ro)  |
-| tmpfs (empty)                                         | `/workspace/<join>/.git/hooks`     | rw join with a `.git` dir |
-| `/dev/null` / tmpfs                                   | `/workspace/<join>/<rel>`          | the join's own masks |
-
-`<join>` is the basename of the resolved join path. A join never gets global or cache overlay
-mounts. A `:ro` join has no config bind and no hooks tmpfs, because its whole tree is already
-read-only. See [Joined projects](#joined-projects---join).
+Each join adds a project-root bind at `/workspace/<basename>`, then its policy mounts and
+masks. Writable joins protect `.makeslop.yaml` with a read-only bind and mask `.git/hooks` when
+`.git` is a directory. Read-only joins need neither policy mount. Joins receive no global or
+cache overlays. See [Joined projects](#joined-projects---join).
 
 ---
 
 ## Joined projects (`--join`)
 
-`makeslop run --join <path>` (short `-j`) mounts another makeslop project into the current
-project's container, next to it. The flag is repeatable. The current project stays the workdir;
-each join is mounted at `/workspace/<basename>`, where `<basename>` is the last element of the
-join's resolved path.
+`makeslop run -j <path>[:ro|:rw]` mounts another makeslop project at
+`/workspace/<basename>`, next to the current project. The flag is repeatable; joins appear in
+flag order. The current project remains the workdir. The default mode is writable.
 
-```
-makeslop run -j ../lib                # rw, at /workspace/lib
-makeslop run -j ../lib:ro -j ~/util   # lib read-only, util rw
+```sh
+makeslop run -j ../lib:ro -j ../util
 ```
 
-**Value syntax:**
-- An optional `:ro` or `:rw` suffix sets the mode. The default is `rw`.
-- The suffix is stripped only when the last `:`-separated segment is exactly `ro` or `rw`.
-  Otherwise the whole value is the path, so `-j foo:bar` joins a directory named `foo:bar`. To
-  join a directory literally named `foo:ro`, write `foo:ro:rw` (or `foo:ro:ro`).
-- Relative paths resolve against the current directory, not the project root. That directory is
-  the physical one (symlinks resolved, as `pwd -P` prints it), not the shell's `$PWD`: from a
-  symlinked directory, `-j ../lib` looks next to the link's target, not next to the link. Symlinks
-  in the join path are resolved too, and the resolved path determines the mount name.
-- makeslop does not expand `~`. `-j ~/lib` and `--join ~/lib` work because the shell expands the
-  separate word. `--join=~/lib` is passed through literally by bash and zsh and fails.
+The suffix is recognized only when the final `:` segment is `ro` or `rw`. Thus `foo:bar` is a
+path, and `foo:ro:rw` names a directory literally called `foo:ro`. Relative paths use the
+physical current directory, even when the shell's `$PWD` contains a symlink. The resolved path
+sets the mount name. The shell expands `~` in `-j ~/lib`, but generally not in `--join=~/lib`;
+makeslop itself does not expand it.
 
-**What a join must be:** an existing directory with a `.makeslop.yaml` that is a regular file
-(not a symlink). Unlike the main project, a join without `.makeslop.yaml` is rejected.
+Each join must be a directory with a regular, non-symlinked `.makeslop.yaml`. Only its `exclude:`
+settings apply, and only within that join. Its `cache:`, `environments:`, `network_mode`, and
+`networks` settings are ignored; the current project's config controls those settings. Nonempty
+environment or network settings produce one notice unless `--quiet` is set. Cache produces no
+notice. Config and symlink warnings remain visible under `--quiet` and name the join.
 
-**What a join contributes:** only its `exclude:` block (scan patterns, skip-dirs, `files`,
-`dirs`), and those masks apply only inside the join's own tree. The main project's masks never
-apply to a join, and a join's masks never apply to the main project. A join's `cache:`,
-`environments:`, `network_mode` and `networks` keys are ignored; the main project's
-`.makeslop.yaml` alone sets them. When a join sets `environments:` or a network key, `run` prints
-one notice (silenced by `--quiet`):
+Roots cannot overlap the current project, the makeslop data directory, or another join. Mount
+basenames must also be unique and differ from the current workspace name. Path and inode checks
+catch case aliases and aliases of a root or its ancestors; a bind mount sourced from a
+subdirectory can escape this check. See [Joined projects in the security guide](security.md#joined-projects).
 
-```
-makeslop: join <host>: environments/network settings ignored
-```
+The [home guard](security.md#home-directory-guard) applies to every join; one `--out-of-home`
+covers all projects.
 
-A join's `cache:` block is ignored without a notice.
-
-**Messages:** a join's config and symlink warnings are prefixed `join <host>: ` and, like the main
-project's, are not silenced by `--quiet`. Its masked count reads
-`makeslop: masked N secret file(s) in <host>`. A parse or validation error in a join's
-`.makeslop.yaml` is reported as `join <host>: projectconfig: …` and aborts the launch. If a join's
-`.makeslop.yaml` disappears between validation and parsing, the launch aborts with
-`join <host>: not a makeslop project (no .makeslop.yaml)`; a join never falls back to an empty
-config.
-
-**Order of checks:** joins are validated (paths only) right after the workspace lookup, before the
-daemon pre-flight. Their `.makeslop.yaml` files are parsed and scanned after the pre-flight, after
-the main project, in flag order. A down daemon is therefore reported before a broken join config,
-just as for the main project. `--dry-run` runs the same validation, parse and scan.
-
-**Errors.** Each one names the value as typed. Per value, checks run in this order: the path
-exists and is a directory, the mount name, the `.makeslop.yaml` checks, the home guard, then
-overlaps and name collisions. A directory without `.makeslop.yaml` (such as `~/.makeslop` itself)
-therefore fails with `not a makeslop project` before any overlap check:
-
-```
-makeslop: --join "../lib": not a makeslop project (no .makeslop.yaml)
-makeslop: --join "../lib": .makeslop.yaml is a symlink — the project config must be a regular file
-makeslop: --join "../lib": not a directory
-makeslop: --join ".": is the current project
-makeslop: --join "sub": is inside the current project
-makeslop: --join "..": contains the current project
-makeslop: --join "/home/me/.makeslop/proj": overlaps the makeslop data dir /home/me/.makeslop
-makeslop: --join "../lib/sub": overlaps --join "../lib"
-makeslop: --join "../x/app-ab12cd": mount name "app-ab12cd" collides with the current project
-makeslop: --join "../b/lib": mount name "lib" collides with --join "../a/lib"
-makeslop: --join "/": cannot derive a mount name from /
-makeslop: --join "/opt/lib": outside /home/me — pass --out-of-home to override
-```
-
-- Overlapping roots are rejected in every direction: join vs current project, join vs the makeslop
-  data dir, and join vs join. Overlap means the same directory or one inside the other. It is
-  checked by path and by inode (each root's ancestors are compared with the other root), so a
-  case-insensitive alias (`../APP/sub`) or a bind-mounted alias of a root or one of its ancestors
-  is caught too. A bind mount whose source is a subdirectory of another root is not detected. See [security.md — Joined projects](security.md#joined-projects).
-- Mount names must be unique: a join's basename may not equal the current project's mount name
-  or another join's basename. The current project is mounted under its workspace name
-  (`<basename>-<6 hex>`, e.g. `app-ab12cd`), so a collision with it only happens for a directory
-  named like a workspace.
-- The [home-directory guard](security.md#home-directory-guard) applies to every join, with the
-  same rule as for the current directory. `--out-of-home` turns it off for the main project and
-  all joins at once.
-- A missing path fails with the underlying error (`--join "x": lstat …: no such file or
-  directory`). `-j ""` and `-j :ro` resolve to the current directory, so they fail with
-  `is the current project` (or `is inside the current project` from a subdirectory).
-
-`status` does not take `--join`.
+Join paths are validated before daemon preflight. Configs are parsed and scanned afterward, in
+flag order, so a down daemon takes precedence over a malformed config. A config removed between
+validation and loading fails the run. `--dry-run` performs the same path, config, and scan checks
+but skips daemon, image, and network preflight. `status` does not accept `--join`.
 
 ---
 
@@ -741,48 +675,18 @@ in CI pipelines and non-interactive shells.
 
 ## Dry run
 
-Pass `--dry-run` (short: `-n`) to print the equivalent shell command for the container launch that
-`makeslop` would execute and then exit without launching the container. The output is a multi-line,
-backslash-continued, paste-ready shell command on stdout (not paste-ready with `--join`; see below). All pre-launch checks still run
-(home-directory guard, settings load, image resolution, workspace lookup, `--join` validation,
-project config parse and secret scan for the current project and every join), so the
-printed command equals the real invocation byte-for-byte. Daemon, image, and network pre-flight
-checks are skipped on `--dry-run`.
+Pass `--dry-run` (short: `-n`) to inspect the container launch on stdout. It runs the
+home, workspace, config, and secret-scan checks, including those for joins, but skips daemon,
+image, and network preflight.
 
+Without joins, output is a paste-ready, backslash-continued `docker run` command. With joins,
+blank lines and `# --- project: … ---` / `# --- join: … ---` comments separate mount groups.
+Those comments break shell continuation, so joined output is for inspection only. Control
+characters in labels are replaced with `?`.
+
+```sh
+makeslop run -n > cmd.sh   # masked-file counts go to stderr
 ```
-makeslop run --dry-run
-makeslop run -n
-```
-
-Because the TTY check is skipped on dry-run, `--dry-run` succeeds even when stdin/stdout are pipes.
-This makes it suitable for CI inspection:
-
-```
-makeslop run -n > cmd.sh   # capture only the command; masked-file count goes to stderr
-```
-
-With `--join`, the mounts are grouped per project: each group is preceded by a blank line and a
-separator comment, and a blank line follows the last group:
-
-```
-docker run \
-  ...
-
-  # --- project: /home/me/app ---
-  --mount type=bind,source=/home/me/app,target=/workspace/app-ab12cd \
-  ...
-
-  # --- join: /home/me/lib (ro) ---
-  --mount type=bind,source=/home/me/lib,target=/workspace/lib,readonly \
-  --mount type=tmpfs,target=/workspace/lib/keys \
-
-  claudebox \
-  /bin/zsh
-```
-
-The blank and separator lines are for reading only: they break the backslash continuation, so
-output with `--join` is not a paste-ready command. Control characters in the label are replaced
-with `?`. Without `--join` no separator is printed and the output is unchanged (and paste-ready).
 
 The output includes resolved `environments.host` values in full, secrets included. Do not keep it
 as a CI artifact or log it without redacting them. See

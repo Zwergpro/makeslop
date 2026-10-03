@@ -206,10 +206,7 @@ func Load(root string) (Config, error) {
 	return load(root, false)
 }
 
-// LoadExisting is Load for a project whose config is required (a --join
-// target): a missing file is an error wrapping fs.ErrNotExist instead of the
-// default config, so a config deleted after an earlier existence check can
-// never silently yield "no masking".
+// LoadExisting requires the config so removal after validation cannot disable masking.
 func LoadExisting(root string) (Config, error) {
 	return load(root, true)
 }

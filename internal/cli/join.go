@@ -11,24 +11,16 @@ import (
 	"github.com/Zwergpro/makeslop/internal/projectconfig"
 )
 
-// errNotProject reports a --join directory without a .makeslop.yaml.
 var errNotProject = errors.New("not a makeslop project (no " + projectconfig.Filename + ")")
 
-// joinTarget is one validated --join value.
 type joinTarget struct {
-	Host     string // abs, EvalSymlinks'd
-	Name     string // filepath.Base(Host); mounted at /workspace/<Name>
+	Host     string
+	Name     string
 	ReadOnly bool
-	Raw      string // as typed (for messages)
+	Raw      string
 }
 
-// resolveJoins validates and normalizes --join values. It checks paths only:
-// the join's .makeslop.yaml must exist as a regular file but is not parsed
-// here, so the daemon preflight still runs before any config error surfaces.
-// mainRoot, baseDir and earlier joins are compared both lexically and by
-// inode (each root's ancestors vs the other root), which catches an alias of
-// a root or of one of its ancestors (case-insensitive filesystems, bind
-// mounts). An alias of a subdirectory reached from outside is not detected.
+// Check only paths here so daemon preflight still precedes config parsing.
 func resolveJoins(pwd, mainRoot, mainName, baseDir string, raw []string, outOfHome bool) ([]joinTarget, error) {
 	joins := make([]joinTarget, 0, len(raw))
 	for _, r := range raw {
@@ -48,7 +40,7 @@ func resolveJoins(pwd, mainRoot, mainName, baseDir string, raw []string, outOfHo
 		case overlaps(j.Host, baseDir):
 			return nil, fmt.Errorf("--join %q: overlaps the makeslop data dir %s", r, baseDir)
 		}
-		// One pass over earlier joins; any overlap wins over a name collision.
+		// Report overlap first: two mounts could expose one file under different masks.
 		var clash *joinTarget
 		for i, prev := range joins {
 			if overlaps(j.Host, prev.Host) {
@@ -69,11 +61,7 @@ func resolveJoins(pwd, mainRoot, mainName, baseDir string, raw []string, outOfHo
 	return joins, nil
 }
 
-// resolveJoin handles a single value: suffix, path resolution, filesystem
-// checks, mount name and the home guard. A relative path resolves against pwd,
-// the physical (symlink-resolved) working directory, not the shell's $PWD.
-// The .makeslop.yaml checks here only fail fast before the daemon preflight;
-// loadProject re-checks existence when it parses the config.
+// pwd is physical so relative joins cannot depend on the shell's stale $PWD.
 func resolveJoin(pwd, raw string, outOfHome bool) (joinTarget, error) {
 	p, readOnly := parseJoinSuffix(raw)
 	if !filepath.IsAbs(p) {
@@ -122,7 +110,6 @@ func resolveJoin(pwd, raw string, outOfHome bool) (joinTarget, error) {
 	return joinTarget{Host: host, Name: name, ReadOnly: readOnly, Raw: raw}, nil
 }
 
-// label is the dry-run section separator text for j.
 func (j joinTarget) label() string {
 	mode := "rw"
 	if j.ReadOnly {
@@ -131,8 +118,6 @@ func (j joinTarget) label() string {
 	return "join: " + j.Host + " (" + mode + ")"
 }
 
-// parseJoinSuffix strips a trailing ":ro" or ":rw". Any other value is taken
-// whole as a path (rw), so "foo:bar" is a path and "foo:ro:rw" joins "foo:ro".
 func parseJoinSuffix(raw string) (path string, readOnly bool) {
 	i := strings.LastIndex(raw, ":")
 	if i < 0 {
@@ -147,14 +132,11 @@ func parseJoinSuffix(raw string) (path string, readOnly bool) {
 	return raw, false
 }
 
-// overlaps reports whether a and b are the same directory or one contains the other.
 func overlaps(a, b string) bool {
 	return containsDir(a, b) || containsDir(b, a)
 }
 
-// containsDir reports whether child is parent or lies below it. The lexical
-// check uses filepath.Rel + IsLocal (as guard.go does); the inode check walks
-// child's ancestors and compares each with parent via os.SameFile.
+// Inode comparison catches case and bind aliases that filepath.Rel misses.
 func containsDir(parent, child string) bool {
 	if rel, err := filepath.Rel(parent, child); err == nil && filepath.IsLocal(rel) {
 		return true
@@ -162,8 +144,6 @@ func containsDir(parent, child string) bool {
 	return hasSameFileAncestor(parent, child)
 }
 
-// hasSameFileAncestor reports whether child or any of its ancestors is the
-// same file as parent. Unstattable paths never match.
 func hasSameFileAncestor(parent, child string) bool {
 	pi, err := os.Stat(parent)
 	if err != nil {

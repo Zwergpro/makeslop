@@ -11,8 +11,6 @@ import (
 	"github.com/Zwergpro/makeslop/internal/projectconfig"
 )
 
-// joinFixture is a temp tree: <root>/home is $HOME, <home>/app is the main
-// project, <home>/.makeslop the data dir, <root>/outside lies outside $HOME.
 type joinFixture struct {
 	root, home, main, baseDir, outside string
 }
@@ -42,7 +40,6 @@ func mkdirAll(t *testing.T, dir string) {
 	}
 }
 
-// makeProject creates dir with an empty .makeslop.yaml and returns dir.
 func makeProject(t *testing.T, dir string) string {
 	t.Helper()
 	writeFile(t, filepath.Join(dir, projectconfig.Filename), "")
@@ -186,7 +183,6 @@ func TestResolveJoins_PathErrors(t *testing.T) {
 	}
 }
 
-// Config errors wrap shared sentinels rather than copying their text.
 func TestResolveJoins_ConfigSentinels(t *testing.T) {
 	f := newJoinFixture(t)
 	mkdirAll(t, filepath.Join(f.home, "plain"))
