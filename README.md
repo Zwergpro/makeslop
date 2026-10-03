@@ -1,4 +1,6 @@
-# makeslop
+<h1 align="center">
+  <img src="docs/assets/logo.png" alt="makeslop" width="480">
+</h1>
 
 A sandboxed runner for Claude Code and Codex: isolates your AI agent in a per-project Docker
 container with controlled mounts and secret masking.
