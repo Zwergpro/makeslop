@@ -53,9 +53,13 @@ Mount order in `BuildSpec`: project root first, then global mounts (`~/.makeslop
 - **docker package:** `docker.New(opts ...Option)` with `WithClient`, `WithTTYCheck`,
   `WithRawMode`, `WithStreams`. `apiClient` in `client.go` is the narrow SDK subset in use; the
   `var _ apiClient = (*moby.Client)(nil)` assertion catches SDK drift. Adding an SDK call means
-  extending `apiClient` and the fakes in `internal/docker/fakes_test.go`.
+  extending `apiClient` and the fakes in `internal/docker/fakes_test.go` (including `noopClient`,
+  which other fakes embed). `ContainerInspect`/`NetworkInspect` back `ContainerRunning` /
+  `NetworkExists` (same not-found contract as `ImageExists`; paused or nil `State` = not running).
 - **cli package:** commands depend on consumer-side interfaces in `internal/cli/deps.go`
-  (`containerRunner`, `daemonChecker`, `imageChecker`). Tests build the tree with
+  (`containerRunner`, `daemonChecker`, `imageChecker`, `networkChecker`). Build `dockerDeps` only
+  via `newDockerDeps(allDocker)` so no field can be left nil; a new interface goes into
+  `allDocker`, `newDockerDeps`, `dockerNewErrStub`, and `fakeDocker`. Tests build the tree with
   `newRootCmdWithDeps(baseDir, deps)` and a `fakeDocker` (see `internal/cli/main_test.go`).
   `run`/`status` tests that need an image seed with `initWithImage(t, baseDir)`;
   unregistered-workspace tests pass `-i test-img` so resolution succeeds and they reach `ws.Lookup`.
@@ -92,12 +96,21 @@ Mount order in `BuildSpec`: project root first, then global mounts (`~/.makeslop
 - The file must be a regular file; a symlink is rejected. When it exists, it is mounted read-only
   over itself in the container (`ProtectProjectConfig`), and `.git/hooks` is tmpfs-masked
   (`MaskGitHooks`).
-- `Load` returns `(Excludes, Cache, Env, error)`. A missing `cache:` block means
-  `{Content:true, Agent:true}`. `init --global-only` scaffolds `{false,false}`. `Scaffold` is
+- `Load` returns `(Config, error)` with `Config{Excludes, Cache, Env, Network}`. A missing
+  `cache:` block means `{Content:true, Agent:true}`. `init --global-only` scaffolds `{false,false}`. `Scaffold` is
   idempotent and never overwrites an existing file.
 - `Env{Static, Host}` comes from `environments:`; `Load` never reads the process env. Host names
   are resolved in `run.go` (`resolveEnv` with `os.LookupEnv`); unset names are skipped.
   `resolveEnv` is the only place the final order (by key) is decided; `Env.Static` keeps file order.
+- `network_mode` / `networks` (compose names) → `Network{Mode, Networks}`; zero = Docker default,
+  no `--network` flag. Both set is an error; `""`/empty list count as unset. `networks` is decoded
+  as a `yaml.Node` so the mapping form gets a targeted error. Errors quote names (not secret).
+  Values flow verbatim to `Options` → `--network` / `HostConfig.NetworkMode` /
+  `NetworkingConfig()`; `TestDriftGuard_Network` keeps them in sync. Attach only, never create.
+- `networkPreflight` (`deps.go`, bounded by `preflightTimeout`) checks a `container:` target is
+  running and named networks exist; built-ins (`bridge|host|none|default`) and unset skip the
+  daemon. `run` calls it after the image check (not on `--dry-run`); `status` uses it for the
+  blocking `network` row, and an invalid `.makeslop.yaml` makes that row `✗`.
 - Existing project files are never auto-migrated.
 
 ### Secret scan

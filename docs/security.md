@@ -1,7 +1,7 @@
 # makeslop — Security
 
 This document covers makeslop's security-relevant behaviors: secret masking, network egress
-control, and the home-directory guard. For in-container hardening flags (`--cap-drop ALL`,
+(`network_mode` / `networks`), and the home-directory guard. For in-container hardening flags (`--cap-drop ALL`,
 `no-new-privileges`, `--tmpfs`, bind-mount rationale), see
 [reference.md — In-container security flags](reference.md#in-container-security-flags).
 
@@ -15,6 +15,8 @@ control, and the home-directory guard. For in-container hardening flags (`--cap-
 - [Host environment passthrough](#host-environment-passthrough)
 - [Example image hardening](#example-image-hardening)
 - [Network egress](#network-egress)
+  - [Egress through a sidecar (`container:proxy`)](#egress-through-a-sidecar-containerproxy)
+  - [Internal network plus an explicit proxy](#internal-network-plus-an-explicit-proxy)
 - [Home-directory guard](#home-directory-guard)
 
 ---
@@ -257,7 +259,8 @@ cp "$(readlink .makeslop.yaml)" .makeslop.yaml.tmp && mv .makeslop.yaml.tmp .mak
 **YAML parse errors are hard failures.** Any unknown field in `.makeslop.yaml` — including the now-removed
 `network:` block from earlier makeslop versions — causes a strict-decode error that aborts `makeslop run`
 before Docker is contacted. If you upgrade from a version that had proxy support and your `.makeslop.yaml`
-contains a `network:` block, remove it:
+contains a `network:` block, remove it (use `network_mode` / `networks` instead, see
+[Network egress](#network-egress)):
 
 ```yaml
 # Remove this block entirely if present:
@@ -374,15 +377,69 @@ Users pick up the change by rebuilding their image with `docker build`.
 
 ## Network egress
 
-The app container uses standard Docker bridge networking with full internet access. There is no
-built-in egress proxy, no `--network none` isolation, and no socat sidecar.
+By default the app container uses Docker's default bridge network with full internet access.
+makeslop has no built-in egress proxy or firewall. Two `.makeslop.yaml` keys change the network
+(full syntax, validation, and pre-flight hints in
+[reference.md — Container networking](reference.md#container-networking-network_mode--networks-in-makeslopyaml)):
 
-Use `--dry-run` to preview the resulting container launch command (printed as an equivalent
-`docker run` invocation), including all exclusion mounts, before launching:
+- `network_mode`: `bridge`, `host`, `none`, `container:<name|id>`, or a network name.
+- `networks`: a list of existing networks to attach to (the first is primary).
+
+makeslop attaches only; it never creates networks or containers. `run` checks that the targets
+exist (and that a `container:` target is running) before launching. `--dry-run` shows the
+resulting `--network` flags:
 
 ```
 makeslop run --dry-run
 ```
+
+**Repository trust.** `.makeslop.yaml` is committed with the project. A cloned repository, or a
+pulled commit, can set `network_mode: host` (the agent gets the host's network stack, including
+services bound to `127.0.0.1`) or `network_mode: "container:<x>"` to join the network namespace of
+any container running on your daemon, and reach whatever that container can. makeslop does not
+warn about this. Before running in a repository you did not write, read its `network_mode` and
+`networks`, and review changes to them like changes to `environments.host`.
+
+### Egress through a sidecar (`container:proxy`)
+
+To force all agent traffic through a VPN, transparent proxy, or mitmproxy, start that container
+yourself and share its network namespace:
+
+```sh
+docker run -d --name proxy <your proxy/VPN image>
+```
+
+```yaml
+# .makeslop.yaml
+network_mode: "container:proxy"
+```
+
+The agent has no network interface of its own; it sees the proxy container's interfaces and
+routes. If `proxy` is missing, stopped, or paused, `run` refuses to start and `status` reports
+`✗`. Under compose, the container is named `<project>-<service>-1` unless `container_name` is set.
+
+### Internal network plus an explicit proxy
+
+Alternatively, attach the agent to an `internal: true` network (no route out) that is shared with
+a proxy container, and point tools at the proxy:
+
+```sh
+docker network create --internal egress_internal
+# run the proxy attached to both egress_internal and a normal network
+```
+
+```yaml
+# .makeslop.yaml
+networks: [egress_internal]
+environments:
+  static:
+    HTTPS_PROXY: "http://proxy:3128"
+    HTTP_PROXY: "http://proxy:3128"
+```
+
+This only works for proxy-aware tools: anything that ignores `HTTPS_PROXY` simply fails to
+connect, since the internal network has no other route out. The `container:proxy` pattern does not
+depend on tool cooperation.
 
 ---
 

@@ -17,6 +17,7 @@ Complete reference for all `makeslop` commands, flags, runtime behavior, and con
 - [Cache layout](#cache-layout)
 - [Container layout and mount table](#container-layout-and-mount-table)
 - [Environment variables](#environment-variables-environments-block-in-makeslopyaml)
+- [Container networking](#container-networking-network_mode--networks-in-makeslopyaml)
 - [In-container security flags](#in-container-security-flags)
 - [Host UID](#host-uid)
 - [TTY policy](#tty-policy)
@@ -79,7 +80,9 @@ the workspace source tree mounted in. By default, per-workspace + global agent c
 (`.claude/`, `.codex/`, `CLAUDE.md`, `docs/`) are also mounted as overlay groups; individual
 groups can be disabled via `cache.content` and `cache.agent` in `.makeslop.yaml`. Static values
 and host-passthrough variables can be injected via the `environments:` block — see
-[Environment variables](#environment-variables-environments-block-in-makeslopyaml).
+[Environment variables](#environment-variables-environments-block-in-makeslopyaml). The
+container's network is set by `network_mode` / `networks` — see
+[Container networking](#container-networking-network_mode--networks-in-makeslopyaml).
 
 - Exits with the container's exit code.
 - Refuses to launch when stdin or stdout is not a TTY (see [TTY policy](#tty-policy)).
@@ -92,14 +95,17 @@ and host-passthrough variables can be injected via the `environments:` block —
   The resolved value must be a valid image reference (lowercase name, optional tag/digest, no
   leading `-`); an invalid one fails the same way, before any docker call.
 - If no ancestor directory is registered, exits non-zero with a hint to run `makeslop init`.
-- Before launching, performs two pre-flight checks:
+- Before launching, performs these pre-flight checks:
   1. Daemon reachability (`— is docker running?`)
   2. Image existence in the local daemon. makeslop never builds or pulls; a missing image fails
      with:
      ```
      makeslop: image "<ref>" not found locally — build or pull it (e.g. 'docker pull <ref>')
      ```
-- `--dry-run` skips both pre-flight checks and the TTY check (printed == executed invariant).
+  3. Network targets from `.makeslop.yaml`, when set: the `container:` target must be running and
+     each named network must exist (see
+     [Container networking](#container-networking-network_mode--networks-in-makeslopyaml)).
+- `--dry-run` skips the pre-flight checks and the TTY check (printed == executed invariant).
 
 **Flags:**
 - `--dry-run` / `-n` — print the equivalent shell command and exit without launching the container
@@ -122,7 +128,13 @@ Checks (in order):
    `run`). Passing `-i` lets the check run even when `settings.json` is absent or corrupt.
 4. Workspace registration — **blocking**
 5. Secret scan summary — non-blocking. An unreadable `.makeslop.yaml` (including a symlinked
-   one) is reported here as a warning (`!`); `status` does not fail on it, unlike `run`/`init`.
+   one) is reported here as a warning (`!`).
+6. Network — **blocking**. `–` when the workspace is unresolved or neither `network_mode` nor
+   `networks` is set; `✓` without a daemon call for the built-in modes (`bridge`, `host`, `none`,
+   `default`). Otherwise the `container:` target or named networks are checked like `run` does,
+   and a failure shows the same hint. `✗ cannot check — daemon unreachable` when the daemon is
+   down. An invalid `.makeslop.yaml` gives `✗ cannot check — .makeslop.yaml invalid`, so `status`
+   is not ready on a config that `run` would reject.
 
 Each check emits one aligned line with a glyph (`✓ ✗ ! –`). A final verdict line names the next
 action. Exit code is 0 when all blocking checks pass.
@@ -259,8 +271,10 @@ a `network:` block, remove it to upgrade:
 # Remove the network: block entirely from .makeslop.yaml
 ```
 
-The app container now always uses standard Docker bridge networking with full internet access. No
-socat sidecar, no `--network none`, and no `--proxy` flag.
+There is no socat sidecar and no `--proxy` flag. To route egress through a proxy or VPN
+container, use the top-level `network_mode` / `networks` keys instead (see
+[Container networking](#container-networking-network_mode--networks-in-makeslopyaml)). Without
+them the app container uses the default Docker bridge network.
 
 ### Breaking changes: `.makeslop.yaml` validation tightened
 
@@ -480,6 +494,74 @@ do not paste its output into logs or issues without redacting them. See
 
 ---
 
+## Container networking (`network_mode` / `networks` in `.makeslop.yaml`)
+
+Two optional top-level keys choose the app container's network. They use compose's names and
+meaning:
+
+```yaml
+network_mode: "container:proxy"   # bridge | host | none | container:<name|id> | <network>
+# or, instead:
+networks: [myapp_default, egress_internal]
+```
+
+- **Unset** (default): no `--network` flag, Docker's default bridge network. `network_mode: ""`
+  and an empty or null `networks` list also count as unset.
+- **`network_mode`** is passed verbatim as `--network <mode>` (SDK: `HostConfig.NetworkMode`).
+  `container:<name|id>` shares another container's network namespace, so all traffic goes
+  through it. makeslop keeps no list of modes; any name-shaped value is passed to the daemon.
+- **`networks`** attaches the container to each listed network at create time, in file order, one
+  `--network <name>` per entry. The first entry is the primary network. Attaching to more than
+  one network at create time needs Docker Engine 25+ (API 1.44).
+- **Not both.** Setting both keys is an error.
+
+makeslop only attaches. It never creates or removes networks or containers. `--dry-run` prints
+the `--network` flags.
+
+### Validation errors
+
+Names must match `^[a-zA-Z0-9][a-zA-Z0-9_.-]*$` (Docker's charset; container IDs match too).
+Errors quote the offending name and abort `run` before Docker is contacted (printed with a
+`makeslop: ` prefix):
+
+```
+projectconfig: set either network_mode or networks, not both
+projectconfig: network_mode "container:" has no container name
+projectconfig: network_mode "container:a b": invalid container name "a b"
+projectconfig: invalid network_mode "a b"
+projectconfig: empty entry in networks
+projectconfig: networks entry "host" is a network_mode, not a network
+projectconfig: invalid network name "a b" in networks
+projectconfig: duplicate network "a" in networks
+projectconfig: networks must be a list of names; per-network options are not supported
+```
+
+`host`, `none`, `default`, and any `container:` value are rejected inside `networks`. Compose's
+mapping form (`networks: {a: {}}`) is not supported.
+
+### Pre-flight checks
+
+`run` (not `--dry-run`) and `status` ask the daemon about the targets, bounded by the 10s
+pre-flight timeout:
+
+- `bridge`, `host`, `none`, `default`, or unset: nothing to check.
+- `container:<x>`: the container must exist and be running. A paused container counts as not
+  running.
+- any other `network_mode`, and every `networks` entry: the network must exist.
+
+Failures (compose prefixes names, so the hints say how to find the real one):
+
+```
+makeslop: network_mode: container "proxy" not found — start it first; compose names containers <project>-<service>-1 unless container_name is set (check 'docker ps')
+makeslop: network_mode: container "proxy" is not running — start it first
+makeslop: network "X" not found — create it with 'docker network create X'; compose prefixes networks with <project>_ (check 'docker network ls')
+```
+
+Security implications (a cloned repository's config can pick `host` or join any container) are in
+[security.md — Network egress](security.md#network-egress).
+
+---
+
 ## In-container security flags
 
 Security flags applied inside the container:
@@ -536,8 +618,8 @@ Pass `--dry-run` (short: `-n`) to print the equivalent shell command for the con
 backslash-continued, paste-ready shell command on stdout. All pre-launch checks still run
 (home-directory guard, settings load, image resolution, workspace lookup, project config parse,
 secret scan), so the
-printed command equals the real invocation byte-for-byte. Daemon and image pre-flight checks are
-skipped on `--dry-run`.
+printed command equals the real invocation byte-for-byte. Daemon, image, and network pre-flight
+checks are skipped on `--dry-run`.
 
 ```
 makeslop run --dry-run

@@ -196,11 +196,11 @@
 - [x] run the linter (`golangci-lint run` or `go vet ./... && staticcheck ./...`) (golangci-lint and staticcheck not installed; `go vet ./...` and `gofmt -l .` clean)
 
 ### Task 8: [Final] Update documentation
-- [ ] `docs/reference.md`: document `network_mode`/`networks` (values, mutual exclusion, attach-only, preflight hints, Engine 25+ for multiple networks); keep the "network: block removed" section with a pointer to the new keys; add the `status` network row
-- [ ] `docs/security.md`: rewrite "Network egress": default bridge, the modes, the repo-trust note (`host` / joining another container's namespace, review cloned configs), the `container:proxy` egress-sidecar pattern, and the `internal: true` network + `HTTPS_PROXY` via `environments.static` variant
-- [ ] `docs/architecture.md`: add the network fields to the spec/preflight flow description
-- [ ] `CLAUDE.md`: project-config section — the new keys, `Load → (Config, error)`, the network preflight in run/status, and the new `apiClient` methods
-- [ ] move this plan to `docs/plans/completed/`
+- [x] `docs/reference.md`: document `network_mode`/`networks` (values, mutual exclusion, attach-only, preflight hints, Engine 25+ for multiple networks); keep the "network: block removed" section with a pointer to the new keys; add the `status` network row
+- [x] `docs/security.md`: rewrite "Network egress": default bridge, the modes, the repo-trust note (`host` / joining another container's namespace, review cloned configs), the `container:proxy` egress-sidecar pattern, and the `internal: true` network + `HTTPS_PROXY` via `environments.static` variant
+- [x] `docs/architecture.md`: add the network fields to the spec/preflight flow description
+- [x] `CLAUDE.md`: project-config section — the new keys, `Load → (Config, error)`, the network preflight in run/status, and the new `apiClient` methods
+- [x] move this plan to `docs/plans/completed/` (deferred — done after review phases)
 
 ## Post-Completion
 *Items requiring manual intervention or external systems - no checkboxes, informational only*
