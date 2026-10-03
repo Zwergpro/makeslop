@@ -327,13 +327,11 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
-// sanitizeLabel replaces characters that are special inside a backtick
-// command substitution (` $ \) and control characters (including newlines)
-// with '?', so a separator label always renders as one inert line.
+// sanitizeLabel replaces control characters (including newlines) with '?', so
+// a separator label always renders as a single comment line.
 func sanitizeLabel(label string) string {
 	return strings.Map(func(r rune) rune {
-		switch {
-		case r == '`', r == '$', r == '\\', unicode.IsControl(r):
+		if unicode.IsControl(r) {
 			return '?'
 		}
 		return r
@@ -341,11 +339,16 @@ func sanitizeLabel(label string) string {
 }
 
 // ShellCommand renders s as a multi-line backslash-continued `docker run` command.
+// With Sections, each project's mounts are preceded by a blank line and a
+// "# --- <label> ---" comment; those lines are for reading only and break the
+// continuation, so such output is not pasteable as one command.
 func (s Spec) ShellCommand() string {
 	args := s.Args() // starts with "run", not "docker"
 
 	var lines []string
 	lines = append(lines, "docker run")
+	// annotations marks blank/comment lines, which get no trailing backslash.
+	annotations := make(map[int]bool)
 
 	// sections maps a --mount ordinal to its separator label. Spec.Mounts maps
 	// 1:1 to --mount tokens in Args(), so Section.Start is that ordinal.
@@ -360,9 +363,10 @@ func (s Spec) ShellCommand() string {
 		tok := args[i]
 		if tok == "--mount" {
 			if label, ok := sections[mountN]; ok {
-				// A backticked comment expands to nothing, so the line stays a
-				// valid continuation when the output is pasted into a shell.
-				lines = append(lines, "  `# --- "+sanitizeLabel(label)+" ---`")
+				annotations[len(lines)] = true
+				lines = append(lines, "")
+				annotations[len(lines)] = true
+				lines = append(lines, "  # --- "+sanitizeLabel(label)+" ---")
 			}
 			mountN++
 		}
@@ -382,7 +386,7 @@ func (s Spec) ShellCommand() string {
 	var sb strings.Builder
 	for j, line := range lines {
 		sb.WriteString(line)
-		if j < len(lines)-1 {
+		if j < len(lines)-1 && !annotations[j] {
 			sb.WriteString(" \\")
 		}
 		sb.WriteByte('\n')

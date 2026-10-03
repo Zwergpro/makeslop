@@ -2947,8 +2947,8 @@ func TestRun_Join_DryRun_SeparatorsAndMounts_NoDaemonCalls(t *testing.T) {
 		t.Fatalf("run -n -j failed: %v; stderr=%q", err, stderr)
 	}
 	for _, want := range []string{
-		"`# --- project: " + f.app + " ---` \\\n",
-		"`# --- join: " + f.lib + " (rw) ---` \\\n",
+		"\n  # --- project: " + f.app + " ---\n",
+		"\n  # --- join: " + f.lib + " (rw) ---\n",
 		"type=bind,source=" + f.lib + ",target=/workspace/lib",
 		"type=bind,source=" + filepath.Join(f.lib, projectconfig.Filename) + ",target=/workspace/lib/.makeslop.yaml,readonly",
 	} {
@@ -2967,7 +2967,7 @@ func TestRun_Join_NoJoin_NoSeparators(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run -n failed: %v; stderr=%q", err, stderr)
 	}
-	if strings.Contains(stdout, "`# ---") || strings.Contains(stdout, "/workspace/lib") {
+	if strings.Contains(stdout, "# ---") || strings.Contains(stdout, "/workspace/lib") {
 		t.Errorf("no --join: dry-run must have no separators or join mounts\nstdout:\n%s", stdout)
 	}
 }

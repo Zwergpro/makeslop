@@ -88,7 +88,7 @@ Joins never get global or cache overlay mounts.
 
 **Sections.** With joins, `Spec.Sections` records where each project's mounts start (`Section.Start`
 indexes `Spec.Mounts`, which maps 1:1 to the `--mount` tokens in `Args()`). Without joins it is
-nil. Only `ShellCommand()` reads it, to print a `` `# --- <label> ---` `` separator line before
+nil. Only `ShellCommand()` reads it, to print a blank line and a `# --- <label> ---` comment before
 each group (labels pass through `sanitizeLabel`). `Args()` and the SDK projections ignore it, so the
 printed command still equals the executed one; `TestDriftGuard_Joins` checks the mount lists of
 `Args()` and `HostConfig()` against each other for a spec with joins.

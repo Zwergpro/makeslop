@@ -52,7 +52,7 @@ Mount order in `BuildSpec`: project root first, then global mounts (`~/.makeslop
 Mount order is per project: `Options.Projects[0]` is main (the order above); each join follows as
 its own group: bind (`readonly` for `:ro`) → sandbox (rw only) → its own masks. An ro join keeps a
 `/dev/null` mask on its config (no self-bind to protect). `Spec.Sections` (set only with joins)
-marks each group's first mount; only `ShellCommand` reads it (`` `# --- label ---` `` lines),
+marks each group's first mount; only `ShellCommand` reads it (blank line + `# --- label ---`; breaks pasteability by design),
 so `Args()`/SDK projections and the drift guards are unaffected. `Section.Start` relies on
 `Spec.Mounts` mapping 1:1 to `--mount` tokens in `Args()` (ShellCommand counts `--mount` flag
 tokens, skipping flag values); labels pass through `sanitizeLabel`.

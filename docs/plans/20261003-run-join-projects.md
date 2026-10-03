@@ -3,7 +3,7 @@
 ## Overview
 - Add `makeslop run --join/-j <path>[:ro|:rw]` (repeatable). Each path points to another makeslop project, meaning a directory containing `.makeslop.yaml`. It is mounted into the current project's container at `/workspace/<basename>`.
 - A joined project is masked using **only its own** `exclude:` block (scan patterns, skip-dirs, files, dirs), and those masks apply **only to its own tree**. Its `cache:`, `environments:` and `network_*` keys are ignored. The main project's masks never apply to a join, and a join's masks never apply to the main project.
-- `run -n` with joins groups the mounts per project and prints a pasteable separator before each group: `` `# --- join: /home/me/lib (ro) ---` `` (a backticked comment; pasteable into bash, dash and non-interactive zsh).
+- `run -n` with joins groups the mounts per project and prints a separator before each group: a blank line plus `# --- join: /home/me/lib (ro) ---` (readable, not pasteable).
 - Without `--join`, both the `run` and `-n` output are byte-identical to today.
 
 ## Context (from discovery)
@@ -75,7 +75,7 @@
   - `ShellCommand()` tracks a `--mount` counter. When the counter equals a section's `Start`, it emits `` "  `: " + shellQuote("--- " + sanitize(label) + " ---") + "`" `` before that mount line, rendering as `` `: '--- join: /home/me/lib (ro) ---'` ``, and the line gets the usual ` \` continuation.
     - Why `:` and not `#`: interactive zsh (the macOS default) doesn't set `INTERACTIVE_COMMENTS`, so `#` isn't a comment there. `(ro)` then becomes a glob qualifier and quotes break parsing.
     - The reviewer tested the `:` form with no stderr in interactive and non-interactive zsh, interactive bash, `bash --posix` and dash.
-    - ➕ Changed after review at the user's request: separators render as `` `# --- <label> ---` `` (no `:`/`shellQuote`). Interactive zsh without `interactivecomments` is no longer a supported paste target, and its paste-test case was removed.
+    - ➕ Changed after review at the user's request: each project group is preceded by a blank line and a plain `# --- <label> ---` comment (no backticks, no `:`). `-n` output with joins is readable, not pasteable; the shell paste test and CI zsh/dash install were removed. `sanitizeLabel` now only replaces control characters.
     - `sanitize` replaces `` ` ``, `\`, `$` and control characters (including newlines) with `?`. Backslash and backtick processing inside backticks happens before `shellQuote` matters.
 - `cli`:
   ```go

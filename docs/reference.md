@@ -743,7 +743,7 @@ in CI pipelines and non-interactive shells.
 
 Pass `--dry-run` (short: `-n`) to print the equivalent shell command for the container launch that
 `makeslop` would execute and then exit without launching the container. The output is a multi-line,
-backslash-continued, paste-ready shell command on stdout. All pre-launch checks still run
+backslash-continued, paste-ready shell command on stdout (not paste-ready with `--join`; see below). All pre-launch checks still run
 (home-directory guard, settings load, image resolution, workspace lookup, `--join` validation,
 project config parse and secret scan for the current project and every join), so the
 printed command equals the real invocation byte-for-byte. Daemon, image, and network pre-flight
@@ -761,26 +761,27 @@ This makes it suitable for CI inspection:
 makeslop run -n > cmd.sh   # capture only the command; masked-file count goes to stderr
 ```
 
-With `--join`, the mounts are grouped per project and each group is preceded by a separator line:
+With `--join`, the mounts are grouped per project and each group is preceded by a blank line and a
+separator comment:
 
 ```
 docker run \
   ...
-  `# --- project: /home/me/app ---` \
+
+  # --- project: /home/me/app ---
   --mount type=bind,source=/home/me/app,target=/workspace/app-ab12cd \
   ...
-  `# --- join: /home/me/lib (ro) ---` \
+
+  # --- join: /home/me/lib (ro) ---
   --mount type=bind,source=/home/me/lib,target=/workspace/lib,readonly \
   --mount type=tmpfs,target=/workspace/lib/keys \
   claudebox \
   /bin/zsh
 ```
 
-The separator is a comment inside a command substitution (`` `# …` ``). It expands to nothing, so
-the command still pastes into bash, dash and zsh scripts. Interactive zsh does not treat `#` as a
-comment unless `setopt interactivecomments` is set, so pasting there prints an error for each
-separator line. Backticks, `$`, `\` and control characters in the label are replaced with `?`. Without
-`--join` no separator is printed and the output is unchanged.
+The blank and separator lines are for reading only: they break the backslash continuation, so
+output with `--join` is not a paste-ready command. Control characters in the label are replaced
+with `?`. Without `--join` no separator is printed and the output is unchanged (and paste-ready).
 
 The output includes resolved `environments.host` values in full, secrets included. Do not keep it
 as a CI artifact or log it without redacting them. See
