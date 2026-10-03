@@ -73,7 +73,9 @@ func TestLoad_MissingFile(t *testing.T) {
 	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
-	excl, _, _, err := Load(root)
+	cfg, err := Load(root)
+
+	excl := cfg.Excludes
 	if err != nil {
 		t.Fatalf("Load on missing file: %v", err)
 	}
@@ -96,7 +98,11 @@ func TestLoad_DefaultStub_RoundTrips(t *testing.T) {
 		t.Fatalf("write stub: %v", err)
 	}
 
-	excl, cacheCfg, _, err := Load(root)
+	cfg, err := Load(root)
+
+	excl := cfg.Excludes
+
+	cacheCfg := cfg.Cache
 	if err != nil {
 		t.Fatalf("Load on default stub: %v", err)
 	}
@@ -155,7 +161,9 @@ func TestLoad_EmptyAndCommentOnlyFiles(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(root, Filename), tc.content, 0o644); err != nil {
 				t.Fatalf("write: %v", err)
 			}
-			excl, cacheCfg, _, err := Load(root)
+			cfg, err := Load(root)
+			excl := cfg.Excludes
+			cacheCfg := cfg.Cache
 			if err != nil {
 				t.Fatalf("Load returned error for %q: %v", tc.name, err)
 			}
@@ -186,7 +194,7 @@ func TestLoad_MalformedYAML(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, _, _, err := Load(root)
+	_, err := Load(root)
 	if err == nil {
 		t.Fatal("expected error for malformed YAML, got nil")
 	}
@@ -203,7 +211,7 @@ func TestLoad_UnknownField(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, _, _, err := Load(root)
+	_, err := Load(root)
 	if err == nil {
 		t.Fatal("expected error for unknown field, got nil")
 	}
@@ -285,7 +293,7 @@ func TestLoad_ValidationRules(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(root, Filename), []byte(tc.yaml), 0o644); err != nil {
 				t.Fatalf("write: %v", err)
 			}
-			_, _, _, err := Load(root)
+			_, err := Load(root)
 			if err == nil {
 				t.Fatalf("expected error containing %q, got nil", tc.wantErrFrag)
 			}
@@ -309,7 +317,7 @@ func TestLoad_ReservedPaths(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(root, Filename), []byte(content), 0o644); err != nil {
 				t.Fatalf("write: %v", err)
 			}
-			_, _, _, err := Load(root)
+			_, err := Load(root)
 			if err == nil {
 				t.Fatalf("expected collision error for %q in dirs, got nil", reserved)
 			}
@@ -323,7 +331,7 @@ func TestLoad_ReservedPaths(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(root, Filename), []byte(content), 0o644); err != nil {
 				t.Fatalf("write: %v", err)
 			}
-			_, _, _, err := Load(root)
+			_, err := Load(root)
 			if err == nil {
 				t.Fatalf("expected collision error for %q in files, got nil", reserved)
 			}
@@ -343,7 +351,7 @@ func TestLoad_CrossListDuplicate(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, _, _, err := Load(root)
+	_, err := Load(root)
 	if err == nil {
 		t.Fatal("expected error for cross-list duplicate, got nil")
 	}
@@ -363,7 +371,7 @@ func TestLoad_CrossListDuplicate_NoFileOnDisk(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, _, _, err := Load(root)
+	_, err := Load(root)
 	if err == nil {
 		t.Fatal("expected error for cross-list duplicate (path absent), got nil")
 	}
@@ -381,7 +389,9 @@ func TestLoad_SilentlyDropsMissingEntries(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	excl, _, _, err := Load(root)
+	cfg, err := Load(root)
+
+	excl := cfg.Excludes
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -407,7 +417,9 @@ func TestLoad_DropsWrongType(t *testing.T) {
 		t.Fatalf("write config: %v", err)
 	}
 
-	excl, _, _, err := Load(root)
+	cfg, err := Load(root)
+
+	excl := cfg.Excludes
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -449,7 +461,9 @@ func TestLoad_DropsSymlinks(t *testing.T) {
 		t.Fatalf("write config: %v", err)
 	}
 
-	excl, _, _, err := Load(root)
+	cfg, err := Load(root)
+
+	excl := cfg.Excludes
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -487,7 +501,9 @@ func TestLoad_SymlinkInFiles_Warning(t *testing.T) {
 		t.Fatalf("write config: %v", err)
 	}
 
-	excl, _, _, err := Load(root)
+	cfg, err := Load(root)
+
+	excl := cfg.Excludes
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -525,7 +541,9 @@ func TestLoad_SymlinkInDirs_Warning(t *testing.T) {
 		t.Fatalf("write config: %v", err)
 	}
 
-	excl, _, _, err := Load(root)
+	cfg, err := Load(root)
+
+	excl := cfg.Excludes
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -558,7 +576,9 @@ func TestLoad_WrongTypeDrop_NoWarning(t *testing.T) {
 		t.Fatalf("write config: %v", err)
 	}
 
-	excl, _, _, err := Load(root)
+	cfg, err := Load(root)
+
+	excl := cfg.Excludes
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -575,7 +595,9 @@ func TestLoad_WrongTypeDrop_NoWarning(t *testing.T) {
 func TestLoad_NoWarnings_AbsentFile(t *testing.T) {
 	root := evalSymlinks(t, t.TempDir())
 
-	excl, _, _, err := Load(root)
+	cfg, err := Load(root)
+
+	excl := cfg.Excludes
 	if err != nil {
 		t.Fatalf("Load on missing file: %v", err)
 	}
@@ -624,7 +646,9 @@ func TestLoad_DeduplicatesWithinLists(t *testing.T) {
 		t.Fatalf("write config: %v", err)
 	}
 
-	excl, _, _, err := Load(root)
+	cfg, err := Load(root)
+
+	excl := cfg.Excludes
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -660,7 +684,9 @@ func TestLoad_ReturnsAbsoluteSortedPaths(t *testing.T) {
 		t.Fatalf("write config: %v", err)
 	}
 
-	excl, _, _, err := Load(root)
+	cfg, err := Load(root)
+
+	excl := cfg.Excludes
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -723,7 +749,7 @@ func TestLoad_Network_BlockRejected(t *testing.T) {
 				t.Fatalf("write: %v", err)
 			}
 
-			_, _, _, err := Load(root)
+			_, err := Load(root)
 			if err == nil {
 				t.Fatal("expected error for stale network: block, got nil")
 			}
@@ -781,7 +807,8 @@ func TestLoad_Scan_ValidPatternsAndSkipDirs(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(root, Filename), []byte(tc.yaml), 0o644); err != nil {
 				t.Fatalf("write: %v", err)
 			}
-			excl, _, _, err := Load(root)
+			cfg, err := Load(root)
+			excl := cfg.Excludes
 			if err != nil {
 				t.Fatalf("Load returned error: %v", err)
 			}
@@ -839,7 +866,7 @@ func TestLoad_Scan_InvalidPatterns(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(root, Filename), []byte(tc.yaml), 0o644); err != nil {
 				t.Fatalf("write: %v", err)
 			}
-			_, _, _, err := Load(root)
+			_, err := Load(root)
 			if err == nil {
 				t.Fatalf("expected error containing %q, got nil", tc.wantErrFrag)
 			}
@@ -865,7 +892,7 @@ func TestLoad_Scan_PathStylePattern_LoadLevel(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, _, _, err := Load(root)
+	_, err := Load(root)
 	if err == nil {
 		t.Fatal("expected error for path-style scan pattern, got nil")
 	}
@@ -916,7 +943,7 @@ func TestLoad_Scan_InvalidSkipDirs(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(root, Filename), []byte(tc.yaml), 0o644); err != nil {
 				t.Fatalf("write: %v", err)
 			}
-			_, _, _, err := Load(root)
+			_, err := Load(root)
 			if err == nil {
 				t.Fatalf("expected error containing %q, got nil", tc.wantErrFrag)
 			}
@@ -939,7 +966,7 @@ func TestLoad_Scan_UnknownKeyRejected(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, _, _, err := Load(root)
+	_, err := Load(root)
 	if err == nil {
 		t.Fatal("expected error for unknown key under exclude.scan, got nil")
 	}
@@ -958,7 +985,9 @@ func TestLoad_Cache_AbsentBlock(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, cacheCfg, _, err := Load(root)
+	cfg, err := Load(root)
+
+	cacheCfg := cfg.Cache
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -974,7 +1003,9 @@ func TestLoad_Cache_MissingFile(t *testing.T) {
 	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
-	_, cacheCfg, _, err := Load(root)
+	cfg, err := Load(root)
+
+	cacheCfg := cfg.Cache
 	if err != nil {
 		t.Fatalf("Load on missing file: %v", err)
 	}
@@ -995,7 +1026,9 @@ func TestLoad_Cache_BothFalse(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, cacheCfg, _, err := Load(root)
+	cfg, err := Load(root)
+
+	cacheCfg := cfg.Cache
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -1016,7 +1049,9 @@ func TestLoad_Cache_BothTrue(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, cacheCfg, _, err := Load(root)
+	cfg, err := Load(root)
+
+	cacheCfg := cfg.Cache
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -1038,7 +1073,9 @@ func TestLoad_Cache_MixedContentFalseAgentAbsent(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, cacheCfg, _, err := Load(root)
+	cfg, err := Load(root)
+
+	cacheCfg := cfg.Cache
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -1060,7 +1097,9 @@ func TestLoad_Cache_MixedAgentFalseContentAbsent(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, cacheCfg, _, err := Load(root)
+	cfg, err := Load(root)
+
+	cacheCfg := cfg.Cache
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -1081,7 +1120,7 @@ func TestLoad_Cache_UnknownKeyRejected(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, _, _, err := Load(root)
+	_, err := Load(root)
 	if err == nil {
 		t.Fatal("expected error for unknown key under cache:, got nil")
 	}
@@ -1100,7 +1139,9 @@ func TestRenderStub_TrueTrue(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, cacheCfg, _, err := Load(root)
+	cfg, err := Load(root)
+
+	cacheCfg := cfg.Cache
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -1122,7 +1163,9 @@ func TestRenderStub_FalseFalse(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, cacheCfg, _, err := Load(root)
+	cfg, err := Load(root)
+
+	cacheCfg := cfg.Cache
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -1151,7 +1194,9 @@ func TestScaffold_CacheFalseFalse(t *testing.T) {
 		t.Errorf("file content mismatch:\ngot:  %q\nwant: %q", got, want)
 	}
 
-	_, cacheCfg, _, err := Load(root)
+	cfg, err := Load(root)
+
+	cacheCfg := cfg.Cache
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -1614,7 +1659,9 @@ cache:
 		t.Fatalf("write: %v", err)
 	}
 
-	_, _, env, err := Load(root)
+	cfg, err := Load(root)
+
+	env := cfg.Env
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -1641,7 +1688,8 @@ func TestLoad_EmptyAndWhitespaceFile_ZeroEnv(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(root, Filename), tc.content, 0o644); err != nil {
 				t.Fatalf("write: %v", err)
 			}
-			_, _, env, err := Load(root)
+			cfg, err := Load(root)
+			env := cfg.Env
 			if err != nil {
 				t.Fatalf("Load returned error for %q: %v", tc.name, err)
 			}
@@ -1670,7 +1718,9 @@ func TestLoad_EnvironmentsBlock_ReturnsPairs(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, _, env, err := Load(root)
+	cfg, err := Load(root)
+
+	env := cfg.Env
 	if err != nil {
 		t.Fatalf("Load returned error: %v", err)
 	}
@@ -1696,7 +1746,8 @@ func TestLoad_EnvironmentsAliases(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(root, Filename), []byte(content), 0o644); err != nil {
 			t.Fatalf("write: %v", err)
 		}
-		_, _, env, err := Load(root)
+		cfg, err := Load(root)
+		env := cfg.Env
 		if err != nil {
 			t.Fatalf("Load returned error: %v", err)
 		}
@@ -1712,7 +1763,7 @@ func TestLoad_EnvironmentsAliases(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(root, Filename), []byte(content), 0o644); err != nil {
 			t.Fatalf("write: %v", err)
 		}
-		_, _, _, err := Load(root)
+		_, err := Load(root)
 		if err == nil || !strings.Contains(err.Error(), "field base not found") {
 			t.Errorf("err = %v, want strict-decode unknown field \"base\"", err)
 		}
@@ -1746,7 +1797,7 @@ func TestLoad_EnvironmentsDuplicateKeys(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(root, Filename), []byte(tc.content), 0o644); err != nil {
 				t.Fatalf("write: %v", err)
 			}
-			_, _, _, err := Load(root)
+			_, err := Load(root)
 			if err == nil || err.Error() != tc.wantErr {
 				t.Fatalf("err = %v, want %q", err, tc.wantErr)
 			}
@@ -1765,7 +1816,7 @@ func TestLoad_TypoInEnvironments_StrictModeRejects(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, _, _, err := Load(root)
+	_, err := Load(root)
 	if err == nil {
 		t.Fatal("expected error for typo in top-level key, got nil")
 	}
@@ -1872,7 +1923,7 @@ func TestLoad_DanglingSymlink(t *testing.T) {
 		t.Fatalf("symlink: %v", err)
 	}
 
-	_, _, _, err := Load(root)
+	_, err := Load(root)
 	if err == nil {
 		t.Fatal("expected error for dangling symlink, got nil (silently treats as missing — wrong)")
 	}
@@ -1904,7 +1955,7 @@ func TestLoad_LiveSymlink(t *testing.T) {
 		t.Fatalf("symlink: %v", err)
 	}
 
-	_, _, _, err := Load(root)
+	_, err := Load(root)
 	if err == nil {
 		t.Fatal("expected error for live symlink to valid config, got nil")
 	}
@@ -1925,7 +1976,11 @@ func TestLoad_LiveSymlink(t *testing.T) {
 func TestLoad_MissingFile_NoSymlink_ReturnsDefaults(t *testing.T) {
 	root := evalSymlinks(t, t.TempDir())
 
-	_, cacheCfg, env, err := Load(root)
+	cfg, err := Load(root)
+
+	cacheCfg := cfg.Cache
+
+	env := cfg.Env
 	if err != nil {
 		t.Fatalf("Load on truly missing file returned error: %v", err)
 	}
@@ -1948,4 +2003,139 @@ func stringSlicesEqual(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// loadDoc writes content as .makeslop.yaml in a fresh root and loads it.
+func loadDoc(t *testing.T, content string) (Config, error) {
+	t.Helper()
+	root := evalSymlinks(t, t.TempDir())
+	if err := os.WriteFile(filepath.Join(root, Filename), []byte(content), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	return Load(root)
+}
+
+func TestLoad_Network_Valid(t *testing.T) {
+	skipNonPOSIX(t, "POSIX-only per CLAUDE.md")
+
+	cases := []struct {
+		name    string
+		content string
+		want    Network
+	}{
+		{"unset", "cache:\n  content: true\n", Network{}},
+		{"empty mode", "network_mode: \"\"\n", Network{}},
+		{"null mode", "network_mode:\n", Network{}},
+		{"bridge", "network_mode: bridge\n", Network{Mode: "bridge"}},
+		{"host", "network_mode: host\n", Network{Mode: "host"}},
+		{"none", "network_mode: none\n", Network{Mode: "none"}},
+		{"default", "network_mode: default\n", Network{Mode: "default"}},
+		{"container name", "network_mode: \"container:proxy\"\n", Network{Mode: "container:proxy"}},
+		{"container id", "network_mode: container:3f4e9a1b2c7d\n", Network{Mode: "container:3f4e9a1b2c7d"}},
+		{"custom network mode", "network_mode: myapp_default\n", Network{Mode: "myapp_default"}},
+		{"single network", "networks: [egress]\n", Network{Networks: []string{"egress"}}},
+		{"multiple networks keep order", "networks:\n  - zeta.net\n  - alpha-1\n  - myapp_default\n",
+			Network{Networks: []string{"zeta.net", "alpha-1", "myapp_default"}}},
+		{"empty mode plus networks", "network_mode: \"\"\nnetworks: [a]\n", Network{Networks: []string{"a"}}},
+		{"mode plus empty networks", "network_mode: x\nnetworks: []\n", Network{Mode: "x"}},
+		{"mode plus null networks", "network_mode: x\nnetworks:\n", Network{Mode: "x"}},
+		{"networks via alias", "exclude:\n  dirs: &nets [a, b]\nnetworks: *nets\n", Network{Networks: []string{"a", "b"}}},
+		{"networks entry via alias", "exclude:\n  dirs: [&n egress]\nnetworks: [*n]\n", Network{Networks: []string{"egress"}}},
+		// A numeric mode is coerced to its string form by yaml; Docker allows
+		// all-digit network names, so it is accepted and left to the preflight.
+		{"numeric mode coerced", "network_mode: 123\n", Network{Mode: "123"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := loadDoc(t, tc.content)
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if !reflect.DeepEqual(cfg.Network, tc.want) {
+				t.Errorf("Network: got %#v, want %#v", cfg.Network, tc.want)
+			}
+		})
+	}
+}
+
+func TestLoad_Network_Errors(t *testing.T) {
+	skipNonPOSIX(t, "POSIX-only per CLAUDE.md")
+
+	cases := []struct {
+		name    string
+		content string
+		wantSub string
+	}{
+		{"both keys set", "network_mode: host\nnetworks: [a]\n", "set either network_mode or networks, not both"},
+		{"container empty name", "network_mode: \"container:\"\n", `network_mode "container:" has no container name`},
+		{"container invalid name", "network_mode: \"container:-bad\"\n", `invalid container name "-bad"`},
+		{"mode with space", "network_mode: \"my net\"\n", `invalid network_mode "my net"`},
+		{"mode leading whitespace", "network_mode: \" host\"\n", `invalid network_mode " host"`},
+		{"mode invalid chars", "network_mode: \"net/1\"\n", `invalid network_mode "net/1"`},
+		{"empty entry", "networks: [\"\"]\n", "empty entry in networks"},
+		{"null entry", "networks:\n  - a\n  -\n", "empty entry in networks at line 3"},
+		{"tilde entry", "networks:\n  - a\n  - ~\n", "empty entry in networks at line 3"},
+		{"whitespace entry", "networks: [\" \"]\n", `invalid network name " " in networks`},
+		{"bridge in networks", "networks: [bridge]\n", `networks entry "bridge" is a network_mode, not a network`},
+		{"bridge mixed in networks", "networks: [bridge, foo]\n", `networks entry "bridge" is a network_mode, not a network`},
+		{"sequence mode", "network_mode: [a]\n", "cannot unmarshal !!seq into string"},
+		{"mapping mode", "network_mode: {}\n", "cannot unmarshal !!map into string"},
+		{"duplicate entry", "networks: [a, b, a]\n", `duplicate network "a" in networks`},
+		{"invalid entry", "networks: [\"a b\"]\n", `invalid network name "a b" in networks`},
+		{"host in networks", "networks: [host]\n", `networks entry "host" is a network_mode, not a network`},
+		{"none in networks", "networks: [none]\n", `networks entry "none" is a network_mode, not a network`},
+		{"default in networks", "networks: [default]\n", `networks entry "default" is a network_mode, not a network`},
+		{"container in networks", "networks: [\"container:x\"]\n", `networks entry "container:x" is a network_mode, not a network`},
+		{"mapping form", "networks:\n  a: {}\n", "networks must be a list of names; per-network options are not supported"},
+		{"scalar form", "networks: a\n", "networks must be a list of names"},
+		{"nested entry", "networks:\n  - [a]\n", "networks entry at line 2 must be a network name"},
+		{"old network block", "network:\n  proxy:\n    address: \"\"\n", "field network not found"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := loadDoc(t, tc.content)
+			if err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !strings.HasPrefix(err.Error(), "projectconfig:") {
+				t.Errorf("error missing 'projectconfig:' prefix: %q", err.Error())
+			}
+			if !strings.Contains(err.Error(), tc.wantSub) {
+				t.Errorf("error %q does not contain %q", err.Error(), tc.wantSub)
+			}
+		})
+	}
+}
+
+// An empty mode or an empty networks list counts as unset, so neither trips
+// the mutual-exclusion check.
+func TestValidateNetwork_EmptyListIsUnset(t *testing.T) {
+	got, err := validateNetwork("", []string{})
+	if err != nil {
+		t.Fatalf("validateNetwork: %v", err)
+	}
+	if got.Mode != "" || got.Networks != nil {
+		t.Errorf("got %#v, want zero Network", got)
+	}
+	if _, err := validateNetwork("bridge", []string{}); err != nil {
+		t.Errorf("mode + empty list: unexpected error %v", err)
+	}
+}
+
+// Both stub variants carry only commented network examples, so they parse to
+// the zero Network.
+func TestStub_ParsesToZeroNetwork(t *testing.T) {
+	skipNonPOSIX(t, "POSIX-only per CLAUDE.md")
+	for _, c := range []Cache{{Content: true, Agent: true}, {}} {
+		cfg, err := loadDoc(t, string(renderStub(c)))
+		if err != nil {
+			t.Fatalf("Load stub %+v: %v", c, err)
+		}
+		if !reflect.DeepEqual(cfg.Network, Network{}) {
+			t.Errorf("stub %+v: Network = %#v, want zero", c, cfg.Network)
+		}
+	}
+	if !strings.Contains(string(Stub), `# network_mode: "container:proxy"`) {
+		t.Error(`Stub missing commented network_mode: "container:proxy" example`)
+	}
 }

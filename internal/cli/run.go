@@ -138,22 +138,22 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir, imageFlag str
 		}
 	}
 
-	yamlExcludes, cacheCfg, env, err := projectconfig.Load(workspaceRoot)
+	pcfg, err := projectconfig.Load(workspaceRoot)
 	if err != nil {
 		return err
 	}
 
 	// Symlink warnings bypass --quiet: degraded protection is never treated as chrome.
-	for _, w := range yamlExcludes.Warnings {
+	for _, w := range pcfg.Excludes.Warnings {
 		fmt.Fprintf(cmd.ErrOrStderr(), "makeslop: warning: %s\n", w)
 	}
 
-	masked, symlinkMatches, err := security.Scan(cmd.Context(), workspaceRoot, yamlExcludes.Patterns, yamlExcludes.SkipDirs)
+	masked, symlinkMatches, err := security.Scan(cmd.Context(), workspaceRoot, pcfg.Excludes.Patterns, pcfg.Excludes.SkipDirs)
 	if err != nil {
 		return err
 	}
 	reportScanResults(cmd.ErrOrStderr(), chrome, workspaceRoot, masked, symlinkMatches)
-	maskedFiles := mergeUniqueSorted(masked, yamlExcludes.Files)
+	maskedFiles := mergeUniqueSorted(masked, pcfg.Excludes.Files)
 
 	// BuildSpec is pure (no fs access); Lstat checks live here.
 	protectProjectConfig, maskGitHooks := sandboxMountGates(workspaceRoot)
@@ -167,12 +167,14 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir, imageFlag str
 		Command:              s.Shell,
 		TmpDirSize:           s.TmpDirSize,
 		MaskedFiles:          maskedFiles,
-		MaskedDirs:           yamlExcludes.Dirs,
-		MountContentCache:    cacheCfg.Content,
-		MountAgentCache:      cacheCfg.Agent,
-		Env:                  resolveEnv(env, os.LookupEnv),
+		MaskedDirs:           pcfg.Excludes.Dirs,
+		MountContentCache:    pcfg.Cache.Content,
+		MountAgentCache:      pcfg.Cache.Agent,
+		Env:                  resolveEnv(pcfg.Env, os.LookupEnv),
 		ProtectProjectConfig: protectProjectConfig,
 		MaskGitHooks:         maskGitHooks,
+		NetworkMode:          pcfg.Network.Mode,
+		Networks:             pcfg.Network.Networks,
 	}
 
 	spec := docker.BuildSpec(opts)
@@ -193,7 +195,11 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir, imageFlag str
 		return errSilent
 	}
 
-	if err := deps.runner.Run(cmd.Context(), spec); err != nil {
+	if err := deps.networkPreflight(cmd.Context(), pcfg.Network); err != nil {
+		return err
+	}
+
+	if err := deps.api.Run(cmd.Context(), spec); err != nil {
 		if errors.Is(err, docker.ErrNoTTY) {
 			fmt.Fprintln(cmd.ErrOrStderr(),
 				"makeslop: stdin/stdout must be a TTY — run in an interactive terminal")

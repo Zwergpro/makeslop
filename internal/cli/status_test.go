@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -231,9 +232,9 @@ func TestStatus_JSON_Shape(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
 		t.Fatalf("--json output is not valid JSON: %v\noutput: %s", err, stdout)
 	}
-	const wantChecks = 5 // daemon, base config, image, workspace, secret scan
+	const wantChecks = 6 // daemon, base config, image, workspace, secret scan, network
 	if len(result.Checks) != wantChecks {
-		t.Errorf("--json result.checks len = %d, want %d (daemon, base config, image, workspace, secret scan)",
+		t.Errorf("--json result.checks len = %d, want %d (daemon, base config, image, workspace, secret scan, network)",
 			len(result.Checks), wantChecks)
 	}
 	validStates := map[checkState]bool{
@@ -400,7 +401,8 @@ func TestStatus_ListedInHelp(t *testing.T) {
 	}
 }
 
-// A projectconfig.Load failure (check 5) is non-blocking: warn, status stays ready.
+// A projectconfig.Load failure warns on the secret-scan row and fails the
+// network row: run rejects the same file, so status must not report ready.
 func TestStatus_Check5_PCErrShowsWarn(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -419,8 +421,11 @@ func TestStatus_Check5_PCErrShowsWarn(t *testing.T) {
 	deps := newFakeStatusDeps(false, false)
 
 	_, stderr, err := runCmdWithDeps(t, baseDir, deps, "status")
-	if err != nil {
-		t.Errorf("status must remain ready despite pcErr (non-blocking); err=%v stderr=%q", err, stderr)
+	if !errors.Is(err, errSilent) {
+		t.Errorf("invalid .makeslop.yaml must make status not ready; err=%v stderr=%q", err, stderr)
+	}
+	if !strings.Contains(stderr, "cannot check — .makeslop.yaml not loaded (see secret scan)") {
+		t.Errorf("stderr missing network invalid-config detail: %q", stderr)
 	}
 	if !strings.Contains(stderr, "secret scan") {
 		t.Errorf("stderr missing 'secret scan' check line: %q", stderr)
@@ -430,8 +435,8 @@ func TestStatus_Check5_PCErrShowsWarn(t *testing.T) {
 	}
 }
 
-// An old flat environments: block (check 5) is non-blocking: warn with the
-// migration hint, status stays ready.
+// An old flat environments: block warns with the migration hint on the
+// secret-scan row and fails the network row (not ready).
 func TestStatus_Check5_FlatEnvironmentsShowsWarnWithHint(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -449,8 +454,11 @@ func TestStatus_Check5_FlatEnvironmentsShowsWarnWithHint(t *testing.T) {
 	deps := newFakeStatusDeps(false, false)
 
 	_, stderr, err := runCmdWithDeps(t, baseDir, deps, "status")
-	if err != nil {
-		t.Errorf("status must remain ready despite pcErr (non-blocking); err=%v stderr=%q", err, stderr)
+	if !errors.Is(err, errSilent) {
+		t.Errorf("invalid .makeslop.yaml must make status not ready; err=%v stderr=%q", err, stderr)
+	}
+	if !strings.Contains(stderr, "cannot check — .makeslop.yaml not loaded (see secret scan)") {
+		t.Errorf("stderr missing network invalid-config detail: %q", stderr)
 	}
 	if !strings.Contains(stderr, "cannot read .makeslop.yaml") {
 		t.Errorf("stderr missing 'cannot read .makeslop.yaml' warn: %q", stderr)
@@ -592,8 +600,8 @@ func TestStatus_CorruptSettings_DaemonDown_ImageShowsSettingsUnreadable(t *testi
 	}
 }
 
-// TestStatus_CheckOrdering verifies that the five status checks appear in
-// the documented order: daemon → base config → image → workspace → secret scan.
+// TestStatus_CheckOrdering verifies that the six status checks appear in the
+// documented order: daemon → base config → image → workspace → secret scan → network.
 // Reordering the checks in runStatus would break the first-failing-check remedy
 // logic and CI integrations that parse the JSON by index.
 func TestStatus_CheckOrdering(t *testing.T) {
@@ -616,7 +624,7 @@ func TestStatus_CheckOrdering(t *testing.T) {
 		t.Fatalf("--json output not valid JSON: %v\noutput: %s", err, stdout)
 	}
 
-	wantOrder := []string{"daemon", "base config", "image", "workspace", "secret scan"}
+	wantOrder := []string{"daemon", "base config", "image", "workspace", "secret scan", "network"}
 	if len(result.Checks) != len(wantOrder) {
 		t.Fatalf("want %d checks, got %d: %v", len(wantOrder), len(result.Checks), result.Checks)
 	}
@@ -969,4 +977,190 @@ func TestStatus_WhitespaceImage_TreatedAsUnset(t *testing.T) {
 	if check.State != checkFail || check.Detail != noImageDetail {
 		t.Errorf("image check = %+v, want fail %q", check, noImageDetail)
 	}
+}
+
+// ── network row ───────────────────────────────────────────────────────────────
+
+const (
+	netContainerMissingHint = `network_mode: container "proxy" not found — start it first; ` +
+		`compose names containers <project>-<service>-1 unless container_name is set (check 'docker ps')`
+	netContainerStoppedHint = `network_mode: container "proxy" is not running (stopped, paused or restarting) — start or unpause it (check 'docker ps -a')`
+	netNetworkMissingHint   = `networks: network "b" not found — create it with 'docker network create b'; ` +
+		`compose prefixes networks with <project>_ (check 'docker network ls')`
+)
+
+func TestStatus_NetworkRow(t *testing.T) {
+	tests := []struct {
+		name       string
+		yaml       string // "" → leave the init scaffold in place
+		setup      func(f *fakeDocker)
+		state      checkState
+		detail     string
+		containers []string // expected ContainerRunning calls
+		networks   []string // expected NetworkExists calls
+	}{
+		{name: "unset", state: checkInfo},
+		{name: "empty mode", yaml: "network_mode: \"\"\n", state: checkInfo},
+		{name: "bridge", yaml: "network_mode: bridge\n", state: checkOK, detail: "bridge"},
+		{name: "host", yaml: "network_mode: host\n", state: checkOK, detail: "host"},
+		{name: "none", yaml: "network_mode: none\n", state: checkOK, detail: "none"},
+		{name: "default", yaml: "network_mode: default\n", state: checkOK, detail: "default"},
+		{
+			name: "container running", yaml: "network_mode: \"container:proxy\"\n",
+			setup: func(f *fakeDocker) { f.Containers = map[string]bool{"proxy": true} },
+			state: checkOK, detail: "container:proxy", containers: []string{"proxy"},
+		},
+		{
+			name: "container missing", yaml: "network_mode: \"container:proxy\"\n",
+			state: checkFail, detail: netContainerMissingHint, containers: []string{"proxy"},
+		},
+		{
+			name: "container stopped", yaml: "network_mode: \"container:proxy\"\n",
+			setup: func(f *fakeDocker) { f.Containers = map[string]bool{"proxy": false} },
+			state: checkFail, detail: netContainerStoppedHint, containers: []string{"proxy"},
+		},
+		{
+			name: "container inspect error", yaml: "network_mode: \"container:proxy\"\n",
+			setup: func(f *fakeDocker) { f.ContainerErr = errors.New("boom") },
+			state: checkFail, detail: `network_mode: check container "proxy": boom`,
+			containers: []string{"proxy"},
+		},
+		{
+			name: "custom mode present", yaml: "network_mode: mynet\n",
+			setup: func(f *fakeDocker) { f.Networks = map[string]bool{"mynet": true} },
+			state: checkOK, detail: "mynet", networks: []string{"mynet"},
+		},
+		{
+			name: "networks present", yaml: "networks: [a, b]\n",
+			setup: func(f *fakeDocker) { f.Networks = map[string]bool{"a": true, "b": true} },
+			state: checkOK, detail: "networks: a, b", networks: []string{"a", "b"},
+		},
+		{
+			name: "network missing", yaml: "networks: [a, b]\n",
+			setup: func(f *fakeDocker) { f.Networks = map[string]bool{"a": true} },
+			state: checkFail, detail: netNetworkMissingHint, networks: []string{"a", "b"},
+		},
+		{
+			name: "invalid yaml", yaml: "network_mode: host\nnetworks: [a]\n",
+			state: checkFail, detail: "cannot check — .makeslop.yaml not loaded (see secret scan)",
+		},
+	}
+	for _, tc := range tests {
+		for _, jsonMode := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/json=%v", tc.name, jsonMode), func(t *testing.T) {
+				setHomeToTestParent(t)
+				baseDir := t.TempDir()
+				pwd := t.TempDir()
+				t.Chdir(pwd)
+				initWithImage(t, baseDir)
+				if tc.yaml != "" {
+					path := filepath.Join(evalSymlinks(t, pwd), projectconfig.Filename)
+					if err := os.WriteFile(path, []byte(tc.yaml), 0o644); err != nil {
+						t.Fatalf("write yaml: %v", err)
+					}
+				}
+				fc := newFakeDocker(0, false)
+				if tc.setup != nil {
+					tc.setup(fc)
+				}
+
+				var err error
+				if jsonMode {
+					var check statusCheck
+					var result statusResult
+					check, result, err = statusJSONCheck(t, baseDir, depsFrom(fc), "network")
+					if check.State != tc.state || check.Detail != tc.detail {
+						t.Errorf("network check = %+v, want %s %q", check, tc.state, tc.detail)
+					}
+					if result.Ready != (tc.state != checkFail) {
+						t.Errorf("ready = %v, want %v", result.Ready, tc.state != checkFail)
+					}
+				} else {
+					var stderr string
+					_, stderr, err = runCmdWithDeps(t, baseDir, depsFrom(fc), "status")
+					glyph := statusGlyphs[tc.state].plain
+					var line string
+					for l := range strings.SplitSeq(stderr, "\n") {
+						if f := strings.Fields(l); len(f) >= 2 && f[1] == "network" {
+							line = l
+							break
+						}
+					}
+					if !strings.Contains(line, glyph) || !strings.HasSuffix(line, tc.detail) {
+						t.Errorf("network line = %q, want glyph %q and detail %q; stderr=%q", line, glyph, tc.detail, stderr)
+					}
+					if tc.state == checkFail && !strings.Contains(stderr, "not ready — "+tc.detail) {
+						t.Errorf("verdict must name the network hint: %q", stderr)
+					}
+				}
+				if tc.state == checkFail {
+					if !errors.Is(err, errSilent) {
+						t.Errorf("failing network row must exit non-zero (errSilent); got %v", err)
+					}
+				} else if err != nil {
+					t.Errorf("status should be ready; err=%v", err)
+				}
+				if !slices.Equal(fc.ContainersInspected, tc.containers) {
+					t.Errorf("ContainersInspected = %v, want %v", fc.ContainersInspected, tc.containers)
+				}
+				if !slices.Equal(fc.NetworksInspected, tc.networks) {
+					t.Errorf("NetworksInspected = %v, want %v", fc.NetworksInspected, tc.networks)
+				}
+			})
+		}
+	}
+}
+
+// Daemon down: inspected targets cannot be checked; built-in modes still ✓.
+func TestStatus_NetworkRow_DaemonDown(t *testing.T) {
+	tests := []struct {
+		yaml   string
+		state  checkState
+		detail string
+	}{
+		{"network_mode: \"container:proxy\"\n", checkFail, "cannot check — daemon unreachable"},
+		{"networks: [a]\n", checkFail, "cannot check — daemon unreachable"},
+		{"network_mode: host\n", checkOK, "host"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.yaml, func(t *testing.T) {
+			setHomeToTestParent(t)
+			baseDir := t.TempDir()
+			pwd := t.TempDir()
+			t.Chdir(pwd)
+			initWithImage(t, baseDir)
+			path := filepath.Join(evalSymlinks(t, pwd), projectconfig.Filename)
+			if err := os.WriteFile(path, []byte(tc.yaml), 0o644); err != nil {
+				t.Fatalf("write yaml: %v", err)
+			}
+			fc := newFakeDocker(0, false)
+			fc.PingErr = errors.New("connection refused")
+			check, result, err := statusJSONCheck(t, baseDir, depsFrom(fc), "network")
+			if check.State != tc.state || check.Detail != tc.detail {
+				t.Errorf("network check = %+v, want %s %q", check, tc.state, tc.detail)
+			}
+			// The daemon row itself fails, so status is never ready here.
+			assertNotReady(t, result, err)
+			if len(fc.ContainersInspected)+len(fc.NetworksInspected) != 0 {
+				t.Errorf("no inspect calls expected with daemon down; got %v %v", fc.ContainersInspected, fc.NetworksInspected)
+			}
+		})
+	}
+}
+
+// Workspace unresolved → network row is info, like the secret scan.
+func TestStatus_NetworkRow_WorkspaceUnresolved(t *testing.T) {
+	setHomeToTestParent(t)
+	baseDir := t.TempDir()
+	t.Chdir(t.TempDir())
+	if _, stderr, err := runCmd(t, baseDir, "init", "--global-only"); err != nil {
+		t.Fatalf("init failed: %v; stderr=%q", err, stderr)
+	}
+	t.Chdir(t.TempDir()) // an unregistered directory
+	check, result, err := statusJSONCheck(t, baseDir, newFakeStatusDeps(false, false), "network")
+	if check.State != checkInfo || check.Detail != "" {
+		t.Errorf("network check = %+v, want info", check)
+	}
+	// The workspace row fails, so status is not ready.
+	assertNotReady(t, result, err)
 }

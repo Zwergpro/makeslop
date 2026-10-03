@@ -61,6 +61,16 @@ func (noopClient) ImageInspect(_ context.Context, _ string, _ ...moby.ImageInspe
 	return moby.ImageInspectResult{}, nil
 }
 
+// ContainerInspect defaults to a found, running container.
+func (noopClient) ContainerInspect(_ context.Context, _ string, _ moby.ContainerInspectOptions) (moby.ContainerInspectResult, error) {
+	return moby.ContainerInspectResult{Container: container.InspectResponse{State: &container.State{Running: true}}}, nil
+}
+
+// NetworkInspect defaults to a found result.
+func (noopClient) NetworkInspect(_ context.Context, _ string, _ moby.NetworkInspectOptions) (moby.NetworkInspectResult, error) {
+	return moby.NetworkInspectResult{}, nil
+}
+
 func (noopClient) Close() error { return nil }
 
 type fakeRunClient struct {
@@ -81,6 +91,16 @@ type fakeRunClient struct {
 	// lets tests verify a timeout deadline reaches the call site.
 	BlockPing         bool
 	BlockImageInspect bool
+
+	// Container/network inspect scripting. A nil ContainerState with
+	// ContainerMissing/ContainerErr unset yields a found container whose State is nil.
+	ContainerMissing      bool             // ContainerInspect returns not-found
+	ContainerErr          error            // if non-nil (and ContainerMissing false), ContainerInspect returns this
+	ContainerState        *container.State // State reported by ContainerInspect
+	LastContainerInspName string           // name passed to the last ContainerInspect
+	NetworkMissing        bool             // NetworkInspect returns not-found
+	NetworkErr            error            // if non-nil (and NetworkMissing false), NetworkInspect returns this
+	LastNetworkInspName   string           // name passed to the last NetworkInspect
 }
 
 // newFakeRunClient returns a fakeRunClient whose ContainerWait reports exitCode.
@@ -111,6 +131,28 @@ func (f *fakeRunClient) ImageInspect(ctx context.Context, imageID string, _ ...m
 		return moby.ImageInspectResult{}, f.ImageErr
 	}
 	return moby.ImageInspectResult{}, nil
+}
+
+func (f *fakeRunClient) ContainerInspect(_ context.Context, name string, _ moby.ContainerInspectOptions) (moby.ContainerInspectResult, error) {
+	f.LastContainerInspName = name
+	if f.ContainerMissing {
+		return moby.ContainerInspectResult{}, fmt.Errorf("container %q: %w", name, errdefs.ErrNotFound)
+	}
+	if f.ContainerErr != nil {
+		return moby.ContainerInspectResult{}, f.ContainerErr
+	}
+	return moby.ContainerInspectResult{Container: container.InspectResponse{State: f.ContainerState}}, nil
+}
+
+func (f *fakeRunClient) NetworkInspect(_ context.Context, name string, _ moby.NetworkInspectOptions) (moby.NetworkInspectResult, error) {
+	f.LastNetworkInspName = name
+	if f.NetworkMissing {
+		return moby.NetworkInspectResult{}, fmt.Errorf("network %q: %w", name, errdefs.ErrNotFound)
+	}
+	if f.NetworkErr != nil {
+		return moby.NetworkInspectResult{}, f.NetworkErr
+	}
+	return moby.NetworkInspectResult{}, nil
 }
 
 func (f *fakeRunClient) ContainerRemove(_ context.Context, id string, _ moby.ContainerRemoveOptions) (moby.ContainerRemoveResult, error) {

@@ -47,11 +47,11 @@ func loadStubConfig(t *testing.T) (patterns, skipDirs []string) {
 	if err := projectconfig.Scaffold(dir, projectconfig.Cache{Content: true, Agent: true}); err != nil {
 		t.Fatalf("loadStubConfig: scaffold: %v", err)
 	}
-	excl, _, _, err := projectconfig.Load(dir)
+	cfg, err := projectconfig.Load(dir)
 	if err != nil {
 		t.Fatalf("loadStubConfig: load: %v", err)
 	}
-	return excl.Patterns, excl.SkipDirs
+	return cfg.Excludes.Patterns, cfg.Excludes.SkipDirs
 }
 
 // Opt-in invariant: no patterns means no walk.

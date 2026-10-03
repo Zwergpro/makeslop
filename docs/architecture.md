@@ -39,6 +39,14 @@ block as names and static pairs and never reads the process environment. `runRun
 `BuildSpec` only receives resolved pairs, so `--dry-run` prints exactly what is executed, resolved
 `host` values included.
 
+Networking follows it too. `projectconfig.Load` validates `network_mode` / `networks` into
+`Config.Network`, and `runRun` copies them to `Options.NetworkMode` / `Options.Networks`.
+`Args()` renders `--network <mode>` or one `--network <name>` per entry. `HostConfig().NetworkMode`
+gets the mode or the first network, and `NetworkingConfig()` (nil when `Networks` is empty) lists
+every network as an endpoint, passed to `ContainerCreate`. `TestDriftGuard_Network` checks that
+the printed flags match both SDK projections. With neither key set there is no flag and an empty
+`NetworkMode` (Docker default bridge).
+
 ---
 
 ## Mount groups and cache overlays
@@ -79,12 +87,13 @@ must set them on their `sampleOptions()` or equivalent fixture.
 ## apiClient seam and fake clients
 
 `internal/docker/client.go` declares a narrow unexported `apiClient` interface covering all SDK
-methods used by `Run`, `CheckDaemon`, and `ImageExists`. A compile-time assertion
-`var _ apiClient = (*moby.Client)(nil)` guards against signature drift. Adding an SDK call means
-extending `apiClient` and the fakes below.
+methods used by `Run`, `CheckDaemon`, `ImageExists`, `ContainerRunning`, and `NetworkExists`. A
+compile-time assertion `var _ apiClient = (*moby.Client)(nil)` guards against signature drift.
+Adding an SDK call means extending `apiClient` and the fakes below.
 
 The interface covers: `ContainerCreate`, `ContainerAttach`, `ContainerStart`, `ContainerWait`,
-`ContainerResize`, `ContainerRemove`, `Ping`, `ImageInspect`, `Close`.
+`ContainerResize`, `ContainerRemove`, `Ping`, `ImageInspect`, `ContainerInspect`,
+`NetworkInspect`, `Close`.
 
 `internal/docker` uses constructor dependency injection. `docker.New(opts ...Option)` builds a
 real moby client from the environment; `WithClient(c apiClient)` (same-package `_test.go` only)
@@ -97,12 +106,15 @@ Test fakes live in `_test.go` files (compiled only during `go test`):
   `apiClient` method; embedded by the fakes so each only overrides what it scripts.
 - **`fakeRunClient`** (`internal/docker/fakes_test.go`) — simulates the preflight/`Run` lifecycle
   with a scripted exit code. Supports `PingErr`, `ImageMissing`, `ImageErr`, `BlockPing`,
-  `BlockImageInspect` fields.
+  `BlockImageInspect` fields, plus `ContainerMissing`/`ContainerErr`/`ContainerState` and
+  `NetworkMissing`/`NetworkErr` for the inspect calls.
 - **`fakeClient`** (`internal/docker/run_test.go`) — the `Run`-lifecycle fake used by
   `run_test.go`; distinct from `fakeRunClient`. Has `attachPayload` to script delayed output.
 
 `internal/cli` depends on consumer-side interfaces in `internal/cli/deps.go` (`containerRunner`,
-`daemonChecker`, `imageChecker`), bundled in `dockerDeps`. Tests build the command tree with
+`daemonChecker`, `imageChecker`, `networkChecker`), combined in `dockerAPI`. `dockerDeps` holds a
+single `dockerAPI` implementation (`dockerDeps{api: x}`), so no capability can be left nil at a
+construction site. Tests build the command tree with
 `newRootCmdWithDeps(baseDir, deps)` and the `fakeDocker` boundary fake in
 `internal/cli/main_test.go`. If `docker.New()` fails, `dockerNewErrStub` defers the error to the
 first Docker call so non-Docker commands (`config`, `ls`, `version`, …) still work.
@@ -113,7 +125,7 @@ There are no shell shims, no `dockerBinary` global, no `executableTempDir`.
 
 ## Preflight helpers
 
-`internal/docker/preflight.go` provides two shared helpers used by both `run` and `status`:
+`internal/docker/preflight.go` provides shared helpers used by both `run` and `status`:
 
 - **`CheckDaemon(ctx context.Context) error`** — pings the daemon via the shared `d.client`;
   returns `*ErrDaemonUnreachable` on failure.
@@ -121,13 +133,27 @@ There are no shell shims, no `dockerBinary` global, no `executableTempDir`.
   `d.client`; returns `(true, nil)` when found, `(false, nil)` only when
   `cerrdefs.IsNotFound(err)`, and `(false, err)` for any other error (so a dead daemon is never
   misreported as "image absent").
+- **`ContainerRunning(ctx, name) (exists, running bool, err error)`** — `ContainerInspect`;
+  `running` requires a non-nil `State` that is running, not paused (a paused proxy would stall
+  traffic through a shared namespace) and not restarting (the daemon refuses to join a
+  crash-looping container's namespace). Same not-found contract.
+- **`NetworkExists(ctx, name) (bool, error)`** — `NetworkInspect`; same not-found contract.
 
-Both methods share the `*Docker`'s single long-lived client — no per-call client construction or
+All methods share the `*Docker`'s single long-lived client — no per-call client construction or
 close. `cmd` callers must `defer d.Close()` once after construction to release the connection.
 
-In `internal/cli`, both calls go through `dockerDeps.checkDaemonPreflight` /
-`imageExistsPreflight`, which bound them with `preflightTimeout` (10s) so a black-hole
-`DOCKER_HOST` cannot hang `run` or `status`. `Run` itself gets no deadline.
+In `internal/cli`, the calls go through `dockerDeps.checkDaemonPreflight` /
+`imageExistsPreflight` / `networkPreflight`, which bound them with `preflightTimeout` (10s) so a
+black-hole `DOCKER_HOST` cannot hang `run` or `status`. `Run` itself gets no deadline.
+
+`networkPreflight(ctx, projectconfig.Network)` is a no-op for an unset config and the built-in
+modes (`bridge`, `host`, `none`, `default`), as decided by `Network.NeedsInspect()`. For
+`container:<x>` it calls `ContainerRunning`; for any other mode and every `networks` entry it
+calls `NetworkExists`. It returns the user-facing hint as an error, prefixed with the key that
+named the target (`network_mode:` or `networks:`): `run` returns it after the image check (printed
+as `makeslop: <hint>`, skipped on `--dry-run`), and `status` puts it in the blocking `network`
+row. `status` reuses its single `projectconfig.Load` for both the secret-scan and network rows; a
+load error makes the network row `✗`.
 
 ---
 

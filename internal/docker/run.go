@@ -148,8 +148,9 @@ func (d *Docker) Run(ctx context.Context, s Spec) error {
 	}
 
 	createRes, err := cli.ContainerCreate(ctx, moby.ContainerCreateOptions{
-		Config:     s.ContainerConfig(),
-		HostConfig: s.HostConfig(),
+		Config:           s.ContainerConfig(),
+		HostConfig:       s.HostConfig(),
+		NetworkingConfig: s.NetworkingConfig(),
 	})
 	if err != nil {
 		return fmt.Errorf("container create: %w", err)

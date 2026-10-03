@@ -31,6 +31,21 @@ type fakeDocker struct {
 
 	DaemonChecked bool   // set when CheckDaemon is called
 	ImageChecked  string // last ref passed to ImageExists
+
+	// Network state. Containers maps name → running; absent means not found.
+	// Networks is the set of existing network names. ContainerErr / NetworkErr, when
+	// set, are returned by the respective inspect.
+	Containers   map[string]bool
+	Networks     map[string]bool
+	ContainerErr error
+	NetworkErr   error
+
+	ContainersInspected []string // names passed to ContainerRunning, in order
+	NetworksInspected   []string // names passed to NetworkExists, in order
+
+	// NetworkCtxNoDeadline is set when a network inspect gets a context
+	// without a deadline (the preflight timeout was not applied).
+	NetworkCtxNoDeadline bool
 }
 
 func newFakeDocker(exitCode int, isTTY bool) *fakeDocker {
@@ -66,6 +81,31 @@ func (f *fakeDocker) ImageExists(_ context.Context, ref string) (bool, error) {
 		return false, f.ImageErr
 	}
 	return true, nil
+}
+
+func (f *fakeDocker) ContainerRunning(ctx context.Context, name string) (exists, running bool, err error) {
+	f.recordNetworkDeadline(ctx)
+	f.ContainersInspected = append(f.ContainersInspected, name)
+	if f.ContainerErr != nil {
+		return false, false, f.ContainerErr
+	}
+	running, exists = f.Containers[name]
+	return exists, running, nil
+}
+
+func (f *fakeDocker) NetworkExists(ctx context.Context, name string) (bool, error) {
+	f.recordNetworkDeadline(ctx)
+	f.NetworksInspected = append(f.NetworksInspected, name)
+	if f.NetworkErr != nil {
+		return false, f.NetworkErr
+	}
+	return f.Networks[name], nil
+}
+
+func (f *fakeDocker) recordNetworkDeadline(ctx context.Context) {
+	if _, ok := ctx.Deadline(); !ok {
+		f.NetworkCtxNoDeadline = true
+	}
 }
 
 // runCmd runs the cobra tree against a production root (live client factory).
@@ -115,7 +155,7 @@ func runCmdWithDeps(t *testing.T, baseDir string, deps dockerDeps, args ...strin
 }
 
 func depsFrom(f *fakeDocker) dockerDeps {
-	return dockerDeps{runner: f, daemon: f, image: f}
+	return dockerDeps{api: f}
 }
 
 // runWithExitCodeAndDeps mirrors runWithExitCode with injected deps and a plain

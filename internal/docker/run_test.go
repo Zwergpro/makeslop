@@ -1147,3 +1147,54 @@ func TestRun_SIGWINCHGoroutineJoined(t *testing.T) {
 		t.Error("resize goroutine was not joined before Run returned: hook was not called")
 	}
 }
+
+func TestRun_PassesNetworkingConfig(t *testing.T) {
+	t.Run("networks", func(t *testing.T) {
+		f := newFakeRunClient(0)
+		d := newDockerWithClient(t, f, WithTTYCheck(alwaysTTY), WithRawMode(noopMakeRaw))
+		s := sampleSpec()
+		s.Networks = []string{"a_net", "b_net"}
+		if err := d.Run(context.Background(), s); err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		opts := f.LastContainerCreateOpts
+		if opts.NetworkingConfig == nil {
+			t.Fatal("ContainerCreate NetworkingConfig = nil, want endpoints for a_net, b_net")
+		}
+		for _, n := range s.Networks {
+			if _, ok := opts.NetworkingConfig.EndpointsConfig[n]; !ok {
+				t.Errorf("EndpointsConfig missing %q", n)
+			}
+		}
+		if got := string(opts.HostConfig.NetworkMode); got != "a_net" {
+			t.Errorf("HostConfig.NetworkMode = %q, want a_net", got)
+		}
+	})
+	t.Run("container_mode", func(t *testing.T) {
+		f := newFakeRunClient(0)
+		d := newDockerWithClient(t, f, WithTTYCheck(alwaysTTY), WithRawMode(noopMakeRaw))
+		s := sampleSpec()
+		s.NetworkMode = "container:proxy"
+		if err := d.Run(context.Background(), s); err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		opts := f.LastContainerCreateOpts
+		if opts.NetworkingConfig != nil {
+			t.Errorf("NetworkingConfig = %+v, want nil for network_mode only", opts.NetworkingConfig)
+		}
+		if got := string(opts.HostConfig.NetworkMode); got != "container:proxy" {
+			t.Errorf("HostConfig.NetworkMode = %q, want container:proxy", got)
+		}
+	})
+	t.Run("unset", func(t *testing.T) {
+		f := newFakeRunClient(0)
+		d := newDockerWithClient(t, f, WithTTYCheck(alwaysTTY), WithRawMode(noopMakeRaw))
+		if err := d.Run(context.Background(), sampleSpec()); err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		opts := f.LastContainerCreateOpts
+		if opts.NetworkingConfig != nil || opts.HostConfig.NetworkMode != "" {
+			t.Errorf("unset: NetworkingConfig=%v NetworkMode=%q, want nil/empty", opts.NetworkingConfig, opts.HostConfig.NetworkMode)
+		}
+	})
+}
