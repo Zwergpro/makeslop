@@ -8,6 +8,7 @@ import (
 	"time"
 
 	cerrdefs "github.com/containerd/errdefs"
+	"github.com/moby/moby/api/types/container"
 )
 
 func TestCheckDaemonOK(t *testing.T) {
@@ -214,5 +215,79 @@ func TestErrDaemonUnreachableMessage(t *testing.T) {
 	}
 	if !strings.Contains(msg, "connection refused") {
 		t.Errorf("cause not in message: %q", msg)
+	}
+}
+
+func TestContainerRunning(t *testing.T) {
+	otherErr := errors.New("permission denied")
+	tests := []struct {
+		name        string
+		setup       func(f *fakeRunClient)
+		wantExists  bool
+		wantRunning bool
+		wantErr     error
+	}{
+		{"running", func(f *fakeRunClient) { f.ContainerState = &container.State{Running: true} }, true, true, nil},
+		{"stopped", func(f *fakeRunClient) { f.ContainerState = &container.State{Running: false} }, true, false, nil},
+		{"paused", func(f *fakeRunClient) { f.ContainerState = &container.State{Running: true, Paused: true} }, true, false, nil},
+		{"nil state", func(f *fakeRunClient) { f.ContainerState = nil }, true, false, nil},
+		{"not found", func(f *fakeRunClient) { f.ContainerMissing = true }, false, false, nil},
+		{"other error", func(f *fakeRunClient) { f.ContainerErr = otherErr }, false, false, otherErr},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFakeRunClient(0)
+			tc.setup(f)
+			d := newDockerWithClient(t, f)
+
+			exists, running, err := d.ContainerRunning(context.Background(), "proxy")
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("err = %v, want %v", err, tc.wantErr)
+			}
+			if err != nil && cerrdefs.IsNotFound(err) {
+				t.Fatal("other error must not be classified as not-found")
+			}
+			if exists != tc.wantExists || running != tc.wantRunning {
+				t.Fatalf("got (exists=%v, running=%v), want (%v, %v)", exists, running, tc.wantExists, tc.wantRunning)
+			}
+			if f.LastContainerInspName != "proxy" {
+				t.Fatalf("inspected %q, want %q", f.LastContainerInspName, "proxy")
+			}
+		})
+	}
+}
+
+func TestNetworkExists(t *testing.T) {
+	otherErr := errors.New("daemon exploded")
+	tests := []struct {
+		name      string
+		setup     func(f *fakeRunClient)
+		wantFound bool
+		wantErr   error
+	}{
+		{"found", func(*fakeRunClient) {}, true, nil},
+		{"not found", func(f *fakeRunClient) { f.NetworkMissing = true }, false, nil},
+		{"other error", func(f *fakeRunClient) { f.NetworkErr = otherErr }, false, otherErr},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFakeRunClient(0)
+			tc.setup(f)
+			d := newDockerWithClient(t, f)
+
+			found, err := d.NetworkExists(context.Background(), "egress")
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("err = %v, want %v", err, tc.wantErr)
+			}
+			if err != nil && cerrdefs.IsNotFound(err) {
+				t.Fatal("other error must not be classified as not-found")
+			}
+			if found != tc.wantFound {
+				t.Fatalf("found = %v, want %v", found, tc.wantFound)
+			}
+			if f.LastNetworkInspName != "egress" {
+				t.Fatalf("inspected %q, want %q", f.LastNetworkInspName, "egress")
+			}
+		})
 	}
 }

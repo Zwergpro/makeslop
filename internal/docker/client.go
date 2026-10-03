@@ -17,6 +17,8 @@ type apiClient interface {
 	ContainerRemove(ctx context.Context, container string, options moby.ContainerRemoveOptions) (moby.ContainerRemoveResult, error)
 	Ping(ctx context.Context, options moby.PingOptions) (moby.PingResult, error)
 	ImageInspect(ctx context.Context, imageID string, opts ...moby.ImageInspectOption) (moby.ImageInspectResult, error)
+	ContainerInspect(ctx context.Context, container string, options moby.ContainerInspectOptions) (moby.ContainerInspectResult, error)
+	NetworkInspect(ctx context.Context, network string, options moby.NetworkInspectOptions) (moby.NetworkInspectResult, error)
 	Close() error
 }
 

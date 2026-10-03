@@ -154,10 +154,10 @@
 - Modify: `internal/docker/preflight.go`
 - Modify: `internal/docker/preflight_test.go`
 
-- [ ] add `ContainerInspect` and `NetworkInspect` to `apiClient` (the `var _ apiClient` assertion must still compile) and to the fakes, including `noopClient` so `run_test.go`'s embedded `fakeClient` keeps compiling
-- [ ] implement `ContainerRunning` and `NetworkExists` with the `IsNotFound`-only contract and the nil-`State` guard
-- [ ] write tests: found/running, found/stopped, found/paused, found/nil State, not found, other error propagates (for both methods where they apply)
-- [ ] run tests - must pass before next task
+- [x] add `ContainerInspect` and `NetworkInspect` to `apiClient` (the `var _ apiClient` assertion must still compile) and to the fakes, including `noopClient` so `run_test.go`'s embedded `fakeClient` keeps compiling
+- [x] implement `ContainerRunning` and `NetworkExists` with the `IsNotFound`-only contract and the nil-`State` guard
+- [x] write tests: found/running, found/stopped, found/paused, found/nil State, not found, other error propagates (for both methods where they apply)
+- [x] run tests - must pass before next task
 
 ### Task 5: Network preflight in `run`
 
