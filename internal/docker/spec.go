@@ -379,6 +379,11 @@ func (s Spec) ShellCommand() string {
 			i++
 		}
 	}
+	if len(s.Sections) > 0 {
+		// Close the last project group off from the image/command tail.
+		annotations[len(lines)] = true
+		lines = append(lines, "")
+	}
 	// Explicit tail lines: a flag-shaped image name must not be parsed as a flag.
 	lines = append(lines, "  "+shellQuote(args[len(args)-2]))
 	lines = append(lines, "  "+shellQuote(args[len(args)-1]))

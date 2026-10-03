@@ -2282,6 +2282,7 @@ func TestShellCommand_Sections_GoldenString(t *testing.T) {
 		"  # --- join: /home/me/lib (ro) ---\n" +
 		"  --mount type=bind,source=/home/me/lib,target=/workspace/lib,readonly \\\n" +
 		"  --mount type=tmpfs,target=/workspace/lib/keys \\\n" +
+		"\n" +
 		"  claudebox \\\n" +
 		"  /bin/zsh"
 	if got := spec.ShellCommand(); got != want {

@@ -761,8 +761,8 @@ This makes it suitable for CI inspection:
 makeslop run -n > cmd.sh   # capture only the command; masked-file count goes to stderr
 ```
 
-With `--join`, the mounts are grouped per project and each group is preceded by a blank line and a
-separator comment:
+With `--join`, the mounts are grouped per project: each group is preceded by a blank line and a
+separator comment, and a blank line follows the last group:
 
 ```
 docker run \
@@ -775,6 +775,7 @@ docker run \
   # --- join: /home/me/lib (ro) ---
   --mount type=bind,source=/home/me/lib,target=/workspace/lib,readonly \
   --mount type=tmpfs,target=/workspace/lib/keys \
+
   claudebox \
   /bin/zsh
 ```
