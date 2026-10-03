@@ -119,7 +119,7 @@ func loadProject(ctx context.Context, stderr, chrome io.Writer, root string, joi
 
 	pcfg, err := load(root)
 	if join && errors.Is(err, fs.ErrNotExist) {
-		return docker.Project{}, projectconfig.Config{}, fmt.Errorf("not a makeslop project (no %s)", projectconfig.Filename)
+		return docker.Project{}, projectconfig.Config{}, errNotProject
 	}
 	if err != nil {
 		return docker.Project{}, projectconfig.Config{}, err
@@ -130,10 +130,11 @@ func loadProject(ctx context.Context, stderr, chrome io.Writer, root string, joi
 		fmt.Fprintf(stderr, "makeslop: warning: %s%s\n", prefix, w)
 	}
 
-	// Only cheaply observable keys: cache: defaults to true, so it is not checked.
+	// Only cheaply observable keys. cache: defaults to true, so it cannot be
+	// detected and is always ignored for a join without a notice.
 	if join && (len(pcfg.Env.Static) > 0 || len(pcfg.Env.Host) > 0 ||
 		pcfg.Network.Mode != "" || len(pcfg.Network.Networks) > 0) {
-		fmt.Fprintf(chrome, "makeslop: %scache/environments/network settings ignored\n", prefix)
+		fmt.Fprintf(chrome, "makeslop: %senvironments/network settings ignored\n", prefix)
 	}
 
 	masked, symlinkMatches, err := security.Scan(ctx, root, pcfg.Excludes.Patterns, pcfg.Excludes.SkipDirs)
@@ -219,11 +220,7 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir, imageFlag str
 		}
 		p.Name = j.Name
 		p.ReadOnly = j.ReadOnly
-		mode := "rw"
-		if j.ReadOnly {
-			mode = "ro"
-		}
-		p.Label = "join: " + j.Host + " (" + mode + ")"
+		p.Label = j.label()
 		projects = append(projects, p)
 	}
 

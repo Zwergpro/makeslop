@@ -133,7 +133,7 @@ type Section struct {
 func BuildSpec(o Options) Spec {
 	main := o.Projects[0]
 	main.ReadOnly = false // the main project is always mounted rw
-	workspacePath := "/workspace/" + main.Name
+	workspacePath := main.containerPath()
 
 	// Main group: bind → global → sandbox → cache overlays → masks. Trailing
 	// slashes on directory mounts are intentional — they match the reference
@@ -204,18 +204,27 @@ func BuildSpec(o Options) Spec {
 // projectBind returns the bind of p.Host at /workspace/<p.Name>, read-only
 // when p.ReadOnly is set.
 func projectBind(p Project) Mount {
-	return Mount{Host: p.Host, Container: "/workspace/" + p.Name, ReadOnly: p.ReadOnly}
+	return Mount{Host: p.Host, Container: p.containerPath(), ReadOnly: p.ReadOnly}
+}
+
+// projectConfigFile mirrors projectconfig.Filename; docker does not import
+// projectconfig.
+const projectConfigFile = ".makeslop.yaml"
+
+// containerPath is where p.Host is mounted inside the container.
+func (p Project) containerPath() string {
+	return "/workspace/" + p.Name
 }
 
 // projectSandbox returns p's sandbox-policy mounts: the read-only config
 // self-bind (ProtectConfig) and the .git/hooks tmpfs (MaskGitHooks).
 func projectSandbox(p Project) []Mount {
 	var mounts []Mount
-	workspacePath := "/workspace/" + p.Name
+	workspacePath := p.containerPath()
 	if p.ProtectConfig {
 		mounts = append(mounts, Mount{
-			Host:      filepath.Join(p.Host, ".makeslop.yaml"),
-			Container: workspacePath + "/.makeslop.yaml",
+			Host:      filepath.Join(p.Host, projectConfigFile),
+			Container: workspacePath + "/" + projectConfigFile,
 			ReadOnly:  true,
 		})
 	}
@@ -234,10 +243,10 @@ func projectSandbox(p Project) []Mount {
 // it would silently override the read-only self-bind (e.g. a broad scan
 // pattern like "*.yaml").
 func projectMasks(p Project, configBound bool) []Mount {
-	workspacePath := "/workspace/" + p.Name
+	workspacePath := p.containerPath()
 	maskedFiles := p.MaskedFiles
 	if configBound {
-		maskedFiles = filterOut(maskedFiles, filepath.Join(p.Host, ".makeslop.yaml"))
+		maskedFiles = filterOut(maskedFiles, filepath.Join(p.Host, projectConfigFile))
 	}
 
 	var mounts []Mount

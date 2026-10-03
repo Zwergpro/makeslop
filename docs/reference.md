@@ -411,7 +411,7 @@ apply to a join, and a join's masks never apply to the main project. A join's `c
 one notice (silenced by `--quiet`):
 
 ```
-makeslop: join <host>: cache/environments/network settings ignored
+makeslop: join <host>: environments/network settings ignored
 ```
 
 A join's `cache:` block is ignored without a notice.
@@ -451,16 +451,16 @@ makeslop: --join "/opt/lib": outside /home/me — pass --out-of-home to override
 
 - Overlapping roots are rejected in every direction: join vs current project, join vs the makeslop
   data dir, and join vs join. Overlap means the same directory or one inside the other. It is
-  checked by path and by inode, so a case-insensitive alias (`../APP/sub`) or a bind-mounted alias
-  path is caught too. See [security.md — Joined projects](security.md#joined-projects).
+  checked by path and by inode (each root's ancestors are compared with the other root), so a
+  case-insensitive alias (`../APP/sub`) or a bind-mounted alias of a root or one of its ancestors
+  is caught too. A bind mount whose source is a subdirectory of another root is not detected. See [security.md — Joined projects](security.md#joined-projects).
 - Mount names must be unique: a join's basename may not equal the current project's mount name
   or another join's basename. The current project is mounted under its workspace name
   (`<basename>-<6 hex>`, e.g. `app-ab12cd`), so a collision with it only happens for a directory
   named like a workspace.
-- The [home-directory guard](security.md#home-directory-guard) applies to every join.
-  `--out-of-home` turns it off for the main project and all joins at once. A join path is
-  compared with `$HOME` by path and, failing that, by inode, so a differently cased spelling of a
-  path under `$HOME` on a case-insensitive filesystem is accepted.
+- The [home-directory guard](security.md#home-directory-guard) applies to every join, with the
+  same rule as for the current directory. `--out-of-home` turns it off for the main project and
+  all joins at once.
 - A missing path fails with the underlying error (`--join "x": lstat …: no such file or
   directory`). `-j ""` and `-j :ro` resolve to the current directory, so they fail with
   `is the current project` (or `is inside the current project` from a subdirectory).

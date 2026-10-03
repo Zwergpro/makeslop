@@ -45,10 +45,7 @@ func mkdirAll(t *testing.T, dir string) {
 // makeProject creates dir with an empty .makeslop.yaml and returns dir.
 func makeProject(t *testing.T, dir string) string {
 	t.Helper()
-	mkdirAll(t, dir)
-	if err := os.WriteFile(filepath.Join(dir, projectconfig.Filename), nil, 0o644); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
+	writeFile(t, filepath.Join(dir, projectconfig.Filename), "")
 	return dir
 }
 
@@ -189,6 +186,22 @@ func TestResolveJoins_PathErrors(t *testing.T) {
 	}
 }
 
+// Config errors wrap shared sentinels rather than copying their text.
+func TestResolveJoins_ConfigSentinels(t *testing.T) {
+	f := newJoinFixture(t)
+	mkdirAll(t, filepath.Join(f.home, "plain"))
+	linked := filepath.Join(f.home, "linked")
+	mkdirAll(t, linked)
+	symlink(t, filepath.Join(f.main, projectconfig.Filename), filepath.Join(linked, projectconfig.Filename))
+
+	if _, err := f.resolve("../plain"); !errors.Is(err, errNotProject) {
+		t.Errorf("no config: err = %v, want wrapping errNotProject", err)
+	}
+	if _, err := f.resolve("../linked"); !errors.Is(err, projectconfig.ErrConfigSymlink) {
+		t.Errorf("symlinked config: err = %v, want wrapping projectconfig.ErrConfigSymlink", err)
+	}
+}
+
 func TestResolveJoins_OverlapErrors(t *testing.T) {
 	f := newJoinFixture(t)
 	makeProject(t, filepath.Join(f.home, "lib"))
@@ -252,6 +265,9 @@ func TestResolveJoins_NameErrors(t *testing.T) {
 	makeProject(t, filepath.Join(f.home, "x", "lib"))
 	makeProject(t, filepath.Join(f.home, "y", "lib"))
 	makeProject(t, filepath.Join(f.home, "z", "app"))
+	makeProject(t, filepath.Join(f.home, "w"))
+	makeProject(t, filepath.Join(f.home, "w", "lib"))
+	makeProject(t, filepath.Join(f.home, "w", "app"))
 
 	tests := []struct {
 		name string
@@ -263,6 +279,11 @@ func TestResolveJoins_NameErrors(t *testing.T) {
 		{"basename collision with main", []string{"../z/app"},
 			`--join "../z/app": mount name "app" collides with the current project`},
 		{"root dir", []string{"/"}, `--join "/": cannot derive a mount name from /`},
+		// Overlap with any earlier join wins over a name collision.
+		{"overlap with later join beats name clash with earlier", []string{"../x/lib", "../w", "../w/lib"},
+			`--join "../w/lib": overlaps --join "../w"`},
+		{"overlap with join beats name clash with main", []string{"../w", "../w/app"},
+			`--join "../w/app": overlaps --join "../w"`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -431,6 +452,9 @@ func TestIsWithinHome(t *testing.T) {
 		{"prefix sibling", home, home + "2", false},
 		{"parent", home, root, false},
 		{"symlinked HOME resolved", linkHome, filepath.Join(home, "proj"), true},
+		// Lexically outside, but an ancestor is $HOME by inode (stands in for a
+		// differently cased spelling on a case-insensitive filesystem).
+		{"alias of home by inode", home, filepath.Join(linkHome, "proj"), true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -446,6 +470,25 @@ func TestIsWithinHome(t *testing.T) {
 				t.Errorf("home = %q, want resolved %q", gotHome, home)
 			}
 		})
+	}
+}
+
+// The inode fallback lives in isWithinHome, so the main run/init guard
+// shares it with --join.
+func TestEnsureWithinHome_InodeFallback(t *testing.T) {
+	root := evalSymlinks(t, t.TempDir())
+	home := filepath.Join(root, "home")
+	mkdirAll(t, home)
+	alias := filepath.Join(root, "alias")
+	symlink(t, home, alias)
+	t.Setenv("HOME", home)
+
+	var stderr strings.Builder
+	if err := ensureWithinHome(&stderr, filepath.Join(alias, "proj"), false); err != nil {
+		t.Errorf("ensureWithinHome(alias/proj) = %v, want nil; stderr=%q", err, stderr.String())
+	}
+	if err := ensureWithinHome(&stderr, filepath.Join(root, "other"), false); !errors.Is(err, errSilent) {
+		t.Errorf("ensureWithinHome(outside) = %v, want errSilent", err)
 	}
 }
 

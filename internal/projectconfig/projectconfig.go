@@ -57,6 +57,10 @@ cache:
 // Filename is the project-local config file name, relative to the project root.
 const Filename = ".makeslop.yaml"
 
+// ErrConfigSymlink is returned when Filename is a symlink rather than a
+// regular file.
+var ErrConfigSymlink = errors.New(Filename + " is a symlink — the project config must be a regular file")
+
 // Stub is the content Scaffold writes for the default Cache{true,true}. It seeds
 // the default scan filters as active values so new projects get secret masking
 // out of the box.
@@ -148,7 +152,7 @@ func Scaffold(root string, c Cache) error {
 				return fmt.Errorf("scaffold %s: %w", Filename, lstErr)
 			}
 			if info.Mode()&fs.ModeSymlink != 0 {
-				return fmt.Errorf("projectconfig: %s is a symlink — the project config must be a regular file", Filename)
+				return fmt.Errorf("projectconfig: %w", ErrConfigSymlink)
 			}
 			return nil
 		}
@@ -224,7 +228,7 @@ func load(root string, required bool) (Config, error) {
 		return Config{}, fmt.Errorf("projectconfig: read %s: %w", Filename, lstErr)
 	}
 	if linfo.Mode()&fs.ModeSymlink != 0 {
-		return Config{}, fmt.Errorf("projectconfig: %s is a symlink — the project config must be a regular file", Filename)
+		return Config{}, fmt.Errorf("projectconfig: %w", ErrConfigSymlink)
 	}
 
 	data, err := os.ReadFile(path)

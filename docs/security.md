@@ -355,8 +355,9 @@ container is protected by its own policy:
   same file would be visible at two container paths with different mask sets, and a secret masked
   in one view would be readable in the other. A join that overlapped the data dir would expose the
   global agent credentials. Overlap is checked by path and by inode (each root's ancestors are
-  compared with `os.SameFile`), so a case-insensitive alias on APFS or a bind-mounted alias path
-  cannot slip past.
+  compared with the other root via `os.SameFile`), so a case-insensitive alias on APFS or a
+  bind-mounted alias of a root or one of its ancestors is caught. A bind mount whose source is a
+  *subdirectory* of another root, used as a join, is not detected; don't join such aliases.
 - **`:ro` joins.** The join is bind-mounted `readonly`. The agent cannot modify its
   `.makeslop.yaml` or plant files in `.git/hooks`, so makeslop skips the config read-only bind and
   the hooks tmpfs for it. Because there is no config bind to protect, a `/dev/null` mask that
@@ -503,6 +504,10 @@ as workspaces and mounting them into a container. On violation the tool prints:
 makeslop: refusing to run from <pwd> (outside <home>) — pass --out-of-home to override
 ```
 
+The path is compared with the symlink-resolved `$HOME` by path and, failing that, by inode: if the
+path or one of its ancestors is the same directory as `$HOME`, it counts as inside. This accepts a
+differently cased spelling of a path under `$HOME` on a case-insensitive filesystem.
+
 Pass `--out-of-home` to bypass this check. The flag is scoped to `init` and `run` only:
 
 ```
@@ -510,7 +515,7 @@ makeslop init --out-of-home
 makeslop run --out-of-home
 ```
 
-`run` also applies the guard to each `--join` path, after symlinks are resolved:
+`run` also applies the same guard to each `--join` path, after symlinks are resolved:
 
 ```
 makeslop: --join "<value>": outside <home> — pass --out-of-home to override

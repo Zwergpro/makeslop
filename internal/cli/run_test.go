@@ -3,8 +3,6 @@ package cli
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
@@ -22,12 +20,18 @@ import (
 // hasMountWithContainer returns true iff spec.Mounts contains a mount
 // whose Container field equals target.
 func hasMountWithContainer(mounts []docker.Mount, target string) bool {
+	_, ok := findMount(mounts, target)
+	return ok
+}
+
+// findMount returns the first mount whose Container field equals container.
+func findMount(mounts []docker.Mount, container string) (docker.Mount, bool) {
 	for _, m := range mounts {
-		if m.Container == target {
-			return true
+		if m.Container == container {
+			return m, true
 		}
 	}
-	return false
+	return docker.Mount{}, false
 }
 
 // hasMountWithContainerAndHost returns true iff spec.Mounts contains a mount
@@ -2916,11 +2920,8 @@ func setupJoinRun(t *testing.T, appYAML, libYAML string) joinRunFixture {
 	parent := evalSymlinks(t, t.TempDir())
 	app := filepath.Join(parent, "app")
 	lib := filepath.Join(parent, "lib")
-	for _, d := range []string{app, lib} {
-		if err := os.MkdirAll(d, 0o755); err != nil {
-			t.Fatalf("mkdir %s: %v", d, err)
-		}
-	}
+	mkdirAll(t, app)
+	mkdirAll(t, lib)
 	t.Chdir(app)
 	initWithImage(t, baseDir)
 	writeFile(t, filepath.Join(app, projectconfig.Filename), appYAML)
@@ -2930,21 +2931,10 @@ func setupJoinRun(t *testing.T, appYAML, libYAML string) joinRunFixture {
 
 func writeFile(t *testing.T, path, content string) {
 	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
-	}
+	mkdirAll(t, filepath.Dir(path))
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("write %s: %v", path, err)
 	}
-}
-
-func findMount(mounts []docker.Mount, container string) (docker.Mount, bool) {
-	for _, m := range mounts {
-		if m.Container == container {
-			return m, true
-		}
-	}
-	return docker.Mount{}, false
 }
 
 func TestRun_Join_DryRun_SeparatorsAndMounts_NoDaemonCalls(t *testing.T) {
@@ -3024,7 +3014,7 @@ func TestRun_Join_ReadOnlyVsReadWrite(t *testing.T) {
 			if got := sectionLabels(fc.LastSpec.Sections); !slices.Equal(got, wantSections) {
 				t.Errorf("Section labels = %q, want %q", got, wantSections)
 			}
-			if want := mainWorkspacePath(f.app); fc.LastSpec.Workdir != want || fc.LastSpec.Mounts[0].Container != want {
+			if want := mainWorkspacePath(t, f.baseDir, f.app); fc.LastSpec.Workdir != want || fc.LastSpec.Mounts[0].Container != want {
 				t.Errorf("Workdir = %q, main bind = %q, want both %q", fc.LastSpec.Workdir, fc.LastSpec.Mounts[0].Container, want)
 			}
 		})
@@ -3214,7 +3204,7 @@ func TestRun_Join_EnvAndNetworkIgnored(t *testing.T) {
 				t.Errorf("join network settings must not be preflighted; networks=%v containers=%v",
 					fc.NetworksInspected, fc.ContainersInspected)
 			}
-			line := "makeslop: join " + f.lib + ": cache/environments/network settings ignored\n"
+			line := "makeslop: join " + f.lib + ": environments/network settings ignored\n"
 			if n := strings.Count(stderr, line); n != 1 {
 				t.Errorf("want exactly one ignored line %q, got %d; stderr=%q", line, n, stderr)
 			}
@@ -3262,10 +3252,18 @@ func sectionLabels(secs []docker.Section) []string {
 }
 
 // mainWorkspacePath is the container path of the main project registered at
-// root: /workspace/<base>-<first 6 hex of sha256(root)>.
-func mainWorkspacePath(root string) string {
-	sum := sha256.Sum256([]byte(root))
-	return "/workspace/" + filepath.Base(root) + "-" + hex.EncodeToString(sum[:])[:6]
+// root, derived from the workspace registry (its cache dir name).
+func mainWorkspacePath(t *testing.T, baseDir, root string) string {
+	t.Helper()
+	s, err := config.Load(baseDir)
+	if err != nil {
+		t.Fatalf("load settings: %v", err)
+	}
+	_, cacheDir, err := workspace.New(baseDir).Lookup(s, root)
+	if err != nil {
+		t.Fatalf("lookup %s: %v", root, err)
+	}
+	return "/workspace/" + filepath.Base(cacheDir)
 }
 
 func TestRun_Join_DataDirRejected(t *testing.T) {

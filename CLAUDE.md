@@ -135,8 +135,10 @@ tokens, skipping flag values); labels pass through `sanitizeLabel`.
   project") instead of loading as the default (no masks). Relative values resolve against the
   physical cwd (`resolvePwd`), not `$PWD`.
 - Overlap = `filepath.Rel` + `IsLocal` in both directions, plus `os.SameFile` against every
-  ancestor (catches case-insensitive and bind aliases). Checked join vs main, `baseDir`, and other
-  joins. A join only contributes `exclude:`; main's `Config` alone supplies cache/env/network.
+  ancestor (catches case-insensitive and bind aliases of a root or its ancestors, not of a
+  subdirectory). Checked join vs main, `baseDir`, and other joins; an overlap with any earlier
+  join wins over a name collision. Shared messages: `errNotProject` (cli),
+  `projectconfig.ErrConfigSymlink`. A join only contributes `exclude:`; main's `Config` alone supplies cache/env/network.
 
 ### Secret scan
 `security.Scan` has no built-in defaults: patterns and skip-dirs come only from `.makeslop.yaml`,
@@ -146,9 +148,11 @@ loud": never skip a directory we can't prove is secret-free).
 ### Command-scope rules
 - The TTY requirement applies to `run` only. All other commands must stay CI/pipe-safe.
 - The home-directory guard (`internal/cli/guard.go`) applies to `run` and `init`. `--out-of-home`
-  is registered only on those two; `--global-only` only on `init`.
-- `--join/-j` is registered on `run` only. The home guard also applies to each join (via
-  `isWithinHome`, with an inode fallback); one `--out-of-home` lifts it for main and all joins.
+  is registered only on those two; `--global-only` only on `init`. One rule, `isWithinHome`:
+  lexical `Rel`/`IsLocal` against the resolved `$HOME`, then an inode fallback
+  (`hasSameFileAncestor`) for case-insensitive spellings.
+- `--join/-j` is registered on `run` only. The home guard also applies to each join via the same
+  `isWithinHome`; one `--out-of-home` lifts it for main and all joins.
 - `--quiet` is a persistent flag. It suppresses stderr chrome (errors still print) and never
   touches stdout.
 - `status` runs ordered checks with `✓/✗/–/!` glyphs, supports `--json`, and exits non-zero if a

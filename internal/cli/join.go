@@ -11,6 +11,9 @@ import (
 	"github.com/Zwergpro/makeslop/internal/projectconfig"
 )
 
+// errNotProject reports a --join directory without a .makeslop.yaml.
+var errNotProject = errors.New("not a makeslop project (no " + projectconfig.Filename + ")")
+
 // joinTarget is one validated --join value.
 type joinTarget struct {
 	Host     string // abs, EvalSymlinks'd
@@ -22,8 +25,10 @@ type joinTarget struct {
 // resolveJoins validates and normalizes --join values. It checks paths only:
 // the join's .makeslop.yaml must exist as a regular file but is not parsed
 // here, so the daemon preflight still runs before any config error surfaces.
-// mainRoot and baseDir are compared both lexically and by inode, so alias
-// paths (case-insensitive filesystems, bind mounts) cannot slip past.
+// mainRoot, baseDir and earlier joins are compared both lexically and by
+// inode (each root's ancestors vs the other root), which catches an alias of
+// a root or of one of its ancestors (case-insensitive filesystems, bind
+// mounts). An alias of a subdirectory reached from outside is not detected.
 func resolveJoins(pwd, mainRoot, mainName, baseDir string, raw []string, outOfHome bool) ([]joinTarget, error) {
 	joins := make([]joinTarget, 0, len(raw))
 	for _, r := range raw {
@@ -43,18 +48,21 @@ func resolveJoins(pwd, mainRoot, mainName, baseDir string, raw []string, outOfHo
 		case overlaps(j.Host, baseDir):
 			return nil, fmt.Errorf("--join %q: overlaps the makeslop data dir %s", r, baseDir)
 		}
-		for _, prev := range joins {
+		// One pass over earlier joins; any overlap wins over a name collision.
+		var clash *joinTarget
+		for i, prev := range joins {
 			if overlaps(j.Host, prev.Host) {
 				return nil, fmt.Errorf("--join %q: overlaps --join %q", r, prev.Raw)
 			}
-		}
-		if j.Name == mainName {
-			return nil, fmt.Errorf("--join %q: mount name %q collides with the current project", r, j.Name)
-		}
-		for _, prev := range joins {
-			if j.Name == prev.Name {
-				return nil, fmt.Errorf("--join %q: mount name %q collides with --join %q", r, j.Name, prev.Raw)
+			if clash == nil && j.Name == prev.Name {
+				clash = &joins[i]
 			}
+		}
+		switch {
+		case j.Name == mainName:
+			return nil, fmt.Errorf("--join %q: mount name %q collides with the current project", r, j.Name)
+		case clash != nil:
+			return nil, fmt.Errorf("--join %q: mount name %q collides with --join %q", r, j.Name, clash.Raw)
 		}
 		joins = append(joins, j)
 	}
@@ -92,11 +100,11 @@ func resolveJoin(pwd, raw string, outOfHome bool) (joinTarget, error) {
 	cfgInfo, err := os.Lstat(filepath.Join(host, projectconfig.Filename))
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
-		return joinTarget{}, fmt.Errorf("--join %q: not a makeslop project (no %s)", raw, projectconfig.Filename)
+		return joinTarget{}, fmt.Errorf("--join %q: %w", raw, errNotProject)
 	case err != nil:
 		return joinTarget{}, fmt.Errorf("--join %q: %w", raw, err)
 	case cfgInfo.Mode()&fs.ModeSymlink != 0:
-		return joinTarget{}, fmt.Errorf("--join %q: %s is a symlink — the project config must be a regular file", raw, projectconfig.Filename)
+		return joinTarget{}, fmt.Errorf("--join %q: %w", raw, projectconfig.ErrConfigSymlink)
 	case !cfgInfo.Mode().IsRegular():
 		return joinTarget{}, fmt.Errorf("--join %q: %s is not a regular file", raw, projectconfig.Filename)
 	}
@@ -106,14 +114,21 @@ func resolveJoin(pwd, raw string, outOfHome bool) (joinTarget, error) {
 		if err != nil {
 			return joinTarget{}, fmt.Errorf("--join %q: %w", raw, err)
 		}
-		// Inode fallback: on a case-insensitive filesystem a differently
-		// cased spelling of a path under $HOME is still under $HOME.
-		if !ok && !hasSameFileAncestor(home, host) {
+		if !ok {
 			return joinTarget{}, fmt.Errorf("--join %q: outside %s — pass --out-of-home to override", raw, home)
 		}
 	}
 
 	return joinTarget{Host: host, Name: name, ReadOnly: readOnly, Raw: raw}, nil
+}
+
+// label is the dry-run section separator text for j.
+func (j joinTarget) label() string {
+	mode := "rw"
+	if j.ReadOnly {
+		mode = "ro"
+	}
+	return "join: " + j.Host + " (" + mode + ")"
 }
 
 // parseJoinSuffix strips a trailing ":ro" or ":rw". Any other value is taken
