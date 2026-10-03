@@ -30,6 +30,7 @@ type fakeDocker struct {
 	LastSpec docker.Spec // set when Run is called (isTTY=true)
 
 	DaemonChecked bool   // set when CheckDaemon is called
+	OnCheckDaemon func() // when set, called by CheckDaemon (simulates changes during preflight)
 	ImageChecked  string // last ref passed to ImageExists
 
 	// Network state. Containers maps name → running; absent means not found.
@@ -66,6 +67,9 @@ func (f *fakeDocker) Run(_ context.Context, s docker.Spec) error {
 
 func (f *fakeDocker) CheckDaemon(_ context.Context) error {
 	f.DaemonChecked = true
+	if f.OnCheckDaemon != nil {
+		f.OnCheckDaemon()
+	}
 	if f.PingErr != nil {
 		return &docker.ErrDaemonUnreachable{Cause: f.PingErr}
 	}

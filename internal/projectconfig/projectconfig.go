@@ -57,6 +57,10 @@ cache:
 // Filename is the project-local config file name, relative to the project root.
 const Filename = ".makeslop.yaml"
 
+// ErrConfigSymlink is returned when Filename is a symlink rather than a
+// regular file.
+var ErrConfigSymlink = errors.New(Filename + " is a symlink — the project config must be a regular file")
+
 // Stub is the content Scaffold writes for the default Cache{true,true}. It seeds
 // the default scan filters as active values so new projects get secret masking
 // out of the box.
@@ -85,7 +89,7 @@ type Excludes struct {
 }
 
 // Cache is the parsed cache-overlay configuration. Both fields default to true
-// when the cache: block is absent (backward-compatible).
+// when the cache: block is absent.
 type Cache struct {
 	Content bool // mount per-workspace cache docs/ + CLAUDE.md (default true)
 	Agent   bool // mount per-workspace cache .claude/ + .codex/ (default true)
@@ -105,8 +109,7 @@ type Network struct {
 }
 
 // yamlSchema is the strict decode target. KnownFields(true) rejects any unknown
-// key — including the old "network:" block (proxy egress) from a prior makeslop
-// version, the intended loud break; network_mode/networks replace it.
+// key.
 type yamlSchema struct {
 	Exclude struct {
 		Scan struct {
@@ -122,7 +125,7 @@ type yamlSchema struct {
 	} `yaml:"cache"`
 	// Decoded as a raw yaml.Node and walked by validateEnvironments: that gives
 	// lenient scalar coercion (numbers/booleans become their string forms) and a
-	// targeted error for the old flat KEY: value form.
+	// targeted error for KEY: value entries placed directly under environments:.
 	Environments yaml.Node `yaml:"environments"`
 	NetworkMode  string    `yaml:"network_mode"`
 	// Decoded as a raw yaml.Node so compose's mapping form gets a targeted
@@ -134,7 +137,7 @@ type yamlSchema struct {
 // defaults. Idempotent: EEXIST on a regular file is success and user edits are
 // never clobbered (c is a no-op on an existing file). A symlink at the path —
 // dangling or live — is rejected with a hard error: the project config must be
-// a regular file so ProtectProjectConfig and Load behave predictably. root must
+// a regular file so the read-only self-bind and Load behave predictably. root must
 // be absolute and EvalSymlinks-evaluated.
 func Scaffold(root string, c Cache) error {
 	path := filepath.Join(root, Filename)
@@ -148,7 +151,7 @@ func Scaffold(root string, c Cache) error {
 				return fmt.Errorf("scaffold %s: %w", Filename, lstErr)
 			}
 			if info.Mode()&fs.ModeSymlink != 0 {
-				return fmt.Errorf("projectconfig: %s is a symlink — the project config must be a regular file", Filename)
+				return fmt.Errorf("projectconfig: %w", ErrConfigSymlink)
 			}
 			return nil
 		}
@@ -199,6 +202,15 @@ func defaultConfig() Config {
 //
 // root must be absolute and EvalSymlinks-evaluated.
 func Load(root string) (Config, error) {
+	return load(root, false)
+}
+
+// LoadExisting requires the config so removal after validation cannot disable masking.
+func LoadExisting(root string) (Config, error) {
+	return load(root, true)
+}
+
+func load(root string, required bool) (Config, error) {
 	path := filepath.Join(root, Filename)
 
 	// Lstat before ReadFile to detect symlinks. ReadFile follows symlinks, which
@@ -206,13 +218,13 @@ func Load(root string) (Config, error) {
 	// (treating it as "no config" — the silent data-loss case this check closes).
 	linfo, lstErr := os.Lstat(path)
 	if lstErr != nil {
-		if errors.Is(lstErr, fs.ErrNotExist) {
+		if errors.Is(lstErr, fs.ErrNotExist) && !required {
 			return defaultConfig(), nil
 		}
 		return Config{}, fmt.Errorf("projectconfig: read %s: %w", Filename, lstErr)
 	}
 	if linfo.Mode()&fs.ModeSymlink != 0 {
-		return Config{}, fmt.Errorf("projectconfig: %s is a symlink — the project config must be a regular file", Filename)
+		return Config{}, fmt.Errorf("projectconfig: %w", ErrConfigSymlink)
 	}
 
 	data, err := os.ReadFile(path)
@@ -220,8 +232,7 @@ func Load(root string) (Config, error) {
 		return Config{}, fmt.Errorf("projectconfig: read %s: %w", Filename, err)
 	}
 
-	// Strict mode: unknown fields error out, surfacing typos and the old
-	// "network:" block from prior makeslop versions.
+	// Strict mode: unknown fields error out, surfacing typos.
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
 
@@ -280,7 +291,7 @@ func Load(root string) (Config, error) {
 	warnings := dedupSorted(append(fileWarnings, dirWarnings...))
 
 	// Absent pointer (nil) means the field was unset in YAML, defaulting to true
-	// (backward-compatible: absent block = both mounted).
+	// (absent block = both mounted).
 	cacheCfg := Cache{
 		Content: schema.Cache.Content == nil || *schema.Cache.Content,
 		Agent:   schema.Cache.Agent == nil || *schema.Cache.Agent,
@@ -504,9 +515,10 @@ func validateSkipDirs(entries []string) ([]string, error) {
 //   - Keys at both levels must be non-null scalars. Duplicates are detected
 //     here: yaml.v3 skips its own duplicate-key check when decoding into a
 //     yaml.Node.
-//   - An unknown key with a scalar value is the pre-static flat form and gets a
-//     migration hint, unless it looks like a misspelled static/host (see
-//     isSubKeyTypo); any other unknown key is reported as unknown.
+//   - An unknown key with a scalar value is a KEY: value entry outside static:
+//     and gets a hint to move it there, unless it looks like a misspelled
+//     static/host (see isSubKeyTypo); any other unknown key is reported as
+//     unknown.
 //   - static: keys must be non-empty and free of '=' and newline,
 //     carriage-return, or tab; values must be non-null scalars without those
 //     characters. Explicit "" is accepted. Numbers/booleans coerce via
@@ -547,7 +559,7 @@ func validateEnvironments(node *yaml.Node) (Env, error) {
 			hostNode = v
 		default:
 			if v.Kind == yaml.ScalarNode && !isSubKeyTypo(k.Value) {
-				return Env{}, errors.New(`projectconfig: environments: flat "KEY: value" form is no longer supported; move entries under environments.static`)
+				return Env{}, errors.New(`projectconfig: environments: variables must be listed under environments.static, not directly under environments`)
 			}
 			return Env{}, fmt.Errorf("projectconfig: unknown key %q in environments (allowed: static, host)", k.Value)
 		}
@@ -575,9 +587,9 @@ func validateEnvironments(node *yaml.Node) (Env, error) {
 }
 
 // flatFormHint is appended to static:/host: shape errors when the value is a
-// scalar: that is what an old flat-form variable named "static" or "host"
-// looks like.
-const flatFormHint = " (if this was the old flat form, move entries under environments.static)"
+// scalar: that is what a variable named "static" or "host" placed directly
+// under environments: looks like.
+const flatFormHint = " (variables belong under environments.static)"
 
 // shapeErr returns a static:/host: shape error, with flatFormHint appended
 // when node is a scalar.
@@ -669,8 +681,8 @@ func validateHostEnv(node *yaml.Node) ([]string, error) {
 }
 
 // isSubKeyTypo reports whether an unknown environments: key is a misspelled
-// static/host (other case, or a trailing "s") rather than an old flat-form
-// variable. All-uppercase keys are taken as variable names (HOST: db.local).
+// static/host (other case, or a trailing "s") rather than a variable placed
+// directly under environments:. All-uppercase keys are taken as variable names (HOST: db.local).
 func isSubKeyTypo(k string) bool {
 	if k == strings.ToUpper(k) {
 		return false

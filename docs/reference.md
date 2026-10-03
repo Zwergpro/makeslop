@@ -13,9 +13,10 @@ Complete reference for all `makeslop` commands, flags, runtime behavior, and con
   - [remove](#remove)
   - [config](#config)
   - [version](#version)
-- [Setup flow and breaking changes](#setup-flow-and-breaking-changes)
+- [Setup flow](#setup-flow)
 - [Cache layout](#cache-layout)
 - [Container layout and mount table](#container-layout-and-mount-table)
+- [Joined projects (`--join`)](#joined-projects---join)
 - [Environment variables](#environment-variables-environments-block-in-makeslopyaml)
 - [Container networking](#container-networking-network_mode--networks-in-makeslopyaml)
 - [In-container security flags](#in-container-security-flags)
@@ -69,7 +70,7 @@ never overwrites existing files.
   clobbers existing user edits), so on an already-init'd project the flag is a no-op — a note is
   not printed in that case, but the existing YAML is left unchanged. If `.makeslop.yaml` is a
   symlink, `init` exits with an error (see
-  [security.md — symlinked .makeslop.yaml](security.md#breaking-change-symlinked-makeslopyaml-rejected)).
+  [security.md — symlinked .makeslop.yaml](security.md#symlinked-makeslopyaml-rejected)).
 
 ---
 
@@ -111,7 +112,9 @@ container's network is set by `network_mode` / `networks` — see
 - `--dry-run` / `-n` — print the equivalent shell command and exit without launching the container
 - `--image` / `-i <ref>` — container image to run for this invocation (overrides the `image`
   setting; not persisted)
-- `--out-of-home` — bypass the home-directory guard
+- `--out-of-home` — bypass the home-directory guard (for the current project and every `--join`)
+- `--join` / `-j <path>[:ro|:rw]` — also mount another makeslop project at
+  `/workspace/<basename>`; repeatable. See [Joined projects](#joined-projects---join)
 
 ---
 
@@ -228,7 +231,7 @@ without ldflags (e.g. via a plain `go build`).
 
 ---
 
-## Setup flow and breaking changes
+## Setup flow
 
 Normal first-run order:
 
@@ -241,51 +244,13 @@ Normal first-run order:
 Steps 2 and 3 can happen in either order. `init` only notes a missing image; `run` is the command
 that requires one. `makeslop status` reports what is still missing.
 
-### Breaking change: `build` and `migrate` removed, no default image
+### `.makeslop.yaml` validation
 
-makeslop no longer ships or builds an image. The `build` and `migrate` commands are gone, and the
-`image` setting has no default (it used to fall back to `claudebox`). To upgrade:
+Invalid `.makeslop.yaml` configurations are hard errors, so masking is never silently lost. Full
+details are in [security.md](security.md#project-local-exclusions).
 
-- Build your image yourself, e.g. from [`examples/claudebox/Dockerfile`](../examples/claudebox/Dockerfile)
-  or from your old `~/.makeslop/Dockerfile`, then run `makeslop config set image <ref>`. If you
-  used the old default, `docker images` probably still lists `claudebox`, so
-  `makeslop config set image claudebox` is enough.
-- `~/.makeslop/Dockerfile` is no longer read or written; delete it if you like.
-- The `version` key in `settings.json` is ignored and dropped on the next settings write. No
-  migration step is needed.
-
-### Breaking change: `network:` block removed from `.makeslop.yaml`
-
-Earlier versions of makeslop supported an optional egress-proxy feature configured via a `network:`
-block in `.makeslop.yaml`:
-
-```yaml
-network:
-  proxy:
-    address: 10.0.0.5:3128
-```
-
-This feature has been removed. The `network:` block is now an **unknown field** and causes a hard
-parse error that aborts `makeslop run` before Docker is contacted. If your `.makeslop.yaml` contains
-a `network:` block, remove it to upgrade:
-
-```
-# Remove the network: block entirely from .makeslop.yaml
-```
-
-There is no socat sidecar and no `--proxy` flag. To route egress through a proxy or VPN
-container, use the top-level `network_mode` / `networks` keys instead (see
-[Container networking](#container-networking-network_mode--networks-in-makeslopyaml)). Without
-them the app container uses the default Docker bridge network.
-
-### Breaking changes: `.makeslop.yaml` validation tightened
-
-Two additional hard errors were added for invalid `.makeslop.yaml` configurations that were
-previously silent (and silently lost secret masking). Full details and migration instructions are
-in [security.md](security.md#project-local-exclusions).
-
-**Path-style scan patterns now error.** Entries in `exclude.scan.patterns` that contain `/` are
-rejected at startup. These patterns could never match (Scan matches basenames). Move path-style
+**Path-style scan patterns error.** Entries in `exclude.scan.patterns` that contain `/` are
+rejected at startup, because Scan matches basenames only. Move path-style
 patterns to `exclude.files` for specific paths, or rewrite them as basename globs:
 
 ```
@@ -294,7 +259,7 @@ patterns to `exclude.files` for specific paths, or rewrite them as basename glob
 
 Fix: replace `secrets/*.pem` with `*.pem` (or add `secrets/my.pem` to `exclude.files`).
 
-**Symlinked `.makeslop.yaml` now errors.** If `.makeslop.yaml` is a symlink, both `makeslop init`
+**Symlinked `.makeslop.yaml` errors.** If `.makeslop.yaml` is a symlink, both `makeslop init`
 and `makeslop run` exit with an error. Replace the symlink with a regular file:
 
 ```sh
@@ -352,9 +317,50 @@ cache:
 ```
 
 Setting a group to `false` omits those overlay mounts so the project's real files show through.
-An absent `cache:` block is equivalent to `{content: true, agent: true}` — behavior is identical
-to before this feature was added. The `init --global-only` flag is a convenience shortcut that
+An absent `cache:` block is equivalent to `{content: true, agent: true}`. The `init --global-only` flag is a convenience shortcut that
 scaffolds `.makeslop.yaml` with both groups disabled.
+
+Each join adds a project-root bind at `/workspace/<basename>`, then its policy mounts and
+masks. Writable joins protect `.makeslop.yaml` with a read-only bind and mask `.git/hooks` when
+`.git` is a directory. Read-only joins need neither policy mount. Joins receive no global or
+cache overlays. See [Joined projects](#joined-projects---join).
+
+---
+
+## Joined projects (`--join`)
+
+`makeslop run -j <path>[:ro|:rw]` mounts another makeslop project at
+`/workspace/<basename>`, next to the current project. The flag is repeatable; joins appear in
+flag order. The current project remains the workdir. The default mode is writable.
+
+```sh
+makeslop run -j ../lib:ro -j ../util
+```
+
+The suffix is recognized only when the final `:` segment is `ro` or `rw`. Thus `foo:bar` is a
+path, and `foo:ro:rw` names a directory literally called `foo:ro`. Relative paths use the
+physical current directory, even when the shell's `$PWD` contains a symlink. The resolved path
+sets the mount name. The shell expands `~` in `-j ~/lib`, but generally not in `--join=~/lib`;
+makeslop itself does not expand it.
+
+Each join must be a directory with a regular, non-symlinked `.makeslop.yaml`. Only its `exclude:`
+settings apply, and only within that join. Its `cache:`, `environments:`, `network_mode`, and
+`networks` settings are ignored; the current project's config controls those settings. Nonempty
+environment or network settings produce one notice unless `--quiet` is set. Cache produces no
+notice. Config and symlink warnings remain visible under `--quiet` and name the join.
+
+Roots cannot overlap the current project, the makeslop data directory, or another join. Mount
+basenames must also be unique and differ from the current workspace name. Path and inode checks
+catch case aliases and aliases of a root or its ancestors; a bind mount sourced from a
+subdirectory can escape this check. See [Joined projects in the security guide](security.md#joined-projects).
+
+The [home guard](security.md#home-directory-guard) applies to every join; one `--out-of-home`
+covers all projects.
+
+Join paths are validated before daemon preflight. Configs are parsed and scanned afterward, in
+flag order, so a down daemon takes precedence over a malformed config. A config removed between
+validation and loading fails the run. `--dry-run` performs the same path, config, and scan checks
+but skips daemon, image, and network preflight. `status` does not accept `--join`.
 
 ---
 
@@ -423,10 +429,10 @@ it as a non-blocking `cannot read .makeslop.yaml` secret-scan warning). Messages
 line numbers only, never values. The full list:
 
 - `environments` not a mapping: `projectconfig: environments must be a mapping with optional "static" and "host" keys`
-- unknown key with a scalar value (the old flat form, see below): `projectconfig: environments: flat "KEY: value" form is no longer supported; move entries under environments.static`
+- `KEY: value` directly under `environments:` instead of under `static`: `projectconfig: environments: variables must be listed under environments.static, not directly under environments`
 - unknown key with a list or map value, or a misspelled `static`/`host` (other case or a trailing
   `s`, e.g. `hosts:` or `Host:`): `projectconfig: unknown key "hosts" in environments (allowed: static, host)`.
-  All-uppercase keys such as `HOST:` count as old flat-form variables.
+  All-uppercase keys such as `HOST:` count as `KEY: value` entries (the error above).
 - duplicate `static` or `host`: `projectconfig: duplicate key "static" in environments`
 - null or non-scalar key: `projectconfig: environments: key at line N must be a non-null scalar`
   (inside `static`: `projectconfig: environments.static: key at line N must be a non-null scalar`)
@@ -434,9 +440,9 @@ line numbers only, never values. The full list:
   `projectconfig: environments.static: merge keys (<<) are not supported`)
 - `static` not a mapping: `projectconfig: environments.static must be a mapping of KEY: value`
 - `host` not a list: `projectconfig: environments.host must be a list of variable names`
-- when `static` or `host` holds a single scalar (e.g. `host: GITHUB_TOKEN`, or an old flat-form
-  variable literally named `host`), the two messages above end with
-  ` (if this was the old flat form, move entries under environments.static)`
+- when `static` or `host` holds a single scalar (e.g. `host: GITHUB_TOKEN`, or a variable
+  literally named `host` placed directly under `environments:`), the two messages above end with
+  ` (variables belong under environments.static)`
 - `static` keys: `projectconfig: empty key in environments.static`,
   `projectconfig: environments.static: key at line N must not contain '='`,
   `projectconfig: environments.static: key at line N must not contain newline, carriage-return, or tab characters`,
@@ -464,28 +470,6 @@ environments:
 The file is decoded strictly, so a top-level key added only to hold an anchor (e.g. `base: &e ...`
 followed by `environments: *e`) is rejected as an unknown field. YAML merge keys (`<<:`) are not
 expanded; they are rejected with the merge key error above.
-
-### Migration from the flat form (breaking change)
-
-Earlier versions accepted a flat `environments: {KEY: value}` map. That form is now rejected and
-`makeslop run` fails with:
-
-```
-projectconfig: environments: flat "KEY: value" form is no longer supported; move entries under environments.static
-```
-
-Files are not auto-migrated. Move the entries one level down, under `static:`:
-
-```yaml
-# before
-environments:
-  NODE_ENV: production
-
-# after
-environments:
-  static:
-    NODE_ENV: production
-```
 
 **Absent block:** When `environments:` is absent or empty, no `-e` flags are emitted.
 
@@ -630,24 +614,17 @@ in CI pipelines and non-interactive shells.
 
 ## Dry run
 
-Pass `--dry-run` (short: `-n`) to print the equivalent shell command for the container launch that
-`makeslop` would execute and then exit without launching the container. The output is a multi-line,
-backslash-continued, paste-ready shell command on stdout. All pre-launch checks still run
-(home-directory guard, settings load, image resolution, workspace lookup, project config parse,
-secret scan), so the
-printed command equals the real invocation byte-for-byte. Daemon, image, and network pre-flight
-checks are skipped on `--dry-run`.
+Pass `--dry-run` (short: `-n`) to inspect the container launch on stdout. It runs the
+home, workspace, config, and secret-scan checks, including those for joins, but skips daemon,
+image, and network preflight.
 
-```
-makeslop run --dry-run
-makeslop run -n
-```
+Without joins, output is a paste-ready, backslash-continued `docker run` command. With joins,
+blank lines and `# --- project: … ---` / `# --- join: … ---` comments separate mount groups.
+Those comments break shell continuation, so joined output is for inspection only. Control
+characters in labels are replaced with `?`.
 
-Because the TTY check is skipped on dry-run, `--dry-run` succeeds even when stdin/stdout are pipes.
-This makes it suitable for CI inspection:
-
-```
-makeslop run -n > cmd.sh   # capture only the command; masked-file count goes to stderr
+```sh
+makeslop run -n > cmd.sh   # masked-file counts go to stderr
 ```
 
 The output includes resolved `environments.host` values in full, secrets included. Do not keep it
@@ -708,10 +685,8 @@ to `/bin/zsh` and `100m`:
 **Field notes:**
 - `image` — required before `run` (unless `-i/--image` is passed). Omitted or empty means unset;
   it is never filled in with a default.
-- Omitted or empty `shell`/`tmp_dir_size` fields fall back to their defaults; existing
-  `settings.json` files predating these keys keep working unchanged.
-- Obsolete keys from older versions (`version`, `migrated_version`) are ignored and dropped the
-  next time makeslop writes the file.
+- Omitted or empty `shell`/`tmp_dir_size` fields fall back to their defaults.
+- Unknown keys are ignored and dropped the next time makeslop writes the file.
 
 `tmp_dir_size` accepts a positive integer with an optional suffix: `k`/`K` (kibibytes), `m`/`M`
 (mebibytes), `g`/`G` (gibibytes), or no suffix (bytes). Example: `100m`, `2g`, `512k`, `1048576`.

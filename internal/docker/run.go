@@ -46,10 +46,10 @@ type pollableStdin struct {
 // stdin. For the real os.Stdin it opens /dev/tty with O_NONBLOCK. The fresh
 // open is the load-bearing detail: O_NONBLOCK lives in the open file
 // description, and a terminal session's fd 0/1/2 are dups of a single
-// description — so flipping the flag on fd 0 itself (a previous approach)
-// silently made os.Stdout non-blocking too. Go treats os.Stdout as a blocking
-// fd, so the first output burst that filled the pty buffer (any TUI redraw)
-// made the stdout pump die on EAGAIN and froze the session.
+// description — so flipping the flag on fd 0 itself would silently make
+// os.Stdout non-blocking too. Go treats os.Stdout as a blocking fd, so the
+// first output burst that fills the pty buffer (any TUI redraw) would make the
+// stdout pump die on EAGAIN and freeze the session.
 //
 // The fresh handle is used only when it refers to the same character device as
 // fd 0 and the runtime poller accepted it (probed via SetReadDeadline — some
@@ -120,8 +120,8 @@ func sameCharDevice(a, b *os.File) bool {
 // predicate, raw-mode function, and I/O streams. Returns ErrNoTTY unless both
 // stdin and stdout are TTYs, and *ExitError on non-zero container exit.
 //
-// Lifecycle order (fixes AutoRemove + wait-before-start race, output truncation,
-// and stdin goroutine leak — findings #1, #2, #3):
+// Lifecycle order (avoids the AutoRemove + wait-before-start race, output
+// truncation, and a stdin goroutine leak):
 //
 //	Create → Attach → raw mode → ContainerWait(next-exit) → ContainerStart →
 //	  stream copies → drain stdout → close stdin handle → join stdin copy →
@@ -200,7 +200,7 @@ func (d *Docker) Run(ctx context.Context, s Spec) error {
 	// status even when the container auto-removes within milliseconds of starting.
 	// A derived cancellable context lets early-return paths (e.g. ContainerStart
 	// failure) cancel the SDK wait goroutine so it does not block forever holding
-	// its connection (finding #4).
+	// its connection.
 	waitCtx, waitCancel := context.WithCancel(ctx)
 	defer waitCancel()
 	wr := cli.ContainerWait(waitCtx, id, moby.ContainerWaitOptions{Condition: container.WaitConditionNextExit})
@@ -258,7 +258,7 @@ func (d *Docker) Run(ctx context.Context, s Spec) error {
 
 	// Container uses a TTY, so the stream is NOT multiplexed.
 	// stdout copy goroutine: closes outputDone when EOF'd so we can drain before
-	// mapping the exit status (fixes output truncation race — finding #1).
+	// mapping the exit status (avoids an output truncation race).
 	outputDone := make(chan struct{})
 	go func() {
 		_, _ = io.Copy(d.stdout, att.Reader) //nolint:errcheck
@@ -291,7 +291,7 @@ func (d *Docker) Run(ctx context.Context, s Spec) error {
 		// returns → outputDone is closed. Without this the drain blocks until the
 		// container exits on its own, and the deferred force-remove at the top of
 		// Run never fires (startedCleanly is true and ctx.Err() is nil),
-		// leaving a running container behind (finding #5).
+		// leaving a running container behind.
 		// Use context.Background() because the parent ctx may already be cancelled.
 		_, _ = cli.ContainerRemove(context.Background(), id, moby.ContainerRemoveOptions{Force: true})
 		drainAndJoin(ctx, outputDone, stdinDone, &ps)

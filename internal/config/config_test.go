@@ -60,7 +60,7 @@ func TestLoad_PreservesExplicitImageAndShell(t *testing.T) {
 	}
 }
 
-// Old settings files must remain usable without inventing an image choice.
+// Settings files missing optional fields get defaults without inventing an image choice.
 func TestLoad_LegacyConfigGetsDefaultsForMissingFields(t *testing.T) {
 	base := t.TempDir()
 	body := `{"workspaces":{}}`

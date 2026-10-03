@@ -49,6 +49,12 @@ Mount order in `BuildSpec`: project root first, then global mounts (`~/.makeslop
 `.makeslop.yaml` itself is dropped so it can't override the read-only bind. The two booleans default to
 `false` in Go, so tests wanting full mounts must set them.
 
+`Options.Projects[0]` is the main project; joins follow in flag order. Each join emits its
+bind, writable policy mounts, then its own masks. A read-only join needs no policy self-bind, so
+its config mask remains. `Spec.Sections` adds readable group labels only to `ShellCommand`;
+`Args()` and SDK projections use the same mounts without labels. Joined dry-run output is not
+paste-ready because the labels break shell continuation.
+
 ### Dependency injection (no global test hooks)
 - **docker package:** `docker.New(opts ...Option)` with `WithClient`, `WithTTYCheck`,
   `WithRawMode`, `WithStreams`. `apiClient` in `client.go` is the narrow SDK subset in use; the
@@ -82,22 +88,21 @@ Mount order in `BuildSpec`: project root first, then global mounts (`~/.makeslop
   `errNoImage`) in `internal/cli/image.go`. `-i/--image` exists on `run` and `status` only. `run`
   resolves before `ws.Lookup` so config errors fail fast; `init` prints a non-blocking note when
   the image is unset. A missing local image fails with a "build or pull it" hint (no auto-pull).
-- `Load` still defaults `Shell` and `TmpDirSize`. There is no version stamp or migration step:
-  obsolete keys (`version`, `migrated_version`) are ignored and dropped on the next `Save`.
+- `Load` defaults `Shell` and `TmpDirSize`. There is no version stamp: keys without a `Settings`
+  field are ignored and dropped on the next `Save`.
 - Every `settings.json` read-modify-write goes through `config.Update` / `config.WithLock`: an
   in-process mutex plus `flock` on `<baseDir>/.settings.lock`. **Never nest `WithLock`**, including
   inside an `Update` mutate func: the nested call self-deadlocks.
 
 ### Project config (`.makeslop.yaml`)
-- Decoded in strict mode (`KnownFields(true)`), so unknown keys are hard errors. That includes the
-  `network:` block from older versions. Exception: `environments:` and `networks:` are decoded as
+- Decoded in strict mode (`KnownFields(true)`), so unknown keys are hard errors. Exception: `environments:` and `networks:` are decoded as
   raw `yaml.Node`s, which strict mode does not check. Both `validateEnvironments` and
   `decodeNetworks` follow aliases by hand (`deref`). `validateEnvironments` does its own unknown-key
   and duplicate-key detection at both levels; its errors name keys or line numbers, never values
   (network errors, by contrast, quote names on purpose).
 - The file must be a regular file; a symlink is rejected. When it exists, it is mounted read-only
-  over itself in the container (`ProtectProjectConfig`), and `.git/hooks` is tmpfs-masked
-  (`MaskGitHooks`).
+  over itself in the container (`Project.ProtectConfig`), and `.git/hooks` is tmpfs-masked
+  (`Project.MaskGitHooks`); both are set per project (main and rw joins) by `sandboxMountGates`.
 - `Load` returns `(Config, error)` with `Config{Excludes, Cache, Env, Network}`. A missing
   `cache:` block means `{Content:true, Agent:true}`. `init --global-only` scaffolds
   `{false,false}`. `Scaffold` is idempotent and never overwrites an existing file.
@@ -116,7 +121,15 @@ Mount order in `BuildSpec`: project root first, then global mounts (`~/.makeslop
   that named the target (`network_mode:` / `networks:`). `run` calls it after the image check (not
   on `--dry-run`); `status` uses it for the blocking `network` row, and an invalid
   `.makeslop.yaml` makes that row `✗`.
-- Existing project files are never auto-migrated.
+- Existing project files are never rewritten.
+
+### Joins (`run --join`)
+`resolveJoins` checks paths and overlap before daemon preflight. `loadProject` then parses and
+scans the main project and joins in flag order. Joins use `LoadExisting` so a config removed
+after validation cannot fall back to an unmasked default. Relative paths use physical cwd.
+Overlap uses lexical containment plus inode comparison of ancestors, catching case and bind
+aliases of roots; a bind alias sourced from a subdirectory is not detected. A join contributes
+only `exclude:`; the main project supplies cache, environment, and network settings.
 
 ### Secret scan
 `security.Scan` has no built-in defaults: patterns and skip-dirs come only from `.makeslop.yaml`,
@@ -125,8 +138,9 @@ loud": never skip a directory we can't prove is secret-free).
 
 ### Command-scope rules
 - The TTY requirement applies to `run` only. All other commands must stay CI/pipe-safe.
-- The home-directory guard (`internal/cli/guard.go`) applies to `run` and `init`. `--out-of-home`
-  is registered only on those two; `--global-only` only on `init`.
+- The home guard applies to `run`, `init`, and every `run --join` root. It checks lexical
+  containment of resolved `$HOME`, then inode aliases. One `--out-of-home` covers all roots;
+  `--global-only` belongs to `init`, and `--join/-j` belongs to `run`.
 - `--quiet` is a persistent flag. It suppresses stderr chrome (errors still print) and never
   touches stdout.
 - `status` runs ordered checks with `✓/✗/–/!` glyphs, supports `--json`, and exits non-zero if a

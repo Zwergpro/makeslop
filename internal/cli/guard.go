@@ -20,28 +20,37 @@ func resolvePwd() (string, error) {
 	return resolved, nil
 }
 
+// The inode fallback accepts case aliases that lexical containment misses.
+func isWithinHome(path string) (ok bool, home string, err error) {
+	rawHome, err := os.UserHomeDir()
+	if err != nil {
+		return false, "", fmt.Errorf("resolve home directory: %w", err)
+	}
+	home, err = filepath.EvalSymlinks(rawHome)
+	if err != nil {
+		return false, "", fmt.Errorf("evaluate symlinks for %s: %w", rawHome, err)
+	}
+	rel, err := filepath.Rel(home, path)
+	if err != nil {
+		return false, "", fmt.Errorf("compute relative path from %s to %s: %w", home, path, err)
+	}
+	return filepath.IsLocal(rel) || hasSameFileAncestor(home, path), home, nil
+}
+
 // ensureWithinHome returns errSilent when pwd is outside home and outOfHome is
 // false. Both pwd and $HOME are EvalSymlinks-resolved for a symmetric comparison.
 func ensureWithinHome(stderr io.Writer, pwd string, outOfHome bool) error {
 	if outOfHome {
 		return nil
 	}
-	home, err := os.UserHomeDir()
+	ok, home, err := isWithinHome(pwd)
 	if err != nil {
-		return fmt.Errorf("resolve home directory: %w", err)
+		return err
 	}
-	resolvedHome, err := filepath.EvalSymlinks(home)
-	if err != nil {
-		return fmt.Errorf("evaluate symlinks for %s: %w", home, err)
-	}
-	rel, err := filepath.Rel(resolvedHome, pwd)
-	if err != nil {
-		return fmt.Errorf("compute relative path from %s to %s: %w", resolvedHome, pwd, err)
-	}
-	if !filepath.IsLocal(rel) {
+	if !ok {
 		fmt.Fprintf(stderr,
 			"makeslop: refusing to run from %s (outside %s) — pass --out-of-home to override\n",
-			pwd, resolvedHome)
+			pwd, home)
 		return errSilent
 	}
 	return nil
