@@ -2,6 +2,7 @@ package docker
 
 import (
 	"encoding/csv"
+	"os/exec"
 	"reflect"
 	"strings"
 	"testing"
@@ -2243,5 +2244,183 @@ func TestDriftGuard_Joins(t *testing.T) {
 		if ro != m.ReadOnly {
 			t.Errorf("[%d] readonly: Args=%v, HostConfig=%v", i, ro, m.ReadOnly)
 		}
+	}
+}
+
+// joinSectionSpec is a minimal hand-built Spec with two sections, so the
+// golden stays stable if BuildSpec later adds flags.
+func joinSectionSpec(mainLabel, joinLabel string) Spec {
+	return Spec{
+		Image:   "claudebox",
+		Command: "/bin/zsh",
+		Workdir: "/workspace/app",
+		Mounts: []Mount{
+			{Host: "/home/me/app", Container: "/workspace/app"},
+			{Host: "/dev/null", Container: "/workspace/app/.env"},
+			{Host: "/home/me/lib", Container: "/workspace/lib", ReadOnly: true},
+			{Type: "tmpfs", Container: "/workspace/lib/keys"},
+		},
+		Tmpfs: []string{"/tmp:size=100m"},
+		Sections: []Section{
+			{Label: mainLabel, Start: 0},
+			{Label: joinLabel, Start: 2},
+		},
+	}
+}
+
+func TestShellCommand_Sections_GoldenString(t *testing.T) {
+	spec := joinSectionSpec("project: /home/me/app", "join: /home/me/lib (ro)")
+	want := "docker run \\\n" +
+		"  --rm \\\n" +
+		"  -it \\\n" +
+		"  --workdir /workspace/app \\\n" +
+		"  --tmpfs /tmp:size=100m \\\n" +
+		"  `: '--- project: /home/me/app ---'` \\\n" +
+		"  --mount type=bind,source=/home/me/app,target=/workspace/app \\\n" +
+		"  --mount type=bind,source=/dev/null,target=/workspace/app/.env \\\n" +
+		"  `: '--- join: /home/me/lib (ro) ---'` \\\n" +
+		"  --mount type=bind,source=/home/me/lib,target=/workspace/lib,readonly \\\n" +
+		"  --mount type=tmpfs,target=/workspace/lib/keys \\\n" +
+		"  claudebox \\\n" +
+		"  /bin/zsh"
+	if got := spec.ShellCommand(); got != want {
+		t.Errorf("ShellCommand mismatch\ngot:\n%s\n\nwant:\n%s", got, want)
+	}
+}
+
+// Sections come from BuildSpec: one separator per project, each directly
+// before that project's bind mount line.
+func TestShellCommand_Sections_FromBuildSpec(t *testing.T) {
+	o := joinOptions(
+		Project{Host: "/home/me/code/lib", Name: "lib", Label: "join: /home/me/code/lib (rw)",
+			MaskedFiles: []string{"/home/me/code/lib/.env"}, ProtectConfig: true, MaskGitHooks: true},
+		Project{Host: "/home/me/code/util", Name: "util", Label: "join: /home/me/code/util (ro)", ReadOnly: true},
+	)
+	lines := strings.Split(BuildSpec(o).ShellCommand(), "\n")
+	wantBefore := map[string]string{
+		"  `: '--- project: /home/me/code/myproj ---'` \\": "  --mount type=bind,source=/home/me/code/myproj,target=/workspace/myproj-abc123 \\",
+		"  `: '--- join: /home/me/code/lib (rw) ---'` \\":  "  --mount type=bind,source=/home/me/code/lib,target=/workspace/lib \\",
+		"  `: '--- join: /home/me/code/util (ro) ---'` \\": "  --mount type=bind,source=/home/me/code/util,target=/workspace/util,readonly \\",
+	}
+	seps := 0
+	for i, line := range lines {
+		if !strings.HasPrefix(line, "  `:") {
+			continue
+		}
+		seps++
+		next, ok := wantBefore[line]
+		if !ok {
+			t.Errorf("unexpected separator line %q", line)
+			continue
+		}
+		if i+1 >= len(lines) || lines[i+1] != next {
+			t.Errorf("separator %q followed by %q, want %q", line, lines[min(i+1, len(lines)-1)], next)
+		}
+	}
+	if seps != len(wantBefore) {
+		t.Errorf("got %d separators, want %d:\n%s", seps, len(wantBefore), strings.Join(lines, "\n"))
+	}
+}
+
+// Without joins the output has no separator, even when the main Label is set.
+func TestShellCommand_NoJoins_NoSeparator(t *testing.T) {
+	o := sampleOptions()
+	o.Projects[0].Label = "project: /home/me/code/myproj"
+	labeled := BuildSpec(o).ShellCommand()
+	if strings.Contains(labeled, "`") {
+		t.Errorf("unexpected separator without joins:\n%s", labeled)
+	}
+	if plain := BuildSpec(sampleOptions()).ShellCommand(); labeled != plain {
+		t.Errorf("Label changed output without joins:\ngot:\n%s\nwant:\n%s", labeled, plain)
+	}
+}
+
+func TestArgs_NeverContainsSeparators(t *testing.T) {
+	spec := joinSectionSpec("project: /home/me/app", "join: /home/me/lib (ro)")
+	withSections := spec.Args()
+	spec.Sections = nil
+	if !reflect.DeepEqual(withSections, spec.Args()) {
+		t.Errorf("Sections changed Args():\n%q\nvs\n%q", withSections, spec.Args())
+	}
+	for _, a := range withSections {
+		if strings.Contains(a, "---") || strings.Contains(a, "`") {
+			t.Errorf("Args() contains separator text: %q", a)
+		}
+	}
+}
+
+func TestSanitizeLabel(t *testing.T) {
+	cases := map[string]string{
+		"join: /home/me/lib (ro)": "join: /home/me/lib (ro)",
+		"a`b":                     "a?b",
+		"a$(id)":                  "a?(id)",
+		`a\b`:                     "a?b",
+		"a\nb\rc\td\x00e\x7f":     "a?b?c?d?e?",
+		`it's "q" (x); y`:         `it's "q" (x); y`,
+	}
+	for in, want := range cases {
+		if got := sanitizeLabel(in); got != want {
+			t.Errorf("sanitizeLabel(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// hostileLabel exercises every character class the separator must neutralize.
+const hostileLabel = "join: /home/me/a`id`$(id)${HOME}\\x\n; echo pwned 'q' \"dq\" (ro) ; rm"
+
+func TestShellCommand_HostileLabel_SingleLine(t *testing.T) {
+	out := joinSectionSpec("project: /home/me/app", hostileLabel).ShellCommand()
+	var sep []string
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "  `:") {
+			sep = append(sep, line)
+		}
+	}
+	if len(sep) != 2 {
+		t.Fatalf("want 2 separator lines, got %d:\n%s", len(sep), out)
+	}
+	line := sep[1]
+	if strings.Count(line, "`") != 2 || strings.Contains(line, "$") ||
+		strings.Contains(strings.ReplaceAll(strings.TrimSuffix(line, " \\"), `'\''`, ""), `\`) {
+		t.Errorf("separator not neutralized: %q", line)
+	}
+	want := "  `: '--- join: /home/me/a?id??(id)?{HOME}?x?; echo pwned '\\''q'\\'' \"dq\" (ro) ; rm ---'` \\"
+	if line != want {
+		t.Errorf("separator =\n%s\nwant\n%s", line, want)
+	}
+}
+
+// The rendered command must parse cleanly and pass exactly Args() to docker in
+// every shell the dry-run output may be pasted into.
+func TestShellCommand_Sections_PasteableInShells(t *testing.T) {
+	spec := joinSectionSpec("project: /home/me/app", hostileLabel)
+	script := "docker() { printf '%s\\n' \"$@\"; }\n" + spec.ShellCommand() + "\n"
+	want := strings.Join(spec.Args(), "\n") + "\n"
+	shells := [][]string{
+		{"bash", "--norc", "--noprofile", "-c"},
+		{"bash", "--posix", "-c"},
+		{"dash", "-c"},
+		{"zsh", "-f", "-c"},
+		{"zsh", "-f", "-i", "-c"}, // interactive: # is not a comment here
+	}
+	for _, sh := range shells {
+		t.Run(strings.Join(sh, " "), func(t *testing.T) {
+			if _, err := exec.LookPath(sh[0]); err != nil {
+				t.Skipf("%s not installed", sh[0])
+			}
+			cmd := exec.Command(sh[0], append(sh[1:], script)...)
+			var stdout, stderr strings.Builder
+			cmd.Stdout, cmd.Stderr = &stdout, &stderr
+			cmd.Env = []string{"PATH=/usr/bin:/bin", "HOME=" + t.TempDir()}
+			if err := cmd.Run(); err != nil {
+				t.Fatalf("%v: %v\nstderr: %s", sh, err, stderr.String())
+			}
+			if stderr.Len() != 0 {
+				t.Errorf("stderr not empty: %q", stderr.String())
+			}
+			if stdout.String() != want {
+				t.Errorf("argv mismatch\ngot:\n%s\nwant:\n%s", stdout.String(), want)
+			}
+		})
 	}
 }

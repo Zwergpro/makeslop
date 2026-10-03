@@ -158,11 +158,11 @@ Approach B was chosen deliberately in brainstorm, even though it means about 88 
 - Modify: `internal/docker/spec.go`
 - Modify: `internal/docker/spec_test.go`
 
-- [ ] in `ShellCommand()`, count `--mount` tokens and emit `` `: '<--- label --->'` `` (via `shellQuote`) before the mount whose index matches a section's `Start`
-- [ ] add a `sanitizeLabel` helper (`` ` ``, `$`, `\`, control characters → `?`)
-- [ ] write golden tests: with joins, separators sit at the right lines with correct continuation; without joins, output is identical to the existing golden
-- [ ] write tests: `Args()` never contains separator text; labels containing `` ` ``, `$`, `\`, newline, `'`, `"`, `(`, `)` and `;` render as a single safe line
-- [ ] run tests; they must pass before Task 4
+- [x] in `ShellCommand()`, count `--mount` tokens and emit `` `: '<--- label --->'` `` (via `shellQuote`) before the mount whose index matches a section's `Start`
+- [x] add a `sanitizeLabel` helper (`` ` ``, `$`, `\`, control characters → `?`)
+- [x] write golden tests: with joins, separators sit at the right lines with correct continuation; without joins, output is identical to the existing golden
+- [x] write tests: `Args()` never contains separator text; labels containing `` ` ``, `$`, `\`, newline, `'`, `"`, `(`, `)` and `;` render as a single safe line
+- [x] run tests; they must pass before Task 4 (also added a paste test running the output through bash, bash --posix, dash, zsh and interactive zsh)
 
 ### Task 4: `resolveJoins` and the `--join` flag parsing
 

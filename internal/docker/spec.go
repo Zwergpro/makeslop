@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"unicode"
 
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/mount"
@@ -317,6 +318,19 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
+// sanitizeLabel replaces characters that are special inside a backtick
+// command substitution (` $ \) and control characters (including newlines)
+// with '?', so a separator label always renders as one inert line.
+func sanitizeLabel(label string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r == '`', r == '$', r == '\\', unicode.IsControl(r):
+			return '?'
+		}
+		return r
+	}, label)
+}
+
 // ShellCommand renders s as a multi-line backslash-continued `docker run` command.
 func (s Spec) ShellCommand() string {
 	args := s.Args() // starts with "run", not "docker"
@@ -324,9 +338,25 @@ func (s Spec) ShellCommand() string {
 	var lines []string
 	lines = append(lines, "docker run")
 
+	// sections maps a --mount ordinal to its separator label. Spec.Mounts maps
+	// 1:1 to --mount tokens in Args(), so Section.Start is that ordinal.
+	sections := make(map[int]string, len(s.Sections))
+	for _, sec := range s.Sections {
+		sections[sec.Start] = sec.Label
+	}
+	mountN := 0
+
 	i := 1 // skip "run" — already in "docker run" prefix
 	for i < len(args)-2 {
 		tok := args[i]
+		if tok == "--mount" {
+			if label, ok := sections[mountN]; ok {
+				// `: '…'` is a no-op command substitution: valid as a continued
+				// line in bash, dash and interactive zsh (where # is not a comment).
+				lines = append(lines, "  `: "+shellQuote("--- "+sanitizeLabel(label)+" ---")+"`")
+			}
+			mountN++
+		}
 		switch tok {
 		case "--workdir", "--tmpfs", "--cap-drop", "--security-opt", "--network", "--mount", "-e":
 			lines = append(lines, "  "+shellQuote(tok)+" "+shellQuote(args[i+1]))
