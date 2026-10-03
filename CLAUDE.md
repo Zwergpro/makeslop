@@ -49,6 +49,12 @@ Mount order in `BuildSpec`: project root first, then global mounts (`~/.makeslop
 `.makeslop.yaml` itself is dropped so it can't override the read-only bind. The two booleans default to
 `false` in Go, so tests wanting full mounts must set them.
 
+Mount order is per project: `Options.Projects[0]` is main (the order above); each join follows as
+its own group: bind (`readonly` for `:ro`) → sandbox (rw only) → its own masks. An ro join keeps a
+`/dev/null` mask on its config (no self-bind to protect). `Spec.Sections` (set only with joins)
+marks each group's first mount; only `ShellCommand` reads it (`` `: '--- label ---'` `` lines),
+so `Args()`/SDK projections and the drift guards are unaffected.
+
 ### Dependency injection (no global test hooks)
 - **docker package:** `docker.New(opts ...Option)` with `WithClient`, `WithTTYCheck`,
   `WithRawMode`, `WithStreams`. `apiClient` in `client.go` is the narrow SDK subset in use; the
@@ -117,6 +123,15 @@ Mount order in `BuildSpec`: project root first, then global mounts (`~/.makeslop
   on `--dry-run`); `status` uses it for the blocking `network` row, and an invalid
   `.makeslop.yaml` makes that row `✗`.
 - Existing project files are never auto-migrated.
+
+### Joins (`run --join`)
+- `resolveJoins` (`internal/cli/join.go`) does path checks only (suffix, `EvalSymlinks`, regular
+  `.makeslop.yaml`, home guard, overlap, name collision) and runs right after `ws.Lookup`, before
+  the daemon preflight. `loadProject` (`run.go`) parses and scans main, then joins in flag order,
+  after the preflight, so the daemon-first contract holds.
+- Overlap = `filepath.Rel` + `IsLocal` in both directions, plus `os.SameFile` against every
+  ancestor (catches case-insensitive and bind aliases). Checked join vs main, `baseDir`, and other
+  joins. A join only contributes `exclude:`; main's `Config` alone supplies cache/env/network.
 
 ### Secret scan
 `security.Scan` has no built-in defaults: patterns and skip-dirs come only from `.makeslop.yaml`,

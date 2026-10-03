@@ -208,10 +208,10 @@ Approach B was chosen deliberately in brainstorm, even though it means about 88 
 - [x] run `golangci-lint run` (or `go vet ./...`) (golangci-lint not installed; `go vet ./...` clean)
 
 ### Task 7: [Final] Update documentation
-- [ ] `docs/reference.md`: `--join` under `### run` (syntax, suffix, the `foo:ro:rw` escape, no `~` expansion with `--join=`, cwd-relative paths, the ignored keys, the not-a-project/overlap/collision errors, the home guard), the mount table for joins, and dry-run section separators
-- [ ] `docs/security.md`: per-project masking (joins use only their own `exclude:`), why overlapping roots are rejected, `:ro` semantics (no config bind/hooks tmpfs needed), that symlinks in joins carry the same residual risk, that an rw join exposes its `.git/config` (`core.hooksPath`, `core.fsmonitor`) the same way main does (recommend `:ro` unless edits are needed), and that `reservedPaths` still applies to a join's excludes (conservative)
-- [ ] `CLAUDE.md`: mount order is per project (`Projects[0]` main, then joins); `Sections` affect only `ShellCommand`; joins resolve (path checks only) before the daemon preflight and are parsed/scanned after it; join overlap uses Rel/IsLocal + `os.SameFile` ancestors
-- [ ] move this plan to `docs/plans/completed/`
+- [x] `docs/reference.md`: `--join` under `### run` (syntax, suffix, the `foo:ro:rw` escape, no `~` expansion with `--join=`, cwd-relative paths, the ignored keys, the not-a-project/overlap/collision errors, the home guard), the mount table for joins, and dry-run section separators
+- [x] `docs/security.md`: per-project masking (joins use only their own `exclude:`), why overlapping roots are rejected, `:ro` semantics (no config bind/hooks tmpfs needed), that symlinks in joins carry the same residual risk, that an rw join exposes its `.git/config` (`core.hooksPath`, `core.fsmonitor`) the same way main does (recommend `:ro` unless edits are needed), and that `reservedPaths` still applies to a join's excludes (conservative)
+- [x] `CLAUDE.md`: mount order is per project (`Projects[0]` main, then joins); `Sections` affect only `ShellCommand`; joins resolve (path checks only) before the daemon preflight and are parsed/scanned after it; join overlap uses Rel/IsLocal + `os.SameFile` ancestors
+- [x] move this plan to `docs/plans/completed/` (deferred to finalize)
 
 ## Post-Completion
 *Items requiring manual intervention or external systems; informational only*

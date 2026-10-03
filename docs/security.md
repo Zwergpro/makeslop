@@ -12,6 +12,7 @@ This document covers makeslop's security-relevant behaviors: secret masking, net
   - [Breaking change: path-style patterns rejected](#breaking-change-path-style-patterns-rejected)
   - [Breaking change: symlinked `.makeslop.yaml` rejected](#breaking-change-symlinked-makeslopyaml-rejected)
 - [Sandbox-policy protection](#sandbox-policy-protection)
+- [Joined projects](#joined-projects)
 - [Host environment passthrough](#host-environment-passthrough)
 - [Example image hardening](#example-image-hardening)
 - [Network egress](#network-egress)
@@ -324,6 +325,51 @@ the real hooks directory.
 
 Both protections are reflected in `--dry-run` output.
 
+**`.git/config` is writable (residual risk).** The hooks tmpfs does not cover `.git/config`, which
+stays writable through the read-write project bind. An agent can set `core.hooksPath` to a
+directory it controls, or `core.fsmonitor` to a command, and either one runs on the host the next
+time you run git there. Review `.git/config` after a session if this matters to you.
+
+---
+
+## Joined projects
+
+`makeslop run --join <path>[:ro|:rw]` mounts other makeslop projects next to the current one (see
+[reference.md — Joined projects](reference.md#joined-projects---join)). Each project in the
+container is protected by its own policy:
+
+- **Per-project masking.** A join is scanned and masked using **only its own** `.makeslop.yaml`
+  `exclude:` block (scan patterns, skip-dirs, `files`, `dirs`). Those masks apply only inside the
+  join's tree. The main project's patterns are never applied to a join, so a join without an
+  `exclude.scan` block has no pattern masking at all, even when the main project has one. This is
+  why a join must have a `.makeslop.yaml`: there is no implicit policy to fall back on.
+- **Same rules as the main project.** The scan for a join behaves exactly as it does for the main
+  project: walk errors abort the launch, `skip-dirs` are mounted unscanned (see
+  [Trust assumptions](#trust-assumptions)), and symlinks matching a pattern or listed in `exclude:`
+  are not masked. Their warnings are prefixed `join <host>: ` and are not silenced by `--quiet`.
+  The reserved-path check also applies to a join's `exclude.files` / `exclude.dirs`, even though a
+  join gets no agent-state or content overlays. This is conservative: those entries are rejected
+  rather than silently allowed.
+- **Overlapping roots are rejected.** A join may not be, contain, or sit inside the current
+  project, the makeslop data dir (`~/.makeslop`), or another join. If two mounts overlapped, the
+  same file would be visible at two container paths with different mask sets, and a secret masked
+  in one view would be readable in the other. A join that overlapped the data dir would expose the
+  global agent credentials. Overlap is checked by path and by inode (each root's ancestors are
+  compared with `os.SameFile`), so a case-insensitive alias on APFS or a bind-mounted alias path
+  cannot slip past.
+- **`:ro` joins.** The join is bind-mounted `readonly`. The agent cannot modify its
+  `.makeslop.yaml` or plant files in `.git/hooks`, so makeslop skips the config read-only bind and
+  the hooks tmpfs for it. Because there is no config bind to protect, a `/dev/null` mask that
+  matches the join's own `.makeslop.yaml` is kept.
+- **rw joins.** The join gets the same [sandbox-policy protection](#sandbox-policy-protection) as
+  the main project: its `.makeslop.yaml` is bound read-only over itself and, when `.git` is a
+  directory, `.git/hooks` is masked with a tmpfs. It also carries the same residual risks: the
+  worktree/submodule hooks gap and a writable `.git/config` (`core.hooksPath`, `core.fsmonitor`).
+  Use `:ro` unless the agent needs to edit the joined project.
+- **Ignored keys.** A join's `cache:`, `environments:`, `network_mode` and `networks` are ignored,
+  so a join can never inject host environment variables or change the container's network.
+- **Home guard.** The [home-directory guard](#home-directory-guard) applies to every join.
+
 ---
 
 ## Host environment passthrough
@@ -460,6 +506,14 @@ Pass `--out-of-home` to bypass this check. The flag is scoped to `init` and `run
 makeslop init --out-of-home
 makeslop run --out-of-home
 ```
+
+`run` also applies the guard to each `--join` path, after symlinks are resolved:
+
+```
+makeslop: --join "<value>": outside <home> — pass --out-of-home to override
+```
+
+A single `--out-of-home` lifts the guard for the current directory and every join.
 
 `makeslop config`, `makeslop version`, `makeslop status`, `makeslop ls`, and `makeslop remove` are
 **exempt** from the home-directory guard — they never register or mount the current working
