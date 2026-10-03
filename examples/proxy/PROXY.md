@@ -9,7 +9,7 @@ Sends all egress traffic of selected Docker containers (TCP, UDP, DNS, QUIC) thr
 │   --network container:vpn-proxy          │      │  wg7  10.66.0.1/24               │
 │        │  (shares the network namespace) │      │   │  ip_forward + MASQUERADE     │
 │        ▼                                 │ UDP  │   ▼                              │
-│ vpn-proxy  wg0 10.66.0.2 ────────────────┼──────┼─► exit interface ──► internet   │
+│ vpn-proxy  wg0 10.66.0.2 ────────────────┼──────┼─► exit interface ──► internet    │
 │   kill switch: no tunnel → no traffic    │57777 │   (eth0, or an upstream VPN)     │
 └──────────────────────────────────────────┘      └──────────────────────────────────┘
 ```
