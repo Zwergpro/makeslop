@@ -8,11 +8,13 @@ container with controlled mounts and secret masking.
 ## What & why
 
 makeslop gives each project its own container launched from a single shared base image. The agent
-gets your source tree plus its own persistent state directories (`.claude/`, `.codex/`, `docs/`),
-but nothing else from your host — no other projects, and no host environment variables except the ones you list under `environments.host` (credentials in the shared agent config dirs like `.claude/` are present by design).
+gets your source tree plus the persistent mounts you explicitly configure: shared directories,
+project-local directories, or existing host files/directories. There are no implicit agent-state
+mounts or host environment variables; configure mounts under `cache` and variables under
+`environments.host`. Shared mounts can intentionally expose credentials across projects.
 
 Why use it:
-- **Isolation** — each project runs in its own container; no credential leakage between projects.
+- **Isolation** — each project runs in its own container; you choose which state to share.
 - **Secret masking** — `.env`, PEM keys, and SSH keys are overlaid with `/dev/null` before launch.
 - **Bring your own image** — makeslop does not build images. Point it at any image you build or
   pull (`makeslop config set image <ref>`, or `-i/--image` per invocation).
@@ -62,13 +64,13 @@ a missing local image fails with a "build or pull it" hint (e.g. `docker pull <r
 ┌─ your terminal ──────────────────────────────────────────────────────────────┐
 │  makeslop run                                                                │
 │    │  scans for secrets (masks with /dev/null)                               │
-│    │  mounts project root + per-project agent state                          │
+│    │  mounts project root + explicitly configured caches                    │
 │    ▼                                                                         │
 │  ──────────────────────────────────────────────────────────────────────────  │
 │  agent container      --cap-drop ALL  --security-opt no-new-privileges       │
 │                                                                              │
 │    /workspace/<name>    ← your project root (bind-mounted)                   │
-│    /home/user/.claude/  ← global agent config                                │
+│    /home/user/.claude/  ← only if cache.shared requests .claude              │
 │    /tmp                 ← tmpfs (default 100m, not on disk)                  │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -81,7 +83,22 @@ through a `container:proxy` sidecar); see [Configuration](#configuration) and
 ## Configuration
 
 `makeslop init` creates a `.makeslop.yaml` at the project root. Edit it to control secret masking
-and directory/file exclusions:
+and directory/file exclusions. Persistent mounts are opt-in, for example:
+
+```yaml
+cache:
+  shared: [.claude, .codex]   # ~/.makeslop/shared/<name> -> /home/user/<name>
+  local: [docs]              # workspace cache -> container project/docs
+  static:
+    - "~/.claude.json:~/.claude.json"  # existing file, not created by makeslop
+    - "./tools:/opt/tools"             # existing project-relative directory
+```
+
+Missing shared/local directories are created on real runs. Static sources must already exist;
+files mount as files and directories as directories. Empty or missing `cache` mounts nothing.
+See [cache layout and path rules](docs/reference.md#cache-layout).
+
+Exclusion example:
 
 ```yaml
 exclude:

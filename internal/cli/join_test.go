@@ -57,6 +57,38 @@ func (f joinFixture) resolve(raw ...string) ([]joinTarget, error) {
 	return resolveJoins(f.main, f.main, "app", f.baseDir, raw, false)
 }
 
+func TestJoin_CacheIgnoredWithoutSourceChecks(t *testing.T) {
+	joinConfig := emptyExcludeYAML + `cache:
+  shared: [join-only]
+  local: [docs]
+  static: ["missing:/opt/missing"]
+`
+	f := setupJoinRun(t, emptyExcludeYAML, joinConfig)
+	fc := newFakeDocker(0, true)
+
+	_, stderr, err := runCmdWithDeps(
+		t,
+		f.baseDir,
+		depsFrom(fc),
+		"run",
+		"-j",
+		"../lib",
+	)
+	if err != nil {
+		t.Fatalf("%v %s", err, stderr)
+	}
+	if !strings.Contains(stderr, "cache/environments/network settings ignored") {
+		t.Fatalf("missing notice: %s", stderr)
+	}
+
+	assertAbsent(t, filepath.Join(f.baseDir, "shared/join-only"))
+	for _, m := range fc.LastSpec.Mounts {
+		if strings.Contains(m.Host, "join-only") || strings.Contains(m.Container, "/opt/missing") {
+			t.Fatalf("join cache mounted: %#v", m)
+		}
+	}
+}
+
 func TestParseJoinSuffix(t *testing.T) {
 	tests := []struct {
 		raw      string

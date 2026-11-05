@@ -7,3 +7,5 @@
 .gotmp/
 .tmp/
 /makeslop
+.agents
+skills-lock.json

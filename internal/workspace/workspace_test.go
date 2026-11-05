@@ -328,28 +328,9 @@ func TestInit_FreshCreatesEverything(t *testing.T) {
 		t.Errorf("workspace path is not a directory")
 	}
 
-	for _, d := range []string{".claude", ".codex", "docs"} {
-		p := filepath.Join(wantDir, d)
-		di, err := os.Stat(p)
-		if err != nil {
-			t.Errorf("stat %s: %v", p, err)
-			continue
-		}
-		if !di.IsDir() {
-			t.Errorf("%s is not a directory", p)
-		}
-	}
-	claudeMd := filepath.Join(wantDir, "CLAUDE.md")
-	fi, err := os.Stat(claudeMd)
-	if err != nil {
-		t.Errorf("stat %s: %v", claudeMd, err)
-	} else {
-		if !fi.Mode().IsRegular() {
-			t.Errorf("%s is not a regular file", claudeMd)
-		}
-		if fi.Size() != 0 {
-			t.Errorf("%s size = %d, want 0", claudeMd, fi.Size())
-		}
+	children, err := os.ReadDir(wantDir)
+	if err != nil || len(children) != 0 {
+		t.Fatalf("workspace should be empty, got %v: %v", children, err)
 	}
 
 	s, err := config.Load(base)
@@ -503,12 +484,15 @@ func TestInit_SecondCallByteEqualNoOp(t *testing.T) {
 		t.Fatalf("read before: %v", err)
 	}
 
-	// User edits the scaffolded template; the second Init must not clobber.
+	// User adds cache files; the second Init must not clobber.
 	sentinel := []byte("user content\n")
 	if err := os.WriteFile(filepath.Join(first, "CLAUDE.md"), sentinel, 0o644); err != nil {
 		t.Fatalf("write sentinel CLAUDE.md: %v", err)
 	}
 	marker := []byte("marker\n")
+	if err := os.MkdirAll(filepath.Join(first, ".claude"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(first, ".claude", "marker.txt"), marker, 0o644); err != nil {
 		t.Fatalf("write marker: %v", err)
 	}

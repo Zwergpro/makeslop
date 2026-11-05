@@ -13,8 +13,10 @@ Commands, configuration, and runtime behavior.
 
 ### init
 
-Registers the current directory and seeds `~/.makeslop/` with `.claude/`, `.codex/`,
-`workspaces/`, and an empty `.claude.json`. Existing files are preserved.
+Registers the current directory and creates structural `shared/` and `workspaces/` directories
+under `~/.makeslop/`. The workspace cache starts empty. A new `.makeslop.yaml` enables the default
+secret-scan patterns and has empty `cache.shared`, `cache.local`, and `cache.static` lists.
+Existing regular configs and stored data are preserved; symlinked configs are rejected.
 
 - If `pwd` is already a subdirectory of a registered workspace, the existing workspace's cache path
   is returned (idempotent, no mutation).
@@ -30,18 +32,16 @@ Registers the current directory and seeds `~/.makeslop/` with `.claude/`, `.code
 
 **Flags:**
 - `--out-of-home` — bypass the home-directory guard (see [security.md](security.md#home-directory-guard))
-- `--global-only` — disable both per-workspace cache overlays in a newly scaffolded
-  `.makeslop.yaml`. An existing regular file is preserved; a symlink is rejected.
 
 ---
 
 ### run
 
 From within a registered workspace, launches an interactive, project-scoped Docker container with
-the workspace source tree mounted in. By default, per-workspace + global agent config
-(`.claude/`, `.codex/`, `CLAUDE.md`, `docs/`) are also mounted as overlay groups; individual
-groups can be disabled via `cache.content` and `cache.agent` in `.makeslop.yaml`. Static values
-and host-passthrough variables can be injected via the `environments:` block — see
+the workspace source tree mounted in. Persistent mounts are opt-in through `cache.shared`,
+`cache.local`, and `cache.static` in `.makeslop.yaml`; there are no implicit agent or content
+mounts. See [Cache layout](#cache-layout). Static environment values and host-passthrough
+variables can be injected via the `environments:` block — see
 [Environment variables](#environment-variables-environments-block-in-makeslopyaml). The
 container's network is set by `network_mode` / `networks` — see
 [Container networking](#container-networking-network_mode--networks-in-makeslopyaml).
@@ -231,60 +231,97 @@ cp --remove-destination "$(readlink .makeslop.yaml)" .makeslop.yaml
 
 ## Cache layout
 
-```
-~/.makeslop/
-├── .claude/            # global agent config (mounted at /home/user/.claude/)
-├── .claude.json
-├── .codex/
-├── settings.json
-└── workspaces/
-    └── <basename>-<sha256[:6]>/
+All persistent mounts are opt-in. An absent/empty `cache:` block mounts nothing:
+
+```yaml
+cache:
+  shared:
+    - .claude
+    - .codex
+    - .config/tool
+  local:
+    - docs
+    - .claude
+  static:
+    - "~/.claude.json:~/.claude.json"
+    - "./tools:/opt/tools"
 ```
 
-`settings.json` records each registered workspace keyed by its absolute, symlink-evaluated path.
-The per-workspace cache directory under `workspaces/` holds per-project agent state (`.claude/`,
-`.codex/`, `docs/`).
+```text
+~/.makeslop/
+├── settings.json
+├── shared/
+│   ├── .claude/
+│   ├── .codex/
+│   └── .config/tool/
+└── workspaces/
+    └── <basename>-<sha256[:6]>/
+        ├── docs/
+        └── .claude/
+```
+
+`shared` directories are reused by every project requesting the same name. `local` directories
+belong to the registered workspace and mount beneath that project's container root. Managed
+names may contain nested paths, but cannot be absolute or contain `.`/`..` components, tildes,
+colons, or control characters. Directory names are normalized; duplicates fail.
+
+On a real `run`, missing managed directories are created empty after image/network preflight.
+Existing contents are preserved; nothing is copied from the project, host home, or image.
+Mounts hide any existing content at their container destinations. Managed storage cannot contain
+symlink components beneath the resolved makeslop base; existing sources must be real directories.
+`run --dry-run` checks and prints mounts without creating directories, even on first use.
+
+`static` entries use exactly `host-path:container-path` (no extra colons or mode suffixes).
+**Static sources must already exist**: regular files mount as files, directories as directories;
+missing paths and special files fail. Host symlinks resolve to their existing targets. All cache
+mounts are writable. Prepare a `.claude.json` file yourself before requesting the example bind.
+
+- Relative host paths resolve from the registered project root, including when invoked below it.
+- Host `~` and `~/...` refer to the host user's home.
+- Container `~` and `~/...` expand to `/home/user`, not a home discovered from the image.
+- Container destinations must be absolute or use the supported tilde form. `~otheruser` is invalid.
+- Paths are not shell-evaluated; environment variables are not expanded. Quote YAML strings when
+  needed. Spaces, commas, and quotes in valid paths are preserved.
+
+No backward compatibility is provided for `cache.content`, `cache.agent`, or `init --global-only`.
+Old config keys fail validation. Legacy cache data is **not moved, deleted, or mounted implicitly**;
+move it manually or use an explicit static bind to its existing location. `remove` still deletes
+that workspace's cache directory, including any static source deliberately placed inside it;
+it leaves shared storage and external static sources alone.
 
 ---
 
 ## Container layout and mount table
 
-`makeslop run` runs with workdir `/workspace/<name>` (where `<name>` is the registered workspace's
-cache-dir basename):
+The workdir is `/workspace/<name>`, where `<name>` is the registered workspace's cache-dir basename.
+For the configuration above:
 
-| Host                                                  | Container                          | Group              |
-| ----------------------------------------------------- | ---------------------------------- | ------------------ |
-| `<projectRoot>`                                       | `/workspace/<name>`                | always             |
-| `~/.makeslop/.claude/`                                | `/home/user/.claude/`              | global             |
-| `~/.makeslop/.claude.json`                            | `/home/user/.claude.json`          | global             |
-| `~/.makeslop/.codex/`                                 | `/home/user/.codex/`               | global             |
-| `<projectRoot>/.makeslop.yaml`                        | `/workspace/<name>/.makeslop.yaml` | sandbox-policy (ro)|
-| tmpfs (empty)                                         | `/workspace/<name>/.git/hooks`     | git-hooks mask     |
-| `~/.makeslop/workspaces/<name>/.claude/`              | `/workspace/<name>/.claude/`       | agent-state        |
-| `~/.makeslop/workspaces/<name>/.codex/`               | `/workspace/<name>/.codex/`        | agent-state        |
-| `~/.makeslop/workspaces/<name>/docs/`                 | `/workspace/<name>/docs/`          | content            |
-| `~/.makeslop/workspaces/<name>/CLAUDE.md`             | `/workspace/<name>/CLAUDE.md`      | content            |
+| Host | Container | Group |
+| --- | --- | --- |
+| `<projectRoot>` | `/workspace/<name>` | always |
+| `<projectRoot>/.makeslop.yaml` | `/workspace/<name>/.makeslop.yaml` | read-only policy, when present |
+| empty tmpfs | `/workspace/<name>/.git/hooks` | hooks mask, when `.git` is a directory |
+| `~/.makeslop/shared/.claude/` | `/home/user/.claude/` | shared |
+| `~/.makeslop/shared/.codex/` | `/home/user/.codex/` | shared |
+| `~/.makeslop/shared/.config/tool/` | `/home/user/.config/tool/` | shared |
+| `~/.makeslop/workspaces/<name>/docs/` | `/workspace/<name>/docs/` | local |
+| `~/.makeslop/workspaces/<name>/.claude/` | `/workspace/<name>/.claude/` | local |
+| `<host-home>/.claude.json` | `/home/user/.claude.json` | static file |
+| `<projectRoot>/tools/` | `/opt/tools/` | static directory |
 
-The **global** mounts (rows 2–4) are always present. The **sandbox-policy** read-only bind (row 5)
-is present only when `.makeslop.yaml` exists at the project root. The **git-hooks mask** tmpfs (row
-6) is present only when `.git` is a directory at the project root (not a gitfile). The
-**agent-state** and **content** overlay mounts (rows 7–10) can be disabled per-project via the
-`cache:` block in `.makeslop.yaml`:
+Cache mounts are emitted shared, local, then static, retaining list order. Secret masks follow
+the mounts they cover. Duplicate, nested, or overlapping cache destinations fail instead of
+using last-entry-wins behavior. Explicit excludes that overlap cache destinations also fail,
+even when their host paths do not exist. Automatic scan masks retain their established precedence.
 
-```yaml
-cache:
-  content: true   # mount docs/ + CLAUDE.md from per-workspace cache (default: true)
-  agent: true     # mount .claude/ + .codex/ from per-workspace cache (default: true)
-```
+Cache destinations cannot replace `/`, the home, `/workspace`, a project root or its ancestors,
+policy config/hook paths, or `/tmp`, `/proc`, `/sys`, `/dev` and their subtrees. Destinations inside
+joined projects are rejected. Only the main project's cache config applies; joins add their root,
+policy mounts, and masks without cache overlays. See [Joined projects](#joined-projects---join).
 
-Setting a group to `false` omits those overlay mounts so the project's real files show through.
-An absent `cache:` block is equivalent to `{content: true, agent: true}`. The `init --global-only` flag is a convenience shortcut that
-scaffolds `.makeslop.yaml` with both groups disabled.
-
-Each join adds a project-root bind at `/workspace/<basename>`, then its policy mounts and
-masks. Writable joins protect `.makeslop.yaml` with a read-only bind and mask `.git/hooks` when
-`.git` is a directory. Read-only joins need neither policy mount. Joins receive no global or
-cache overlays. See [Joined projects](#joined-projects---join).
+Shared caches are writable across participating projects. They can expose credentials and allow
+cross-project modification. Neither shared/local cache contents nor arbitrary static sources
+are secret-scanned. See [security](security.md#cache-mounts).
 
 ---
 
@@ -307,8 +344,9 @@ makeslop itself does not expand it.
 Each join must be a directory with a regular, non-symlinked `.makeslop.yaml`. Only its `exclude:`
 settings apply, and only within that join. Its `cache:`, `environments:`, `network_mode`, and
 `networks` settings are ignored; the current project's config controls those settings. Nonempty
-environment or network settings produce one notice unless `--quiet` is set. Cache produces no
-notice. Config and symlink warnings remain visible under `--quiet` and name the join.
+cache, environment, or network settings produce one combined notice unless `--quiet` is set.
+Ignored static cache sources are not checked for existence. Config and symlink warnings remain
+visible under `--quiet` and name the join.
 
 Roots cannot overlap the current project, the makeslop data directory, or another join. Mount
 basenames must also be unique and differ from the current workspace name. Path and inode checks

@@ -116,10 +116,11 @@ func loadProject(ctx context.Context, stderr, chrome io.Writer, root string, joi
 		fmt.Fprintf(stderr, "makeslop: warning: %s%s\n", prefix, w)
 	}
 
-	// Cache has no presence marker, so only observable ignored settings get a notice.
-	if join && (len(pcfg.Env.Static) > 0 || len(pcfg.Env.Host) > 0 ||
-		pcfg.Network.Mode != "" || len(pcfg.Network.Networks) > 0) {
-		fmt.Fprintf(chrome, "makeslop: %senvironments/network settings ignored\n", prefix)
+	hasCache := len(pcfg.Cache.Shared)+len(pcfg.Cache.Local)+len(pcfg.Cache.Static) > 0
+	hasEnv := len(pcfg.Env.Static)+len(pcfg.Env.Host) > 0
+	hasNetwork := pcfg.Network.Mode != "" || len(pcfg.Network.Networks) > 0
+	if join && (hasCache || hasEnv || hasNetwork) {
+		fmt.Fprintf(chrome, "makeslop: %scache/environments/network settings ignored\n", prefix)
 	}
 
 	masked, symlinkMatches, err := security.Scan(ctx, root, pcfg.Excludes.Patterns, pcfg.Excludes.SkipDirs)
@@ -208,18 +209,20 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir, imageFlag str
 		projects = append(projects, p)
 	}
 
+	cache, err := resolveProjectCache(baseDir, projects, pcfg)
+	if err != nil {
+		return err
+	}
+
 	opts := docker.Options{
-		Projects:          projects,
-		WorkspaceHost:     workspaceDir,
-		BaseDir:           baseDir,
-		Image:             image,
-		Command:           s.Shell,
-		TmpDirSize:        s.TmpDirSize,
-		MountContentCache: pcfg.Cache.Content,
-		MountAgentCache:   pcfg.Cache.Agent,
-		Env:               resolveEnv(pcfg.Env, os.LookupEnv),
-		NetworkMode:       pcfg.Network.Mode,
-		Networks:          pcfg.Network.Networks,
+		CacheMounts: cache.Mounts,
+		Projects:    projects,
+		Image:       image,
+		Command:     s.Shell,
+		TmpDirSize:  s.TmpDirSize,
+		Env:         resolveEnv(pcfg.Env, os.LookupEnv),
+		NetworkMode: pcfg.Network.Mode,
+		Networks:    pcfg.Network.Networks,
 	}
 
 	spec := docker.BuildSpec(opts)
@@ -241,6 +244,10 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir, imageFlag str
 	}
 
 	if err := deps.networkPreflight(cmd.Context(), pcfg.Network); err != nil {
+		return err
+	}
+
+	if err := prepareCacheDirs(cmd.Context(), cache.Dirs); err != nil {
 		return err
 	}
 

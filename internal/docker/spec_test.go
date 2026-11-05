@@ -11,14 +11,13 @@ import (
 
 func sampleOptions() Options {
 	return Options{
-		Projects:          []Project{{Host: "/home/me/code/myproj", Name: "myproj-abc123"}},
-		BaseDir:           "/home/me/.makeslop",
-		WorkspaceHost:     "/home/me/.makeslop/workspaces/myproj-abc123",
-		Image:             "claudebox",
-		Command:           "/bin/zsh",
-		TmpDirSize:        "100m",
-		MountAgentCache:   true,
-		MountContentCache: true,
+		Projects: []Project{{Host: "/home/me/code/myproj", Name: "myproj-abc123"}},
+		CacheMounts: []Mount{
+			{Host: "/home/me/.makeslop/shared/.claude/", Container: "/home/user/.claude/"},
+			{Host: "/home/me/.makeslop/shared/.codex/", Container: "/home/user/.codex/"},
+			{Host: "/home/me/.makeslop/workspaces/myproj-abc123/docs/", Container: "/workspace/myproj-abc123/docs/"},
+		},
+		Image: "claudebox", Command: "/bin/zsh", TmpDirSize: "100m",
 	}
 }
 
@@ -50,13 +49,9 @@ func TestBuildSpec_MountListMatchesReferenceOrder(t *testing.T) {
 
 	want := []Mount{
 		{Host: "/home/me/code/myproj", Container: "/workspace/myproj-abc123"},
-		{Host: "/home/me/.makeslop/.claude/", Container: "/home/user/.claude/"},
-		{Host: "/home/me/.makeslop/.claude.json", Container: "/home/user/.claude.json"},
-		{Host: "/home/me/.makeslop/.codex/", Container: "/home/user/.codex/"},
-		{Host: "/home/me/.makeslop/workspaces/myproj-abc123/.claude/", Container: "/workspace/myproj-abc123/.claude/"},
-		{Host: "/home/me/.makeslop/workspaces/myproj-abc123/.codex/", Container: "/workspace/myproj-abc123/.codex/"},
+		{Host: "/home/me/.makeslop/shared/.claude/", Container: "/home/user/.claude/"},
+		{Host: "/home/me/.makeslop/shared/.codex/", Container: "/home/user/.codex/"},
 		{Host: "/home/me/.makeslop/workspaces/myproj-abc123/docs/", Container: "/workspace/myproj-abc123/docs/"},
-		{Host: "/home/me/.makeslop/workspaces/myproj-abc123/CLAUDE.md", Container: "/workspace/myproj-abc123/CLAUDE.md"},
 	}
 	if !reflect.DeepEqual(spec.Mounts, want) {
 		t.Errorf("Mounts mismatch\n got: %+v\nwant: %+v", spec.Mounts, want)
@@ -73,13 +68,9 @@ func TestSpecArgs_FullArgvForRepresentativeSpec(t *testing.T) {
 		"--cap-drop", "ALL",
 		"--security-opt", "no-new-privileges",
 		"--mount", `type=bind,source=/home/me/code/myproj,target=/workspace/myproj-abc123`,
-		"--mount", `type=bind,source=/home/me/.makeslop/.claude/,target=/home/user/.claude/`,
-		"--mount", `type=bind,source=/home/me/.makeslop/.claude.json,target=/home/user/.claude.json`,
-		"--mount", `type=bind,source=/home/me/.makeslop/.codex/,target=/home/user/.codex/`,
-		"--mount", `type=bind,source=/home/me/.makeslop/workspaces/myproj-abc123/.claude/,target=/workspace/myproj-abc123/.claude/`,
-		"--mount", `type=bind,source=/home/me/.makeslop/workspaces/myproj-abc123/.codex/,target=/workspace/myproj-abc123/.codex/`,
+		"--mount", `type=bind,source=/home/me/.makeslop/shared/.claude/,target=/home/user/.claude/`,
+		"--mount", `type=bind,source=/home/me/.makeslop/shared/.codex/,target=/home/user/.codex/`,
 		"--mount", `type=bind,source=/home/me/.makeslop/workspaces/myproj-abc123/docs/,target=/workspace/myproj-abc123/docs/`,
-		"--mount", `type=bind,source=/home/me/.makeslop/workspaces/myproj-abc123/CLAUDE.md,target=/workspace/myproj-abc123/CLAUDE.md`,
 		"claudebox", "/bin/zsh",
 	}
 	if got := spec.Args(); !reflect.DeepEqual(got, want) {
@@ -517,11 +508,11 @@ func collectMountArgs(argv []string) []string {
 	return out
 }
 
-// Default spec must produce exactly 8 mounts (no extra proxy/network mounts).
+// The representative fixture has one project bind and three configured caches.
 func TestBuildSpec_DefaultMountCount(t *testing.T) {
 	spec := BuildSpec(sampleOptions())
-	if len(spec.Mounts) != 8 {
-		t.Errorf("Mounts len = %d, want 8", len(spec.Mounts))
+	if len(spec.Mounts) != 4 {
+		t.Errorf("Mounts len = %d, want 4", len(spec.Mounts))
 	}
 }
 
@@ -1060,161 +1051,6 @@ func TestDriftGuard_ArgsAndSDKProjectionsAgree(t *testing.T) {
 	}
 }
 
-// All 4 MountAgentCache/MountContentCache combos: per-workspace mounts toggle,
-// but global mounts (BaseDir/.claude/, .claude.json, .codex/) are always present.
-func TestBuildSpec_CacheMountCombos(t *testing.T) {
-	base := "/home/me/.makeslop"
-	ws := "/home/me/.makeslop/workspaces/myproj-abc123"
-	wcp := "/workspace/myproj-abc123"
-
-	globalMounts := []Mount{
-		{Host: "/home/me/code/myproj", Container: wcp},
-		{Host: base + "/.claude/", Container: "/home/user/.claude/"},
-		{Host: base + "/.claude.json", Container: "/home/user/.claude.json"},
-		{Host: base + "/.codex/", Container: "/home/user/.codex/"},
-	}
-
-	agentMounts := []Mount{
-		{Host: ws + "/.claude/", Container: wcp + "/.claude/"},
-		{Host: ws + "/.codex/", Container: wcp + "/.codex/"},
-	}
-
-	contentMounts := []Mount{
-		{Host: ws + "/docs/", Container: wcp + "/docs/"},
-		{Host: ws + "/CLAUDE.md", Container: wcp + "/CLAUDE.md"},
-	}
-
-	tests := []struct {
-		name              string
-		mountAgentCache   bool
-		mountContentCache bool
-		wantMounts        []Mount
-	}{
-		{
-			name:              "both true — full mount set (current default behavior)",
-			mountAgentCache:   true,
-			mountContentCache: true,
-			wantMounts:        append(append(globalMounts, agentMounts...), contentMounts...),
-		},
-		{
-			name:              "agent off, content on — no per-workspace .claude/.codex",
-			mountAgentCache:   false,
-			mountContentCache: true,
-			wantMounts:        append(globalMounts, contentMounts...),
-		},
-		{
-			name:              "agent on, content off — no per-workspace docs/CLAUDE.md",
-			mountAgentCache:   true,
-			mountContentCache: false,
-			wantMounts:        append(globalMounts, agentMounts...),
-		},
-		{
-			name:              "both off — global mounts only (--global-only mode)",
-			mountAgentCache:   false,
-			mountContentCache: false,
-			wantMounts:        globalMounts,
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			o := Options{
-				Projects:          []Project{{Host: "/home/me/code/myproj", Name: "myproj-abc123"}},
-				BaseDir:           "/home/me/.makeslop",
-				WorkspaceHost:     "/home/me/.makeslop/workspaces/myproj-abc123",
-				Image:             "claudebox",
-				Command:           "/bin/zsh",
-				TmpDirSize:        "100m",
-				MountAgentCache:   tc.mountAgentCache,
-				MountContentCache: tc.mountContentCache,
-			}
-			spec := BuildSpec(o)
-			if !reflect.DeepEqual(spec.Mounts, tc.wantMounts) {
-				t.Errorf("Mounts mismatch for %s\n got: %+v\nwant: %+v",
-					tc.name, spec.Mounts, tc.wantMounts)
-			}
-		})
-	}
-}
-
-// Disabled cache groups must drop the corresponding paths from Args() output.
-func TestBuildSpec_CacheMountCombos_Args(t *testing.T) {
-	base := "/home/me/.makeslop"
-
-	tests := []struct {
-		name              string
-		mountAgentCache   bool
-		mountContentCache bool
-		absent            []string // substrings that must NOT appear in any --mount arg
-		present           []string // substrings that must appear in at least one --mount arg
-	}{
-		{
-			name:              "agent off — workspace .claude and .codex absent",
-			mountAgentCache:   false,
-			mountContentCache: true,
-			absent:            []string{"workspaces/myproj-abc123/.claude", "workspaces/myproj-abc123/.codex"},
-			present:           []string{base + "/.claude/", base + "/.codex/", "docs/", "CLAUDE.md"},
-		},
-		{
-			name:              "content off — workspace docs and CLAUDE.md absent",
-			mountAgentCache:   true,
-			mountContentCache: false,
-			absent:            []string{"workspaces/myproj-abc123/docs", "workspaces/myproj-abc123/CLAUDE.md"},
-			present:           []string{base + "/.claude/", base + "/.codex/", "workspaces/myproj-abc123/.claude", "workspaces/myproj-abc123/.codex"},
-		},
-		{
-			name:              "both off — only global paths present",
-			mountAgentCache:   false,
-			mountContentCache: false,
-			absent:            []string{"workspaces/myproj-abc123/.claude", "workspaces/myproj-abc123/.codex", "workspaces/myproj-abc123/docs", "workspaces/myproj-abc123/CLAUDE.md"},
-			present:           []string{base + "/.claude/", base + "/.codex/"},
-		},
-		{
-			name:              "both on — all per-workspace paths present",
-			mountAgentCache:   true,
-			mountContentCache: true,
-			absent:            nil,
-			present: []string{
-				base + "/.claude/", base + "/.codex/",
-				"workspaces/myproj-abc123/.claude", "workspaces/myproj-abc123/.codex",
-				"docs/", "CLAUDE.md",
-			},
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			o := Options{
-				Projects:          []Project{{Host: "/home/me/code/myproj", Name: "myproj-abc123"}},
-				BaseDir:           "/home/me/.makeslop",
-				WorkspaceHost:     "/home/me/.makeslop/workspaces/myproj-abc123",
-				Image:             "claudebox",
-				Command:           "/bin/zsh",
-				TmpDirSize:        "100m",
-				MountAgentCache:   tc.mountAgentCache,
-				MountContentCache: tc.mountContentCache,
-			}
-			spec := BuildSpec(o)
-			args := spec.Args()
-
-			mountArgs := collectMountArgs(args)
-			allMountStr := strings.Join(mountArgs, " ")
-
-			for _, sub := range tc.absent {
-				if strings.Contains(allMountStr, sub) {
-					t.Errorf("--mount args should NOT contain %q but do:\n%v", sub, mountArgs)
-				}
-			}
-			for _, sub := range tc.present {
-				if !strings.Contains(allMountStr, sub) {
-					t.Errorf("--mount args should contain %q but don't:\n%v", sub, mountArgs)
-				}
-			}
-		})
-	}
-}
-
-// -e flags must appear after all --security-opt and before the first --mount.
 func TestArgs_EnvFlagsEmittedAfterSecOptBeforeMounts(t *testing.T) {
 	o := sampleOptions()
 	o.Env = []string{"NODE_ENV=production", "PORT=3000"}
@@ -1371,20 +1207,17 @@ func TestBuildSpec_EnvDeterminism(t *testing.T) {
 
 // ---- ProtectProjectConfig and MaskGitHooks tests ----
 
-// Both flags off: no sandbox-policy mounts appended. The baseline count is
-// pinned to an explicit expected value (4 base + 2 agent-cache + 2 content-cache
-// from sampleOptions) so that a silent change to sampleOptions defaults causes
-// this test to fail loudly rather than masking the regression.
+// Policy flags add mounts without replacing the configured cache binds.
 func TestBuildSpec_SandboxFlags_BothOff(t *testing.T) {
 	o := sampleOptions()
 	// flags default to false
 	specOff := BuildSpec(o)
 
-	// sampleOptions has MountAgentCache=true and MountContentCache=true:
-	//   4 base mounts + 2 agent-cache + 2 content-cache = 8.
-	const wantBaseline = 8
+	// sampleOptions includes three explicit cache binds:
+	// One project bind plus three cache binds.
+	const wantBaseline = 4
 	if got := len(specOff.Mounts); got != wantBaseline {
-		t.Fatalf("baseline mount count = %d, want %d (4 base + 2 agent-cache + 2 content-cache); sampleOptions may have changed", got, wantBaseline)
+		t.Fatalf("baseline mount count = %d, want %d (1 project + 3 cache); sampleOptions may have changed", got, wantBaseline)
 	}
 
 	// Enabling each flag individually must increase the mount count by exactly 1.
@@ -1409,8 +1242,8 @@ func TestBuildSpec_SandboxFlags_BothOff(t *testing.T) {
 	}
 }
 
-// ProtectProjectConfig=true: .makeslop.yaml read-only bind is present at mounts[4]
-// (after the 4 base mounts and before any cache overlays).
+// ProtectProjectConfig=true: .makeslop.yaml read-only bind is present at mounts[1]
+// (after the project bind and before any cache overlays).
 func TestBuildSpec_ProtectProjectConfig_MountPresent(t *testing.T) {
 	o := sampleOptions()
 	o.Projects[0].ProtectConfig = true
@@ -1425,9 +1258,9 @@ func TestBuildSpec_ProtectProjectConfig_MountPresent(t *testing.T) {
 	if len(spec.Mounts) < 5 {
 		t.Fatalf("expected at least 5 mounts, got %d", len(spec.Mounts))
 	}
-	// Must appear at index 4 — after the 4 base mounts, before cache overlays.
-	if spec.Mounts[4] != wantMount {
-		t.Errorf("mounts[4] = %+v, want %+v", spec.Mounts[4], wantMount)
+	// Must follow the project bind, before cache overlays.
+	if spec.Mounts[1] != wantMount {
+		t.Errorf("mounts[1] = %+v, want %+v", spec.Mounts[1], wantMount)
 	}
 }
 
@@ -1496,13 +1329,13 @@ func TestBuildSpec_MaskGitHooks_MountPresent(t *testing.T) {
 	if len(spec.Mounts) < 5 {
 		t.Fatalf("expected at least 5 mounts, got %d", len(spec.Mounts))
 	}
-	// When only MaskGitHooks is set (ProtectProjectConfig=false), it appears at mounts[4].
-	if spec.Mounts[4] != wantMount {
-		t.Errorf("mounts[4] = %+v, want %+v", spec.Mounts[4], wantMount)
+	// When only MaskGitHooks is set (ProtectProjectConfig=false), it appears at mounts[1].
+	if spec.Mounts[1] != wantMount {
+		t.Errorf("mounts[1] = %+v, want %+v", spec.Mounts[1], wantMount)
 	}
 }
 
-// Both flags on: .makeslop.yaml bind is at mounts[4], .git/hooks tmpfs at mounts[5],
+// Both flags on: .makeslop.yaml bind is at mounts[1], .git/hooks tmpfs at mounts[2],
 // both before cache overlays.
 func TestBuildSpec_BothSandboxFlags_Order(t *testing.T) {
 	o := sampleOptions()
@@ -1524,29 +1357,26 @@ func TestBuildSpec_BothSandboxFlags_Order(t *testing.T) {
 		Container: "/workspace/myproj-abc123/.git/hooks",
 	}
 
-	// mounts[4] = .makeslop.yaml bind
-	if spec.Mounts[4] != wantConfig {
-		t.Errorf("mounts[4] = %+v, want %+v", spec.Mounts[4], wantConfig)
+	// mounts[1] = .makeslop.yaml bind
+	if spec.Mounts[1] != wantConfig {
+		t.Errorf("mounts[1] = %+v, want %+v", spec.Mounts[1], wantConfig)
 	}
-	// mounts[5] = .git/hooks tmpfs
-	if spec.Mounts[5] != wantHooks {
-		t.Errorf("mounts[5] = %+v, want %+v", spec.Mounts[5], wantHooks)
+	// mounts[2] = .git/hooks tmpfs
+	if spec.Mounts[2] != wantHooks {
+		t.Errorf("mounts[2] = %+v, want %+v", spec.Mounts[2], wantHooks)
 	}
 
-	// Both appear before any cache-overlay mounts (mounts from sampleOptions cache are
-	// the agent/content overlays; with both sandbox flags they'd start at index 6).
-	// Assert mounts[6] is a cache mount (host contains "workspaces/") and that no
-	// sandbox mount leaks into the cache range.
-	if len(spec.Mounts) < 7 {
-		t.Fatalf("expected at least 7 mounts (4 base + 2 sandbox + ≥1 cache), got %d", len(spec.Mounts))
+	// Cache binds follow both policy mounts, starting at index 3.
+	if len(spec.Mounts) < 4 {
+		t.Fatalf("expected at least 4 mounts (project + 2 policy + cache), got %d", len(spec.Mounts))
 	}
-	if !strings.Contains(spec.Mounts[6].Host, "workspaces/") {
-		t.Errorf("mounts[6] expected to be first cache-overlay mount (host containing 'workspaces/'), got %+v", spec.Mounts[6])
+	if !strings.Contains(spec.Mounts[3].Host, "shared/") {
+		t.Errorf("mounts[3] expected to be first cache-overlay mount (host containing 'shared/'), got %+v", spec.Mounts[3])
 	}
-	for i := 6; i < len(spec.Mounts); i++ {
+	for i := 3; i < len(spec.Mounts); i++ {
 		m := spec.Mounts[i]
 		if m.Host == "/home/me/code/myproj/.makeslop.yaml" || (m.Type == "tmpfs" && m.Container == "/workspace/myproj-abc123/.git/hooks") {
-			t.Errorf("sandbox mount found at index %d (expected before index 6)", i)
+			t.Errorf("sandbox mount found at index %d (expected before index 3)", i)
 		}
 	}
 }
@@ -1600,7 +1430,7 @@ func TestArgs_MaskGitHooks_TmpfsMountShape(t *testing.T) {
 // ProtectProjectConfig mount must appear after the base mounts (mounts[0]) and
 // before the first cache overlay mount.
 func TestBuildSpec_ProtectProjectConfig_PositionAfterBase_BeforeCache(t *testing.T) {
-	o := sampleOptions() // both cache flags true
+	o := sampleOptions()
 	o.Projects[0].ProtectConfig = true
 	spec := BuildSpec(o)
 
@@ -1615,9 +1445,9 @@ func TestBuildSpec_ProtectProjectConfig_PositionAfterBase_BeforeCache(t *testing
 	if sandboxIdx == -1 {
 		t.Fatal(".makeslop.yaml mount not found")
 	}
-	// Must be after index 3 (last of 4 base mounts).
-	if sandboxIdx <= 3 {
-		t.Errorf("sandbox mount at index %d, want > 3 (after base mounts)", sandboxIdx)
+	// Must follow the main project bind.
+	if sandboxIdx <= 0 {
+		t.Errorf("sandbox mount at index %d, want > 0 (after base mounts)", sandboxIdx)
 	}
 	// Must be before cache overlay mounts. Rather than asserting a fixed index,
 	// we search for the first per-workspace cache overlay and verify the sandbox
@@ -1752,54 +1582,6 @@ func TestDriftGuard_SandboxFlags(t *testing.T) {
 }
 
 // Drift-guard across all 4 cache combos: Args() and HostConfig() mount counts must agree.
-func TestDriftGuard_CacheMountCombos(t *testing.T) {
-	combos := []struct {
-		name              string
-		mountAgentCache   bool
-		mountContentCache bool
-	}{
-		{"both_true", true, true},
-		{"agent_only", true, false},
-		{"content_only", false, true},
-		{"both_false", false, false},
-	}
-
-	for _, c := range combos {
-		t.Run(c.name, func(t *testing.T) {
-			o := sampleOptions()
-			o.MountAgentCache = c.mountAgentCache
-			o.MountContentCache = c.mountContentCache
-
-			spec := BuildSpec(o)
-			args := spec.Args()
-			hc := spec.HostConfig()
-
-			argsMounts := collectMountArgs(args)
-			var argsBindCount int
-			for _, raw := range argsMounts {
-				if !strings.HasPrefix(raw, "type=tmpfs") && !strings.HasPrefix(raw, "type=volume") {
-					argsBindCount++
-				}
-			}
-			var hcBindCount int
-			for _, m := range hc.Mounts {
-				if m.Type == "bind" || m.Type == "" {
-					hcBindCount++
-				}
-			}
-			if argsBindCount != hcBindCount {
-				t.Errorf("bind mount count: Args=%d, HostConfig=%d (combo: %s)",
-					argsBindCount, hcBindCount, c.name)
-			}
-
-			if len(argsMounts) != len(hc.Mounts) {
-				t.Errorf("total mount count: Args=%d, HostConfig=%d (combo: %s)",
-					len(argsMounts), len(hc.Mounts), c.name)
-			}
-		})
-	}
-}
-
 func TestBuildSpec_Network(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -2007,7 +1789,7 @@ func joinOptions(joins ...Project) Options {
 	return o
 }
 
-const mainMountCount = 8
+const mainMountCount = 4
 
 func TestBuildSpec_Join_RW(t *testing.T) {
 	o := joinOptions(Project{
@@ -2150,8 +1932,8 @@ func TestBuildSpec_TwoJoins_OrderAndSections(t *testing.T) {
 
 	wantSections := []Section{
 		{Label: "project: /home/me/code/myproj", Start: 0},
-		{Label: "join: /home/me/code/lib (rw)", Start: 9},
-		{Label: "join: /home/me/code/util (ro)", Start: 13},
+		{Label: "join: /home/me/code/lib (rw)", Start: 5},
+		{Label: "join: /home/me/code/util (ro)", Start: 9},
 	}
 	if !reflect.DeepEqual(spec.Sections, wantSections) {
 		t.Errorf("Sections = %+v, want %+v", spec.Sections, wantSections)
@@ -2164,7 +1946,7 @@ func TestBuildSpec_TwoJoins_OrderAndSections(t *testing.T) {
 		{Host: "/home/me/code/util", Container: "/workspace/util", ReadOnly: true},
 		{Type: "tmpfs", Container: "/workspace/util/keys"},
 	}
-	if got := spec.Mounts[9:]; !reflect.DeepEqual(got, wantTail) {
+	if got := spec.Mounts[5:]; !reflect.DeepEqual(got, wantTail) {
 		t.Errorf("join mounts =\n%+v\nwant\n%+v", got, wantTail)
 	}
 	for _, s := range spec.Sections {

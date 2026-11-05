@@ -600,13 +600,10 @@ func TestRun_DryRun_StdoutEqualsBuildSpecShellCommand(t *testing.T) {
 			Label:         "project: " + resolvedPwd,
 			ProtectConfig: true,
 		}},
-		WorkspaceHost:     workspaceDir,
-		BaseDir:           baseDir,
-		Image:             s.Image,
-		Command:           s.Shell,
-		TmpDirSize:        s.TmpDirSize,
-		MountContentCache: true,
-		MountAgentCache:   true,
+
+		Image:      s.Image,
+		Command:    s.Shell,
+		TmpDirSize: s.TmpDirSize,
 	}).ShellCommand()
 
 	got := strings.TrimSuffix(stdout, "\n")
@@ -1034,13 +1031,10 @@ func TestRun_YamlAbsentIsBitIdenticalArgv(t *testing.T) {
 			Name:  filepath.Base(workspaceDir),
 			Label: "project: " + resolvedPwd,
 		}},
-		WorkspaceHost:     workspaceDir,
-		BaseDir:           baseDir,
-		Image:             s.Image,
-		Command:           s.Shell,
-		TmpDirSize:        s.TmpDirSize,
-		MountContentCache: true,
-		MountAgentCache:   true,
+
+		Image:      s.Image,
+		Command:    s.Shell,
+		TmpDirSize: s.TmpDirSize,
 	}).ShellCommand()
 
 	got := strings.TrimSuffix(stdout, "\n")
@@ -1144,7 +1138,7 @@ func TestRun_YamlReservedPathAbortsBeforeDocker(t *testing.T) {
 	initWithImage(t, baseDir)
 	resolvedPwd := evalSymlinks(t, pwd)
 
-	yamlContent := "exclude:\n  dirs: [.claude]\n  files: []\n"
+	yamlContent := "exclude:\n  dirs: [.makeslop.yaml]\n  files: []\n"
 	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(yamlContent), 0o644); err != nil {
 		t.Fatalf("write yaml: %v", err)
 	}
@@ -1156,8 +1150,8 @@ func TestRun_YamlReservedPathAbortsBeforeDocker(t *testing.T) {
 	if code == 0 {
 		t.Fatalf("expected non-zero exit from reserved path, got 0; stderr=%q", stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "reserved agent path") {
-		t.Errorf("stderr missing 'reserved agent path': %q", stderr.String())
+	if !strings.Contains(stderr.String(), "reserved policy path") {
+		t.Errorf("stderr missing 'reserved policy path': %q", stderr.String())
 	}
 	if fc.Started {
 		t.Errorf("docker client must not be started when yaml lists reserved path")
@@ -1289,13 +1283,10 @@ func TestRun_DryRun_DefaultIsBridge(t *testing.T) {
 			Name:  filepath.Base(workspaceDir),
 			Label: "project: " + resolvedPwd,
 		}},
-		WorkspaceHost:     workspaceDir,
-		BaseDir:           baseDir,
-		Image:             s.Image,
-		Command:           s.Shell,
-		TmpDirSize:        s.TmpDirSize,
-		MountContentCache: true,
-		MountAgentCache:   true,
+
+		Image:      s.Image,
+		Command:    s.Shell,
+		TmpDirSize: s.TmpDirSize,
 	}).ShellCommand()
 	got := strings.TrimSuffix(stdout, "\n")
 	if got != want {
@@ -1473,149 +1464,6 @@ func TestRun_HappyPath_LaunchesDocker(t *testing.T) {
 	}
 }
 
-// ── Cache mount overlay tests ──────────────────────────────────────────────────
-
-// cache:{content:false,agent:false} drops all per-workspace cache mounts; global
-// mounts and the project bind stay.
-func TestRun_DryRun_CacheDisabled(t *testing.T) {
-	setHomeToTestParent(t)
-	baseDir := t.TempDir()
-	pwd := t.TempDir()
-	t.Chdir(pwd)
-
-	initOut := initWithImage(t, baseDir)
-	workspaceDir := strings.TrimSpace(initOut)
-	workspaceName := filepath.Base(workspaceDir)
-
-	resolvedPwd := evalSymlinks(t, pwd)
-	yamlContent := "cache:\n  content: false\n  agent: false\n"
-	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(yamlContent), 0o644); err != nil {
-		t.Fatalf("write .makeslop.yaml: %v", err)
-	}
-
-	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
-	if err != nil {
-		t.Fatalf("--dry-run failed: %v; stderr=%q", err, stderr)
-	}
-
-	workspacePath := "/workspace/" + workspaceName
-	// Per-workspace mounts must be absent.
-	if strings.Contains(stdout, workspacePath+"/.claude/") {
-		t.Errorf("agent .claude/ mount must be absent when agent cache disabled; stdout:\n%s", stdout)
-	}
-	if strings.Contains(stdout, workspacePath+"/.codex/") {
-		t.Errorf("agent .codex/ mount must be absent when agent cache disabled; stdout:\n%s", stdout)
-	}
-	if strings.Contains(stdout, workspacePath+"/docs/") {
-		t.Errorf("content docs/ mount must be absent when content cache disabled; stdout:\n%s", stdout)
-	}
-	if strings.Contains(stdout, workspacePath+"/CLAUDE.md") {
-		t.Errorf("content CLAUDE.md mount must be absent when content cache disabled; stdout:\n%s", stdout)
-	}
-	// Global mounts must still be present.
-	if !strings.Contains(stdout, "target=/home/user/.claude/") {
-		t.Errorf("global .claude/ mount must be present; stdout:\n%s", stdout)
-	}
-	if !strings.Contains(stdout, "target=/home/user/.claude.json") {
-		t.Errorf("global .claude.json mount must be present; stdout:\n%s", stdout)
-	}
-	if !strings.Contains(stdout, "target=/home/user/.codex/") {
-		t.Errorf("global .codex/ mount must be present; stdout:\n%s", stdout)
-	}
-	if !strings.Contains(stdout, "source="+resolvedPwd+",target="+workspacePath) {
-		t.Errorf("project root bind must be present; stdout:\n%s", stdout)
-	}
-}
-
-// Absent cache: block keeps all per-workspace cache mounts present (default = true).
-func TestRun_DryRun_CacheDefault(t *testing.T) {
-	setHomeToTestParent(t)
-	baseDir := t.TempDir()
-	pwd := t.TempDir()
-	t.Chdir(pwd)
-
-	initOut := initWithImage(t, baseDir)
-	workspaceDir := strings.TrimSpace(initOut)
-	workspaceName := filepath.Base(workspaceDir)
-
-	resolvedPwd := evalSymlinks(t, pwd)
-	yamlContent := "exclude:\n  scan:\n    patterns: []\n  files: []\n  dirs: []\n"
-	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(yamlContent), 0o644); err != nil {
-		t.Fatalf("write .makeslop.yaml: %v", err)
-	}
-
-	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
-	if err != nil {
-		t.Fatalf("--dry-run failed: %v; stderr=%q", err, stderr)
-	}
-
-	workspacePath := "/workspace/" + workspaceName
-	workspaceHost := filepath.Join(baseDir, "workspaces", workspaceName)
-
-	wantAgentClaude := "source=" + filepath.Join(workspaceHost, ".claude") + "/,target=" + workspacePath + "/.claude/"
-	if !strings.Contains(stdout, wantAgentClaude) {
-		t.Errorf("agent .claude/ mount must be present by default; stdout:\n%s", stdout)
-	}
-	wantAgentCodex := "source=" + filepath.Join(workspaceHost, ".codex") + "/,target=" + workspacePath + "/.codex/"
-	if !strings.Contains(stdout, wantAgentCodex) {
-		t.Errorf("agent .codex/ mount must be present by default; stdout:\n%s", stdout)
-	}
-	wantDocs := "source=" + filepath.Join(workspaceHost, "docs") + "/,target=" + workspacePath + "/docs/"
-	if !strings.Contains(stdout, wantDocs) {
-		t.Errorf("content docs/ mount must be present by default; stdout:\n%s", stdout)
-	}
-	wantClaude := "source=" + filepath.Join(workspaceHost, "CLAUDE.md") + ",target=" + workspacePath + "/CLAUDE.md"
-	if !strings.Contains(stdout, wantClaude) {
-		t.Errorf("content CLAUDE.md mount must be present by default; stdout:\n%s", stdout)
-	}
-}
-
-// cache:{content:false} keeps agent mounts but drops content mounts. Guards
-// against a runRun wiring bug that swaps the Content/Agent assignments.
-func TestRun_DryRun_CacheMixed(t *testing.T) {
-	setHomeToTestParent(t)
-	baseDir := t.TempDir()
-	pwd := t.TempDir()
-	t.Chdir(pwd)
-
-	initOut := initWithImage(t, baseDir)
-	workspaceDir := strings.TrimSpace(initOut)
-	workspaceName := filepath.Base(workspaceDir)
-
-	// content cache off; agent cache defaults to true.
-	resolvedPwd := evalSymlinks(t, pwd)
-	yamlContent := "cache:\n  content: false\n"
-	if err := os.WriteFile(filepath.Join(resolvedPwd, projectconfig.Filename), []byte(yamlContent), 0o644); err != nil {
-		t.Fatalf("write .makeslop.yaml: %v", err)
-	}
-
-	stdout, stderr, err := runCmd(t, baseDir, "run", "--dry-run")
-	if err != nil {
-		t.Fatalf("--dry-run failed: %v; stderr=%q", err, stderr)
-	}
-
-	workspacePath := "/workspace/" + workspaceName
-	workspaceHost := filepath.Join(baseDir, "workspaces", workspaceName)
-
-	// Content mounts absent (content=false).
-	if strings.Contains(stdout, workspacePath+"/docs/") {
-		t.Errorf("content docs/ must be absent when content cache disabled; stdout:\n%s", stdout)
-	}
-	if strings.Contains(stdout, workspacePath+"/CLAUDE.md") {
-		t.Errorf("content CLAUDE.md must be absent when content cache disabled; stdout:\n%s", stdout)
-	}
-	// Agent mounts present (agent defaults to true).
-	wantAgentClaude := "source=" + filepath.Join(workspaceHost, ".claude") + "/,target=" + workspacePath + "/.claude/"
-	if !strings.Contains(stdout, wantAgentClaude) {
-		t.Errorf("agent .claude/ mount must be present (agent=true); stdout:\n%s", stdout)
-	}
-	wantAgentCodex := "source=" + filepath.Join(workspaceHost, ".codex") + "/,target=" + workspacePath + "/.codex/"
-	if !strings.Contains(stdout, wantAgentCodex) {
-		t.Errorf("agent .codex/ mount must be present (agent=true); stdout:\n%s", stdout)
-	}
-}
-
-// tmp_dir_size from settings.json threads into the docker run argv.
 func TestRun_CustomTmpDirSize_FlowsIntoDockerArgv(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -3183,6 +3031,7 @@ func TestRun_Join_EnvAndNetworkIgnored(t *testing.T) {
 		{"host env", "environments:\n  host: [JOIN_HOST_VAR]\n"},
 		{"network_mode", "network_mode: host\n"},
 		{"networks", "networks: [joinnet]\n"},
+		{"cache", "cache: {shared: [join-only], local: [join-docs], static: [\"missing:/opt/missing\"]}\n"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -3201,7 +3050,7 @@ func TestRun_Join_EnvAndNetworkIgnored(t *testing.T) {
 				t.Errorf("join network settings must not be preflighted; networks=%v containers=%v",
 					fc.NetworksInspected, fc.ContainersInspected)
 			}
-			line := "makeslop: join " + f.lib + ": environments/network settings ignored\n"
+			line := "makeslop: join " + f.lib + ": cache/environments/network settings ignored\n"
 			if n := strings.Count(stderr, line); n != 1 {
 				t.Errorf("want exactly one ignored line %q, got %d; stderr=%q", line, n, stderr)
 			}

@@ -32,13 +32,10 @@ type Project struct {
 type Options struct {
 	// The caller guarantees a main project at index 0, unique names and disjoint roots.
 	Projects []Project
-	BaseDir  string // ~/.makeslop
-	// WorkspaceHost is the per-workspace cache directory on the host
-	// (e.g. ~/.makeslop/workspaces/<Projects[0].Name>). Caller computes this;
-	// BuildSpec uses it directly for cache overlay mounts.
-	WorkspaceHost string
-	Image         string
-	Command       string // shell to exec inside the container
+	// CacheMounts contains fully resolved opt-in binds, in configuration order.
+	CacheMounts []Mount
+	Image       string
+	Command     string // shell to exec inside the container
 
 	// TmpDirSize is passed verbatim to --tmpfs /tmp:size=<TmpDirSize>; config.Load
 	// owns the default, BuildSpec does not re-default.
@@ -46,15 +43,6 @@ type Options struct {
 
 	// Env holds "KEY=VALUE" pairs to inject; copied verbatim (caller sorts).
 	Env []string
-
-	// MountAgentCache gates the per-workspace agent-state cache overlays
-	// (workspaceHost/.claude/, .codex/). The global ~/.makeslop equivalents are
-	// always present regardless.
-	MountAgentCache bool
-
-	// MountContentCache gates the per-workspace content cache overlays
-	// (workspaceHost/docs/, CLAUDE.md); false lets the project's own files show.
-	MountContentCache bool
 
 	// NetworkMode is passed verbatim as --network / HostConfig.NetworkMode
 	// (bridge, host, none, container:<x>, or a network name). Empty means the
@@ -116,28 +104,10 @@ func BuildSpec(o Options) Spec {
 
 	// Directory trailing slashes make Docker reject unexpected files early.
 	mounts := []Mount{projectBind(main)}
-	mounts = append(mounts,
-		Mount{Host: filepath.Join(o.BaseDir, ".claude") + "/", Container: "/home/user/.claude/"},
-		Mount{Host: filepath.Join(o.BaseDir, ".claude.json"), Container: "/home/user/.claude.json"},
-		Mount{Host: filepath.Join(o.BaseDir, ".codex") + "/", Container: "/home/user/.codex/"},
-	)
-
 	// The policy mounts must shadow the writable project bind.
 	mounts = append(mounts, projectSandbox(main)...)
 
-	if o.MountAgentCache {
-		mounts = append(mounts,
-			Mount{Host: filepath.Join(o.WorkspaceHost, ".claude") + "/", Container: workspacePath + "/.claude/"},
-			Mount{Host: filepath.Join(o.WorkspaceHost, ".codex") + "/", Container: workspacePath + "/.codex/"},
-		)
-	}
-
-	if o.MountContentCache {
-		mounts = append(mounts,
-			Mount{Host: filepath.Join(o.WorkspaceHost, "docs") + "/", Container: workspacePath + "/docs/"},
-			Mount{Host: filepath.Join(o.WorkspaceHost, "CLAUDE.md"), Container: workspacePath + "/CLAUDE.md"},
-		)
-	}
+	mounts = append(mounts, o.CacheMounts...)
 
 	mounts = append(mounts, projectMasks(main, main.ProtectConfig)...)
 
