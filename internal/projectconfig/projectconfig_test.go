@@ -36,7 +36,7 @@ func TestScaffold_WritesStub(t *testing.T) {
 	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 	root := evalSymlinks(t, t.TempDir())
 
-	if err := Scaffold(root, Cache{Content: true, Agent: true}); err != nil {
+	if err := Scaffold(root); err != nil {
 		t.Fatalf("Scaffold returned error: %v", err)
 	}
 
@@ -58,7 +58,7 @@ func TestScaffold_Idempotent(t *testing.T) {
 		t.Fatalf("pre-write: %v", err)
 	}
 
-	if err := Scaffold(root, Cache{Content: true, Agent: true}); err != nil {
+	if err := Scaffold(root); err != nil {
 		t.Fatalf("Scaffold on existing file returned error: %v", err)
 	}
 
@@ -111,8 +111,8 @@ func TestLoad_DefaultStub_RoundTrips(t *testing.T) {
 	if len(excl.Files) != 0 || len(excl.Dirs) != 0 {
 		t.Errorf("expected zero Files/Dirs from default stub, got files=%v dirs=%v", excl.Files, excl.Dirs)
 	}
-	if !cacheCfg.Content || !cacheCfg.Agent {
-		t.Errorf("Cache from default Stub: got {Content:%v Agent:%v}, want {true, true}", cacheCfg.Content, cacheCfg.Agent)
+	if !reflect.DeepEqual(cacheCfg, CacheMounts{}) {
+		t.Errorf("Cache from default Stub: got %#v, want empty", cacheCfg)
 	}
 	// Must mirror Stub exactly (sorted); update if Stub changes.
 	wantPatterns := []string{
@@ -178,11 +178,8 @@ func TestLoad_EmptyAndCommentOnlyFiles(t *testing.T) {
 			if excl.SkipDirs != nil {
 				t.Errorf("expected nil SkipDirs for %q, got %v", tc.name, excl.SkipDirs)
 			}
-			if !cacheCfg.Content {
-				t.Errorf("Cache.Content: got false, want true for empty/comment-only file %q", tc.name)
-			}
-			if !cacheCfg.Agent {
-				t.Errorf("Cache.Agent: got false, want true for empty/comment-only file %q", tc.name)
+			if !reflect.DeepEqual(cacheCfg, CacheMounts{}) {
+				t.Errorf("nonempty cache: %#v", cacheCfg)
 			}
 		})
 	}
@@ -312,7 +309,7 @@ func TestLoad_ValidationRules(t *testing.T) {
 func TestLoad_ReservedPaths(t *testing.T) {
 	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
 
-	for _, reserved := range []string{".claude", ".codex", "docs", "CLAUDE.md", ".makeslop.yaml"} {
+	for _, reserved := range []string{".makeslop.yaml"} {
 		t.Run("dirs/"+reserved, func(t *testing.T) {
 			root := evalSymlinks(t, t.TempDir())
 			content := "exclude:\n  dirs:\n    - " + reserved + "\n  files: []\n"
@@ -323,8 +320,8 @@ func TestLoad_ReservedPaths(t *testing.T) {
 			if err == nil {
 				t.Fatalf("expected collision error for %q in dirs, got nil", reserved)
 			}
-			if !strings.Contains(err.Error(), "reserved agent path") {
-				t.Errorf("error %q does not mention 'reserved agent path'", err.Error())
+			if !strings.Contains(err.Error(), "reserved policy path") {
+				t.Errorf("error %q does not mention 'reserved policy path'", err.Error())
 			}
 		})
 		t.Run("files/"+reserved, func(t *testing.T) {
@@ -337,8 +334,8 @@ func TestLoad_ReservedPaths(t *testing.T) {
 			if err == nil {
 				t.Fatalf("expected collision error for %q in files, got nil", reserved)
 			}
-			if !strings.Contains(err.Error(), "reserved agent path") {
-				t.Errorf("error %q does not mention 'reserved agent path'", err.Error())
+			if !strings.Contains(err.Error(), "reserved policy path") {
+				t.Errorf("error %q does not mention 'reserved policy path'", err.Error())
 			}
 		})
 	}
@@ -976,273 +973,112 @@ func TestLoad_Scan_UnknownKeyRejected(t *testing.T) {
 	}
 }
 
-// An absent cache: block defaults both fields to true.
-func TestLoad_Cache_AbsentBlock(t *testing.T) {
-	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
-	root := evalSymlinks(t, t.TempDir())
+func TestLoad_CacheDeclarations(t *testing.T) {
+	cfg, err := loadDoc(t, `cache:
+  shared: [.claude]
+  local: [docs]
+  static: ["./x:~/x"]
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	content := "exclude:\n  dirs: []\n  files: []\n"
-	if err := os.WriteFile(filepath.Join(root, Filename), []byte(content), 0o644); err != nil {
-		t.Fatalf("write: %v", err)
+	want := CacheMounts{
+		Shared: []CacheDirectory{{Name: ".claude"}}, Local: []CacheDirectory{{Name: "docs"}},
+		Static: []CacheBind{{Host: "./x", Container: "~/x"}},
+	}
+	if !reflect.DeepEqual(cfg.Cache, want) {
+		t.Fatalf("got %#v", cfg.Cache)
+	}
+}
+
+func TestLoad_EmptyCacheDeclarations(t *testing.T) {
+	for _, text := range []string{"", "exclude: {}", "cache: {}"} {
+		t.Run(text, func(t *testing.T) {
+			cfg, err := loadDoc(t, text)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(cfg.Cache, CacheMounts{}) {
+				t.Fatalf("nonempty cache: %#v", cfg.Cache)
+			}
+		})
+	}
+}
+
+func TestLoad_CacheRejected(t *testing.T) {
+	cases := []string{
+		"cache: {content: true}",
+		"cache: {agent: false}",
+		"cache: {typo: []}",
+		"cache: {shared: &x [a], local: *x}",
+		"cache: {shared: [1]}",
+		"cache: {shared: [], shared: []}",
+	}
+
+	for _, text := range cases {
+		t.Run(text, func(t *testing.T) {
+			if _, err := loadDoc(t, text); err == nil {
+				t.Fatal("accepted invalid cache")
+			}
+		})
+	}
+}
+
+func TestLoad_CacheDeclaredExcludes(t *testing.T) {
+	cfg, err := loadDoc(t, `exclude:
+  dirs: [docs, .claude, .codex]
+  files: [CLAUDE.md]
+cache:
+  local: [docs]
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := []string{".claude", ".codex", "CLAUDE.md", "docs"}
+	if !reflect.DeepEqual(cfg.Excludes.DeclaredPaths, want) {
+		t.Fatalf("got %#v", cfg.Excludes.DeclaredPaths)
+	}
+	if len(cfg.Excludes.Files)+len(cfg.Excludes.Dirs) != 0 {
+		t.Fatal("missing masks should remain filtered")
+	}
+}
+
+func TestScaffold_EmptyCache(t *testing.T) {
+	root := evalSymlinks(t, t.TempDir())
+	if err := Scaffold(root); err != nil {
+		t.Fatal(err)
 	}
 
 	cfg, err := Load(root)
-
-	cacheCfg := cfg.Cache
 	if err != nil {
-		t.Fatalf("Load returned error: %v", err)
+		t.Fatal(err)
 	}
-	if !cacheCfg.Content {
-		t.Errorf("Cache.Content: got false, want true (absent block should default to true)")
-	}
-	if !cacheCfg.Agent {
-		t.Errorf("Cache.Agent: got false, want true (absent block should default to true)")
+	if len(cfg.Cache.Shared)+len(cfg.Cache.Local)+len(cfg.Cache.Static) != 0 {
+		t.Fatalf("got %#v", cfg.Cache)
 	}
 }
 
-func TestLoad_Cache_MissingFile(t *testing.T) {
-	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
+func TestScaffold_EmptyCacheIdempotent(t *testing.T) {
 	root := evalSymlinks(t, t.TempDir())
-
-	cfg, err := Load(root)
-
-	cacheCfg := cfg.Cache
+	if err := Scaffold(root); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(filepath.Join(root, Filename))
 	if err != nil {
-		t.Fatalf("Load on missing file: %v", err)
-	}
-	if !cacheCfg.Content {
-		t.Errorf("Cache.Content: got false, want true for missing file")
-	}
-	if !cacheCfg.Agent {
-		t.Errorf("Cache.Agent: got false, want true for missing file")
-	}
-}
-
-func TestLoad_Cache_BothFalse(t *testing.T) {
-	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
-	root := evalSymlinks(t, t.TempDir())
-
-	content := "cache:\n  content: false\n  agent: false\n"
-	if err := os.WriteFile(filepath.Join(root, Filename), []byte(content), 0o644); err != nil {
-		t.Fatalf("write: %v", err)
+		t.Fatal(err)
 	}
 
-	cfg, err := Load(root)
-
-	cacheCfg := cfg.Cache
+	if err := Scaffold(root); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.ReadFile(filepath.Join(root, Filename))
 	if err != nil {
-		t.Fatalf("Load returned error: %v", err)
+		t.Fatal(err)
 	}
-	if cacheCfg.Content {
-		t.Errorf("Cache.Content: got true, want false")
-	}
-	if cacheCfg.Agent {
-		t.Errorf("Cache.Agent: got true, want false")
-	}
-}
-
-func TestLoad_Cache_BothTrue(t *testing.T) {
-	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
-	root := evalSymlinks(t, t.TempDir())
-
-	content := "cache:\n  content: true\n  agent: true\n"
-	if err := os.WriteFile(filepath.Join(root, Filename), []byte(content), 0o644); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-
-	cfg, err := Load(root)
-
-	cacheCfg := cfg.Cache
-	if err != nil {
-		t.Fatalf("Load returned error: %v", err)
-	}
-	if !cacheCfg.Content {
-		t.Errorf("Cache.Content: got false, want true")
-	}
-	if !cacheCfg.Agent {
-		t.Errorf("Cache.Agent: got false, want true")
-	}
-}
-
-// content:false with agent absent → Cache{false,true} (absent field defaults true).
-func TestLoad_Cache_MixedContentFalseAgentAbsent(t *testing.T) {
-	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
-	root := evalSymlinks(t, t.TempDir())
-
-	content := "cache:\n  content: false\n"
-	if err := os.WriteFile(filepath.Join(root, Filename), []byte(content), 0o644); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-
-	cfg, err := Load(root)
-
-	cacheCfg := cfg.Cache
-	if err != nil {
-		t.Fatalf("Load returned error: %v", err)
-	}
-	if cacheCfg.Content {
-		t.Errorf("Cache.Content: got true, want false")
-	}
-	if !cacheCfg.Agent {
-		t.Errorf("Cache.Agent: got false, want true (absent field defaults to true)")
-	}
-}
-
-// agent:false with content absent → Cache{true,false}.
-func TestLoad_Cache_MixedAgentFalseContentAbsent(t *testing.T) {
-	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
-	root := evalSymlinks(t, t.TempDir())
-
-	content := "cache:\n  agent: false\n"
-	if err := os.WriteFile(filepath.Join(root, Filename), []byte(content), 0o644); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-
-	cfg, err := Load(root)
-
-	cacheCfg := cfg.Cache
-	if err != nil {
-		t.Fatalf("Load returned error: %v", err)
-	}
-	if !cacheCfg.Content {
-		t.Errorf("Cache.Content: got false, want true (absent field defaults to true)")
-	}
-	if cacheCfg.Agent {
-		t.Errorf("Cache.Agent: got true, want false")
-	}
-}
-
-func TestLoad_Cache_UnknownKeyRejected(t *testing.T) {
-	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
-	root := evalSymlinks(t, t.TempDir())
-
-	content := "cache:\n  content: true\n  agent: true\n  typo: bad\n"
-	if err := os.WriteFile(filepath.Join(root, Filename), []byte(content), 0o644); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-
-	_, err := Load(root)
-	if err == nil {
-		t.Fatal("expected error for unknown key under cache:, got nil")
-	}
-	if !strings.HasPrefix(err.Error(), "projectconfig:") {
-		t.Errorf("error missing 'projectconfig:' prefix: %q", err.Error())
-	}
-}
-
-// renderStub(Cache{true,true}) must round-trip through Load to Cache{true,true}.
-func TestRenderStub_TrueTrue(t *testing.T) {
-	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
-	root := evalSymlinks(t, t.TempDir())
-
-	data := renderStub(Cache{Content: true, Agent: true})
-	if err := os.WriteFile(filepath.Join(root, Filename), data, 0o644); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-
-	cfg, err := Load(root)
-
-	cacheCfg := cfg.Cache
-	if err != nil {
-		t.Fatalf("Load returned error: %v", err)
-	}
-	if !cacheCfg.Content {
-		t.Errorf("Cache.Content: got false, want true")
-	}
-	if !cacheCfg.Agent {
-		t.Errorf("Cache.Agent: got false, want true")
-	}
-}
-
-// renderStub(Cache{false,false}) must round-trip through Load to Cache{false,false}.
-func TestRenderStub_FalseFalse(t *testing.T) {
-	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
-	root := evalSymlinks(t, t.TempDir())
-
-	data := renderStub(Cache{Content: false, Agent: false})
-	if err := os.WriteFile(filepath.Join(root, Filename), data, 0o644); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-
-	cfg, err := Load(root)
-
-	cacheCfg := cfg.Cache
-	if err != nil {
-		t.Fatalf("Load returned error: %v", err)
-	}
-	if cacheCfg.Content {
-		t.Errorf("Cache.Content: got true, want false")
-	}
-	if cacheCfg.Agent {
-		t.Errorf("Cache.Agent: got true, want false")
-	}
-}
-
-func TestScaffold_CacheFalseFalse(t *testing.T) {
-	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
-	root := evalSymlinks(t, t.TempDir())
-
-	if err := Scaffold(root, Cache{Content: false, Agent: false}); err != nil {
-		t.Fatalf("Scaffold returned error: %v", err)
-	}
-
-	got, err := os.ReadFile(filepath.Join(root, Filename))
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
-	}
-	want := renderStub(Cache{Content: false, Agent: false})
-	if string(got) != string(want) {
-		t.Errorf("file content mismatch:\ngot:  %q\nwant: %q", got, want)
-	}
-
-	cfg, err := Load(root)
-
-	cacheCfg := cfg.Cache
-	if err != nil {
-		t.Fatalf("Load returned error: %v", err)
-	}
-	if cacheCfg.Content {
-		t.Errorf("Cache.Content: got true, want false")
-	}
-	if cacheCfg.Agent {
-		t.Errorf("Cache.Agent: got true, want false")
-	}
-}
-
-// A second Scaffold with different Cache values must be a no-op: EEXIST wins
-// over the c parameter, so user edits are never clobbered.
-func TestScaffold_IdempotentWithDifferentCache(t *testing.T) {
-	skipNonPOSIX(t, "symlinks required; POSIX-only per CLAUDE.md")
-	root := evalSymlinks(t, t.TempDir())
-
-	if err := Scaffold(root, Cache{Content: true, Agent: true}); err != nil {
-		t.Fatalf("first Scaffold returned error: %v", err)
-	}
-
-	first, err := os.ReadFile(filepath.Join(root, Filename))
-	if err != nil {
-		t.Fatalf("ReadFile after first scaffold: %v", err)
-	}
-
-	if err := Scaffold(root, Cache{Content: false, Agent: false}); err != nil {
-		t.Fatalf("second Scaffold returned error: %v", err)
-	}
-
-	second, err := os.ReadFile(filepath.Join(root, Filename))
-	if err != nil {
-		t.Fatalf("ReadFile after second scaffold: %v", err)
-	}
-
-	if string(first) != string(second) {
-		t.Errorf("second Scaffold clobbered the file:\nfirst:  %q\nsecond: %q", first, second)
-	}
-}
-
-// Stub must equal renderStub(Cache{true,true}) so callers comparing against Stub work.
-func TestStub_MatchesDefaultRenderStub(t *testing.T) {
-	want := renderStub(Cache{Content: true, Agent: true})
-	if string(Stub) != string(want) {
-		t.Errorf("Stub does not match renderStub(Cache{true,true}):\nStub:  %q\nwant: %q", Stub, want)
+	if string(before) != string(after) {
+		t.Fatal("scaffold overwrote config")
 	}
 }
 
@@ -1653,8 +1489,9 @@ func TestLoad_AbsentEnvironments_ZeroEnv(t *testing.T) {
   files: []
   dirs: []
 cache:
-  content: true
-  agent: true
+  shared: []
+  local: []
+  static: []
 `
 	if err := os.WriteFile(filepath.Join(root, Filename), []byte(content), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
@@ -1838,7 +1675,7 @@ func TestScaffold_DanglingSymlink(t *testing.T) {
 		t.Fatalf("symlink: %v", err)
 	}
 
-	err := Scaffold(root, Cache{Content: true, Agent: true})
+	err := Scaffold(root)
 	if err == nil {
 		t.Fatal("expected error for dangling symlink at config path, got nil")
 	}
@@ -1870,7 +1707,7 @@ func TestScaffold_LiveSymlink(t *testing.T) {
 		t.Fatalf("symlink: %v", err)
 	}
 
-	err := Scaffold(root, Cache{Content: true, Agent: true})
+	err := Scaffold(root)
 	if err == nil {
 		t.Fatal("expected error for live symlink at config path, got nil")
 	}
@@ -1898,7 +1735,7 @@ func TestScaffold_RegularFile_Idempotent_SymlinkCheck(t *testing.T) {
 		t.Fatalf("pre-write: %v", err)
 	}
 
-	if err := Scaffold(root, Cache{Content: true, Agent: true}); err != nil {
+	if err := Scaffold(root); err != nil {
 		t.Fatalf("Scaffold on existing regular file returned error: %v", err)
 	}
 
@@ -1985,8 +1822,8 @@ func TestLoad_MissingFile_NoSymlink_ReturnsDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load on truly missing file returned error: %v", err)
 	}
-	if !cacheCfg.Content || !cacheCfg.Agent {
-		t.Errorf("Cache defaults wrong: got {Content:%v Agent:%v}, want {true, true}", cacheCfg.Content, cacheCfg.Agent)
+	if !reflect.DeepEqual(cacheCfg, CacheMounts{}) {
+		t.Errorf("nonempty cache: %#v", cacheCfg)
 	}
 	if !reflect.DeepEqual(env, Env{}) {
 		t.Errorf("expected zero Env for missing file, got %#v", env)
@@ -2024,7 +1861,7 @@ func TestLoad_Network_Valid(t *testing.T) {
 		content string
 		want    Network
 	}{
-		{"unset", "cache:\n  content: true\n", Network{}},
+		{"unset", "cache: {}\n", Network{}},
 		{"empty mode", "network_mode: \"\"\n", Network{}},
 		{"null mode", "network_mode:\n", Network{}},
 		{"bridge", "network_mode: bridge\n", Network{Mode: "bridge"}},
@@ -2123,18 +1960,15 @@ func TestValidateNetwork_EmptyListIsUnset(t *testing.T) {
 	}
 }
 
-// Both stub variants carry only commented network examples, so they parse to
-// the zero Network.
+// Commented network examples leave the network configuration unset.
 func TestStub_ParsesToZeroNetwork(t *testing.T) {
 	skipNonPOSIX(t, "POSIX-only per CLAUDE.md")
-	for _, c := range []Cache{{Content: true, Agent: true}, {}} {
-		cfg, err := loadDoc(t, string(renderStub(c)))
-		if err != nil {
-			t.Fatalf("Load stub %+v: %v", c, err)
-		}
-		if !reflect.DeepEqual(cfg.Network, Network{}) {
-			t.Errorf("stub %+v: Network = %#v, want zero", c, cfg.Network)
-		}
+	cfg, err := loadDoc(t, string(Stub))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(cfg.Network, Network{}) {
+		t.Errorf("Network = %#v, want zero", cfg.Network)
 	}
 	if !strings.Contains(string(Stub), `# network_mode: "container:proxy"`) {
 		t.Error(`Stub missing commented network_mode: "container:proxy" example`)

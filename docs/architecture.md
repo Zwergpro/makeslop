@@ -12,15 +12,15 @@ The CLI lives in `internal/cli`. It loads settings and project configuration, ch
 
 `Options.Projects[0]` is the writable main project; joins follow in flag order. Mounts are added in this order:
 
-1. Project root, then the global `~/.makeslop` agent config mounts.
+1. Main-project root.
 2. Main-project policy mounts: a read-only `.makeslop.yaml` bind and a `.git/hooks` tmpfs when applicable.
-3. Per-workspace agent and content overlays, controlled by `MountAgentCache` and `MountContentCache`.
+3. Explicit `Options.CacheMounts`, ordered shared, local, static.
 4. Main-project secret masks.
 5. Each join's root, writable policy mounts, and masks.
 
-Masks must follow the mounts they cover. A `/dev/null` mask for `.makeslop.yaml` is dropped when it would hide the read-only config bind. Read-only joins need no policy mounts, though their config may still be masked. Global and cache mounts apply only to the main project.
+Masks must follow the mounts they cover. A `/dev/null` mask for `.makeslop.yaml` is dropped when it would hide the read-only config bind. Read-only joins need no policy mounts, though their config may still be masked. Cache mounts apply only to the main project.
 
-Absent `cache:` config enables both overlay groups. Go's zero-value flags disable them, so direct `BuildSpec` callers must opt in. Joined dry runs include group labels for inspection; those labels make the output unsuitable for pasting into a shell.
+Absent `cache:` config and zero-value `Options.CacheMounts` both mount nothing. Projectconfig validates declarations without preparing sources. CLI cache helpers resolve host/container paths, preserve file/directory types, reject destination conflicts, and check managed-directory containment. Real launches prepare shared/local directories after image/network preflight; dry runs perform no creation. Explicit exclude declarations are retained before stat filtering so missing paths cannot bypass collision checks. Joined dry runs include group labels for inspection; those labels make the output unsuitable for pasting into a shell.
 
 ## Docker boundary
 

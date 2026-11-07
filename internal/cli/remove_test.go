@@ -31,6 +31,39 @@ func seedWorkspace(t *testing.T, baseDir, path, name string) string {
 	return cacheDir
 }
 
+func TestRemove_CacheScope(t *testing.T) {
+	base, root, ws := runCacheFixture(t)
+	external := filepath.Join(root, "keep.txt")
+	writeFile(t, external, "keep")
+	writeCacheConfig(t, root, "cache: {shared: [common], local: [docs], static: [\"./keep.txt:/opt/keep.txt\"]}\n")
+	if _, _, err := runCmdWithDeps(
+		t,
+		base,
+		depsFrom(newFakeDocker(0, true)),
+		"run",
+	); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(ws, "inside.txt"), "local")
+
+	if _, _, err := runCmd(
+		t,
+		base,
+		"remove",
+		filepath.Base(ws),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	assertAbsent(t, ws)
+	if fi, err := os.Stat(filepath.Join(base, "shared/common")); err != nil || !fi.IsDir() {
+		t.Fatalf("shared disappeared: %v", err)
+	}
+	if data, err := os.ReadFile(external); err != nil || string(data) != "keep" {
+		t.Fatalf("static source changed %q %v", data, err)
+	}
+}
+
 func TestRemove_ExistingWorkspace_RemovesEntryAndCacheDir(t *testing.T) {
 	baseDir := t.TempDir()
 

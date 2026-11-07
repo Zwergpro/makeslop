@@ -93,9 +93,6 @@ func (w *Workspaces) Init(pwd string) (string, error) {
 		if err := os.MkdirAll(workspaceDir, 0o755); err != nil {
 			return fmt.Errorf("create workspace dir %s: %w", workspaceDir, err)
 		}
-		if err := scaffoldTemplate(workspaceDir); err != nil {
-			return err
-		}
 		// Save failure leaves the cache dir orphaned; the next Init for this pwd reclaims it.
 		return config.Save(w.baseDir, s)
 	})
@@ -133,24 +130,6 @@ func (w *Workspaces) Remove(name string) (cacheDir string, err error) {
 		return "", err
 	}
 	return cacheDir, nil
-}
-
-func scaffoldTemplate(workspaceDir string) error {
-	for _, d := range []string{".claude", ".codex", "docs"} {
-		p := filepath.Join(workspaceDir, d)
-		if err := os.MkdirAll(p, 0o755); err != nil {
-			return fmt.Errorf("scaffold %s: %w", p, err)
-		}
-	}
-	p := filepath.Join(workspaceDir, "CLAUDE.md")
-	f, err := os.OpenFile(p, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
-	if err != nil && !errors.Is(err, os.ErrExist) {
-		return fmt.Errorf("scaffold %s: %w", p, err)
-	}
-	if err == nil {
-		f.Close()
-	}
-	return nil
 }
 
 // Filesystem root maps to "root" so the basename is never empty.

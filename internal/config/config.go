@@ -114,55 +114,9 @@ func Save(baseDir string, s *Settings) error {
 	return nil
 }
 
-// bootstrapFile writes content to path via temp-file+rename so a failed write
-// never leaves a partial file. A no-op (idempotent) if path already exists.
-func bootstrapFile(path string, content []byte) error {
-	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
-	if err != nil {
-		return fmt.Errorf("create temp file for %s: %w", path, err)
-	}
-	tmpName := tmp.Name()
-	cleanup := true
-	defer func() {
-		if cleanup {
-			_ = os.Remove(tmpName)
-		}
-	}()
-
-	if _, err := tmp.Write(content); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("write temp file for %s: %w", path, err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close temp file for %s: %w", path, err)
-	}
-
-	// Existence-check then Rename (not Link): os.Link fails with EPERM on
-	// overlayfs and other filesystems (Docker, CI, NFS); checking first
-	// preserves the idempotent no-overwrite contract.
-	if _, err := os.Lstat(path); err == nil {
-		return nil
-	} else if !errors.Is(err, fs.ErrNotExist) {
-		// Real Lstat failure (e.g. EACCES on parent) — surface it rather than
-		// fall through to Rename and produce a misleading message.
-		return fmt.Errorf("stat %s: %w", path, err)
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		return fmt.Errorf("install %s: %w", path, err)
-	}
-	cleanup = false
-	// Normalise to 0o644 regardless of the process umask.
-	if err := os.Chmod(path, 0o644); err != nil {
-		return fmt.Errorf("chmod %s: %w", path, err)
-	}
-	return nil
-}
-
 var bootstrapDirs = []string{
 	"",
-	".codex",
-	".claude",
+	"shared",
 	WorkspacesDir,
 }
 
@@ -181,8 +135,8 @@ func BaseConfigExists(baseDir string) (bool, error) {
 	return false, fmt.Errorf("stat %s: %w", path, err)
 }
 
-// Bootstrap is idempotent: creates the agent directories and seed files under
-// baseDir, never overwriting existing content. settings.json is not touched.
+// Bootstrap creates structural storage directories without seeding agent data.
+// Existing content and settings.json are not touched.
 func Bootstrap(baseDir string) error {
 	for _, sub := range bootstrapDirs {
 		dir := filepath.Join(baseDir, sub)
@@ -190,5 +144,5 @@ func Bootstrap(baseDir string) error {
 			return fmt.Errorf("create dir %s: %w", dir, err)
 		}
 	}
-	return bootstrapFile(filepath.Join(baseDir, ".claude.json"), []byte("{}\n"))
+	return nil
 }

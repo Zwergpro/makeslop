@@ -1153,7 +1153,7 @@ func TestStatus_NetworkRow_WorkspaceUnresolved(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	t.Chdir(t.TempDir())
-	if _, stderr, err := runCmd(t, baseDir, "init", "--global-only"); err != nil {
+	if _, stderr, err := runCmd(t, baseDir, "init"); err != nil {
 		t.Fatalf("init failed: %v; stderr=%q", err, stderr)
 	}
 	t.Chdir(t.TempDir()) // an unregistered directory

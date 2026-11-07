@@ -11,7 +11,7 @@ import (
 	"github.com/Zwergpro/makeslop/internal/workspace"
 )
 
-func runInit(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfHome, globalOnly, quiet bool) error {
+func runInit(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOfHome, quiet bool) error {
 	chrome := &quietWriter{w: cmd.ErrOrStderr(), quiet: quiet}
 
 	pwd, err := resolvePwd()
@@ -39,7 +39,7 @@ func runInit(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOf
 	if err != nil {
 		return err
 	}
-	if err := projectconfig.Scaffold(workspaceRoot, projectconfig.Cache{Content: !globalOnly, Agent: !globalOnly}); err != nil {
+	if err := projectconfig.Scaffold(workspaceRoot); err != nil {
 		return err
 	}
 
@@ -53,7 +53,6 @@ func runInit(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, outOf
 
 func newInitCmd(ws *workspace.Workspaces, baseDir string) *cobra.Command {
 	var outOfHome bool
-	var globalOnly bool
 
 	cmd := &cobra.Command{
 		Use:          "init",
@@ -62,12 +61,10 @@ func newInitCmd(ws *workspace.Workspaces, baseDir string) *cobra.Command {
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			quiet, _ := cmd.Flags().GetBool("quiet")
-			return runInit(cmd, ws, baseDir, outOfHome, globalOnly, quiet)
+			return runInit(cmd, ws, baseDir, outOfHome, quiet)
 		},
 	}
 	cmd.Flags().BoolVar(&outOfHome, "out-of-home", false,
 		"allow running outside the user's home directory")
-	cmd.Flags().BoolVar(&globalOnly, "global-only", false,
-		"scaffold .makeslop.yaml with project cache overlays disabled (only global ~/.makeslop mounts)")
 	return cmd
 }

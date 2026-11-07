@@ -2,18 +2,23 @@
   <img src="docs/assets/logo.png" alt="makeslop" width="480">
 </h1>
 
-A sandboxed runner for Claude Code and Codex: isolates your AI agent in a per-project Docker
-container with controlled mounts and secret masking.
+A sandboxed runner for any AI agent: isolates your agent in a per-project Docker container
+with controlled mounts and secret masking. Bring an image with your preferred agent installed —
+for example, Claude Code or Pi.
 
 ## What & why
 
 makeslop gives each project its own container launched from a single shared base image. The agent
-gets your source tree plus its own persistent state directories (`.claude/`, `.codex/`, `docs/`),
-but nothing else from your host — no other projects, and no host environment variables except the ones you list under `environments.host` (credentials in the shared agent config dirs like `.claude/` are present by design).
+gets your source tree plus the persistent mounts you explicitly configure: shared directories,
+project-local directories, or existing host files/directories. There are no implicit agent-state
+mounts or host environment variables; configure mounts under `cache` and variables under
+`environments.host`. Shared mounts can intentionally expose credentials across projects.
 
 Why use it:
-- **Isolation** — each project runs in its own container; no credential leakage between projects.
+- **Isolation** — each project runs in its own container; you choose which state to share.
 - **Secret masking** — `.env`, PEM keys, and SSH keys are overlaid with `/dev/null` before launch.
+- **Agent-neutral** — run your preferred agent inside the container; makeslop handles the sandbox,
+  not the agent itself.
 - **Bring your own image** — makeslop does not build images. Point it at any image you build or
   pull (`makeslop config set image <ref>`, or `-i/--image` per invocation).
   [`examples/claudebox/Dockerfile`](examples/claudebox/Dockerfile) is a starting point. See
@@ -37,19 +42,24 @@ for each tagged version (built with [GoReleaser](https://goreleaser.com)).
 ## Quickstart
 
 ```
-# 1. Build or pull an image (the example Dockerfile is a starting point;
-#    run from a clone of this repo)
-docker build -t claudebox examples/claudebox
+# 1. Build or pull an image with your preferred agent installed.
+#    This example uses the included Dockerfile; run from a clone of this repo.
+docker build -t agentbox examples/claudebox
 
 # 2. Tell makeslop which image to use
-makeslop config set image claudebox
+makeslop config set image agentbox
 
 # 3. From your project directory — register the project and seed ~/.makeslop/
 makeslop init
 
-# 4. Launch an interactive agent session
+# 4. Open an interactive shell in the sandbox
 makeslop run
+
+# 5. Inside the container, launch the agent installed in your image
 ```
+
+Use your own Dockerfile to install the agent and tools you need. The included Dockerfile is
+only an example, not a required image or agent choice.
 
 The image has no default. If none is configured, `run` fails, `status` reports ✗, and `init`
 prints a note — each pointing at `makeslop config set image <ref>`. Override the configured image
@@ -62,13 +72,13 @@ a missing local image fails with a "build or pull it" hint (e.g. `docker pull <r
 ┌─ your terminal ──────────────────────────────────────────────────────────────┐
 │  makeslop run                                                                │
 │    │  scans for secrets (masks with /dev/null)                               │
-│    │  mounts project root + per-project agent state                          │
+│    │  mounts project root + explicitly configured caches                    │
 │    ▼                                                                         │
 │  ──────────────────────────────────────────────────────────────────────────  │
 │  agent container      --cap-drop ALL  --security-opt no-new-privileges       │
 │                                                                              │
 │    /workspace/<name>    ← your project root (bind-mounted)                   │
-│    /home/user/.claude/  ← global agent config                                │
+│    /home/user/agent-state/ ← only if cache.shared requests agent-state       │
 │    /tmp                 ← tmpfs (default 100m, not on disk)                  │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -81,7 +91,22 @@ through a `container:proxy` sidecar); see [Configuration](#configuration) and
 ## Configuration
 
 `makeslop init` creates a `.makeslop.yaml` at the project root. Edit it to control secret masking
-and directory/file exclusions:
+and directory/file exclusions. Persistent mounts are opt-in, for example:
+
+```yaml
+cache:
+  shared: [agent-state]     # ~/.makeslop/shared/<name> -> /home/user/<name>
+  local: [docs]              # workspace cache -> container project/docs
+  static:
+    - "~/.config/agent:~/.config/agent"  # existing agent config directory
+    - "./tools:/opt/tools"               # existing project-relative directory
+```
+
+Missing shared/local directories are created on real runs. Static sources must already exist;
+files mount as files and directories as directories. Empty or missing `cache` mounts nothing.
+See [cache layout and path rules](docs/reference.md#cache-layout).
+
+Exclusion example:
 
 ```yaml
 exclude:
@@ -140,7 +165,7 @@ network row. Absent keys = Docker's default bridge. See
 
 Global settings (`~/.makeslop/settings.json`) control the image (required, no default), shell, and `/tmp` size:
 ```
-makeslop config set image claudebox
+makeslop config set image agentbox
 makeslop config set shell /bin/zsh
 makeslop config set tmp_dir_size 100m
 ```

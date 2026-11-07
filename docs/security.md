@@ -82,8 +82,9 @@ exclude:
   files: []
   dirs: []
 cache:
-  content: true
-  agent: true
+  shared: []
+  local: []
+  static: []
 ```
 
 Edit this file to control scanning and hide additional directories and files from the container on
@@ -198,10 +199,11 @@ cp "$(readlink .makeslop.yaml)" .makeslop.yaml.tmp && mv .makeslop.yaml.tmp .mak
 strict-decode error that aborts `makeslop run` before Docker is contacted. Container networking is
 set with `network_mode` / `networks` (see [Network egress](#network-egress)).
 
-**Reserved paths.** The paths `.claude`, `.codex`, `docs`, `CLAUDE.md`, and `.makeslop.yaml` are
-already mounted by `makeslop run` (agent state or sandbox-policy mounts). Listing them in
-`.makeslop.yaml` is rejected with an error
-(`projectconfig: path %q collides with a reserved agent path`).
+**Reserved paths.** `.makeslop.yaml` remains protected and cannot be explicitly excluded.
+Names such as `.claude`, `.codex`, `docs`, and `CLAUDE.md` are no longer reserved by default.
+However, explicit exclusions that overlap configured cache destinations fail, even if the
+excluded host path is missing. Cache destinations also cannot overlap policy config or Git-hook
+paths, replace project/home roots, target a joined project, or replace runtime infrastructure.
 
 **Symlink warnings.** If an entry in `exclude.files` or `exclude.dirs` is a symlink on the host,
 it is dropped from masking and a warning is printed to stderr:
@@ -279,6 +281,38 @@ The join's `cache:`, `environments:`, and network settings cannot change the con
 [home guard](#home-directory-guard) applies to every join.
 
 ---
+
+## Cache mounts
+
+Cache mounts are opt-in; an absent/empty `cache` block mounts nothing. `shared` names reuse
+directories under `~/.makeslop/shared/` across participating projects. Mounts default to read-write;
+append `:ro` to an entry to make that container mount read-only (`:rw` is explicit read-write).
+A compromised agent can read exposed credentials and, with writable mounts, modify data there,
+affecting later sessions in other projects. Read-only mounts do not hide secrets or prevent other
+containers or host processes from changing shared data. Share only directories whose contents you
+intend to trust across projects.
+
+`local` directories use only their owner's registered workspace cache. This is a configuration
+boundary, not a host-user permission boundary: an explicit `static` bind can expose another
+workspace's directory. Static binds accept existing regular files or directories, resolve host
+symlinks, and accept an optional `:ro` or `:rw` after the container path. Inspect project config
+before launching untrusted projects; a static
+bind can expose host data outside the project, regardless of the project home-directory guard.
+
+Managed directories reject symlink components beneath the resolved makeslop base and never
+replace existing files. This is not a guarantee against arbitrary concurrent host filesystem
+changes. Managed directories are created empty on real launch even for read-only mounts, never
+during dry-run. Missing
+static sources fail instead of being created with an ambiguous type.
+
+Secret scanning walks project trees, **not shared/local cache contents or arbitrary static
+sources**. Existing automatic scan masks follow cache overlays, but do not assume caches or
+additional binds are scanned. Explicit cache/exclude destination conflicts fail rather than
+silently hiding unrelated data. See [cache configuration](reference.md#cache-layout) for the
+full path and collision rules.
+
+`remove` deletes the owner's workspace cache directory, including static sources deliberately
+located inside it. It does not delete shared storage or external static sources.
 
 ## Host environment passthrough
 

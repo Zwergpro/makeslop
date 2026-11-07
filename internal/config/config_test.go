@@ -400,14 +400,14 @@ func TestLoad_DropsLegacyVersionKeys(t *testing.T) {
 	}
 }
 
-func TestBootstrap_CreatesDirsAndClaudeJSON(t *testing.T) {
+func TestBootstrap_StructuralOnly(t *testing.T) {
 	base := filepath.Join(t.TempDir(), ".makeslop")
 
 	if err := Bootstrap(base); err != nil {
 		t.Fatalf("Bootstrap: %v", err)
 	}
 
-	for _, sub := range []string{"", ".codex", ".claude", WorkspacesDir} {
+	for _, sub := range []string{"", "shared", WorkspacesDir} {
 		path := filepath.Join(base, sub)
 		info, err := os.Stat(path)
 		if err != nil {
@@ -419,13 +419,10 @@ func TestBootstrap_CreatesDirsAndClaudeJSON(t *testing.T) {
 		}
 	}
 
-	claudeJSON := filepath.Join(base, ".claude.json")
-	data, err := os.ReadFile(claudeJSON)
-	if err != nil {
-		t.Fatalf("read .claude.json: %v", err)
-	}
-	if !bytes.Equal(data, []byte("{}\n")) {
-		t.Errorf(".claude.json content = %q, want %q", data, "{}\n")
+	for _, name := range []string{".claude", ".codex", ".claude.json"} {
+		if _, err := os.Stat(filepath.Join(base, name)); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("unexpected implicit artifact %s: %v", name, err)
+		}
 	}
 
 	// settings.json must NOT be touched by Bootstrap — the workspace registry
@@ -493,7 +490,7 @@ func TestBootstrap_PartialStateRecovers(t *testing.T) {
 		t.Fatalf("Bootstrap: %v", err)
 	}
 
-	for _, sub := range []string{".codex", ".claude", WorkspacesDir} {
+	for _, sub := range []string{".codex", "shared", WorkspacesDir} {
 		info, err := os.Stat(filepath.Join(base, sub))
 		if err != nil {
 			t.Errorf("missing %s after bootstrap: %v", sub, err)

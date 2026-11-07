@@ -16,9 +16,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// renderStub returns the .makeslop.yaml stub bytes for the given Cache defaults.
-func renderStub(c Cache) []byte {
-	return []byte(fmt.Sprintf(`exclude:
+// Stub enables secret masking but leaves all persistent mounts opt-in.
+var Stub = []byte(`exclude:
   scan:
     patterns:
       - "*.env"
@@ -46,13 +45,21 @@ func renderStub(c Cache) []byte {
   files: []
   dirs: []
 cache:
-  content: %t
-  agent: %t
+  shared: []
+  local: []
+  static: []
+  # shared: [.claude, .codex]  # shared storage -> container home
+  # local: [docs]             # workspace storage -> container project
+  # static: ["~/.claude.json:~/.claude.json"]  # existing file or directory
+  # Append :ro for read-only or :rw for read-write (default) to any entry.
+  # local: [docs:ro]
+  # static: ["./tools:/opt/tools:ro"]
+  # Relative container paths resolve from the main project's container root.
+  # static: ["~/.makeslop/settings.json:./settings.json:ro"]
 # Container networking (compose names; makeslop attaches, never creates):
 # network_mode: "container:proxy"   # bridge | host | none | container:<name> | <network>
 # networks: [myapp_default]         # alternative to network_mode; not both
-`, c.Content, c.Agent))
-}
+`)
 
 // Filename is the project-local config file name, relative to the project root.
 const Filename = ".makeslop.yaml"
@@ -61,38 +68,17 @@ const Filename = ".makeslop.yaml"
 // regular file.
 var ErrConfigSymlink = errors.New(Filename + " is a symlink — the project config must be a regular file")
 
-// Stub is the content Scaffold writes for the default Cache{true,true}. It seeds
-// the default scan filters as active values so new projects get secret masking
-// out of the box.
-var Stub = renderStub(Cache{Content: true, Agent: true})
-
-// reservedPaths lists paths docker.BuildSpec may mount over the project root;
-// user overlays in exclude.dirs/exclude.files would silently shadow them. The
-// check fires regardless of cache config, so disabling a cache group and still
-// listing such a path errors even when the mount is inactive (conservative).
-var reservedPaths = map[string]struct{}{
-	".claude":        {},
-	".codex":         {},
-	"docs":           {},
-	"CLAUDE.md":      {},
-	".makeslop.yaml": {},
-}
-
 // Excludes is the parsed, validated, host-resolved result of Load.
-// Paths are absolute, under root, deduplicated within each list, and sorted.
+// Files/Dirs are absolute beneath root; DeclaredPaths retains relative declarations.
+// Each list is deduplicated and sorted.
 type Excludes struct {
-	Files    []string // absolute host paths; /dev/null overlay targets
-	Dirs     []string // absolute host paths; tmpfs overlay targets
-	Patterns []string // basename globs for the WalkDir secret scan; deduped and sorted
-	SkipDirs []string // bare directory names pruned during the WalkDir scan; deduped and sorted
-	Warnings []string // human-readable notices about dropped entries (e.g. symlinks); callers should surface these
-}
-
-// Cache is the parsed cache-overlay configuration. Both fields default to true
-// when the cache: block is absent.
-type Cache struct {
-	Content bool // mount per-workspace cache docs/ + CLAUDE.md (default true)
-	Agent   bool // mount per-workspace cache .claude/ + .codex/ (default true)
+	// DeclaredPaths retains relative declarations even when stat filtering drops them.
+	DeclaredPaths []string
+	Files         []string // absolute host paths; /dev/null overlay targets
+	Dirs          []string // absolute host paths; tmpfs overlay targets
+	Patterns      []string // basename globs for the WalkDir secret scan; deduped and sorted
+	SkipDirs      []string // bare directory names pruned during the WalkDir scan; deduped and sorted
+	Warnings      []string // human-readable notices about dropped entries (e.g. symlinks); callers should surface these
 }
 
 // Env is the parsed environments: block.
@@ -119,10 +105,7 @@ type yamlSchema struct {
 		Dirs  []string `yaml:"dirs"`
 		Files []string `yaml:"files"`
 	} `yaml:"exclude"`
-	Cache struct {
-		Content *bool `yaml:"content"`
-		Agent   *bool `yaml:"agent"`
-	} `yaml:"cache"`
+	Cache yaml.Node `yaml:"cache"`
 	// Decoded as a raw yaml.Node and walked by validateEnvironments: that gives
 	// lenient scalar coercion (numbers/booleans become their string forms) and a
 	// targeted error for KEY: value entries placed directly under environments:.
@@ -135,7 +118,7 @@ type yamlSchema struct {
 
 // Scaffold preserves existing regular configs. Symlinks are rejected because
 // Load and the read-only self-bind require a real file. root must be resolved.
-func Scaffold(root string, c Cache) error {
+func Scaffold(root string) error {
 	path := filepath.Join(root, Filename)
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
 	if err != nil {
@@ -154,7 +137,7 @@ func Scaffold(root string, c Cache) error {
 		return fmt.Errorf("scaffold %s: %w", Filename, err)
 	}
 	defer f.Close()
-	if _, err := f.Write(renderStub(c)); err != nil {
+	if _, err := f.Write(Stub); err != nil {
 		// Remove the partial file so a retry isn't blocked by O_EXCL seeing
 		// ErrExist and returning nil, leaving the file corrupt forever.
 		writeErr := fmt.Errorf("scaffold %s: %w", Filename, err)
@@ -172,9 +155,8 @@ type Config struct {
 	// carries human-readable notices for symlinked entries (dropped with a
 	// warning); missing entries and non-symlink wrong-type drops stay silent.
 	Excludes Excludes
-	// Cache holds per-workspace overlay settings; defaults to {true,true} when
-	// the cache: block (or the whole file) is absent.
-	Cache Cache
+	// Cache contains only explicitly configured mounts; its zero value mounts nothing.
+	Cache CacheMounts
 	// Env holds static "KEY=VALUE" pairs and host variable names from
 	// environments:; zero Env{} when the block is absent. Load never reads the
 	// process environment: callers resolve Env.Host themselves.
@@ -186,7 +168,7 @@ type Config struct {
 
 // defaultConfig is returned when .makeslop.yaml is absent or empty.
 func defaultConfig() Config {
-	return Config{Cache: Cache{Content: true, Agent: true}}
+	return Config{}
 }
 
 // Load parses the project config. It rejects symlinks because following one can
@@ -280,11 +262,9 @@ func load(root string, required bool) (Config, error) {
 	// Merge warnings from both lists; deduplicate and sort.
 	warnings := dedupSorted(append(fileWarnings, dirWarnings...))
 
-	// Absent pointer (nil) means the field was unset in YAML, defaulting to true
-	// (absent block = both mounted).
-	cacheCfg := Cache{
-		Content: schema.Cache.Content == nil || *schema.Cache.Content,
-		Agent:   schema.Cache.Agent == nil || *schema.Cache.Agent,
+	cacheCfg, err := decodeCache(&schema.Cache)
+	if err != nil {
+		return Config{}, err
 	}
 
 	env, err := validateEnvironments(&schema.Environments)
@@ -302,10 +282,13 @@ func load(root string, required bool) (Config, error) {
 	}
 
 	return Config{
-		Excludes: Excludes{Files: files, Dirs: dirs, Patterns: patterns, SkipDirs: skipDirs, Warnings: warnings},
-		Cache:    cacheCfg,
-		Env:      env,
-		Network:  netCfg,
+		Excludes: Excludes{
+			Files: files, Dirs: dirs, Patterns: patterns, SkipDirs: skipDirs, Warnings: warnings,
+			DeclaredPaths: dedupSorted(append(cleanedFiles, cleanedDirs...)),
+		},
+		Cache:   cacheCfg,
+		Env:     env,
+		Network: netCfg,
 	}, nil
 }
 
@@ -440,8 +423,8 @@ func validateEntries(entries []string, listName string) ([]string, error) {
 		if c == "." {
 			return nil, fmt.Errorf("projectconfig: path %q refers to project root; entries must be strictly under root", entry)
 		}
-		if _, reserved := reservedPaths[c]; reserved {
-			return nil, fmt.Errorf("projectconfig: path %q collides with a reserved agent path", c)
+		if c == Filename || strings.HasPrefix(c, Filename+"/") {
+			return nil, fmt.Errorf("projectconfig: path %q collides with a reserved policy path", c)
 		}
 		cleaned = append(cleaned, c)
 	}

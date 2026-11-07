@@ -228,7 +228,7 @@ func TestInit_CorruptSettings_ReportsError(t *testing.T) {
 }
 
 // Bootstrap contract: artifacts exist after first init; second init is byte-equal.
-func TestInit_BootstrapsAgentArtifacts(t *testing.T) {
+func TestInit_BootstrapsStructuralDirs(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
@@ -238,7 +238,7 @@ func TestInit_BootstrapsAgentArtifacts(t *testing.T) {
 		t.Fatalf("first init: %v", err)
 	}
 
-	for _, sub := range []string{".codex", ".claude", "workspaces"} {
+	for _, sub := range []string{"shared", "workspaces"} {
 		info, err := os.Stat(filepath.Join(baseDir, sub))
 		if err != nil {
 			t.Errorf("missing %s: %v", sub, err)
@@ -249,13 +249,8 @@ func TestInit_BootstrapsAgentArtifacts(t *testing.T) {
 		}
 	}
 
-	claudeJSON := filepath.Join(baseDir, ".claude.json")
-	data, err := os.ReadFile(claudeJSON)
-	if err != nil {
-		t.Fatalf("read .claude.json: %v", err)
-	}
-	if !bytes.Equal(data, []byte("{}\n")) {
-		t.Errorf(".claude.json content = %q, want %q", data, "{}\n")
+	for _, name := range []string{".claude", ".codex", ".claude.json"} {
+		assertAbsent(t, filepath.Join(baseDir, name))
 	}
 
 	snapBefore := snapshotTree(t, baseDir)
@@ -493,92 +488,65 @@ func TestInit_FreshSeed_StdoutIsBarePathOnly(t *testing.T) {
 	}
 }
 
-// init --global-only scaffolds a .makeslop.yaml parsing to Cache{false, false}.
-func TestInit_GlobalOnly_ScaffoldsCacheDisabled(t *testing.T) {
+func TestInit_EmptyCacheScaffold(t *testing.T) {
 	setHomeToTestParent(t)
-	baseDir := t.TempDir()
-	pwd := t.TempDir()
-	t.Chdir(pwd)
+	base := t.TempDir()
+	root := t.TempDir()
+	t.Chdir(root)
 
-	_, stderr, err := runCmd(t, baseDir, "init", "--global-only")
+	out, _, err := runCmd(t, base, "init")
 	if err != nil {
-		t.Fatalf("init --global-only failed: %v; stderr=%q", err, stderr)
+		t.Fatal(err)
+	}
+	cfg, err := projectconfig.Load(evalSymlinks(t, root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Cache.Shared)+len(cfg.Cache.Local)+len(cfg.Cache.Static) != 0 {
+		t.Fatalf("nonempty cache: %#v", cfg.Cache)
 	}
 
-	resolvedPwd := evalSymlinks(t, pwd)
-	cfg, err := projectconfig.Load(resolvedPwd)
-	cache := cfg.Cache
-	if err != nil {
-		t.Fatalf("projectconfig.Load after init --global-only: %v", err)
-	}
-	if cache.Content {
-		t.Errorf("cache.Content must be false after init --global-only; got true")
-	}
-	if cache.Agent {
-		t.Errorf("cache.Agent must be false after init --global-only; got true")
+	children, err := os.ReadDir(strings.TrimSpace(out))
+	if err != nil || len(children) != 0 {
+		t.Fatalf("workspace not empty: %v %v", children, err)
 	}
 }
 
-// Plain init scaffolds a .makeslop.yaml parsing to Cache{true, true}.
-func TestInit_NoGlobalOnly_ScaffoldsCacheEnabled(t *testing.T) {
-	setHomeToTestParent(t)
-	baseDir := t.TempDir()
-	pwd := t.TempDir()
-	t.Chdir(pwd)
-
-	_, stderr, err := runCmd(t, baseDir, "init")
-	if err != nil {
-		t.Fatalf("init failed: %v; stderr=%q", err, stderr)
-	}
-
-	resolvedPwd := evalSymlinks(t, pwd)
-	cfg, err := projectconfig.Load(resolvedPwd)
-	cache := cfg.Cache
-	if err != nil {
-		t.Fatalf("projectconfig.Load after init: %v", err)
-	}
-	if !cache.Content {
-		t.Errorf("cache.Content must be true after plain init; got false")
-	}
-	if !cache.Agent {
-		t.Errorf("cache.Agent must be true after plain init; got false")
-	}
-}
-
-// init --global-only is a no-op on an existing .makeslop.yaml (Scaffold is
+// init is a no-op on an existing .makeslop.yaml (Scaffold is
 // idempotent: EEXIST = success, never clobbers).
-func TestInit_GlobalOnly_IsNopOnExistingFile(t *testing.T) {
+func TestInit_IsNopOnExistingFile(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
 	t.Chdir(pwd)
 
 	resolvedPwd := evalSymlinks(t, pwd)
-	existing := []byte("exclude:\n  dirs: []\n  files: []\n  scan:\n    patterns: []\ncache:\n  content: true\n  agent: true\n")
+	existing := []byte("exclude:\n  dirs: []\n  files: []\n  scan:\n    patterns: []\ncache:\n  shared: [.claude]\n")
 	configPath := filepath.Join(resolvedPwd, projectconfig.Filename)
 	if err := os.WriteFile(configPath, existing, 0o644); err != nil {
 		t.Fatalf("write pre-existing config: %v", err)
 	}
 
-	_, stderr, err := runCmd(t, baseDir, "init", "--global-only")
+	_, stderr, err := runCmd(t, baseDir, "init")
 	if err != nil {
-		t.Fatalf("init --global-only on existing config failed: %v; stderr=%q", err, stderr)
+		t.Fatalf("init on existing config failed: %v; stderr=%q", err, stderr)
 	}
 
 	after, readErr := os.ReadFile(configPath)
 	if readErr != nil {
-		t.Fatalf("read config after init --global-only: %v", readErr)
+		t.Fatalf("read config after init: %v", readErr)
 	}
 	if !bytes.Equal(after, existing) {
-		t.Errorf(".makeslop.yaml was modified by init --global-only\ngot:  %q\nwant: %q", after, existing)
+		t.Errorf(".makeslop.yaml was modified by init\ngot:  %q\nwant: %q", after, existing)
 	}
 }
 
-// --global-only is rejected as unknown on every command except init.
-func TestGlobalOnly_RejectedOnNonInitCommands(t *testing.T) {
+// --global-only is no longer supported on any command.
+func TestInit_GlobalOnlyRejected(t *testing.T) {
 	baseDir := t.TempDir()
 
 	for _, cmd := range [][]string{
+		{"init", "--global-only"},
 		{"run", "--global-only"},
 		{"version", "--global-only"},
 		{"config", "--global-only"},
