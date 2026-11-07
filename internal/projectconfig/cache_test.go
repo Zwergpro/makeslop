@@ -46,8 +46,8 @@ static: ["./settings.json:~/.settings.json"]`))
 	}
 
 	want := CacheMounts{
-		Shared: []string{".claude", ".config/tool"},
-		Local:  []string{"docs", ".claude"},
+		Shared: []CacheDirectory{{Name: ".claude"}, {Name: ".config/tool"}},
+		Local:  []CacheDirectory{{Name: "docs"}, {Name: ".claude"}},
 		Static: []CacheBind{{Host: "./settings.json", Container: "~/.settings.json"}},
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -95,13 +95,28 @@ func TestDecodeCache_InvalidNames(t *testing.T) {
 
 func TestDecodeCache_InvalidStatic(t *testing.T) {
 	entries := []string{
-		"missing", ":/x", "x:", "x:/x:ro", "~foo:/x", "x:~foo", "x:docs", "x\n:/x",
+		"missing", ":/x", "x:", "x:/x:invalid", "~foo:/x", "x:~foo", "x:../docs", "x:./../../docs:ro", "x:a/../../docs:rw", "x\n:/x",
 	}
 
 	for _, entry := range entries {
 		t.Run(entry, func(t *testing.T) {
 			if _, err := decodeCache(cacheEntryNode("static", entry)); err == nil {
 				t.Fatalf("accepted %q", entry)
+			}
+		})
+	}
+}
+
+func TestDecodeCache_RelativeStatic(t *testing.T) {
+	for _, target := range []string{"settings.json", "./settings.json", "nested/settings.json", "./nested/../settings.json"} {
+		t.Run(target, func(t *testing.T) {
+			got, err := decodeCache(cacheEntryNode("static", "~/.makeslop/settings.json:"+target+":ro"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := []CacheBind{{Host: "~/.makeslop/settings.json", Container: target, ReadOnly: true}}
+			if !reflect.DeepEqual(got.Static, want) {
+				t.Fatalf("got %#v, want %#v", got.Static, want)
 			}
 		})
 	}
@@ -134,8 +149,63 @@ static: ["./a b,c'd:/opt/a b,c'd"]`))
 		t.Fatal(err)
 	}
 
-	if got.Local[0] != "a b,c'd" || got.Static[0].Host != "./a b,c'd" {
+	if got.Local[0].Name != "a b,c'd" || got.Static[0].Host != "./a b,c'd" {
 		t.Fatalf("mangled: %#v", got)
+	}
+}
+
+func TestDecodeCache_Modes(t *testing.T) {
+	for _, group := range []string{"shared", "local", "static"} {
+		for _, suffix := range []string{"", ":ro", ":rw"} {
+			t.Run(group+suffix, func(t *testing.T) {
+				value := "docs" + suffix
+				if group == "static" {
+					value = "./docs:/opt/docs" + suffix
+				}
+				got, err := decodeCache(cacheEntryNode(group, value))
+				if err != nil {
+					t.Fatal(err)
+				}
+				readOnly := suffix == ":ro"
+				switch group {
+				case "shared":
+					if !reflect.DeepEqual(got.Shared, []CacheDirectory{{Name: "docs", ReadOnly: readOnly}}) {
+						t.Fatalf("got %#v", got.Shared)
+					}
+				case "local":
+					if !reflect.DeepEqual(got.Local, []CacheDirectory{{Name: "docs", ReadOnly: readOnly}}) {
+						t.Fatalf("got %#v", got.Local)
+					}
+				case "static":
+					want := []CacheBind{{Host: "./docs", Container: "/opt/docs", ReadOnly: readOnly}}
+					if !reflect.DeepEqual(got.Static, want) {
+						t.Fatalf("got %#v", got.Static)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestDecodeCache_InvalidModes(t *testing.T) {
+	for _, group := range []string{"shared", "local", "static"} {
+		for _, value := range []string{":ro", "docs:", "docs:RO", "docs:other", "docs:ro:rw", "../docs:ro"} {
+			if group == "static" {
+				value = "./host:/opt/" + value
+				// Static destinations permit traversal; exercise an empty path instead.
+				if value == "./host:/opt/../docs:ro" || value == "./host:/opt/:ro" {
+					value = "./host::ro"
+				}
+			}
+			t.Run(group+"/"+value, func(t *testing.T) {
+				if _, err := decodeCache(cacheEntryNode(group, value)); err == nil {
+					t.Fatalf("accepted %q", value)
+				}
+			})
+		}
+	}
+	if _, err := decodeCache(cacheNode(t, "local: [docs, docs/:ro]")); err == nil {
+		t.Fatal("accepted duplicate with different mode")
 	}
 }
 

@@ -11,13 +11,22 @@ import (
 
 // CacheMounts declares opt-in persistent directories and existing host binds.
 type CacheMounts struct {
-	Shared []string
-	Local  []string
+	Shared []CacheDirectory
+	Local  []CacheDirectory
 	Static []CacheBind
 }
 
+// CacheDirectory declares a managed directory and its container mount mode.
+type CacheDirectory struct {
+	Name     string
+	ReadOnly bool
+}
+
 // CacheBind preserves the host and container path spellings until CLI resolution.
-type CacheBind struct{ Host, Container string }
+type CacheBind struct {
+	Host, Container string
+	ReadOnly        bool
+}
 
 func decodeCache(node *yaml.Node) (CacheMounts, error) {
 	if node.Kind == 0 || isNull(node) {
@@ -85,14 +94,19 @@ func (c *CacheMounts) decodeGroup(group string, list *yaml.Node) error {
 			continue
 		}
 
-		name, err := decodeCacheName(node.Value, entry, names)
+		value, readOnly, err := decodeCacheMode(node.Value, entry)
 		if err != nil {
 			return err
 		}
+		name, err := decodeCacheName(value, entry, names)
+		if err != nil {
+			return err
+		}
+		dir := CacheDirectory{Name: name, ReadOnly: readOnly}
 		if group == "shared" {
-			c.Shared = append(c.Shared, name)
+			c.Shared = append(c.Shared, dir)
 		} else {
-			c.Local = append(c.Local, name)
+			c.Local = append(c.Local, dir)
 		}
 	}
 
@@ -101,16 +115,39 @@ func (c *CacheMounts) decodeGroup(group string, list *yaml.Node) error {
 
 func decodeCacheBind(value, entry string) (CacheBind, error) {
 	host, target, hasSeparator := strings.Cut(value, ":")
+	target, readOnly, err := decodeCacheMode(target, entry)
+	if err != nil {
+		return CacheBind{}, err
+	}
 	invalidPath := host == "" || target == "" || strings.Contains(target, ":")
 	invalidHome := unsupportedHome(host) || unsupportedHome(target)
-	absoluteTarget := strings.HasPrefix(target, "/") || target == "~" || strings.HasPrefix(target, "~/")
+	cleanTarget := path.Clean(target)
+	escapesProject := cleanTarget == ".." || strings.HasPrefix(cleanTarget, "../")
 
 	validPaths := hasSeparator && !invalidPath && !invalidHome
-	if !validPaths || !absoluteTarget || hasControl(value) {
+	if !validPaths || hasControl(value) {
 		return CacheBind{}, fmt.Errorf("projectconfig: %s must be host:container", entry)
 	}
+	if escapesProject {
+		return CacheBind{}, fmt.Errorf("projectconfig: %s relative container path must stay within the project root", entry)
+	}
 
-	return CacheBind{Host: host, Container: target}, nil
+	return CacheBind{Host: host, Container: target, ReadOnly: readOnly}, nil
+}
+
+func decodeCacheMode(value, entry string) (string, bool, error) {
+	p, mode, hasMode := strings.Cut(value, ":")
+	if !hasMode {
+		return value, false, nil
+	}
+	switch mode {
+	case "ro":
+		return p, true, nil
+	case "rw":
+		return p, false, nil
+	default:
+		return "", false, fmt.Errorf("projectconfig: %s mount mode must be ro or rw", entry)
+	}
 }
 
 func decodeCacheName(value, entry string, seen map[string]bool) (string, error) {

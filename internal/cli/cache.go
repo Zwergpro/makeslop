@@ -24,7 +24,7 @@ type cachePlan struct {
 
 type cacheGroup struct {
 	name, host, target string
-	entries            []string
+	entries            []projectconfig.CacheDirectory
 }
 
 func resolveCache(
@@ -39,7 +39,7 @@ func resolveCache(
 	if err := result.resolveManaged(c, paths, mainRoot); err != nil {
 		return cachePlan{}, err
 	}
-	if err := result.resolveStatic(c.Static, paths, projects[0].Host); err != nil {
+	if err := result.resolveStatic(c.Static, paths, projects[0]); err != nil {
 		return cachePlan{}, err
 	}
 
@@ -78,7 +78,8 @@ func (p *cachePlan) resolveManaged(c projectconfig.CacheMounts, paths cachePaths
 }
 
 func (p *cachePlan) resolveManagedGroup(group cacheGroup, base string) error {
-	for i, name := range group.entries {
+	for i, dirConfig := range group.entries {
+		name := dirConfig.Name
 		entry := fmt.Sprintf("cache.%s[%d]", group.name, i)
 		source := filepath.Join(group.host, filepath.FromSlash(name))
 		dir := cacheDir{Base: base, Path: source, Entry: entry}
@@ -90,19 +91,20 @@ func (p *cachePlan) resolveManagedGroup(group cacheGroup, base string) error {
 		p.entries = append(p.entries, entry)
 		p.Mounts = append(p.Mounts, docker.Mount{
 			Host: source + "/", Container: path.Join(group.target, name) + "/",
+			ReadOnly: dirConfig.ReadOnly,
 		})
 	}
 
 	return nil
 }
 
-func (p *cachePlan) resolveStatic(binds []projectconfig.CacheBind, paths cachePaths, projectRoot string) error {
+func (p *cachePlan) resolveStatic(binds []projectconfig.CacheBind, paths cachePaths, project docker.Project) error {
 	for i, bind := range binds {
 		entry := fmt.Sprintf("cache.static[%d]", i)
 		mount, err := resolveStaticCacheMount(
 			bind,
 			paths,
-			projectRoot,
+			project,
 			entry,
 		)
 		if err != nil {
@@ -119,10 +121,10 @@ func (p *cachePlan) resolveStatic(binds []projectconfig.CacheBind, paths cachePa
 func resolveStaticCacheMount(
 	bind projectconfig.CacheBind,
 	paths cachePaths,
-	projectRoot string,
+	project docker.Project,
 	entry string,
 ) (docker.Mount, error) {
-	host, err := staticCacheHost(bind.Host, paths.HostHome, projectRoot)
+	host, err := staticCacheHost(bind.Host, paths.HostHome, project.Host)
 	if err != nil {
 		return docker.Mount{}, fmt.Errorf("%s: %w", entry, err)
 	}
@@ -139,13 +141,16 @@ func resolveStaticCacheMount(
 	if strings.HasPrefix(target, "~/") {
 		target = path.Join(containerHome, strings.TrimPrefix(target, "~/"))
 	}
+	if !path.IsAbs(target) {
+		target = path.Join("/workspace/"+project.Name, target)
+	}
 	target = path.Clean(target)
 	if isDir {
 		source += "/"
 		target += "/"
 	}
 
-	return docker.Mount{Host: source, Container: target}, nil
+	return docker.Mount{Host: source, Container: target, ReadOnly: bind.ReadOnly}, nil
 }
 
 func staticCacheHost(host, home, projectRoot string) (string, error) {

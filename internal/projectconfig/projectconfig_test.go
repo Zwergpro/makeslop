@@ -984,7 +984,7 @@ func TestLoad_CacheDeclarations(t *testing.T) {
 	}
 
 	want := CacheMounts{
-		Shared: []string{".claude"}, Local: []string{"docs"},
+		Shared: []CacheDirectory{{Name: ".claude"}}, Local: []CacheDirectory{{Name: "docs"}},
 		Static: []CacheBind{{Host: "./x", Container: "~/x"}},
 	}
 	if !reflect.DeepEqual(cfg.Cache, want) {

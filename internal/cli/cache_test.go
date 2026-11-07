@@ -43,7 +43,7 @@ func TestResolveCache_Mappings(t *testing.T) {
 	file := filepath.Join(projects[0].Host, "settings.json")
 	writeFile(t, file, "keep")
 	cfg := projectconfig.CacheMounts{
-		Shared: []string{".claude"}, Local: []string{"docs"},
+		Shared: []projectconfig.CacheDirectory{{Name: ".claude"}}, Local: []projectconfig.CacheDirectory{{Name: "docs"}},
 		Static: []projectconfig.CacheBind{{Host: "./settings.json", Container: "~/.settings.json"}},
 	}
 
@@ -72,9 +72,54 @@ func TestResolveCache_Mappings(t *testing.T) {
 	assertAbsent(t, paths.WorkspaceDir)
 }
 
+func TestResolveCache_Modes(t *testing.T) {
+	for _, readOnly := range []bool{false, true} {
+		name := "rw"
+		if readOnly {
+			name = "ro"
+		}
+		t.Run(name, func(t *testing.T) {
+			paths, projects := staticCacheFixture(t)
+			cfg := projectconfig.CacheMounts{
+				Shared: []projectconfig.CacheDirectory{{Name: "shared", ReadOnly: readOnly}},
+				Local:  []projectconfig.CacheDirectory{{Name: "local", ReadOnly: readOnly}},
+				Static: []projectconfig.CacheBind{
+					{Host: "./a b,c'd", Container: "/opt/file", ReadOnly: readOnly},
+					{Host: "./tools", Container: "/opt/tools", ReadOnly: readOnly},
+				},
+			}
+			plan, err := resolveCache(cfg, paths, projects, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := []docker.Mount{
+				{Host: paths.BaseDir + "/shared/shared/", Container: "/home/user/shared/", ReadOnly: readOnly},
+				{Host: paths.WorkspaceDir + "/local/", Container: "/workspace/app-abc123/local/", ReadOnly: readOnly},
+				{Host: projects[0].Host + "/a b,c'd", Container: "/opt/file", ReadOnly: readOnly},
+				{Host: projects[0].Host + "/tools/", Container: "/opt/tools/", ReadOnly: readOnly},
+			}
+			if !reflect.DeepEqual(plan.Mounts, want) {
+				t.Fatalf("got %#v, want %#v", plan.Mounts, want)
+			}
+		})
+	}
+}
+
 func TestResolveCache_StaticFilePaths(t *testing.T) {
 	paths, projects := staticCacheFixture(t)
 	cases := []struct{ name, host, target, wantHost, wantTarget string }{
+		{
+			name: "bare relative target", host: "./a b,c'd", target: "settings.json",
+			wantHost: projects[0].Host + "/a b,c'd", wantTarget: "/workspace/app-abc123/settings.json",
+		},
+		{
+			name: "dot relative target", host: "./a b,c'd", target: "./settings.json",
+			wantHost: projects[0].Host + "/a b,c'd", wantTarget: "/workspace/app-abc123/settings.json",
+		},
+		{
+			name: "nested relative target", host: "./a b,c'd", target: "nested/settings.json",
+			wantHost: projects[0].Host + "/a b,c'd", wantTarget: "/workspace/app-abc123/nested/settings.json",
+		},
 		{
 			name: "file characters", host: "./a b,c'd", target: "/opt/a b,c'd",
 			wantHost: projects[0].Host + "/a b,c'd", wantTarget: "/opt/a b,c'd",
@@ -134,7 +179,7 @@ func TestResolveCache_StaticDirectorySources(t *testing.T) {
 func TestResolveCache_MissingStaticDoesNotCreateManaged(t *testing.T) {
 	paths, projects := cacheFixture(t)
 	cfg := projectconfig.CacheMounts{
-		Shared: []string{"new"},
+		Shared: []projectconfig.CacheDirectory{{Name: "new"}},
 		Static: []projectconfig.CacheBind{{Host: "missing", Container: "/opt/x"}},
 	}
 
@@ -176,7 +221,10 @@ func TestResolveCache_SpecialAndDanglingSources(t *testing.T) {
 
 func TestResolveCache_SharedAndLocalScope(t *testing.T) {
 	paths, projects := cacheFixture(t)
-	cfg := projectconfig.CacheMounts{Shared: []string{".claude"}, Local: []string{".claude"}}
+	cfg := projectconfig.CacheMounts{
+		Shared: []projectconfig.CacheDirectory{{Name: ".claude"}},
+		Local:  []projectconfig.CacheDirectory{{Name: ".claude"}},
+	}
 	first, err := resolveCache(
 		cfg,
 		paths,
@@ -232,7 +280,7 @@ func TestResolveCache_ProtectedDestinations(t *testing.T) {
 	for _, target := range targets {
 		t.Run(target, func(t *testing.T) {
 			cfg := projectconfig.CacheMounts{
-				Static: []projectconfig.CacheBind{{Host: source, Container: target}},
+				Static: []projectconfig.CacheBind{{Host: source, Container: target, ReadOnly: true}},
 			}
 			if _, err := resolveCache(
 				cfg,
@@ -331,11 +379,11 @@ func TestResolveCache_CrossGroupConflicts(t *testing.T) {
 	writeFile(t, source, "x")
 	cases := []projectconfig.CacheMounts{
 		{
-			Shared: []string{".claude"},
+			Shared: []projectconfig.CacheDirectory{{Name: ".claude"}},
 			Static: []projectconfig.CacheBind{{Host: source, Container: "~/.claude/x"}},
 		},
 		{
-			Local:  []string{"docs"},
+			Local:  []projectconfig.CacheDirectory{{Name: "docs"}},
 			Static: []projectconfig.CacheBind{{Host: source, Container: "/workspace/app-abc123/docs"}},
 		},
 	}

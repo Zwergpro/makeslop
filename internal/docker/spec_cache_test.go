@@ -8,7 +8,7 @@ import (
 func TestBuildSpec_ConfiguredCacheMounts(t *testing.T) {
 	caches := []Mount{
 		{Host: "/host/shared/custom/", Container: "/home/user/custom/"},
-		{Host: "/host/file", Container: "/opt/file"},
+		{Host: "/host/file", Container: "/opt/file", ReadOnly: true},
 	}
 	opts := Options{
 		Projects: []Project{
@@ -55,8 +55,10 @@ func TestBuildSpec_NoImplicitCaches(t *testing.T) {
 
 func TestDriftGuard_ConfiguredCacheMounts(t *testing.T) {
 	caches := []Mount{
-		{Host: "/host/a b,c'd/", Container: "/home/user/a b,c'd/"},
-		{Host: "/host/file", Container: "/opt/file"},
+		{Host: "/host/a b,c'd/", Container: "/home/user/a b,c'd/", ReadOnly: true},
+		{Host: "/host/file", Container: "/opt/file", ReadOnly: true},
+		{Host: "/host/rw/", Container: "/opt/rw/"},
+		{Host: "/host/rw-file", Container: "/opt/rw-file"},
 	}
 	spec := BuildSpec(Options{
 		Projects: []Project{{Host: "/host/app", Name: "app"}}, CacheMounts: caches,
@@ -71,8 +73,12 @@ func TestDriftGuard_ConfiguredCacheMounts(t *testing.T) {
 			t.Fatalf("args %#v want %#v", got, want)
 		}
 
+		_, readOnly := got["readonly"]
+		if readOnly != want.ReadOnly {
+			t.Fatalf("args mode %#v want %#v", got, want)
+		}
 		samePaths := sdk[i+1].Source == want.Host && sdk[i+1].Target == want.Container
-		if !samePaths || sdk[i+1].ReadOnly {
+		if !samePaths || sdk[i+1].ReadOnly != want.ReadOnly {
 			t.Fatalf("SDK %#v", sdk[i+1])
 		}
 	}

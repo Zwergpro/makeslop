@@ -263,7 +263,8 @@ cache:
 `shared` directories are reused by every project requesting the same name. `local` directories
 belong to the registered workspace and mount beneath that project's container root. Managed
 names may contain nested paths, but cannot be absolute or contain `.`/`..` components, tildes,
-colons, or control characters. Directory names are normalized; duplicates fail.
+colons (except the mode suffix below), or control characters. Directory names are normalized;
+duplicates fail even when their mount modes differ.
 
 On a real `run`, missing managed directories are created empty after image/network preflight.
 Existing contents are preserved; nothing is copied from the project, host home, or image.
@@ -271,17 +272,43 @@ Mounts hide any existing content at their container destinations. Managed storag
 symlink components beneath the resolved makeslop base; existing sources must be real directories.
 `run --dry-run` checks and prints mounts without creating directories, even on first use.
 
-`static` entries use exactly `host-path:container-path` (no extra colons or mode suffixes).
+Every entry accepts an optional `:ro` (read-only) or `:rw` (read-write) suffix; omitting it
+means `:rw`. For example:
+
+```yaml
+cache:
+  shared: [.claude:rw]
+  local: [docs:ro]
+  static: ["./tools:/opt/tools:ro"]
+```
+
+The suffix controls writes through the container mount, not host filesystem permissions.
+Missing shared/local directories are still created on real runs even for `:ro` mounts.
+Unknown modes and extra colon-separated fields are rejected; colons within paths are unsupported.
+
+`static` entries use `host-path:container-path[:ro|:rw]`.
 **Static sources must already exist**: regular files mount as files, directories as directories;
-missing paths and special files fail. Host symlinks resolve to their existing targets. All cache
-mounts are writable. Prepare a `.claude.json` file yourself before requesting the example bind.
+missing paths and special files fail. Host symlinks resolve to their existing targets.
+Prepare a `.claude.json` file yourself before requesting the example bind.
 
 - Relative host paths resolve from the registered project root, including when invoked below it.
 - Host `~` and `~/...` refer to the host user's home.
 - Container `~` and `~/...` expand to `/home/user`, not a home discovered from the image.
-- Container destinations must be absolute or use the supported tilde form. `~otheruser` is invalid.
+- Relative container destinations resolve beneath the main project's container root, not the
+  invocation directory: `settings.json` and `./settings.json` both mean
+  `/workspace/<registered-name>/settings.json`. Nested paths are supported; relative paths
+  cannot escape the project root with `..`. Mounting over the project root itself is prohibited.
+- Absolute container destinations are used as given (after path normalization). The supported
+  tilde forms still refer to `/home/user`; `~otheruser` is invalid.
 - Paths are not shell-evaluated; environment variables are not expanded. Quote YAML strings when
   needed. Spaces, commas, and quotes in valid paths are preserved.
+
+For example, to expose a host settings file read-only in the project directory:
+
+```yaml
+cache:
+  static: ["~/.makeslop/settings.json:./settings.json:ro"]
+```
 
 No backward compatibility is provided for `cache.content`, `cache.agent`, or `init --global-only`.
 Old config keys fail validation. Legacy cache data is **not moved, deleted, or mounted implicitly**;

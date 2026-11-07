@@ -285,19 +285,24 @@ The join's `cache:`, `environments:`, and network settings cannot change the con
 ## Cache mounts
 
 Cache mounts are opt-in; an absent/empty `cache` block mounts nothing. `shared` names reuse
-writable directories under `~/.makeslop/shared/` across participating projects. A compromised
-agent can read or modify credentials and other data there, affecting later sessions in other
-projects. Share only directories whose contents you intend to trust across projects.
+directories under `~/.makeslop/shared/` across participating projects. Mounts default to read-write;
+append `:ro` to an entry to make that container mount read-only (`:rw` is explicit read-write).
+A compromised agent can read exposed credentials and, with writable mounts, modify data there,
+affecting later sessions in other projects. Read-only mounts do not hide secrets or prevent other
+containers or host processes from changing shared data. Share only directories whose contents you
+intend to trust across projects.
 
 `local` directories use only their owner's registered workspace cache. This is a configuration
 boundary, not a host-user permission boundary: an explicit `static` bind can expose another
 workspace's directory. Static binds accept existing regular files or directories, resolve host
-symlinks, and are writable. Inspect project config before launching untrusted projects; a static
+symlinks, and accept an optional `:ro` or `:rw` after the container path. Inspect project config
+before launching untrusted projects; a static
 bind can expose host data outside the project, regardless of the project home-directory guard.
 
 Managed directories reject symlink components beneath the resolved makeslop base and never
 replace existing files. This is not a guarantee against arbitrary concurrent host filesystem
-changes. Managed directories are created empty on real launch, never during dry-run. Missing
+changes. Managed directories are created empty on real launch even for read-only mounts, never
+during dry-run. Missing
 static sources fail instead of being created with an ambiguous type.
 
 Secret scanning walks project trees, **not shared/local cache contents or arbitrary static

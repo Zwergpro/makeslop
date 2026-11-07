@@ -51,6 +51,11 @@ cache:
   # shared: [.claude, .codex]  # shared storage -> container home
   # local: [docs]             # workspace storage -> container project
   # static: ["~/.claude.json:~/.claude.json"]  # existing file or directory
+  # Append :ro for read-only or :rw for read-write (default) to any entry.
+  # local: [docs:ro]
+  # static: ["./tools:/opt/tools:ro"]
+  # Relative container paths resolve from the main project's container root.
+  # static: ["~/.makeslop/settings.json:./settings.json:ro"]
 # Container networking (compose names; makeslop attaches, never creates):
 # network_mode: "container:proxy"   # bridge | host | none | container:<name> | <network>
 # networks: [myapp_default]         # alternative to network_mode; not both
