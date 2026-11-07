@@ -8,7 +8,7 @@ import (
 
 // version is bumped by the release workflow (.github/workflows/release.yaml) so
 // `go install` builds report it; release builds also override it via -ldflags.
-var version = "v0.5.0"
+var version = "v0.5.1"
 
 func main() {
 	os.Exit(cli.Main(version, os.Args[1:]))
