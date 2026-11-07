@@ -1,6 +1,6 @@
 module github.com/Zwergpro/makeslop
 
-go 1.26.2
+go 1.27.3
 
 require (
 	github.com/containerd/errdefs v1.0.0
