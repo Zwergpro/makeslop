@@ -274,7 +274,7 @@ func TestResolveCache_ProtectedDestinations(t *testing.T) {
 		"/workspace/joined", "/workspace/joined/data",
 		"/workspace/app-abc123/.makeslop.yaml", "/workspace/app-abc123/.makeslop.yaml/x",
 		"/workspace/app-abc123/.git", "/workspace/app-abc123/.git/hooks",
-		"/workspace/app-abc123/.git/hooks/x", "/tmp", "/tmp/a", "/proc/x", "/sys", "/dev/x",
+		"/workspace/app-abc123/.git/hooks/x", "/tmp", "/tmp/a", "/tmp/makeslop-zmx", "/proc/x", "/sys", "/dev/x",
 	}
 
 	for _, target := range targets {

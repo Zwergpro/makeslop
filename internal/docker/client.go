@@ -13,6 +13,10 @@ type apiClient interface {
 	ContainerCreate(ctx context.Context, options moby.ContainerCreateOptions) (moby.ContainerCreateResult, error)
 	ContainerAttach(ctx context.Context, container string, options moby.ContainerAttachOptions) (moby.ContainerAttachResult, error)
 	ContainerStart(ctx context.Context, container string, options moby.ContainerStartOptions) (moby.ContainerStartResult, error)
+	ContainerStop(ctx context.Context, container string, options moby.ContainerStopOptions) (moby.ContainerStopResult, error)
+	ExecCreate(ctx context.Context, execContainer string, options moby.ExecCreateOptions) (moby.ExecCreateResult, error)
+	ExecAttach(ctx context.Context, execID string, options moby.ExecAttachOptions) (moby.ExecAttachResult, error)
+	ExecInspect(ctx context.Context, execID string, options moby.ExecInspectOptions) (moby.ExecInspectResult, error)
 	ContainerWait(ctx context.Context, container string, options moby.ContainerWaitOptions) moby.ContainerWaitResult
 	ContainerResize(ctx context.Context, container string, options moby.ContainerResizeOptions) (moby.ContainerResizeResult, error)
 	ContainerRemove(ctx context.Context, container string, options moby.ContainerRemoveOptions) (moby.ContainerRemoveResult, error)

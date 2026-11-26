@@ -41,6 +41,22 @@ func (noopClient) ContainerStart(_ context.Context, _ string, _ moby.ContainerSt
 	return moby.ContainerStartResult{}, nil
 }
 
+func (noopClient) ContainerStop(_ context.Context, _ string, _ moby.ContainerStopOptions) (moby.ContainerStopResult, error) {
+	return moby.ContainerStopResult{}, nil
+}
+
+func (noopClient) ExecCreate(_ context.Context, _ string, _ moby.ExecCreateOptions) (moby.ExecCreateResult, error) {
+	return moby.ExecCreateResult{}, nil
+}
+
+func (noopClient) ExecAttach(_ context.Context, _ string, _ moby.ExecAttachOptions) (moby.ExecAttachResult, error) {
+	return moby.ExecAttachResult{}, nil
+}
+
+func (noopClient) ExecInspect(_ context.Context, _ string, _ moby.ExecInspectOptions) (moby.ExecInspectResult, error) {
+	return moby.ExecInspectResult{}, nil
+}
+
 func (noopClient) ContainerWait(_ context.Context, _ string, _ moby.ContainerWaitOptions) moby.ContainerWaitResult {
 	return moby.ContainerWaitResult{
 		Result: make(chan container.WaitResponse),
