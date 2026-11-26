@@ -152,7 +152,7 @@ func (d *Docker) resizeExecTTY(ctx context.Context, id string, fd int) {
 	if size := d.execConsoleSize(fd); size.Width != 0 && size.Height != 0 {
 		resizeCtx, cancel := WithPreflightTimeout(ctx)
 		defer cancel()
-		_, _ = d.client.ExecResize(resizeCtx, id, moby.ExecResizeOptions{Width: size.Width, Height: size.Height})
+		_, _ = d.client.ExecResize(resizeCtx, id, moby.ExecResizeOptions(size))
 	}
 }
 

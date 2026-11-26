@@ -56,6 +56,7 @@ type bgLifecycleClient struct {
 	cleanupCtxErr error
 	cleanupErr    error
 	startErr      error
+	startBounded  bool
 	onCreate      func()
 	probeOutput   string
 	probeErr      error
@@ -78,6 +79,7 @@ func (f *bgLifecycleClient) ContainerInspect(_ context.Context, id string, _ mob
 func (f *bgLifecycleClient) ContainerStart(ctx context.Context, id string, _ moby.ContainerStartOptions) (moby.ContainerStartResult, error) {
 	f.calls = append(f.calls, "start")
 	f.mutationID = id
+	_, f.startBounded = ctx.Deadline()
 	if ctx.Err() != nil {
 		return moby.ContainerStartResult{}, ctx.Err()
 	}
@@ -153,6 +155,18 @@ func TestBGLifecycle(t *testing.T) {
 				t.Fatal("wrong lifecycle mutation")
 			}
 		})
+	}
+}
+
+func TestBGRestartStartFailureKeepsContainer(t *testing.T) {
+	f := &bgLifecycleClient{
+		bgIdentityClient: bgIdentityClient{result: bgInspection(testBGUUID, "running")},
+		startErr:         context.DeadlineExceeded,
+	}
+	d := &Docker{client: f}
+	err := d.RestartBG(t.Context(), testBGUUID)
+	if !f.startBounded || !errors.Is(err, context.DeadlineExceeded) || f.removed != "" {
+		t.Fatalf("restart: deadline=%v, removed=%q, err=%v", f.startBounded, f.removed, err)
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -72,7 +73,59 @@ func (p *bgCLIProbe) RestartBG(_ context.Context, id string) error {
 	return nil
 }
 
+type bgPolicyProbe struct {
+	*bgCLIProbe
+	checks []string
+}
+
+func (p *bgPolicyProbe) CheckDaemon(ctx context.Context) error {
+	p.checks = append(p.checks, "daemon")
+	return p.fakeDocker.CheckDaemon(ctx)
+}
+
+func (p *bgPolicyProbe) ImageExists(ctx context.Context, image string) (bool, error) {
+	p.checks = append(p.checks, "image")
+	return p.fakeDocker.ImageExists(ctx, image)
+}
+
+func (p *bgPolicyProbe) NetworkExists(ctx context.Context, name string) (bool, error) {
+	p.checks = append(p.checks, "network:"+name)
+	return p.fakeDocker.NetworkExists(ctx, name)
+}
+
 func TestBGCommands(t *testing.T) {
+	t.Run("shared policy and preflight", func(t *testing.T) {
+		base, root, ws := runCacheFixture(t)
+		cache := filepath.Join(ws, "docs")
+		writeCacheConfig(t, root, "cache:\n  local: [docs]\nnetworks: [devnet]\n")
+		p := &bgPolicyProbe{bgCLIProbe: &bgCLIProbe{fakeDocker: newFakeDocker(0, true)}}
+		p.Networks = map[string]bool{"devnet": true}
+		deps := dockerDeps{api: p}
+		if out, _, err := runCmdWithDeps(t, base, deps, "bg", "run", "-n"); err != nil || !strings.Contains(out, "--network devnet") || len(p.checks) != 0 {
+			t.Fatalf("dry run: %q, checks %v, err %v", out, p.checks, err)
+		}
+		if _, err := os.Stat(cache); !os.IsNotExist(err) {
+			t.Fatalf("dry run created cache: %v", err)
+		}
+		writeCacheConfig(t, root, "cache:\n  static: [./missing:/opt/missing]\nnetworks: [devnet]\n")
+		if _, _, err := runCmdWithDeps(t, base, deps, "bg", "run"); err == nil || !slices.Equal(p.checks, []string{"daemon"}) {
+			t.Fatalf("invalid mount: checks %v, err %v", p.checks, err)
+		}
+		writeCacheConfig(t, root, "cache:\n  local: [docs]\nnetworks: [devnet]\n")
+		p.checks = nil
+		if _, _, err := runCmdWithDeps(t, base, deps, "bg", "run"); err != nil || !slices.Equal(p.checks, []string{"daemon", "image", "network:devnet"}) {
+			t.Fatalf("run: checks %v, err %v", p.checks, err)
+		}
+		if _, err := os.Stat(cache); err != nil {
+			t.Fatalf("cache not created: %v", err)
+		}
+		if _, _, err := runCmdWithDeps(t, base, deps, "run"); err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(p.spec.Mounts, p.LastSpec.Mounts) || !slices.Equal(p.spec.Networks, p.LastSpec.Networks) {
+			t.Fatalf("foreground/background policy differs: %+v / %+v", p.spec.Mounts, p.LastSpec.Mounts)
+		}
+	})
 	t.Run("creation", func(t *testing.T) {
 		setHomeToTestParent(t)
 		t.Chdir(t.TempDir())

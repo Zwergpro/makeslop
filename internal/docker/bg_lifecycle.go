@@ -147,8 +147,15 @@ func bgStateError(c BGContainer) error {
 }
 
 func (d *Docker) startBG(ctx context.Context, c BGContainer) error {
-	if _, err := d.client.ContainerStart(ctx, c.ID, moby.ContainerStartOptions{}); err != nil {
-		return fmt.Errorf("%w — background images must have zmx on PATH", bgDaemonError("start", c.UUID, err))
+	startCtx, cancelStart := WithPreflightTimeout(ctx)
+	_, err := d.client.ContainerStart(startCtx, c.ID, moby.ContainerStartOptions{})
+	cancelStart()
+	if err != nil {
+		startErr := bgDaemonError("start", c.UUID, err)
+		if strings.Contains(err.Error(), "zmx") {
+			return fmt.Errorf("%w — background images must have zmx on PATH", startErr)
+		}
+		return startErr
 	}
 	readyCtx, cancel := WithPreflightTimeout(ctx)
 	defer cancel()

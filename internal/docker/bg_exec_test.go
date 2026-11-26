@@ -147,7 +147,7 @@ func TestBGExecCancelledWhileIdle(t *testing.T) {
 	a, b := net.Pipe()
 	defer b.Close()
 	stdin, write := io.Pipe()
-	defer write.Close()
+	defer func() { _ = write.Close() }()
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	f := &bgExecClient{bgIdentityClient: bgIdentityClient{result: bgInspection(testBGUUID, "running")}, connection: a, onAttach: cancel}
