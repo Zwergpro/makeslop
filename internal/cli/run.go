@@ -140,27 +140,40 @@ func loadProject(ctx context.Context, stderr, chrome io.Writer, root string, joi
 	}, pcfg, nil
 }
 
-func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir, imageFlag string, joinFlags []string, outOfHome, dryRun, quiet bool, deps dockerDeps) error {
-	chrome := &quietWriter{w: cmd.ErrOrStderr(), quiet: quiet}
+type launchOptions struct {
+	ImageFlag                string
+	JoinFlags                []string
+	OutOfHome, DryRun, Quiet bool
+}
+
+type preparedLaunch struct {
+	Spec      docker.Spec
+	Project   string
+	Network   projectconfig.Network
+	CacheDirs []cacheDir
+}
+
+func prepareLaunch(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, opts launchOptions, deps dockerDeps) (preparedLaunch, error) {
+	chrome := &quietWriter{w: cmd.ErrOrStderr(), quiet: opts.Quiet}
 	pwd, err := resolvePwd()
 	if err != nil {
-		return err
+		return preparedLaunch{}, err
 	}
-	if err := ensureWithinHome(cmd.ErrOrStderr(), pwd, outOfHome); err != nil {
-		return err
+	if err := ensureWithinHome(cmd.ErrOrStderr(), pwd, opts.OutOfHome); err != nil {
+		return preparedLaunch{}, err
 	}
 
 	// Load once; pass the same *Settings to ws.Lookup to avoid a redundant read.
 	s, err := config.Load(baseDir)
 	if err != nil {
-		return err
+		return preparedLaunch{}, err
 	}
 
 	// Resolve the image first so an unregistered workspace cannot hide a
 	// missing image setting.
-	image, err := resolveImage(imageFlag, s.Image)
+	image, err := resolveImage(opts.ImageFlag, s.Image)
 	if err != nil {
-		return err
+		return preparedLaunch{}, err
 	}
 
 	workspaceRoot, workspaceDir, err := ws.Lookup(s, pwd)
@@ -168,31 +181,31 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir, imageFlag str
 		fmt.Fprintf(cmd.ErrOrStderr(),
 			"makeslop: no workspace registered for %s — run 'makeslop init' to register it\n",
 			pwd)
-		return errSilent
+		return preparedLaunch{}, errSilent
 	}
 	if err != nil {
-		return err
+		return preparedLaunch{}, err
 	}
 
 	// Path checks only; join configs are parsed after the daemon preflight.
 	mainName := filepath.Base(workspaceDir)
-	joins, err := resolveJoins(pwd, workspaceRoot, mainName, baseDir, joinFlags, outOfHome)
+	joins, err := resolveJoins(pwd, workspaceRoot, mainName, baseDir, opts.JoinFlags, opts.OutOfHome)
 	if err != nil {
-		return err
+		return preparedLaunch{}, err
 	}
 
 	// Before the scan: a down daemon is reported immediately. Skipped on --dry-run.
-	if !dryRun {
+	if !opts.DryRun {
 		if daemonErr := deps.checkDaemonPreflight(cmd.Context()); daemonErr != nil {
 			fmt.Fprintf(cmd.ErrOrStderr(),
 				"makeslop: %v — is docker running?\n", daemonErr)
-			return errSilent
+			return preparedLaunch{}, errSilent
 		}
 	}
 
 	mainProj, pcfg, err := loadProject(cmd.Context(), cmd.ErrOrStderr(), chrome, workspaceRoot, false)
 	if err != nil {
-		return err
+		return preparedLaunch{}, err
 	}
 	mainProj.Name = mainName
 	mainProj.Label = "project: " + workspaceRoot
@@ -201,7 +214,7 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir, imageFlag str
 	for _, j := range joins {
 		p, _, err := loadProject(cmd.Context(), cmd.ErrOrStderr(), chrome, j.Host, true)
 		if err != nil {
-			return fmt.Errorf("join %s: %w", j.Host, err)
+			return preparedLaunch{}, fmt.Errorf("join %s: %w", j.Host, err)
 		}
 		p.Name = j.Name
 		p.ReadOnly = j.ReadOnly
@@ -211,10 +224,10 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir, imageFlag str
 
 	cache, err := resolveProjectCache(baseDir, projects, pcfg)
 	if err != nil {
-		return err
+		return preparedLaunch{}, err
 	}
 
-	opts := docker.Options{
+	spec := docker.BuildSpec(docker.Options{
 		CacheMounts: cache.Mounts,
 		Projects:    projects,
 		Image:       image,
@@ -223,15 +236,12 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir, imageFlag str
 		Env:         resolveEnv(pcfg.Env, os.LookupEnv),
 		NetworkMode: pcfg.Network.Mode,
 		Networks:    pcfg.Network.Networks,
-	}
+	})
+	return preparedLaunch{Spec: spec, Project: mainName, Network: pcfg.Network, CacheDirs: cache.Dirs}, nil
+}
 
-	spec := docker.BuildSpec(opts)
-
-	if dryRun {
-		fmt.Fprintln(cmd.OutOrStdout(), spec.ShellCommand())
-		return nil
-	}
-
+func prepareLaunchExecution(cmd *cobra.Command, launch preparedLaunch, deps dockerDeps) error {
+	image := launch.Spec.Image
 	imageFound, imageErr := deps.imageExistsPreflight(cmd.Context(), image)
 	if imageErr != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(),
@@ -243,15 +253,25 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir, imageFlag str
 		return errSilent
 	}
 
-	if err := deps.networkPreflight(cmd.Context(), pcfg.Network); err != nil {
+	if err := deps.networkPreflight(cmd.Context(), launch.Network); err != nil {
 		return err
 	}
+	return prepareCacheDirs(cmd.Context(), launch.CacheDirs)
+}
 
-	if err := prepareCacheDirs(cmd.Context(), cache.Dirs); err != nil {
+func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, opts launchOptions, deps dockerDeps) error {
+	launch, err := prepareLaunch(cmd, ws, baseDir, opts, deps)
+	if err != nil {
 		return err
 	}
-
-	if err := deps.api.Run(cmd.Context(), spec); err != nil {
+	if opts.DryRun {
+		fmt.Fprintln(cmd.OutOrStdout(), launch.Spec.ShellCommand())
+		return nil
+	}
+	if err := prepareLaunchExecution(cmd, launch, deps); err != nil {
+		return err
+	}
+	if err := deps.api.Run(cmd.Context(), launch.Spec); err != nil {
 		if errors.Is(err, docker.ErrNoTTY) {
 			fmt.Fprintln(cmd.ErrOrStderr(),
 				"makeslop: stdin/stdout must be a TTY — run in an interactive terminal")
@@ -263,28 +283,28 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir, imageFlag str
 }
 
 func newRunCmd(ws *workspace.Workspaces, baseDir string, deps dockerDeps) *cobra.Command {
-	var outOfHome bool
-	var dryRun bool
-	var image string
-	var joins []string
-
+	var opts launchOptions
 	cmd := &cobra.Command{
 		Use:          "run",
 		Short:        "Launch the docker container for this workspace",
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			quiet, _ := cmd.Flags().GetBool("quiet")
-			return runRun(cmd, ws, baseDir, image, joins, outOfHome, dryRun, quiet, deps)
+			opts.Quiet, _ = cmd.Flags().GetBool("quiet")
+			return runRun(cmd, ws, baseDir, opts, deps)
 		},
 	}
-	cmd.Flags().BoolVarP(&dryRun, "dry-run", "n", false,
-		"print the docker run command instead of executing it")
-	cmd.Flags().BoolVar(&outOfHome, "out-of-home", false,
-		"allow running outside the user's home directory")
-	cmd.Flags().StringVarP(&image, "image", "i", "",
-		"container image to run (overrides the settings image)")
-	cmd.Flags().StringArrayVarP(&joins, "join", "j", nil,
-		"mount another makeslop project at /workspace/<basename>; `path[:ro|:rw]`, repeatable (default rw)")
+	bindLaunchFlags(cmd, &opts)
 	return cmd
+}
+
+func bindLaunchFlags(cmd *cobra.Command, opts *launchOptions) {
+	cmd.Flags().BoolVarP(&opts.DryRun, "dry-run", "n", false,
+		"print the docker run command instead of executing it")
+	cmd.Flags().BoolVar(&opts.OutOfHome, "out-of-home", false,
+		"allow running outside the user's home directory")
+	cmd.Flags().StringVarP(&opts.ImageFlag, "image", "i", "",
+		"container image to run (overrides the settings image)")
+	cmd.Flags().StringArrayVarP(&opts.JoinFlags, "join", "j", nil,
+		"mount another makeslop project at /workspace/<basename>; `path[:ro|:rw]`, repeatable (default rw)")
 }

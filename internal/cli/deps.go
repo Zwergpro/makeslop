@@ -25,12 +25,25 @@ type networkChecker interface {
 	NetworkExists(ctx context.Context, name string) (bool, error)
 }
 
+type backgroundRunner interface {
+	CheckTTY() error
+	RunBG(context.Context, docker.Spec) error
+	ListBG(context.Context) ([]docker.BGContainer, error)
+	AttachBG(context.Context, string) error
+	ExecBG(context.Context, string, []string) error
+	StopBG(context.Context, string) error
+	StartBG(context.Context, string) error
+	RestartBG(context.Context, string) error
+	RemoveBG(context.Context, string) error
+}
+
 // dockerAPI is everything the commands need from docker.
 type dockerAPI interface {
 	containerRunner
 	daemonChecker
 	imageChecker
 	networkChecker
+	backgroundRunner
 }
 
 // dockerDeps holds a single dockerAPI implementation, so no capability can be
@@ -110,3 +123,13 @@ func (s dockerNewErrStub) ContainerRunning(_ context.Context, _ string) (exists,
 func (s dockerNewErrStub) NetworkExists(_ context.Context, _ string) (bool, error) {
 	return false, s.err
 }
+
+func (s dockerNewErrStub) CheckTTY() error                                      { return s.err }
+func (s dockerNewErrStub) RunBG(context.Context, docker.Spec) error             { return s.err }
+func (s dockerNewErrStub) ListBG(context.Context) ([]docker.BGContainer, error) { return nil, s.err }
+func (s dockerNewErrStub) AttachBG(context.Context, string) error               { return s.err }
+func (s dockerNewErrStub) ExecBG(context.Context, string, []string) error       { return s.err }
+func (s dockerNewErrStub) StopBG(context.Context, string) error                 { return s.err }
+func (s dockerNewErrStub) StartBG(context.Context, string) error                { return s.err }
+func (s dockerNewErrStub) RestartBG(context.Context, string) error              { return s.err }
+func (s dockerNewErrStub) RemoveBG(context.Context, string) error               { return s.err }

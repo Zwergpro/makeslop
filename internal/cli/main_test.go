@@ -53,6 +53,16 @@ func newFakeDocker(exitCode int, isTTY bool) *fakeDocker {
 	return &fakeDocker{exitCode: exitCode, isTTY: isTTY}
 }
 
+func (*fakeDocker) CheckTTY() error                                      { return nil }
+func (*fakeDocker) RunBG(context.Context, docker.Spec) error             { return nil }
+func (*fakeDocker) ListBG(context.Context) ([]docker.BGContainer, error) { return nil, nil }
+func (*fakeDocker) AttachBG(context.Context, string) error               { return nil }
+func (*fakeDocker) ExecBG(context.Context, string, []string) error       { return nil }
+func (*fakeDocker) StopBG(context.Context, string) error                 { return nil }
+func (*fakeDocker) StartBG(context.Context, string) error                { return nil }
+func (*fakeDocker) RestartBG(context.Context, string) error              { return nil }
+func (*fakeDocker) RemoveBG(context.Context, string) error               { return nil }
+
 func (f *fakeDocker) Run(_ context.Context, s docker.Spec) error {
 	if !f.isTTY {
 		return docker.ErrNoTTY
