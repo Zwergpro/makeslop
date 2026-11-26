@@ -37,6 +37,7 @@ func NewBGUUID() (string, error) {
 type BGContainer struct {
 	UUID, ID, Project, State, Image, Shell, Workdir string
 	Created                                         int64
+	user                                            string
 	running                                         bool
 	stopped                                         bool
 }
@@ -87,7 +88,7 @@ func (d *Docker) lookupBG(ctx context.Context, uuid string) (BGContainer, error)
 	c := reply.Container
 	if c.Config != nil && c.ID != "" {
 		if id, ok := bgIdentity(c.Name, c.Config.Labels); ok && id == uuid {
-			row := BGContainer{UUID: uuid, ID: c.ID, Project: c.Config.Labels[bgProjectLabel], Image: c.Config.Image, Shell: c.Config.Labels[bgShellLabel], Workdir: c.Config.WorkingDir}
+			row := BGContainer{UUID: uuid, ID: c.ID, Project: c.Config.Labels[bgProjectLabel], Image: c.Config.Image, Shell: c.Config.Labels[bgShellLabel], Workdir: c.Config.WorkingDir, user: c.Config.User}
 			if st := c.State; st != nil {
 				row.State = string(st.Status)
 				row.running = st.Running && !st.Paused && !st.Restarting && st.Status == "running"

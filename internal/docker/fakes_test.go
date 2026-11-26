@@ -57,6 +57,10 @@ func (noopClient) ExecInspect(_ context.Context, _ string, _ moby.ExecInspectOpt
 	return moby.ExecInspectResult{}, nil
 }
 
+func (noopClient) ExecResize(_ context.Context, _ string, _ moby.ExecResizeOptions) (moby.ExecResizeResult, error) {
+	return moby.ExecResizeResult{}, nil
+}
+
 func (noopClient) ContainerWait(_ context.Context, _ string, _ moby.ContainerWaitOptions) moby.ContainerWaitResult {
 	return moby.ContainerWaitResult{
 		Result: make(chan container.WaitResponse),
