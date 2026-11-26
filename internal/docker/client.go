@@ -9,6 +9,7 @@ import (
 // apiClient is the narrow subset of moby's client.APIClient this package uses.
 // *moby.Client satisfies it (see assertion below); tests inject a fake via WithClient.
 type apiClient interface {
+	ContainerList(ctx context.Context, options moby.ContainerListOptions) (moby.ContainerListResult, error)
 	ContainerCreate(ctx context.Context, options moby.ContainerCreateOptions) (moby.ContainerCreateResult, error)
 	ContainerAttach(ctx context.Context, container string, options moby.ContainerAttachOptions) (moby.ContainerAttachResult, error)
 	ContainerStart(ctx context.Context, container string, options moby.ContainerStartOptions) (moby.ContainerStartResult, error)

@@ -25,6 +25,10 @@ func skipNonPOSIX(t *testing.T, why string) {
 
 type noopClient struct{}
 
+func (noopClient) ContainerList(_ context.Context, _ moby.ContainerListOptions) (moby.ContainerListResult, error) {
+	return moby.ContainerListResult{}, nil
+}
+
 func (noopClient) ContainerCreate(_ context.Context, _ moby.ContainerCreateOptions) (moby.ContainerCreateResult, error) {
 	return moby.ContainerCreateResult{}, nil
 }
