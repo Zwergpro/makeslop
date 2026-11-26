@@ -153,12 +153,19 @@ type preparedLaunch struct {
 	CacheDirs []cacheDir
 }
 
-func prepareLaunch(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, opts launchOptions, deps dockerDeps) (preparedLaunch, error) {
+func prepareLaunch(
+	cmd *cobra.Command,
+	ws *workspace.Workspaces,
+	baseDir string,
+	opts launchOptions,
+	deps dockerDeps,
+) (preparedLaunch, error) {
 	chrome := &quietWriter{w: cmd.ErrOrStderr(), quiet: opts.Quiet}
 	pwd, err := resolvePwd()
 	if err != nil {
 		return preparedLaunch{}, err
 	}
+
 	if err := ensureWithinHome(cmd.ErrOrStderr(), pwd, opts.OutOfHome); err != nil {
 		return preparedLaunch{}, err
 	}
@@ -181,6 +188,7 @@ func prepareLaunch(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string,
 		fmt.Fprintf(cmd.ErrOrStderr(),
 			"makeslop: no workspace registered for %s — run 'makeslop init' to register it\n",
 			pwd)
+
 		return preparedLaunch{}, errSilent
 	}
 	if err != nil {
@@ -199,6 +207,7 @@ func prepareLaunch(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string,
 		if daemonErr := deps.checkDaemonPreflight(cmd.Context()); daemonErr != nil {
 			fmt.Fprintf(cmd.ErrOrStderr(),
 				"makeslop: %v — is docker running?\n", daemonErr)
+
 			return preparedLaunch{}, errSilent
 		}
 	}
@@ -237,6 +246,7 @@ func prepareLaunch(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string,
 		NetworkMode: pcfg.Network.Mode,
 		Networks:    pcfg.Network.Networks,
 	})
+
 	return preparedLaunch{Spec: spec, Project: mainName, Network: pcfg.Network, CacheDirs: cache.Dirs}, nil
 }
 
@@ -256,6 +266,7 @@ func prepareLaunchExecution(cmd *cobra.Command, launch preparedLaunch, deps dock
 	if err := deps.networkPreflight(cmd.Context(), launch.Network); err != nil {
 		return err
 	}
+
 	return prepareCacheDirs(cmd.Context(), launch.CacheDirs)
 }
 
@@ -264,13 +275,17 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, opts l
 	if err != nil {
 		return err
 	}
+
 	if opts.DryRun {
 		fmt.Fprintln(cmd.OutOrStdout(), launch.Spec.ShellCommand())
+
 		return nil
 	}
+
 	if err := prepareLaunchExecution(cmd, launch, deps); err != nil {
 		return err
 	}
+
 	if err := deps.api.Run(cmd.Context(), launch.Spec); err != nil {
 		if errors.Is(err, docker.ErrNoTTY) {
 			fmt.Fprintln(cmd.ErrOrStderr(),
@@ -291,10 +306,12 @@ func newRunCmd(ws *workspace.Workspaces, baseDir string, deps dockerDeps) *cobra
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			opts.Quiet, _ = cmd.Flags().GetBool("quiet")
+
 			return runRun(cmd, ws, baseDir, opts, deps)
 		},
 	}
 	bindLaunchFlags(cmd, &opts)
+
 	return cmd
 }
 

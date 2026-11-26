@@ -41,12 +41,20 @@ func (noopClient) ContainerStart(_ context.Context, _ string, _ moby.ContainerSt
 	return moby.ContainerStartResult{}, nil
 }
 
-func (noopClient) ContainerStop(_ context.Context, _ string, _ moby.ContainerStopOptions) (moby.ContainerStopResult, error) {
+func (noopClient) ContainerStop(
+	_ context.Context,
+	_ string,
+	_ moby.ContainerStopOptions,
+) (moby.ContainerStopResult, error) {
 	return moby.ContainerStopResult{}, nil
 }
 
 func (noopClient) ExecCreate(_ context.Context, _ string, _ moby.ExecCreateOptions) (moby.ExecCreateResult, error) {
 	return moby.ExecCreateResult{}, nil
+}
+
+func (noopClient) ExecStart(context.Context, string, moby.ExecStartOptions) (moby.ExecStartResult, error) {
+	return moby.ExecStartResult{}, nil
 }
 
 func (noopClient) ExecAttach(_ context.Context, _ string, _ moby.ExecAttachOptions) (moby.ExecAttachResult, error) {

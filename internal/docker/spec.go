@@ -208,14 +208,25 @@ func projectMasks(p Project, configBound bool) []Mount {
 // Args uses CSV quoting so Docker can parse mount paths containing ',' or '"'.
 func (s Spec) Args() []string {
 	var args []string
+
 	if s.bgUUID == "" {
 		args = append(args, "run", "--rm", "-it")
 	} else {
-		args = append(args, "run", "-dit", "--name", bgPrefix+s.bgUUID,
-			"--label", bgUUIDLabel+"="+s.bgUUID,
-			"--label", bgProjectLabel+"="+s.bgProject,
-			"--label", bgShellLabel+"="+s.Command)
+		args = append(
+			args,
+			"run",
+			"-dit",
+			"--name",
+			bgPrefix+s.bgUUID,
+			"--label",
+			bgUUIDLabel+"="+s.bgUUID,
+			"--label",
+			bgProjectLabel+"="+s.bgProject,
+			"--label",
+			bgShellLabel+"="+s.Command,
+		)
 	}
+
 	args = append(args, "--workdir", s.Workdir)
 	for _, t := range s.Tmpfs {
 		args = append(args, "--tmpfs", t)
@@ -254,7 +265,9 @@ func (s Spec) Args() []string {
 			args = append(args, "--mount", val)
 		}
 	}
+
 	args = append(args, s.Image)
+
 	return append(args, s.commandArgv()...)
 }
 
@@ -340,6 +353,7 @@ func (s Spec) ShellCommand() string {
 
 func (s Spec) commandArgv() []string {
 	argv := make([]string, 0, len(s.ZMXArgv)+1)
+
 	return append(append(argv, s.ZMXArgv...), s.Command)
 }
 
@@ -356,6 +370,7 @@ func (s Spec) ContainerConfig() *container.Config {
 		AttachStdout: attached,
 		AttachStderr: attached,
 	}
+
 	if !attached {
 		cfg.Labels = map[string]string{
 			bgUUIDLabel:    s.bgUUID,
@@ -363,6 +378,7 @@ func (s Spec) ContainerConfig() *container.Config {
 			bgShellLabel:   s.Command,
 		}
 	}
+
 	return cfg
 }
 

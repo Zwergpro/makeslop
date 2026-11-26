@@ -66,6 +66,19 @@ prints a note — each pointing at `makeslop config set image <ref>`. Override t
 for one invocation with `-i/--image` (`makeslop run -i myimage:dev`). makeslop never pulls images:
 a missing local image fails with a "build or pull it" hint (e.g. `docker pull <ref>`).
 
+## Background terminals
+
+With [zmx installed inside your image](docs/reference.md#image-contract), run from a registered project:
+
+```sh
+id=$(makeslop bg run)
+makeslop bg attach "$id"
+```
+
+Press **Ctrl-\** to detach and leave your shell or agent running. Run `makeslop bg ls` from anywhere
+on the same Docker daemon to find the UUID again. See the [background command reference](docs/reference.md#bg--background-terminals)
+for `exec`, `stop`, `start`, `restart`, and `remove`.
+
 ## How it works
 
 ```

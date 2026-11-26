@@ -6,6 +6,9 @@ Commands, configuration, and runtime behavior.
 
 - A reachable Docker daemon (`DOCKER_HOST` or `/var/run/docker.sock`). The Docker CLI is not required.
 - A local image. Build or pull one yourself; makeslop does neither. See [custom images](#using-a-custom-docker-image).
+- **Background mode (`makeslop bg`)**: To run and reattach to a background session,
+  install [zmx](https://zmx.sh/getting-started) on `PATH` **inside the container image**.
+  The host does not need zmx, and foreground `makeslop run` does not require it.
 
 ---
 
@@ -76,6 +79,43 @@ container's network is set by `network_mode` / `networks` — see
 - `--out-of-home` — bypass the home-directory guard (for the current project and every `--join`)
 - `--join` / `-j <path>[:ro|:rw]` — also mount another makeslop project at
   `/workspace/<basename>`; repeatable. See [Joined projects](#joined-projects---join)
+
+---
+
+### bg — background terminals
+
+From a registered project, run `id=$(makeslop bg run)` and then `makeslop bg attach "$id"`.
+The configured `shell` opens in zmx in the main project's workdir. Launch your agent from that
+shell. Press **Ctrl-\** with the default zmx bindings, or close the host terminal, to disconnect
+without ending the session. Attaching again returns to the same shell and whatever is running in it.
+Multiple attached clients share the same input and output.
+
+| Command | Behavior |
+|---|---|
+| `bg run [--attach]` | Create a new container and wait for the zmx terminal to be ready. By default stdout is exactly the UUID and a newline. `--attach` connects immediately and prints the UUID to stderr before terminal output, even with `--quiet`. |
+| `bg ls` | List running and stopped background containers on the selected daemon, newest first, with `UUID`, `PROJECT`, `STATE`, and `IMAGE`. |
+| `bg attach <uuid>` | Connect to the zmx session. If it is missing while the container is still running, zmx can open a fresh configured shell instead. This does not start a stopped container. |
+| `bg exec <uuid> [--] [command [args...]]` | Open an independent interactive process, defaulting to the configured shell. It does not reattach to zmx; exiting it leaves the persistent session running. Returns the command's exit status. |
+| `bg stop <uuid>` | Stop the container and end its processes; keep it listed. Already stopped is a no-op. |
+| `bg start <uuid>` | Start a stopped container and open a fresh shell. If already running with a ready session, leave it alone. If running without a ready session, use `restart`. |
+| `bg restart <uuid>` | Start a fresh session even if one is already running. Keep the same UUID and writable container layer. |
+| `bg remove <uuid>` | Delete a stopped container and its writable layer. Stop a running container first. Does not unregister a workspace or delete host files or caches. |
+
+Accepts full UUIDs; raw Docker names, Docker IDs, or shortened UUIDs are not accepted. Management
+commands work outside the project. Only `attach`, `exec`, and real `run --attach` require a TTY.
+Successful `stop`, `start`, `restart`, and `remove` print nothing to stdout.
+For `bg exec`, place makeslop flags before the UUID; arguments after it are passed to the command.
+
+`bg run` accepts the same `--image`, `--join`, `--out-of-home`, and `--dry-run` options as `run`.
+Dry runs do not connect to Docker, create a cache, or attach. They show a Docker command with an
+example name, not a live UUID. New background containers use the same sandbox and mount policy
+as foreground containers.
+
+Exiting the persistent **shell** stops the container; exiting an agent launched from it returns
+to that shell. Start and restart reuse the original mounts, environment, and secret masks. They
+**do not rescan files or read new configuration**. Stop the old container and run `bg run` again to
+apply changed policy or mask newly added secrets. Attach and detach do not make state survive a
+container stop. See [background session security](security.md#background-sessions).
 
 ---
 
@@ -710,6 +750,12 @@ A custom image must satisfy the assumptions makeslop and the bind mounts rely on
   ```sh
   makeslop config set shell /bin/bash
   ```
+- **Background sessions:** install [zmx](https://zmx.sh/getting-started) on `PATH` inside the
+  image. Its `attach` and `get` commands must be available (`zmx get agent` checks readiness without creating a session). Use an entrypoint that runs
+  the supplied command. `bg run` passes the global `shell` setting to zmx as a single executable
+  path; the same setting is the default command for `bg exec`. makeslop reserves `ZMX_DIR`
+  (set to `/tmp/makeslop-zmx`), `ZMX_DIR_MODE`, `ZMX_SESSION`, and `ZMX_SESSION_PREFIX` for its
+  container-private zmx setup. The full Docker/zmx smoke test is opt-in and does not run in CI.
 - **Agents (optional):** the `claude` / `codex` CLIs are not required by makeslop itself — include
   them only if you want them available in the container. Their per-workspace and global state
   directories are mounted regardless.

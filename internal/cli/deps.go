@@ -124,12 +124,20 @@ func (s dockerNewErrStub) NetworkExists(_ context.Context, _ string) (bool, erro
 	return false, s.err
 }
 
-func (s dockerNewErrStub) CheckTTY() error                                      { return s.err }
-func (s dockerNewErrStub) RunBG(context.Context, docker.Spec) error             { return s.err }
+func (s dockerNewErrStub) CheckTTY() error { return s.err }
+
+func (s dockerNewErrStub) RunBG(context.Context, docker.Spec) error { return s.err }
+
 func (s dockerNewErrStub) ListBG(context.Context) ([]docker.BGContainer, error) { return nil, s.err }
-func (s dockerNewErrStub) AttachBG(context.Context, string) error               { return s.err }
-func (s dockerNewErrStub) ExecBG(context.Context, string, []string) error       { return s.err }
-func (s dockerNewErrStub) StopBG(context.Context, string) error                 { return s.err }
-func (s dockerNewErrStub) StartBG(context.Context, string) error                { return s.err }
-func (s dockerNewErrStub) RestartBG(context.Context, string) error              { return s.err }
-func (s dockerNewErrStub) RemoveBG(context.Context, string) error               { return s.err }
+
+func (s dockerNewErrStub) AttachBG(context.Context, string) error { return s.err }
+
+func (s dockerNewErrStub) ExecBG(context.Context, string, []string) error { return s.err }
+
+func (s dockerNewErrStub) StopBG(context.Context, string) error { return s.err }
+
+func (s dockerNewErrStub) StartBG(context.Context, string) error { return s.err }
+
+func (s dockerNewErrStub) RestartBG(context.Context, string) error { return s.err }
+
+func (s dockerNewErrStub) RemoveBG(context.Context, string) error { return s.err }
