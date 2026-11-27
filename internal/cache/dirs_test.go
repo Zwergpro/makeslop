@@ -1,4 +1,4 @@
-package cli
+package cache
 
 import (
 	"context"
@@ -54,7 +54,7 @@ func TestCheckCacheDir_RejectsSymlinkComponents(t *testing.T) {
 			if err := checkCacheDir(dir); err == nil {
 				t.Fatal("accepted symlink")
 			}
-			if err := prepareCacheDirs(context.Background(), []cacheDir{dir}); err == nil {
+			if err := (Plan{dirs: []cacheDir{dir}}).Prepare(context.Background()); err == nil {
 				t.Fatal("prepared symlink")
 			}
 
@@ -100,7 +100,7 @@ func TestPrepareCacheDirs_PrechecksAll(t *testing.T) {
 		{Base: base, Path: filepath.Join(bad, "child"), Entry: "cache.local[0]"},
 	}
 
-	if err := prepareCacheDirs(context.Background(), dirs); err == nil {
+	if err := (Plan{dirs: dirs}).Prepare(context.Background()); err == nil {
 		t.Fatal("accepted file parent")
 	}
 	assertAbsent(t, filepath.Join(base, "shared"))
@@ -112,7 +112,7 @@ func TestPrepareCacheDirs_Canceled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err := prepareCacheDirs(ctx, []cacheDir{{Base: base, Path: target, Entry: "cache.shared[0]"}})
+	err := (Plan{dirs: []cacheDir{{Base: base, Path: target, Entry: "cache.shared[0]"}}}).Prepare(ctx)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("got %v", err)
 	}
@@ -125,7 +125,7 @@ func TestPrepareCacheDirs_CreatesAndPreserves(t *testing.T) {
 		{Base: base, Path: filepath.Join(base, "shared/.config/tool"), Entry: "cache.shared[0]"},
 		{Base: base, Path: filepath.Join(base, "workspaces/app-abc123/docs"), Entry: "cache.local[0]"},
 	}
-	if err := prepareCacheDirs(context.Background(), dirs); err != nil {
+	if err := (Plan{dirs: dirs}).Prepare(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	for _, dir := range dirs {
@@ -136,7 +136,7 @@ func TestPrepareCacheDirs_CreatesAndPreserves(t *testing.T) {
 
 	sentinel := filepath.Join(dirs[0].Path, "sentinel")
 	writeFile(t, sentinel, "keep")
-	if err := prepareCacheDirs(context.Background(), dirs); err != nil {
+	if err := (Plan{dirs: dirs}).Prepare(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if data, err := os.ReadFile(sentinel); err != nil || string(data) != "keep" {

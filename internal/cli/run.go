@@ -14,6 +14,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/Zwergpro/makeslop/internal/cache"
 	"github.com/Zwergpro/makeslop/internal/config"
 	"github.com/Zwergpro/makeslop/internal/docker"
 	"github.com/Zwergpro/makeslop/internal/projectconfig"
@@ -147,10 +148,10 @@ type launchOptions struct {
 }
 
 type preparedLaunch struct {
-	Spec      docker.Spec
-	Project   string
-	Network   projectconfig.Network
-	CacheDirs []cacheDir
+	Spec    docker.Spec
+	Project string
+	Network projectconfig.Network
+	Cache   cache.Plan
 }
 
 func prepareLaunch(
@@ -231,13 +232,13 @@ func prepareLaunch(
 		layout.Joins = append(layout.Joins, p)
 	}
 
-	cache, err := resolveProjectCache(baseDir, layout, pcfg)
+	plan, err := resolveProjectCache(baseDir, layout, pcfg)
 	if err != nil {
 		return preparedLaunch{}, err
 	}
 
 	spec := docker.BuildSpec(docker.Options{
-		CacheMounts: cache.Mounts,
+		CacheMounts: plan.Mounts(),
 		Layout:      layout,
 		Image:       image,
 		Command:     s.Shell,
@@ -247,7 +248,7 @@ func prepareLaunch(
 		Networks:    pcfg.Network.Networks,
 	})
 
-	return preparedLaunch{Spec: spec, Project: mainName, Network: pcfg.Network, CacheDirs: cache.Dirs}, nil
+	return preparedLaunch{Spec: spec, Project: mainName, Network: pcfg.Network, Cache: plan}, nil
 }
 
 func launchRoot(name, host string) docker.ProjectRoot {
@@ -271,7 +272,7 @@ func prepareLaunchExecution(cmd *cobra.Command, launch preparedLaunch, deps dock
 		return err
 	}
 
-	return prepareCacheDirs(cmd.Context(), launch.CacheDirs)
+	return launch.Cache.Prepare(cmd.Context())
 }
 
 func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, opts launchOptions, deps dockerDeps) error {

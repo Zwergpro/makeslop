@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -10,6 +11,14 @@ import (
 
 	"github.com/Zwergpro/makeslop/internal/projectconfig"
 )
+
+func assertAbsent(t *testing.T, p string) {
+	t.Helper()
+
+	if _, err := os.Lstat(p); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected absent %s, got %v", p, err)
+	}
+}
 
 func runCacheFixture(t *testing.T) (base, root, workspaceDir string) {
 	t.Helper()

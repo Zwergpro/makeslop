@@ -1,4 +1,4 @@
-package cli
+package cache
 
 import (
 	"path/filepath"
@@ -10,20 +10,20 @@ import (
 	"github.com/Zwergpro/makeslop/internal/projectconfig"
 )
 
-func cacheFixture(t *testing.T) (cachePaths, docker.Layout) {
+func cacheFixture(t *testing.T) (Sources, docker.Layout) {
 	t.Helper()
 
 	base := evalSymlinks(t, t.TempDir())
 	root := evalSymlinks(t, t.TempDir())
 	home := evalSymlinks(t, t.TempDir())
-	paths := cachePaths{
+	paths := Sources{
 		BaseDir: base, WorkspaceDir: filepath.Join(base, "workspaces/app-abc123"), HostHome: home,
 	}
 
-	return paths, docker.Layout{Main: docker.Project{ProjectRoot: launchRoot("app-abc123", root)}}
+	return paths, docker.Layout{Main: docker.Project{ProjectRoot: testRoot("app-abc123", root)}}
 }
 
-func staticCacheFixture(t *testing.T) (cachePaths, docker.Layout) {
+func staticCacheFixture(t *testing.T) (Sources, docker.Layout) {
 	t.Helper()
 
 	paths, projects := cacheFixture(t)
@@ -50,16 +50,16 @@ func TestResolveCache_UsesResolvedRoots(t *testing.T) {
 	source := filepath.Join(main.HostRoot, "source")
 	writeFile(t, source, "keep")
 	cfg := projectconfig.CacheMounts{Static: []projectconfig.CacheBind{{Host: "./source", Container: "build"}}}
-	plan, err := resolveCache(cfg, paths, layout, nil)
+	plan, err := Resolve(cfg, paths, layout, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := plan.Mounts[0]; got.Host != source || got.Container != "/src/app/build" {
+	if got := plan.Mounts()[0]; got.Host != source || got.Container != "/src/app/build" {
 		t.Fatalf("mount=%+v", got)
 	}
 
 	cfg.Static[0].Container = "/src/lib/build"
-	if _, err := resolveCache(cfg, paths, layout, nil); err == nil {
+	if _, err := Resolve(cfg, paths, layout, nil); err == nil {
 		t.Fatal("cache mount under joined root accepted")
 	}
 }
@@ -73,7 +73,7 @@ func TestResolveCache_Mappings(t *testing.T) {
 		Static: []projectconfig.CacheBind{{Host: "./settings.json", Container: "~/.settings.json"}},
 	}
 
-	got, err := resolveCache(
+	got, err := Resolve(
 		cfg,
 		paths,
 		projects,
@@ -87,11 +87,11 @@ func TestResolveCache_Mappings(t *testing.T) {
 		{Host: paths.WorkspaceDir + "/docs/", Container: "/workspace/app-abc123/docs/"},
 		{Host: file, Container: "/home/user/.settings.json"},
 	}
-	if !reflect.DeepEqual(got.Mounts, want) {
-		t.Fatalf("got %#v, want %#v", got.Mounts, want)
+	if !reflect.DeepEqual(got.Mounts(), want) {
+		t.Fatalf("got %#v, want %#v", got.Mounts(), want)
 	}
-	if len(got.Dirs) != 2 {
-		t.Fatalf("dirs %#v", got.Dirs)
+	if len(got.dirs) != 2 {
+		t.Fatalf("dirs %#v", got.dirs)
 	}
 
 	assertAbsent(t, filepath.Join(paths.BaseDir, "shared"))
@@ -114,7 +114,7 @@ func TestResolveCache_Modes(t *testing.T) {
 					{Host: "./tools", Container: "/opt/tools", ReadOnly: readOnly},
 				},
 			}
-			plan, err := resolveCache(cfg, paths, projects, nil)
+			plan, err := Resolve(cfg, paths, projects, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -124,8 +124,8 @@ func TestResolveCache_Modes(t *testing.T) {
 				{Host: projects.Main.HostRoot + "/a b,c'd", Container: "/opt/file", ReadOnly: readOnly},
 				{Host: projects.Main.HostRoot + "/tools/", Container: "/opt/tools/", ReadOnly: readOnly},
 			}
-			if !reflect.DeepEqual(plan.Mounts, want) {
-				t.Fatalf("got %#v, want %#v", plan.Mounts, want)
+			if !reflect.DeepEqual(plan.Mounts(), want) {
+				t.Fatalf("got %#v, want %#v", plan.Mounts(), want)
 			}
 		})
 	}
@@ -161,7 +161,7 @@ func TestResolveCache_StaticFilePaths(t *testing.T) {
 			cfg := projectconfig.CacheMounts{
 				Static: []projectconfig.CacheBind{{Host: tc.host, Container: tc.target}},
 			}
-			plan, err := resolveCache(
+			plan, err := Resolve(
 				cfg,
 				paths,
 				projects,
@@ -170,7 +170,7 @@ func TestResolveCache_StaticFilePaths(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if m := plan.Mounts[0]; m.Host != tc.wantHost || m.Container != tc.wantTarget {
+			if m := plan.Mounts()[0]; m.Host != tc.wantHost || m.Container != tc.wantTarget {
 				t.Fatalf("got %#v", m)
 			}
 		})
@@ -184,7 +184,7 @@ func TestResolveCache_StaticDirectorySources(t *testing.T) {
 			cfg := projectconfig.CacheMounts{
 				Static: []projectconfig.CacheBind{{Host: source, Container: "/opt/tools"}},
 			}
-			plan, err := resolveCache(
+			plan, err := Resolve(
 				cfg,
 				paths,
 				projects,
@@ -195,8 +195,8 @@ func TestResolveCache_StaticDirectorySources(t *testing.T) {
 			}
 
 			want := docker.Mount{Host: projects.Main.HostRoot + "/tools/", Container: "/opt/tools/"}
-			if plan.Mounts[0] != want {
-				t.Fatalf("got %#v, want %#v", plan.Mounts[0], want)
+			if plan.Mounts()[0] != want {
+				t.Fatalf("got %#v, want %#v", plan.Mounts()[0], want)
 			}
 		})
 	}
@@ -209,7 +209,7 @@ func TestResolveCache_MissingStaticDoesNotCreateManaged(t *testing.T) {
 		Static: []projectconfig.CacheBind{{Host: "missing", Container: "/opt/x"}},
 	}
 
-	if _, err := resolveCache(
+	if _, err := Resolve(
 		cfg,
 		paths,
 		projects,
@@ -234,7 +234,7 @@ func TestResolveCache_SpecialAndDanglingSources(t *testing.T) {
 		cfg := projectconfig.CacheMounts{
 			Static: []projectconfig.CacheBind{{Host: source, Container: "/opt/x"}},
 		}
-		if _, err := resolveCache(
+		if _, err := Resolve(
 			cfg,
 			paths,
 			projects,
@@ -251,7 +251,7 @@ func TestResolveCache_SharedAndLocalScope(t *testing.T) {
 		Shared: []projectconfig.CacheDirectory{{Name: ".claude"}},
 		Local:  []projectconfig.CacheDirectory{{Name: ".claude"}},
 	}
-	first, err := resolveCache(
+	first, err := Resolve(
 		cfg,
 		paths,
 		projects,
@@ -261,9 +261,9 @@ func TestResolveCache_SharedAndLocalScope(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	projects.Main.ProjectRoot = launchRoot("other-def456", projects.Main.HostRoot)
+	projects.Main.ProjectRoot = testRoot("other-def456", projects.Main.HostRoot)
 	paths.WorkspaceDir = filepath.Join(paths.BaseDir, "workspaces/other-def456")
-	second, err := resolveCache(
+	second, err := Resolve(
 		cfg,
 		paths,
 		projects,
@@ -272,27 +272,27 @@ func TestResolveCache_SharedAndLocalScope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.Mounts[0].Host != second.Mounts[0].Host || first.Mounts[1].Host == second.Mounts[1].Host {
+	if first.Mounts()[0].Host != second.Mounts()[0].Host || first.Mounts()[1].Host == second.Mounts()[1].Host {
 		t.Fatal("wrong scope")
 	}
 }
 
 func TestResolveCache_Empty(t *testing.T) {
 	_, projects := cacheFixture(t)
-	empty, err := resolveCache(
+	empty, err := Resolve(
 		projectconfig.CacheMounts{},
-		cachePaths{},
+		Sources{},
 		projects,
 		nil,
 	)
-	if err != nil || len(empty.Mounts) != 0 {
+	if err != nil || len(empty.Mounts()) != 0 {
 		t.Fatalf("empty: %#v %v", empty, err)
 	}
 }
 
 func TestResolveCache_ProtectedDestinations(t *testing.T) {
 	paths, projects := cacheFixture(t)
-	projects.Joins = []docker.Project{{ProjectRoot: launchRoot("joined", t.TempDir())}}
+	projects.Joins = []docker.Project{{ProjectRoot: testRoot("joined", t.TempDir())}}
 	source := filepath.Join(projects.Main.HostRoot, "source")
 	writeFile(t, source, "x")
 	targets := []string{
@@ -308,7 +308,7 @@ func TestResolveCache_ProtectedDestinations(t *testing.T) {
 			cfg := projectconfig.CacheMounts{
 				Static: []projectconfig.CacheBind{{Host: source, Container: target, ReadOnly: true}},
 			}
-			if _, err := resolveCache(
+			if _, err := Resolve(
 				cfg,
 				paths,
 				projects,
@@ -339,7 +339,7 @@ func TestResolveCache_OverlappingDestinations(t *testing.T) {
 			for _, target := range tc.targets {
 				cfg.Static = append(cfg.Static, projectconfig.CacheBind{Host: source, Container: target})
 			}
-			if _, err := resolveCache(
+			if _, err := Resolve(
 				cfg,
 				paths,
 				projects,
@@ -362,7 +362,7 @@ func TestResolveCache_PathSegmentBoundaries(t *testing.T) {
 		cfg.Static = append(cfg.Static, projectconfig.CacheBind{Host: source, Container: target})
 	}
 
-	if _, err := resolveCache(
+	if _, err := Resolve(
 		cfg,
 		paths,
 		projects,
@@ -387,7 +387,7 @@ func TestResolveCache_ExcludeConflicts(t *testing.T) {
 			cfg := projectconfig.CacheMounts{
 				Static: []projectconfig.CacheBind{{Host: source, Container: tc.target}},
 			}
-			if _, err := resolveCache(
+			if _, err := Resolve(
 				cfg,
 				paths,
 				projects,
@@ -415,7 +415,7 @@ func TestResolveCache_CrossGroupConflicts(t *testing.T) {
 	}
 
 	for _, cfg := range cases {
-		if _, err := resolveCache(
+		if _, err := Resolve(
 			cfg,
 			paths,
 			projects,

@@ -1,4 +1,4 @@
-package cli
+package cache
 
 import (
 	"context"
@@ -82,19 +82,20 @@ func checkedCacheDirRelativePath(dir cacheDir) (string, error) {
 	return rel, nil
 }
 
+// Prepare revalidates all managed paths before creating any directory.
 // Preparation is idempotent; an operational failure may leave earlier empty dirs.
-func prepareCacheDirs(ctx context.Context, dirs []cacheDir) error {
+func (p Plan) Prepare(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 
 	// Validate every declaration first so a later invalid source causes no writes.
-	for _, dir := range dirs {
+	for _, dir := range p.dirs {
 		if err := checkCacheDir(dir); err != nil {
 			return err
 		}
 	}
-	for _, dir := range dirs {
+	for _, dir := range p.dirs {
 		if err := prepareCacheDir(ctx, dir); err != nil {
 			return err
 		}
