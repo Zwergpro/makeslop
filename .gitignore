@@ -1,7 +1,6 @@
 .idea/
 .gocache/
 .claude/
-.agents/
 .codex/
 .makeslop.yaml
 .gotmp/
@@ -9,4 +8,5 @@
 /makeslop
 .agents
 skills-lock.json
-docs/superpowers/
+docs/superpowers
+settings.json

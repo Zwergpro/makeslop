@@ -9,9 +9,20 @@ import (
 // apiClient is the narrow subset of moby's client.APIClient this package uses.
 // *moby.Client satisfies it (see assertion below); tests inject a fake via WithClient.
 type apiClient interface {
+	ContainerList(ctx context.Context, options moby.ContainerListOptions) (moby.ContainerListResult, error)
 	ContainerCreate(ctx context.Context, options moby.ContainerCreateOptions) (moby.ContainerCreateResult, error)
 	ContainerAttach(ctx context.Context, container string, options moby.ContainerAttachOptions) (moby.ContainerAttachResult, error)
 	ContainerStart(ctx context.Context, container string, options moby.ContainerStartOptions) (moby.ContainerStartResult, error)
+	ContainerStop(
+		ctx context.Context,
+		container string,
+		options moby.ContainerStopOptions,
+	) (moby.ContainerStopResult, error)
+	ExecCreate(ctx context.Context, execContainer string, options moby.ExecCreateOptions) (moby.ExecCreateResult, error)
+	ExecStart(ctx context.Context, execID string, options moby.ExecStartOptions) (moby.ExecStartResult, error)
+	ExecAttach(ctx context.Context, execID string, options moby.ExecAttachOptions) (moby.ExecAttachResult, error)
+	ExecInspect(ctx context.Context, execID string, options moby.ExecInspectOptions) (moby.ExecInspectResult, error)
+	ExecResize(ctx context.Context, execID string, options moby.ExecResizeOptions) (moby.ExecResizeResult, error)
 	ContainerWait(ctx context.Context, container string, options moby.ContainerWaitOptions) moby.ContainerWaitResult
 	ContainerResize(ctx context.Context, container string, options moby.ContainerResizeOptions) (moby.ContainerResizeResult, error)
 	ContainerRemove(ctx context.Context, container string, options moby.ContainerRemoveOptions) (moby.ContainerRemoveResult, error)

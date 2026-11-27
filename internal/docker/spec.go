@@ -77,6 +77,7 @@ type Mount struct {
 type Spec struct {
 	Image   string
 	Command string
+	ZMXArgv []string // nil for foreground; otherwise prefix before Command
 	Workdir string
 	Env     []string // "KEY=VALUE" pairs; nil/empty → no -e flags
 	Mounts  []Mount
@@ -89,6 +90,9 @@ type Spec struct {
 
 	// Presentation only; argv and SDK projections ignore these labels.
 	Sections []Section
+
+	bgUUID    string
+	bgProject string
 }
 
 type Section struct {
@@ -204,7 +208,25 @@ func projectMasks(p Project, configBound bool) []Mount {
 // Args uses CSV quoting so Docker can parse mount paths containing ',' or '"'.
 func (s Spec) Args() []string {
 	var args []string
-	args = append(args, "run", "--rm", "-it")
+
+	if s.bgUUID == "" {
+		args = append(args, "run", "--rm", "-it")
+	} else {
+		args = append(
+			args,
+			"run",
+			"-dit",
+			"--name",
+			bgPrefix+s.bgUUID,
+			"--label",
+			bgUUIDLabel+"="+s.bgUUID,
+			"--label",
+			bgProjectLabel+"="+s.bgProject,
+			"--label",
+			bgShellLabel+"="+s.Command,
+		)
+	}
+
 	args = append(args, "--workdir", s.Workdir)
 	for _, t := range s.Tmpfs {
 		args = append(args, "--tmpfs", t)
@@ -243,8 +265,10 @@ func (s Spec) Args() []string {
 			args = append(args, "--mount", val)
 		}
 	}
-	args = append(args, s.Image, s.Command)
-	return args
+
+	args = append(args, s.Image)
+
+	return append(args, s.commandArgv()...)
 }
 
 var shellSafeRe = regexp.MustCompile(`^[A-Za-z0-9_./:=,@+-]+$`)
@@ -284,8 +308,9 @@ func (s Spec) ShellCommand() string {
 	}
 	mountN := 0
 
-	i := 1 // skip "run" — already in "docker run" prefix
-	for i < len(args)-2 {
+	tail := len(args) - 2 - len(s.ZMXArgv) // image, optional prefix, shell
+	i := 1                                 // skip "run" — already in "docker run" prefix
+	for i < tail {
 		tok := args[i]
 		if tok == "--mount" {
 			if label, ok := sections[mountN]; ok {
@@ -297,7 +322,7 @@ func (s Spec) ShellCommand() string {
 			mountN++
 		}
 		switch tok {
-		case "--workdir", "--tmpfs", "--cap-drop", "--security-opt", "--network", "--mount", "-e":
+		case "--workdir", "--tmpfs", "--cap-drop", "--security-opt", "--network", "--mount", "-e", "--name", "--label":
 			lines = append(lines, "  "+shellQuote(tok)+" "+shellQuote(args[i+1]))
 			i += 2
 		default:
@@ -311,8 +336,9 @@ func (s Spec) ShellCommand() string {
 		lines = append(lines, "")
 	}
 	// Explicit tail lines: a flag-shaped image name must not be parsed as a flag.
-	lines = append(lines, "  "+shellQuote(args[len(args)-2]))
-	lines = append(lines, "  "+shellQuote(args[len(args)-1]))
+	for _, arg := range args[tail:] {
+		lines = append(lines, "  "+shellQuote(arg))
+	}
 
 	var sb strings.Builder
 	for j, line := range lines {
@@ -325,23 +351,40 @@ func (s Spec) ShellCommand() string {
 	return strings.TrimSuffix(sb.String(), "\n")
 }
 
+func (s Spec) commandArgv() []string {
+	argv := make([]string, 0, len(s.ZMXArgv)+1)
+
+	return append(append(argv, s.ZMXArgv...), s.Command)
+}
+
 func (s Spec) ContainerConfig() *container.Config {
-	return &container.Config{
+	attached := s.bgUUID == ""
+	cfg := &container.Config{
 		Image:        s.Image,
-		Cmd:          []string{s.Command},
+		Cmd:          s.commandArgv(),
 		WorkingDir:   s.Workdir,
 		Env:          s.Env,
 		Tty:          true,
 		OpenStdin:    true,
-		AttachStdin:  true,
-		AttachStdout: true,
-		AttachStderr: true,
+		AttachStdin:  attached,
+		AttachStdout: attached,
+		AttachStderr: attached,
 	}
+
+	if !attached {
+		cfg.Labels = map[string]string{
+			bgUUIDLabel:    s.bgUUID,
+			bgProjectLabel: s.bgProject,
+			bgShellLabel:   s.Command,
+		}
+	}
+
+	return cfg
 }
 
 func (s Spec) HostConfig() *container.HostConfig {
 	return &container.HostConfig{
-		AutoRemove:  true,
+		AutoRemove:  s.bgUUID == "",
 		CapDrop:     s.CapDrop,
 		SecurityOpt: s.SecOpt,
 		Tmpfs:       tmpfsMap(s.Tmpfs),

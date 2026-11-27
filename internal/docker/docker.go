@@ -13,6 +13,7 @@ type Docker struct {
 	client              apiClient
 	isTTYFn             func() bool
 	makeRaw             func(fd int) (*term.State, error)
+	getTTYSize          func(fd int) (width, height int, err error)
 	stdin               io.Reader
 	stdout              io.Writer
 	resizeGoroutineHook func() // called at end of resize goroutine body; nil in production
@@ -53,10 +54,11 @@ func WithStreams(in io.Reader, out io.Writer) Option {
 // leave an unused transport behind.
 func New(opts ...Option) (*Docker, error) {
 	d := &Docker{
-		isTTYFn: func() bool { return isTTY(os.Stdin) && isTTY(os.Stdout) },
-		makeRaw: func(fd int) (*term.State, error) { return term.MakeRaw(fd) },
-		stdin:   os.Stdin,
-		stdout:  os.Stdout,
+		isTTYFn:    func() bool { return isTTY(os.Stdin) && isTTY(os.Stdout) },
+		makeRaw:    term.MakeRaw,
+		getTTYSize: term.GetSize,
+		stdin:      os.Stdin,
+		stdout:     os.Stdout,
 	}
 	for _, o := range opts {
 		o(d)

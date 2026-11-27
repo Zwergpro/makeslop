@@ -25,6 +25,10 @@ func skipNonPOSIX(t *testing.T, why string) {
 
 type noopClient struct{}
 
+func (noopClient) ContainerList(_ context.Context, _ moby.ContainerListOptions) (moby.ContainerListResult, error) {
+	return moby.ContainerListResult{}, nil
+}
+
 func (noopClient) ContainerCreate(_ context.Context, _ moby.ContainerCreateOptions) (moby.ContainerCreateResult, error) {
 	return moby.ContainerCreateResult{}, nil
 }
@@ -35,6 +39,34 @@ func (noopClient) ContainerAttach(_ context.Context, _ string, _ moby.ContainerA
 
 func (noopClient) ContainerStart(_ context.Context, _ string, _ moby.ContainerStartOptions) (moby.ContainerStartResult, error) {
 	return moby.ContainerStartResult{}, nil
+}
+
+func (noopClient) ContainerStop(
+	_ context.Context,
+	_ string,
+	_ moby.ContainerStopOptions,
+) (moby.ContainerStopResult, error) {
+	return moby.ContainerStopResult{}, nil
+}
+
+func (noopClient) ExecCreate(_ context.Context, _ string, _ moby.ExecCreateOptions) (moby.ExecCreateResult, error) {
+	return moby.ExecCreateResult{}, nil
+}
+
+func (noopClient) ExecStart(context.Context, string, moby.ExecStartOptions) (moby.ExecStartResult, error) {
+	return moby.ExecStartResult{}, nil
+}
+
+func (noopClient) ExecAttach(_ context.Context, _ string, _ moby.ExecAttachOptions) (moby.ExecAttachResult, error) {
+	return moby.ExecAttachResult{}, nil
+}
+
+func (noopClient) ExecInspect(_ context.Context, _ string, _ moby.ExecInspectOptions) (moby.ExecInspectResult, error) {
+	return moby.ExecInspectResult{}, nil
+}
+
+func (noopClient) ExecResize(_ context.Context, _ string, _ moby.ExecResizeOptions) (moby.ExecResizeResult, error) {
+	return moby.ExecResizeResult{}, nil
 }
 
 func (noopClient) ContainerWait(_ context.Context, _ string, _ moby.ContainerWaitOptions) moby.ContainerWaitResult {

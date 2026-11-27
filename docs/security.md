@@ -49,6 +49,20 @@ Existing project configs are never rewritten when template patterns change.
 
 ---
 
+## Background sessions
+
+`bg run` applies the same scan and sandbox policy as `run` when it creates a container. A background
+container stays on the daemon after you disconnect. Anyone with access to that daemon can inspect
+or control it; the UUID is an identifier, not a credential. Attached clients share terminal input
+and output. Docker's configured logging driver may retain terminal output, so avoid printing secrets.
+
+`bg start` and `bg restart` reuse the container's original mounts and do not scan for newly added
+secrets or reload `.makeslop.yaml`. Manually stop and recreate the container with `bg run` to apply
+new masks. While the old container exists, its writable layer persists; removing it does not remove
+bind-mounted data or daemon-managed logs outside its lifecycle.
+
+---
+
 ## Project-local exclusions
 
 `makeslop init` creates this `.makeslop.yaml` at the project root:
