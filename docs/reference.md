@@ -615,11 +615,14 @@ in CI pipelines and non-interactive shells.
 
 ## Dry run
 
-Pass `--dry-run` (short: `-n`) to inspect the container launch on stdout. It runs the
-home, workspace, config, and secret-scan checks, including those for joins, but skips daemon,
-image, and network preflight.
+Pass `--dry-run` (short: `-n`) to `run` or `bg run` to inspect the container launch on stdout.
+It checks the home-directory guard, workspace, project configuration, and secret masks, including
+those for joins. It also validates cache mounts: a missing static source or a conflicting target
+fails the preview, but missing managed cache directories are not created. Dry runs skip Docker
+daemon, image, and network preflight.
 
-Without joins, output is a paste-ready, backslash-continued `docker run` command. With joins,
+Without joins, output is a backslash-continued `docker run` command. For `bg run`, the name and
+UUID label use an example UUID, not the ID of a session you can attach to. With joins,
 blank lines and `# --- project: … ---` / `# --- join: … ---` comments separate mount groups.
 Those comments break shell continuation, so joined output is for inspection only. Control
 characters in labels are replaced with `?`.

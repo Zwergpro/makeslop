@@ -4,23 +4,29 @@ The CLI lives in `internal/cli`. It loads settings and project configuration, ch
 
 ## Spec and runtime
 
-`internal/docker/create_spec.go` builds a `ForegroundSpec` or `BackgroundSpec` from resolved `BuildInputs`. Both hold final create values: the dry-run shell command and the SDK request render those values without inferring execution mode from a UUID. Drift tests keep printed flags and daemon settings aligned. Filesystem checks, host environment lookup, and SDK calls happen before or after spec construction, never inside it.
+`run` and `bg run` share `prepareLaunch` in `internal/cli/run.go`. It returns resolved `docker.BuildInputs` plus a `cache.Plan`: the builders need the mount list, while the CLI keeps the plan for directory creation. Filesystem checks and host environment lookups stay outside the builders.
+
+`BuildForeground` and `BuildBackground` in `internal/docker/create_spec.go` return distinct types accepted by `Run` and `RunBG`, respectively. Each wraps a private `createSpec` with the final command, environment, mounts, and lifecycle flags. Dry runs render that spec as a shell command; real launches use it to build the Docker SDK create request. Neither renderer chooses the launch mode.
 
 `projectconfig.Load` parses `environments:` without reading host variables. `internal/cli/run.go` resolves them and sorts the final `KEY=VALUE` pairs before building the spec. Network settings follow the same path: project config to `BuildInputs`, then to both shell and SDK projections. Image and network preflight read those same inputs.
 
 ### Mount order
 
-`BuildInputs.Layout.Main` is the writable main project; joins follow in flag order. CLI resolves each host and container root once and passes the same layout to cache validation and spec construction. Mounts are added in this order:
+`BuildInputs.Layout.Main` is the writable main project; joins follow in flag order. The CLI resolves each host and container root once and passes the same `docker.Layout` to cache validation and spec construction. Both reject relative host roots and require clean, absolute container paths. Mounts are added in this order:
 
 1. Main-project root.
 2. Main-project policy mounts: a read-only `.makeslop.yaml` bind and a `.git/hooks` tmpfs when applicable.
-3. Explicit `Options.CacheMounts`, ordered shared, local, static.
+3. Explicit `BuildInputs.CacheMounts`, ordered shared, local, static.
 4. Main-project secret masks.
 5. Each join's root, writable policy mounts, and masks.
 
 Masks must follow the mounts they cover. A `/dev/null` mask for `.makeslop.yaml` is dropped when it would hide the read-only config bind. Read-only joins need no policy mounts, though their config may still be masked. Cache mounts apply only to the main project.
 
-Absent `cache:` config and zero-value `BuildInputs.CacheMounts` both mount nothing. Projectconfig validates declarations without preparing sources. `internal/cache.Resolve` preserves file/directory types, rejects destination conflicts, and checks managed-directory containment. CLI supplies the layout and host source locations. Real launches call `Plan.Prepare` after image/network preflight; it rechecks all managed directories before creating any. Dry runs never call it. Explicit exclude declarations are retained before stat filtering so missing paths cannot bypass collision checks. Joined dry runs include group labels for inspection; those labels make the output unsuitable for pasting into a shell.
+### Cache resolution and preparation
+
+`internal/projectconfig` validates cache declarations. The CLI supplies `cache.Resolve` with the project layout, host source locations, and declared excludes, including paths that do not yet exist. `internal/cache` checks source types, managed-directory containment, and destination conflicts without creating anything. `Plan.Mounts()` returns a copy of the validated mounts; absent `cache:` configuration contributes none.
+
+Only real launches call `Plan.Prepare`, after image and network preflight. It rechecks all managed directories before creating any. Dry runs therefore report invalid cache sources or conflicting destinations without populating the cache.
 
 ## Docker boundary
 
