@@ -6,13 +6,10 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"reflect"
 	"regexp"
 	"slices"
 	"strings"
 	"testing"
-
-	moby "github.com/moby/moby/client"
 
 	"github.com/Zwergpro/makeslop/internal/config"
 	"github.com/Zwergpro/makeslop/internal/docker"
@@ -22,7 +19,7 @@ const bgTestUUID = "018009ac-5fec-4c37-891a-244c91beda77"
 
 type bgCLIProbe struct {
 	*fakeDocker
-	create                        moby.ContainerCreateOptions
+	bgPreview                     string
 	calls                         []string
 	rows                          []docker.BGContainer
 	argv                          []string
@@ -48,9 +45,10 @@ func (p *bgCLIProbe) RunBG(ctx context.Context, s docker.BackgroundSpec) error {
 	if p.errorRun != nil {
 		return p.errorRun
 	}
-	var err error
-	p.create, err = captureCreate(func(d *docker.Docker) error { return d.RunBG(ctx, s) })
-	return err
+
+	p.bgPreview = s.ShellCommand()
+
+	return nil
 }
 
 func (p *bgCLIProbe) ListBG(context.Context) ([]docker.BGContainer, error) {
@@ -238,9 +236,10 @@ func TestBGCommands(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		if !reflect.DeepEqual(p.create.HostConfig.Mounts, p.LastCreate.HostConfig.Mounts) ||
-			!reflect.DeepEqual(p.create.NetworkingConfig, p.LastCreate.NetworkingConfig) {
-			t.Fatal("foreground/background mount or network policy differs")
+		for _, flag := range []string{"--mount", "--network"} {
+			if !slices.Equal(previewFlags(p.bgPreview, flag), previewFlags(p.LastPreview, flag)) {
+				t.Errorf("foreground/background %s values differ", flag)
+			}
 		}
 	})
 	t.Run("creation", func(t *testing.T) {
@@ -249,7 +248,8 @@ func TestBGCommands(t *testing.T) {
 		base := t.TempDir()
 		initWithImage(t, base)
 
-		if _, _, err := runCmd(t, base, "config", "set", "shell", "/bin/fish"); err != nil {
+		const shell = "/bin/fish"
+		if _, _, err := runCmd(t, base, "config", "set", "shell", shell); err != nil {
 			t.Fatal(err)
 		}
 
@@ -262,21 +262,12 @@ func TestBGCommands(t *testing.T) {
 			t.Fatalf("run: %q / %q / %v, %v", out, stderr, err, p.calls)
 		}
 
-		cfg := p.create.Config
-		const shell = "/bin/fish"
-
-		if cfg.Labels["io.makeslop.bg.shell"] != shell {
-			t.Fatalf("shell label: %v", cfg.Labels)
-		}
-
-		if !slices.Equal(cfg.Cmd, []string{"zmx", "attach", "agent", shell}) {
-			t.Fatalf("command: %v", cfg.Cmd)
-		}
-
-		privateSocket := slices.Contains(cfg.Env, "ZMX_DIR=/tmp/makeslop-zmx") &&
-			!slices.Contains(cfg.Env, "ZMX_DIR=/tmp/overridden")
-		if !slices.Contains(cfg.Env, "COLOR=blue") || !privateSocket {
-			t.Fatalf("cfg: %+v", cfg)
+		wantName := "makeslop-" + strings.TrimSpace(out)
+		hasName := slices.Contains(previewFlags(p.bgPreview, "--name"), wantName)
+		hasShell := strings.HasSuffix(p.bgPreview, "  "+shell)
+		hasEnv := slices.Contains(previewFlags(p.bgPreview, "-e"), "COLOR=blue")
+		if !hasName || !hasShell || !hasEnv {
+			t.Fatalf("background spec does not match launch: %s", p.bgPreview)
 		}
 
 		another, _, err := runCmdWithDeps(t, base, deps, "bg", "run")

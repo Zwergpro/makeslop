@@ -72,6 +72,22 @@ func TestBuildModes_InvalidInput(t *testing.T) {
 	missingRoot := modeInputs()
 	missingRoot.Layout.Main.ContainerRoot = ""
 
+	for _, root := range []ProjectRoot{
+		{HostRoot: "relative", ContainerRoot: "/src/lib"},
+		{HostRoot: "/host/lib", ContainerRoot: "relative"},
+		{HostRoot: "/host/lib", ContainerRoot: "/src/lib/"},
+	} {
+		in := modeInputs()
+		in.Layout.Joins = []Project{{ProjectRoot: root}}
+		if _, err := BuildForeground(in); err == nil {
+			t.Errorf("foreground accepted invalid join %+v", root)
+		}
+
+		if _, err := BuildBackground(in, testBGUUID); err == nil {
+			t.Errorf("background accepted invalid join %+v", root)
+		}
+	}
+
 	for _, in := range []BuildInputs{bad, missingRoot} {
 		if _, err := BuildForeground(in); err == nil {
 			t.Error("foreground accepted invalid inputs")

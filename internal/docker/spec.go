@@ -1,6 +1,8 @@
 package docker
 
 import (
+	"fmt"
+	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -38,6 +40,33 @@ type Project struct {
 type Layout struct {
 	Main  Project
 	Joins []Project
+}
+
+// Validate requires the same resolved roots for target checks and mount creation.
+func (l Layout) Validate() error {
+	if err := l.Main.validateRoots(); err != nil {
+		return fmt.Errorf("main project: %w", err)
+	}
+
+	for i, join := range l.Joins {
+		if err := join.validateRoots(); err != nil {
+			return fmt.Errorf("join[%d]: %w", i, err)
+		}
+	}
+
+	return nil
+}
+
+func (r ProjectRoot) validateRoots() error {
+	if !filepath.IsAbs(r.HostRoot) {
+		return fmt.Errorf("host root %q must be absolute", r.HostRoot)
+	}
+
+	if !path.IsAbs(r.ContainerRoot) || path.Clean(r.ContainerRoot) != r.ContainerRoot {
+		return fmt.Errorf("container root %q must be clean and absolute", r.ContainerRoot)
+	}
+
+	return nil
 }
 
 func filterOut(s []string, exclude string) []string {
@@ -128,25 +157,33 @@ func projectMasks(p Project, configBound bool) []Mount {
 // Args uses CSV quoting so Docker can parse mount paths containing ',' or '"'.
 func (s createSpec) Args() []string {
 	args := []string{"run"}
+
 	if s.AutoRemove {
 		args = append(args, "--rm")
 	}
+
 	flags := "-"
+
 	if !s.Attached {
 		flags += "d"
 	}
+
 	if s.OpenStdin {
 		flags += "i"
 	}
+
 	if s.Tty {
 		flags += "t"
 	}
+
 	if flags != "-" {
 		args = append(args, flags)
 	}
+
 	if s.Name != "" {
 		args = append(args, "--name", s.Name)
 	}
+
 	for _, l := range s.Labels {
 		args = append(args, "--label", l.key+"="+l.value)
 	}
@@ -170,22 +207,28 @@ func (s createSpec) Args() []string {
 	for _, e := range s.Env {
 		args = append(args, "-e", e)
 	}
+
 	for _, m := range s.Mounts {
 		switch m.Type {
 		case MountTmpfs:
-			args = append(args, "--mount",
-				"type=tmpfs,"+csvField("target="+m.Container))
+			args = append(args, "--mount", "type=tmpfs,"+csvField("target="+m.Container))
+
 		case MountVolume:
 			val := "type=volume," + csvField("source="+m.Host) + "," + csvField("target="+m.Container)
+
 			if m.ReadOnly {
 				val += ",readonly"
 			}
+
 			args = append(args, "--mount", val)
+
 		case MountBind:
 			val := "type=bind," + csvField("source="+m.Host) + "," + csvField("target="+m.Container)
+
 			if m.ReadOnly {
 				val += ",readonly"
 			}
+
 			args = append(args, "--mount", val)
 		}
 	}

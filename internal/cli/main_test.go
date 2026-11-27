@@ -13,8 +13,6 @@ import (
 	"strings"
 	"testing"
 
-	moby "github.com/moby/moby/client"
-
 	"github.com/Zwergpro/makeslop/internal/config"
 	"github.com/Zwergpro/makeslop/internal/docker"
 	"github.com/Zwergpro/makeslop/internal/projectconfig"
@@ -29,7 +27,6 @@ type fakeDocker struct {
 	ImageMissing bool  // ImageExists returns (false, nil)
 	ImageErr     error // ImageExists returns (false, err) unless ImageMissing
 
-	LastCreate  moby.ContainerCreateOptions
 	LastPreview string
 
 	DaemonChecked bool   // set when CheckDaemon is called
@@ -74,17 +71,13 @@ func (*fakeDocker) RestartBG(context.Context, string) error { return nil }
 
 func (*fakeDocker) RemoveBG(context.Context, string) error { return nil }
 
-func (f *fakeDocker) Run(ctx context.Context, s docker.ForegroundSpec) error {
+func (f *fakeDocker) Run(_ context.Context, s docker.ForegroundSpec) error {
 	if !f.isTTY {
 		return docker.ErrNoTTY
 	}
 	f.Started = true
 	f.LastPreview = s.ShellCommand()
-	var err error
-	f.LastCreate, err = captureCreate(func(d *docker.Docker) error { return d.Run(ctx, s) })
-	if err != nil {
-		return err
-	}
+
 	if f.exitCode != 0 {
 		return &docker.ExitError{Code: f.exitCode}
 	}

@@ -34,12 +34,17 @@ func Resolve(
 	layout docker.Layout,
 	declaredExcludes []string,
 ) (Plan, error) {
+	if err := layout.Validate(); err != nil {
+		return Plan{}, err
+	}
+
 	// Empty plans retain zero-value slices, like absent project configuration.
 	var result Plan
 	mainRoot := layout.Main.ContainerRoot
 	if err := result.resolveManaged(c, paths, mainRoot); err != nil {
 		return Plan{}, err
 	}
+
 	if err := result.resolveStatic(c.Static, paths, layout.Main.ProjectRoot); err != nil {
 		return Plan{}, err
 	}
@@ -60,12 +65,16 @@ func Resolve(
 func (p *Plan) resolveManaged(c projectconfig.CacheMounts, paths Sources, mainRoot string) error {
 	groups := []cacheGroup{
 		{
-			name: "shared", host: filepath.Join(paths.BaseDir, "shared"),
-			target: containerHome, entries: c.Shared,
+			name:    "shared",
+			host:    filepath.Join(paths.BaseDir, "shared"),
+			target:  containerHome,
+			entries: c.Shared,
 		},
 		{
-			name: "local", host: paths.WorkspaceDir,
-			target: mainRoot, entries: c.Local,
+			name:    "local",
+			host:    paths.WorkspaceDir,
+			target:  mainRoot,
+			entries: c.Local,
 		},
 	}
 
@@ -91,9 +100,10 @@ func (p *Plan) resolveManagedGroup(group cacheGroup, base string) error {
 		p.dirs = append(p.dirs, dir)
 		p.entries = append(p.entries, entry)
 		p.mounts = append(p.mounts, docker.Mount{
-			Type: docker.MountBind,
-			Host: source + "/", Container: path.Join(group.target, name) + "/",
-			ReadOnly: dirConfig.ReadOnly,
+			Type:      docker.MountBind,
+			Host:      source + "/",
+			Container: path.Join(group.target, name) + "/",
+			ReadOnly:  dirConfig.ReadOnly,
 		})
 	}
 
@@ -130,6 +140,7 @@ func resolveStaticCacheMount(
 	if err != nil {
 		return docker.Mount{}, fmt.Errorf("%s: %w", entry, err)
 	}
+
 	source, isDir, err := staticCacheSource(host, entry)
 	if err != nil {
 		return docker.Mount{}, err
@@ -137,16 +148,21 @@ func resolveStaticCacheMount(
 
 	// Container paths use POSIX rules independently of the host filesystem.
 	target := bind.Container
+
 	if target == "~" {
 		target = containerHome
 	}
+
 	if strings.HasPrefix(target, "~/") {
 		target = path.Join(containerHome, strings.TrimPrefix(target, "~/"))
 	}
+
 	if !path.IsAbs(target) {
 		target = path.Join(project.ContainerRoot, target)
 	}
+
 	target = path.Clean(target)
+
 	if isDir {
 		source += "/"
 		target += "/"
@@ -167,6 +183,7 @@ func staticCacheHost(host, home, projectRoot string) (string, error) {
 			host = filepath.Join(home, strings.TrimPrefix(host, "~/"))
 		}
 	}
+
 	if !filepath.IsAbs(host) {
 		host = filepath.Join(projectRoot, host)
 	}

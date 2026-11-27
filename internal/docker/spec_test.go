@@ -12,11 +12,21 @@ import (
 
 func sampleOptions() BuildInputs {
 	return BuildInputs{
-		Layout: Layout{Main: Project{ProjectRoot: ProjectRoot{HostRoot: "/home/me/code/myproj", Name: "myproj-abc123", ContainerRoot: "/workspace/myproj-abc123"}}},
+		Layout: Layout{Main: Project{
+			ProjectRoot: ProjectRoot{
+				HostRoot:      "/home/me/code/myproj",
+				Name:          "myproj-abc123",
+				ContainerRoot: "/workspace/myproj-abc123",
+			},
+		}},
 		CacheMounts: []Mount{
 			{Type: MountBind, Host: "/home/me/.makeslop/shared/.claude/", Container: "/home/user/.claude/"},
 			{Type: MountBind, Host: "/home/me/.makeslop/shared/.codex/", Container: "/home/user/.codex/"},
-			{Type: MountBind, Host: "/home/me/.makeslop/workspaces/myproj-abc123/docs/", Container: "/workspace/myproj-abc123/docs/"},
+			{
+				Type:      MountBind,
+				Host:      "/home/me/.makeslop/workspaces/myproj-abc123/docs/",
+				Container: "/workspace/myproj-abc123/docs/",
+			},
 		},
 		Image: "claudebox", Shell: "/bin/zsh", TmpDirSize: "100m",
 	}
@@ -52,7 +62,11 @@ func TestBuildForeground_MountListMatchesReferenceOrder(t *testing.T) {
 		{Type: MountBind, Host: "/home/me/code/myproj", Container: "/workspace/myproj-abc123"},
 		{Type: MountBind, Host: "/home/me/.makeslop/shared/.claude/", Container: "/home/user/.claude/"},
 		{Type: MountBind, Host: "/home/me/.makeslop/shared/.codex/", Container: "/home/user/.codex/"},
-		{Type: MountBind, Host: "/home/me/.makeslop/workspaces/myproj-abc123/docs/", Container: "/workspace/myproj-abc123/docs/"},
+		{
+			Type:      MountBind,
+			Host:      "/home/me/.makeslop/workspaces/myproj-abc123/docs/",
+			Container: "/workspace/myproj-abc123/docs/",
+		},
 	}
 	if !reflect.DeepEqual(spec.Mounts, want) {
 		t.Errorf("Mounts mismatch\n got: %+v\nwant: %+v", spec.Mounts, want)
@@ -641,8 +655,16 @@ func TestContainerConfig_ImageCmdTTYStdin(t *testing.T) {
 		wantWd  string
 	}{
 		{
-			name:    "minimal spec",
-			spec:    createSpec{Attached: true, AutoRemove: true, Tty: true, OpenStdin: true, Image: "claudebox", Argv: []string{"/bin/zsh"}, Workdir: "/workspace/foo"},
+			name: "minimal spec",
+			spec: createSpec{
+				Attached:   true,
+				AutoRemove: true,
+				Tty:        true,
+				OpenStdin:  true,
+				Image:      "claudebox",
+				Argv:       []string{"/bin/zsh"},
+				Workdir:    "/workspace/foo",
+			},
 			wantImg: "claudebox",
 			wantCmd: []string{"/bin/zsh"},
 			wantWd:  "/workspace/foo",
@@ -706,7 +728,15 @@ func TestHostConfig_AutoRemoveCapDropSecOpt(t *testing.T) {
 
 // With no network settings, NetworkMode is empty (Docker default bridge).
 func TestHostConfig_NetworkModeDefaultsToEmpty(t *testing.T) {
-	spec := createSpec{Attached: true, AutoRemove: true, Tty: true, OpenStdin: true, Image: "img", Argv: []string{"sh"}, Workdir: "/wd"}
+	spec := createSpec{
+		Attached:   true,
+		AutoRemove: true,
+		Tty:        true,
+		OpenStdin:  true,
+		Image:      "img",
+		Argv:       []string{"sh"},
+		Workdir:    "/wd",
+	}
 	hc := spec.HostConfig()
 	if hc.NetworkMode != "" {
 		t.Errorf("NetworkMode = %q, want empty string (default bridge)", hc.NetworkMode)
@@ -742,7 +772,15 @@ func TestHostConfig_TmpfsMapWithoutColon(t *testing.T) {
 }
 
 func TestHostConfig_TmpfsMapEmpty(t *testing.T) {
-	spec := createSpec{Attached: true, AutoRemove: true, Tty: true, OpenStdin: true, Image: "img", Argv: []string{"sh"}, Workdir: "/wd"}
+	spec := createSpec{
+		Attached:   true,
+		AutoRemove: true,
+		Tty:        true,
+		OpenStdin:  true,
+		Image:      "img",
+		Argv:       []string{"sh"},
+		Workdir:    "/wd",
+	}
 	hc := spec.HostConfig()
 	if hc.Tmpfs != nil {
 		t.Errorf("Tmpfs = %v, want nil for empty input", hc.Tmpfs)
@@ -1682,7 +1720,17 @@ func TestShellCommand_NetworkLines(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			spec := createSpec{Attached: true, AutoRemove: true, Tty: true, OpenStdin: true, Image: "img", Argv: []string{"sh"}, Workdir: "/wd", NetworkMode: c.mode, Networks: c.networks}
+			spec := createSpec{
+				Attached:    true,
+				AutoRemove:  true,
+				Tty:         true,
+				OpenStdin:   true,
+				Image:       "img",
+				Argv:        []string{"sh"},
+				Workdir:     "/wd",
+				NetworkMode: c.mode,
+				Networks:    c.networks,
+			}
 			out := spec.ShellCommand()
 			lines := strings.Split(out, "\n")
 			var got []string
@@ -1807,7 +1855,12 @@ func TestBuildForeground_Join_RW(t *testing.T) {
 	got := spec.Mounts[mainMountCount:]
 	want := []Mount{
 		{Type: MountBind, Host: "/home/me/code/lib", Container: "/workspace/lib"},
-		{Type: MountBind, Host: "/home/me/code/lib/.makeslop.yaml", Container: "/workspace/lib/.makeslop.yaml", ReadOnly: true},
+		{
+			Type:      MountBind,
+			Host:      "/home/me/code/lib/.makeslop.yaml",
+			Container: "/workspace/lib/.makeslop.yaml",
+			ReadOnly:  true,
+		},
 		{Type: "tmpfs", Container: "/workspace/lib/.git/hooks"},
 		{Type: MountBind, Host: "/dev/null", Container: "/workspace/lib/.env"},
 		{Type: "tmpfs", Container: "/workspace/lib/secrets"},
@@ -1851,7 +1904,12 @@ func TestBuildForeground_Join_RWConfigMaskFiltered(t *testing.T) {
 	got := testForegroundCreate(o).Mounts[mainMountCount:]
 	want := []Mount{
 		{Type: MountBind, Host: "/home/me/code/lib", Container: "/workspace/lib"},
-		{Type: MountBind, Host: "/home/me/code/lib/.makeslop.yaml", Container: "/workspace/lib/.makeslop.yaml", ReadOnly: true},
+		{
+			Type:      MountBind,
+			Host:      "/home/me/code/lib/.makeslop.yaml",
+			Container: "/workspace/lib/.makeslop.yaml",
+			ReadOnly:  true,
+		},
 		{Type: MountBind, Host: "/dev/null", Container: "/workspace/lib/a.yaml"},
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -1916,12 +1974,14 @@ func TestBuildForeground_Join_MasksIsolatedPerProject(t *testing.T) {
 func TestBuildForeground_TwoJoins_OrderAndSections(t *testing.T) {
 	o := joinOptions(
 		Project{
-			ProjectRoot: ProjectRoot{HostRoot: "/home/me/code/lib", Name: "lib", ContainerRoot: "/workspace/lib"}, Label: "join: /home/me/code/lib (rw)",
+			ProjectRoot: ProjectRoot{HostRoot: "/home/me/code/lib", Name: "lib", ContainerRoot: "/workspace/lib"},
+			Label:       "join: /home/me/code/lib (rw)",
 			MaskedFiles: []string{"/home/me/code/lib/.env"}, ProtectConfig: true, MaskGitHooks: true,
 		},
 		Project{
-			ProjectRoot: ProjectRoot{HostRoot: "/home/me/code/util", Name: "util", ContainerRoot: "/workspace/util"}, Label: "join: /home/me/code/util (ro)",
-			ReadOnly: true, MaskedDirs: []string{"/home/me/code/util/keys"},
+			ProjectRoot: ProjectRoot{HostRoot: "/home/me/code/util", Name: "util", ContainerRoot: "/workspace/util"},
+			Label:       "join: /home/me/code/util (ro)",
+			ReadOnly:    true, MaskedDirs: []string{"/home/me/code/util/keys"},
 		},
 	)
 	o.Layout.Main.MaskedFiles = []string{"/home/me/code/myproj/.env"}
@@ -1937,7 +1997,12 @@ func TestBuildForeground_TwoJoins_OrderAndSections(t *testing.T) {
 	}
 	wantTail := []Mount{
 		{Type: MountBind, Host: "/home/me/code/lib", Container: "/workspace/lib"},
-		{Type: MountBind, Host: "/home/me/code/lib/.makeslop.yaml", Container: "/workspace/lib/.makeslop.yaml", ReadOnly: true},
+		{
+			Type:      MountBind,
+			Host:      "/home/me/code/lib/.makeslop.yaml",
+			Container: "/workspace/lib/.makeslop.yaml",
+			ReadOnly:  true,
+		},
 		{Type: "tmpfs", Container: "/workspace/lib/.git/hooks"},
 		{Type: MountBind, Host: "/dev/null", Container: "/workspace/lib/.env"},
 		{Type: MountBind, Host: "/home/me/code/util", Container: "/workspace/util", ReadOnly: true},
@@ -1982,13 +2047,15 @@ func parseMountArg(t *testing.T, raw string) map[string]string {
 func TestDriftGuard_Joins(t *testing.T) {
 	o := joinOptions(
 		Project{
-			ProjectRoot: ProjectRoot{HostRoot: "/home/me/code/lib", Name: "lib", ContainerRoot: "/workspace/lib"}, Label: "join: /home/me/code/lib (rw)",
+			ProjectRoot: ProjectRoot{HostRoot: "/home/me/code/lib", Name: "lib", ContainerRoot: "/workspace/lib"},
+			Label:       "join: /home/me/code/lib (rw)",
 			MaskedFiles: []string{"/home/me/code/lib/.env"}, MaskedDirs: []string{"/home/me/code/lib/d"},
 			ProtectConfig: true, MaskGitHooks: true,
 		},
 		Project{
-			ProjectRoot: ProjectRoot{HostRoot: "/home/me/code/util", Name: "util", ContainerRoot: "/workspace/util"}, Label: "join: /home/me/code/util (ro)",
-			ReadOnly: true, MaskedFiles: []string{"/home/me/code/util/.makeslop.yaml"},
+			ProjectRoot: ProjectRoot{HostRoot: "/home/me/code/util", Name: "util", ContainerRoot: "/workspace/util"},
+			Label:       "join: /home/me/code/util (ro)",
+			ReadOnly:    true, MaskedFiles: []string{"/home/me/code/util/.makeslop.yaml"},
 			ProtectConfig: true, MaskGitHooks: true,
 		},
 	)
@@ -1998,7 +2065,10 @@ func TestDriftGuard_Joins(t *testing.T) {
 	argsMounts := collectMountArgs(spec.Args())
 	hc := spec.HostConfig()
 	if len(argsMounts) != len(hc.Mounts) || len(argsMounts) != len(spec.Mounts) {
-		t.Fatalf("mount count: Args=%d, HostConfig=%d, createSpec=%d", len(argsMounts), len(hc.Mounts), len(spec.Mounts))
+		t.Fatalf(
+			"mount count: Args=%d, HostConfig=%d, createSpec=%d",
+			len(argsMounts), len(hc.Mounts), len(spec.Mounts),
+		)
 	}
 	for i, raw := range argsMounts {
 		f := parseMountArg(t, raw)
@@ -2065,11 +2135,20 @@ func TestShellCommand_Sections_GoldenString(t *testing.T) {
 
 // Sections come from BuildForeground: one separator per project, each directly
 // before that project's bind mount line.
-func TestShellCommand_Sections_FromtestForegroundCreate(t *testing.T) {
+func TestShellCommand_Sections_FromBuildForeground(t *testing.T) {
 	o := joinOptions(
-		Project{ProjectRoot: ProjectRoot{HostRoot: "/home/me/code/lib", Name: "lib", ContainerRoot: "/workspace/lib"}, Label: "join: /home/me/code/lib (rw)",
-			MaskedFiles: []string{"/home/me/code/lib/.env"}, ProtectConfig: true, MaskGitHooks: true},
-		Project{ProjectRoot: ProjectRoot{HostRoot: "/home/me/code/util", Name: "util", ContainerRoot: "/workspace/util"}, Label: "join: /home/me/code/util (ro)", ReadOnly: true},
+		Project{
+			ProjectRoot:   ProjectRoot{HostRoot: "/home/me/code/lib", Name: "lib", ContainerRoot: "/workspace/lib"},
+			Label:         "join: /home/me/code/lib (rw)",
+			MaskedFiles:   []string{"/home/me/code/lib/.env"},
+			ProtectConfig: true,
+			MaskGitHooks:  true,
+		},
+		Project{
+			ProjectRoot: ProjectRoot{HostRoot: "/home/me/code/util", Name: "util", ContainerRoot: "/workspace/util"},
+			Label:       "join: /home/me/code/util (ro)",
+			ReadOnly:    true,
+		},
 	)
 	lines := strings.Split(testForegroundCreate(o).ShellCommand(), "\n")
 	wantBefore := map[string]string{

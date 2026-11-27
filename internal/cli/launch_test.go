@@ -1,18 +1,16 @@
 package cli
 
 import (
-	"context"
-	"errors"
-	"fmt"
+	"slices"
+	"strings"
 	"testing"
-
-	moby "github.com/moby/moby/client"
 
 	"github.com/Zwergpro/makeslop/internal/docker"
 )
 
 func testBuildForeground(t *testing.T, in docker.BuildInputs) docker.ForegroundSpec {
 	t.Helper()
+
 	spec, err := docker.BuildForeground(in)
 	if err != nil {
 		t.Fatal(err)
@@ -21,34 +19,30 @@ func testBuildForeground(t *testing.T, in docker.BuildInputs) docker.ForegroundS
 	return spec
 }
 
-// Stop at the SDK boundary without contacting a daemon or manipulating a TTY.
-var errCapturedCreate = errors.New("test captured Docker create request")
+// previewFlags extracts single-line flags for these fixtures (not a general shell parser).
+func previewFlags(preview, flag string) []string {
+	var values []string
 
-type captureCreateClient struct {
-	*moby.Client
-	options moby.ContainerCreateOptions
-}
-
-func (c *captureCreateClient) ContainerCreate(
-	_ context.Context,
-	options moby.ContainerCreateOptions,
-) (moby.ContainerCreateResult, error) {
-	c.options = options
-
-	return moby.ContainerCreateResult{}, errCapturedCreate
-}
-
-func captureCreate(run func(*docker.Docker) error) (moby.ContainerCreateOptions, error) {
-	c := &captureCreateClient{}
-	d, err := docker.New(docker.WithClient(c), docker.WithTTYCheck(func() bool { return true }))
-	if err != nil {
-		return moby.ContainerCreateOptions{}, err
+	for line := range strings.SplitSeq(preview, "\n") {
+		if value, ok := strings.CutPrefix(line, "  "+flag+" "); ok {
+			value = strings.TrimSuffix(value, " \\")
+			values = append(values, strings.Trim(value, "'"))
+		}
 	}
 
-	err = run(d)
-	if !errors.Is(err, errCapturedCreate) {
-		return moby.ContainerCreateOptions{}, fmt.Errorf("expected capture at ContainerCreate, got %v", err)
+	return values
+}
+
+func bindFlag(source, target string, readOnly bool) string {
+	flag := "type=bind,source=" + source + ",target=" + target
+
+	if readOnly {
+		flag += ",readonly"
 	}
 
-	return c.options, nil
+	return flag
+}
+
+func hasBind(preview, source, target string, readOnly bool) bool {
+	return slices.Contains(previewFlags(preview, "--mount"), bindFlag(source, target, readOnly))
 }

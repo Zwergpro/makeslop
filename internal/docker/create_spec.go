@@ -2,8 +2,6 @@ package docker
 
 import (
 	"fmt"
-	"path"
-	"path/filepath"
 	"slices"
 	"strings"
 
@@ -51,6 +49,7 @@ func BuildForeground(in BuildInputs) (ForegroundSpec, error) {
 	if err != nil {
 		return ForegroundSpec{}, err
 	}
+
 	s.Argv = []string{in.Shell}
 	s.Env = slices.Clone(in.Env)
 	s.Attached = true
@@ -63,10 +62,12 @@ func BuildBackground(in BuildInputs, uuid string) (BackgroundSpec, error) {
 	if !validBGUUID(uuid) {
 		return BackgroundSpec{}, fmt.Errorf("expected a full background UUID")
 	}
+
 	s, err := buildCreateSpec(in)
 	if err != nil {
 		return BackgroundSpec{}, err
 	}
+
 	s.Name = bgPrefix + uuid
 	s.Labels = []label{{bgUUIDLabel, uuid}, {bgProjectLabel, in.Layout.Main.Name}, {bgShellLabel, in.Shell}}
 	s.Argv = []string{"zmx", "attach", bgSession, in.Shell}
@@ -77,8 +78,10 @@ func BuildBackground(in BuildInputs, uuid string) (BackgroundSpec, error) {
 
 func backgroundEnv(entries []string) []string {
 	env := make([]string, 0, len(entries)+len(bgZMXEnv))
+
 	for _, entry := range entries {
 		key, _, _ := strings.Cut(entry, "=")
+
 		switch key {
 		case "ZMX_DIR", "ZMX_DIR_MODE", "ZMX_SESSION", "ZMX_SESSION_PREFIX":
 		default:
@@ -104,9 +107,10 @@ func (s createSpec) createOptions() moby.ContainerCreateOptions {
 
 // Mount order is significant: later masks shadow earlier binds.
 func buildCreateSpec(o BuildInputs) (createSpec, error) {
-	if !filepath.IsAbs(o.Layout.Main.HostRoot) || !path.IsAbs(o.Layout.Main.ContainerRoot) {
-		return createSpec{}, fmt.Errorf("main project requires absolute host and container roots")
+	if err := o.Layout.Validate(); err != nil {
+		return createSpec{}, err
 	}
+
 	for _, m := range o.CacheMounts {
 		switch m.Type {
 		case MountBind, MountTmpfs, MountVolume:
@@ -121,24 +125,27 @@ func buildCreateSpec(o BuildInputs) (createSpec, error) {
 
 	// Directory trailing slashes make Docker reject unexpected files early.
 	mounts := []Mount{projectBind(main)}
+
 	// The policy mounts must shadow the writable project bind.
 	mounts = append(mounts, projectSandbox(main)...)
-
 	mounts = append(mounts, o.CacheMounts...)
-
 	mounts = append(mounts, projectMasks(main, main.ProtectConfig)...)
 
 	// An ro join needs no policy self-bind, so its config mask remains effective.
 	var sections []section
+
 	if len(o.Layout.Joins) > 0 {
 		sections = append(sections, section{Label: main.Label, Start: 0})
 	}
+
 	for _, j := range o.Layout.Joins {
 		sections = append(sections, section{Label: j.Label, Start: len(mounts)})
 		mounts = append(mounts, projectBind(j))
+
 		if !j.ReadOnly {
 			mounts = append(mounts, projectSandbox(j)...)
 		}
+
 		mounts = append(mounts, projectMasks(j, !j.ReadOnly && j.ProtectConfig)...)
 	}
 
