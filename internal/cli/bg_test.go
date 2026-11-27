@@ -26,6 +26,7 @@ type bgCLIProbe struct {
 	uuid                          string
 	ttyErr, errorRun, errorAttach error
 	beforeAttach                  func(string)
+	beforeRun                     func(context.Context)
 }
 
 func (p *bgCLIProbe) CheckTTY() error {
@@ -34,9 +35,13 @@ func (p *bgCLIProbe) CheckTTY() error {
 	return p.ttyErr
 }
 
-func (p *bgCLIProbe) RunBG(_ context.Context, s docker.Spec) error {
+func (p *bgCLIProbe) RunBG(ctx context.Context, s docker.Spec) error {
 	p.calls = append(p.calls, "run")
 	p.spec = s
+
+	if p.beforeRun != nil {
+		p.beforeRun(ctx)
+	}
 
 	return p.errorRun
 }
@@ -97,27 +102,98 @@ func (p *bgCLIProbe) RestartBG(_ context.Context, id string) error {
 type bgPolicyProbe struct {
 	*bgCLIProbe
 	checks []string
+	trace  []string
+}
+
+func (p *bgPolicyProbe) CheckTTY() error {
+	p.trace = append(p.trace, "tty")
+
+	return p.bgCLIProbe.CheckTTY()
+}
+
+func (p *bgPolicyProbe) RunBG(ctx context.Context, s docker.Spec) error {
+	p.trace = append(p.trace, "run")
+
+	return p.bgCLIProbe.RunBG(ctx, s)
+}
+
+func (p *bgPolicyProbe) AttachBG(ctx context.Context, id string) error {
+	p.trace = append(p.trace, "attach")
+
+	return p.bgCLIProbe.AttachBG(ctx, id)
 }
 
 func (p *bgPolicyProbe) CheckDaemon(ctx context.Context) error {
 	p.checks = append(p.checks, "daemon")
+	p.trace = append(p.trace, "daemon")
 
 	return p.fakeDocker.CheckDaemon(ctx)
 }
 
 func (p *bgPolicyProbe) ImageExists(ctx context.Context, image string) (bool, error) {
 	p.checks = append(p.checks, "image")
+	p.trace = append(p.trace, "image")
 
 	return p.fakeDocker.ImageExists(ctx, image)
 }
 
 func (p *bgPolicyProbe) NetworkExists(ctx context.Context, name string) (bool, error) {
 	p.checks = append(p.checks, "network:"+name)
+	p.trace = append(p.trace, "network:"+name)
 
 	return p.fakeDocker.NetworkExists(ctx, name)
 }
 
 func TestBGCommands(t *testing.T) {
+	t.Run("attach runs after preflight and cache preparation", func(t *testing.T) {
+		base, root, ws := runCacheFixture(t)
+		cacheDir := filepath.Join(ws, "docs")
+		writeCacheConfig(t, root, "cache:\n  local: [docs]\nnetworks: [devnet]\n")
+		p := &bgPolicyProbe{bgCLIProbe: &bgCLIProbe{fakeDocker: newFakeDocker(0, true), ttyErr: docker.ErrNoTTY}}
+		p.Networks = map[string]bool{"devnet": true}
+		deps := dockerDeps{api: p}
+		out, _, err := runCmdWithDeps(t, base, deps, "bg", "run", "--attach", "-n")
+
+		if err != nil || !strings.Contains(out, "# Example UUID; no container was created.") || len(p.trace) != 0 {
+			t.Fatalf("preview: stdout=%q trace=%v err=%v", out, p.trace, err)
+		}
+		if _, err := os.Stat(cacheDir); !os.IsNotExist(err) {
+			t.Fatalf("preview touched cache: %v", err)
+		}
+
+		p.ttyErr = nil
+		p.ImageErr = errors.New("inspect failed")
+		out, _, err = runCmdWithDeps(t, base, deps, "bg", "run", "--attach")
+
+		if err == nil || out != "" || !slices.Equal(p.trace, []string{"daemon", "tty", "image"}) {
+			t.Fatalf("failed preflight: stdout=%q trace=%v err=%v", out, p.trace, err)
+		}
+		if _, err := os.Stat(cacheDir); !os.IsNotExist(err) {
+			t.Fatalf("failed preflight touched cache: %v", err)
+		}
+
+		p.ImageErr, p.trace = nil, nil
+		var stdout, stderr bytes.Buffer
+		p.beforeRun = func(ctx context.Context) {
+			if _, ok := ctx.Deadline(); ok || p.NetworkCtxNoDeadline {
+				t.Error("preflight deadline should apply only to preflight")
+			}
+			if info, err := os.Stat(cacheDir); err != nil || !info.IsDir() {
+				t.Errorf("managed cache not prepared at entry to RunBG: %v", err)
+			}
+		}
+		p.beforeAttach = func(id string) {
+			if !strings.Contains(stderr.String(), id+"\n") {
+				t.Errorf("recovery ID missing before attach: %q", stderr.String())
+			}
+		}
+		code := runWithExitCodeAndDeps(base, &stdout, &stderr, deps, []string{"bg", "run", "--attach", "--quiet"})
+		want := []string{"daemon", "tty", "image", "network:devnet", "run", "attach"}
+
+		if code != 0 || stdout.Len() != 0 || !slices.Equal(p.trace, want) {
+			t.Fatalf("launch: code=%d stdout=%q stderr=%q trace=%v", code, &stdout, &stderr, p.trace)
+		}
+	})
 	t.Run("shared policy and preflight", func(t *testing.T) {
 		base, root, ws := runCacheFixture(t)
 		cache := filepath.Join(ws, "docs")

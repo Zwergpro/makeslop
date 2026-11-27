@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -26,6 +28,27 @@ func writeCacheConfig(t *testing.T, root, text string) {
 
 	if err := os.WriteFile(filepath.Join(root, projectconfig.Filename), []byte(text), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestRun_QuietWarningBeforeCacheError(t *testing.T) {
+	skipNonPOSIX(t, "symlinks require POSIX")
+	base, root, _ := runCacheFixture(t)
+	writeFile(t, filepath.Join(root, "secret"), "not real credentials")
+
+	if err := os.Symlink("secret", filepath.Join(root, "secret.env")); err != nil {
+		t.Fatal(err)
+	}
+
+	writeCacheConfig(t, root, "exclude:\n  scan:\n    patterns: ['*.env']\ncache:\n  static: [./missing:/opt/cache]\n")
+	f := newFakeDocker(0, true)
+	var stderr bytes.Buffer
+	code := runWithExitCodeAndDeps(base, io.Discard, &stderr, dockerDeps{api: f}, []string{"run", "--quiet"})
+	text := stderr.String()
+	warning, failure := strings.Index(text, "NOT masked"), strings.Index(text, "cache.static[0]")
+
+	if code != 1 || f.Started || warning < 0 || failure <= warning || strings.Count(text, "cache.static[0]") != 1 {
+		t.Fatalf("exit=%d started=%v stderr=%q", code, f.Started, text)
 	}
 }
 
