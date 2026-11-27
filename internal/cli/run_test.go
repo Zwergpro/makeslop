@@ -594,9 +594,8 @@ func TestRun_DryRun_StdoutEqualsBuildSpecShellCommand(t *testing.T) {
 	// init scaffolds .makeslop.yaml ⇒ ProtectProjectConfig true; both cache groups default to true.
 	// t.TempDir() has no .git directory — MaskGitHooks stays false.
 	want := docker.BuildSpec(docker.Options{
-		Projects: []docker.Project{{
-			Host:          resolvedPwd,
-			Name:          filepath.Base(workspaceDir),
+		Layout: docker.Layout{Main: docker.Project{
+			ProjectRoot:   launchRoot(filepath.Base(workspaceDir), resolvedPwd),
 			Label:         "project: " + resolvedPwd,
 			ProtectConfig: true,
 		}},
@@ -1026,10 +1025,9 @@ func TestRun_YamlAbsentIsBitIdenticalArgv(t *testing.T) {
 	}
 	// Absent yaml ⇒ both cache groups default to true.
 	want := docker.BuildSpec(docker.Options{
-		Projects: []docker.Project{{
-			Host:  resolvedPwd,
-			Name:  filepath.Base(workspaceDir),
-			Label: "project: " + resolvedPwd,
+		Layout: docker.Layout{Main: docker.Project{
+			ProjectRoot: launchRoot(filepath.Base(workspaceDir), resolvedPwd),
+			Label:       "project: " + resolvedPwd,
 		}},
 
 		Image:      s.Image,
@@ -1278,10 +1276,9 @@ func TestRun_DryRun_DefaultIsBridge(t *testing.T) {
 		t.Fatalf("load settings: %v", loadErr)
 	}
 	want := docker.BuildSpec(docker.Options{
-		Projects: []docker.Project{{
-			Host:  resolvedPwd,
-			Name:  filepath.Base(workspaceDir),
-			Label: "project: " + resolvedPwd,
+		Layout: docker.Layout{Main: docker.Project{
+			ProjectRoot: launchRoot(filepath.Base(workspaceDir), resolvedPwd),
+			Label:       "project: " + resolvedPwd,
 		}},
 
 		Image:      s.Image,

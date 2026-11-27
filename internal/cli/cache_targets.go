@@ -11,17 +11,17 @@ import (
 )
 
 type cacheTargetRules struct {
-	projects  []docker.Project
+	layout    docker.Layout
 	protected []string
 }
 
 func validateCacheTargets(
 	mounts []docker.Mount,
 	entries []string,
-	projects []docker.Project,
+	layout docker.Layout,
 	excludes []string,
 ) error {
-	rules := cacheTargetRules{projects: projects, protected: cacheProtectedPaths(projects, excludes)}
+	rules := cacheTargetRules{layout: layout, protected: cacheProtectedPaths(layout, excludes)}
 	for i, mount := range mounts {
 		target := path.Clean(mount.Container)
 		if err := rules.checkProjectRoots(target, entries[i]); err != nil {
@@ -47,14 +47,18 @@ func validateCacheTargets(
 	return nil
 }
 
-func cacheProtectedPaths(projects []docker.Project, excludes []string) []string {
+func cacheProtectedPaths(layout docker.Layout, excludes []string) []string {
 	protected := []string{"/tmp", "/proc", "/sys", "/dev"}
-	for _, project := range projects {
-		root := "/workspace/" + project.Name
-		protected = append(protected, root+"/"+projectconfig.Filename, root+"/.git/hooks")
+	addPolicy := func(root string) {
+		protected = append(protected, path.Join(root, projectconfig.Filename), path.Join(root, ".git/hooks"))
+	}
+	mainRoot := layout.Main.ContainerRoot
+	addPolicy(mainRoot)
+
+	for _, join := range layout.Joins {
+		addPolicy(join.ContainerRoot)
 	}
 
-	mainRoot := "/workspace/" + projects[0].Name
 	for _, exclude := range excludes {
 		protected = append(protected, path.Join(mainRoot, filepath.ToSlash(exclude)))
 	}
@@ -76,17 +80,14 @@ func (r cacheTargetRules) checkProjectRoots(target, entry string) error {
 		}
 	}
 
-	for i, project := range r.projects {
-		root := "/workspace/" + project.Name
-		replacesRoot := withinContainer(root, target)
-		insideJoin := i > 0 && withinContainer(target, root)
-		if replacesRoot || insideJoin {
-			return fmt.Errorf(
-				"%s: destination %q conflicts with project %q",
-				entry,
-				target,
-				root,
-			)
+	main := r.layout.Main.ContainerRoot
+	if withinContainer(main, target) {
+		return fmt.Errorf("%s: destination %q conflicts with project %q", entry, target, main)
+	}
+
+	for _, join := range r.layout.Joins {
+		if containerOverlap(join.ContainerRoot, target) {
+			return fmt.Errorf("%s: destination %q conflicts with project %q", entry, target, join.ContainerRoot)
 		}
 	}
 

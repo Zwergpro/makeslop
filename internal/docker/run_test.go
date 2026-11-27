@@ -19,7 +19,7 @@ import (
 
 func sampleSpec() Spec {
 	return BuildSpec(Options{
-		Projects: []Project{{Host: "/host/project", Name: "demo-abc123"}},
+		Layout: Layout{Main: Project{ProjectRoot: ProjectRoot{HostRoot: "/host/project", Name: "demo-abc123", ContainerRoot: "/workspace/demo-abc123"}}},
 
 		Image:   "claudebox",
 		Command: "/bin/zsh",

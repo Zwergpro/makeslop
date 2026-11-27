@@ -11,12 +11,15 @@ import (
 	"github.com/moby/moby/api/types/network"
 )
 
-// Project.Host must be absolute and symlink-resolved before BuildSpec.
+// ProjectRoot pairs a resolved absolute host root with its container destination.
+type ProjectRoot struct {
+	Name, HostRoot, ContainerRoot string
+}
+
 type Project struct {
-	Host     string
-	Name     string
+	ProjectRoot
 	Label    string
-	ReadOnly bool // ignored for Projects[0]
+	ReadOnly bool // ignored for the main project
 
 	MaskedFiles []string
 	MaskedDirs  []string
@@ -28,10 +31,15 @@ type Project struct {
 	MaskGitHooks bool
 }
 
+// Layout contains the writable main project and its joins in flag order.
+type Layout struct {
+	Main  Project
+	Joins []Project
+}
+
 // Options must be resolved before BuildSpec; it performs no I/O.
 type Options struct {
-	// The caller guarantees a main project at index 0, unique names and disjoint roots.
-	Projects []Project
+	Layout Layout
 	// CacheMounts contains fully resolved opt-in binds, in configuration order.
 	CacheMounts []Mount
 	Image       string
@@ -102,9 +110,9 @@ type Section struct {
 
 // BuildSpec preserves mount order because later masks must shadow earlier binds.
 func BuildSpec(o Options) Spec {
-	main := o.Projects[0]
+	main := o.Layout.Main
 	main.ReadOnly = false
-	workspacePath := main.containerPath()
+	workspacePath := main.ContainerRoot
 
 	// Directory trailing slashes make Docker reject unexpected files early.
 	mounts := []Mount{projectBind(main)}
@@ -117,10 +125,10 @@ func BuildSpec(o Options) Spec {
 
 	// An ro join needs no policy self-bind, so its config mask remains effective.
 	var sections []Section
-	if len(o.Projects) > 1 {
+	if len(o.Layout.Joins) > 0 {
 		sections = append(sections, Section{Label: main.Label, Start: 0})
 	}
-	for _, j := range o.Projects[1:] {
+	for _, j := range o.Layout.Joins {
 		sections = append(sections, Section{Label: j.Label, Start: len(mounts)})
 		mounts = append(mounts, projectBind(j))
 		if !j.ReadOnly {
@@ -147,23 +155,19 @@ func BuildSpec(o Options) Spec {
 }
 
 func projectBind(p Project) Mount {
-	return Mount{Host: p.Host, Container: p.containerPath(), ReadOnly: p.ReadOnly}
+	return Mount{Host: p.HostRoot, Container: p.ContainerRoot, ReadOnly: p.ReadOnly}
 }
 
 // projectConfigFile mirrors projectconfig.Filename; docker does not import
 // projectconfig.
 const projectConfigFile = ".makeslop.yaml"
 
-func (p Project) containerPath() string {
-	return "/workspace/" + p.Name
-}
-
 func projectSandbox(p Project) []Mount {
 	var mounts []Mount
-	workspacePath := p.containerPath()
+	workspacePath := p.ContainerRoot
 	if p.ProtectConfig {
 		mounts = append(mounts, Mount{
-			Host:      filepath.Join(p.Host, projectConfigFile),
+			Host:      filepath.Join(p.HostRoot, projectConfigFile),
 			Container: workspacePath + "/" + projectConfigFile,
 			ReadOnly:  true,
 		})
@@ -180,23 +184,23 @@ func projectSandbox(p Project) []Mount {
 // A config mask would override the read-only policy bind because Docker applies
 // later mounts last.
 func projectMasks(p Project, configBound bool) []Mount {
-	workspacePath := p.containerPath()
+	workspacePath := p.ContainerRoot
 	maskedFiles := p.MaskedFiles
 	if configBound {
-		maskedFiles = filterOut(maskedFiles, filepath.Join(p.Host, projectConfigFile))
+		maskedFiles = filterOut(maskedFiles, filepath.Join(p.HostRoot, projectConfigFile))
 	}
 
 	// Validated mask paths are beneath Host, so Rel cannot fail on POSIX.
 	var mounts []Mount
 	for _, host := range maskedFiles {
-		rel, _ := filepath.Rel(p.Host, host)
+		rel, _ := filepath.Rel(p.HostRoot, host)
 		mounts = append(mounts, Mount{
 			Host:      "/dev/null",
 			Container: workspacePath + "/" + filepath.ToSlash(rel),
 		})
 	}
 	for _, host := range p.MaskedDirs {
-		rel, _ := filepath.Rel(p.Host, host)
+		rel, _ := filepath.Rel(p.HostRoot, host)
 		mounts = append(mounts, Mount{
 			Type:      "tmpfs",
 			Container: workspacePath + "/" + filepath.ToSlash(rel),

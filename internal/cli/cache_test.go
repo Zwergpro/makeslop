@@ -10,7 +10,7 @@ import (
 	"github.com/Zwergpro/makeslop/internal/projectconfig"
 )
 
-func cacheFixture(t *testing.T) (cachePaths, []docker.Project) {
+func cacheFixture(t *testing.T) (cachePaths, docker.Layout) {
 	t.Helper()
 
 	base := evalSymlinks(t, t.TempDir())
@@ -20,27 +20,53 @@ func cacheFixture(t *testing.T) (cachePaths, []docker.Project) {
 		BaseDir: base, WorkspaceDir: filepath.Join(base, "workspaces/app-abc123"), HostHome: home,
 	}
 
-	return paths, []docker.Project{{Host: root, Name: "app-abc123"}}
+	return paths, docker.Layout{Main: docker.Project{ProjectRoot: launchRoot("app-abc123", root)}}
 }
 
-func staticCacheFixture(t *testing.T) (cachePaths, []docker.Project) {
+func staticCacheFixture(t *testing.T) (cachePaths, docker.Layout) {
 	t.Helper()
 
 	paths, projects := cacheFixture(t)
-	for _, root := range []string{paths.HostHome, projects[0].Host} {
+	for _, root := range []string{paths.HostHome, projects.Main.HostRoot} {
 		writeFile(t, filepath.Join(root, "a b,c'd"), "keep")
 	}
 
-	dir := filepath.Join(projects[0].Host, "tools")
+	dir := filepath.Join(projects.Main.HostRoot, "tools")
 	mkdirAll(t, dir)
-	symlink(t, dir, filepath.Join(projects[0].Host, "link"))
+	symlink(t, dir, filepath.Join(projects.Main.HostRoot, "link"))
 
 	return paths, projects
 }
 
+func TestResolveCache_UsesResolvedRoots(t *testing.T) {
+	paths, projects := cacheFixture(t)
+	main := docker.Project{ProjectRoot: docker.ProjectRoot{
+		Name: "app", HostRoot: projects.Main.HostRoot, ContainerRoot: "/src/app",
+	}}
+	join := docker.Project{ProjectRoot: docker.ProjectRoot{
+		Name: "lib", HostRoot: t.TempDir(), ContainerRoot: "/src/lib",
+	}}
+	layout := docker.Layout{Main: main, Joins: []docker.Project{join}}
+	source := filepath.Join(main.HostRoot, "source")
+	writeFile(t, source, "keep")
+	cfg := projectconfig.CacheMounts{Static: []projectconfig.CacheBind{{Host: "./source", Container: "build"}}}
+	plan, err := resolveCache(cfg, paths, layout, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := plan.Mounts[0]; got.Host != source || got.Container != "/src/app/build" {
+		t.Fatalf("mount=%+v", got)
+	}
+
+	cfg.Static[0].Container = "/src/lib/build"
+	if _, err := resolveCache(cfg, paths, layout, nil); err == nil {
+		t.Fatal("cache mount under joined root accepted")
+	}
+}
+
 func TestResolveCache_Mappings(t *testing.T) {
 	paths, projects := cacheFixture(t)
-	file := filepath.Join(projects[0].Host, "settings.json")
+	file := filepath.Join(projects.Main.HostRoot, "settings.json")
 	writeFile(t, file, "keep")
 	cfg := projectconfig.CacheMounts{
 		Shared: []projectconfig.CacheDirectory{{Name: ".claude"}}, Local: []projectconfig.CacheDirectory{{Name: "docs"}},
@@ -95,8 +121,8 @@ func TestResolveCache_Modes(t *testing.T) {
 			want := []docker.Mount{
 				{Host: paths.BaseDir + "/shared/shared/", Container: "/home/user/shared/", ReadOnly: readOnly},
 				{Host: paths.WorkspaceDir + "/local/", Container: "/workspace/app-abc123/local/", ReadOnly: readOnly},
-				{Host: projects[0].Host + "/a b,c'd", Container: "/opt/file", ReadOnly: readOnly},
-				{Host: projects[0].Host + "/tools/", Container: "/opt/tools/", ReadOnly: readOnly},
+				{Host: projects.Main.HostRoot + "/a b,c'd", Container: "/opt/file", ReadOnly: readOnly},
+				{Host: projects.Main.HostRoot + "/tools/", Container: "/opt/tools/", ReadOnly: readOnly},
 			}
 			if !reflect.DeepEqual(plan.Mounts, want) {
 				t.Fatalf("got %#v, want %#v", plan.Mounts, want)
@@ -110,19 +136,19 @@ func TestResolveCache_StaticFilePaths(t *testing.T) {
 	cases := []struct{ name, host, target, wantHost, wantTarget string }{
 		{
 			name: "bare relative target", host: "./a b,c'd", target: "settings.json",
-			wantHost: projects[0].Host + "/a b,c'd", wantTarget: "/workspace/app-abc123/settings.json",
+			wantHost: projects.Main.HostRoot + "/a b,c'd", wantTarget: "/workspace/app-abc123/settings.json",
 		},
 		{
 			name: "dot relative target", host: "./a b,c'd", target: "./settings.json",
-			wantHost: projects[0].Host + "/a b,c'd", wantTarget: "/workspace/app-abc123/settings.json",
+			wantHost: projects.Main.HostRoot + "/a b,c'd", wantTarget: "/workspace/app-abc123/settings.json",
 		},
 		{
 			name: "nested relative target", host: "./a b,c'd", target: "nested/settings.json",
-			wantHost: projects[0].Host + "/a b,c'd", wantTarget: "/workspace/app-abc123/nested/settings.json",
+			wantHost: projects.Main.HostRoot + "/a b,c'd", wantTarget: "/workspace/app-abc123/nested/settings.json",
 		},
 		{
 			name: "file characters", host: "./a b,c'd", target: "/opt/a b,c'd",
-			wantHost: projects[0].Host + "/a b,c'd", wantTarget: "/opt/a b,c'd",
+			wantHost: projects.Main.HostRoot + "/a b,c'd", wantTarget: "/opt/a b,c'd",
 		},
 		{
 			name: "home expansion", host: "~/a b,c'd", target: "~/a b,c'd",
@@ -168,7 +194,7 @@ func TestResolveCache_StaticDirectorySources(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			want := docker.Mount{Host: projects[0].Host + "/tools/", Container: "/opt/tools/"}
+			want := docker.Mount{Host: projects.Main.HostRoot + "/tools/", Container: "/opt/tools/"}
 			if plan.Mounts[0] != want {
 				t.Fatalf("got %#v, want %#v", plan.Mounts[0], want)
 			}
@@ -197,12 +223,12 @@ func TestResolveCache_MissingStaticDoesNotCreateManaged(t *testing.T) {
 func TestResolveCache_SpecialAndDanglingSources(t *testing.T) {
 	skipNonPOSIX(t, "FIFO and symlink sources")
 	paths, projects := cacheFixture(t)
-	fifo := filepath.Join(projects[0].Host, "fifo")
+	fifo := filepath.Join(projects.Main.HostRoot, "fifo")
 	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	dangling := filepath.Join(projects[0].Host, "dangling")
-	symlink(t, filepath.Join(projects[0].Host, "missing"), dangling)
+	dangling := filepath.Join(projects.Main.HostRoot, "dangling")
+	symlink(t, filepath.Join(projects.Main.HostRoot, "missing"), dangling)
 
 	for _, source := range []string{fifo, dangling} {
 		cfg := projectconfig.CacheMounts{
@@ -235,7 +261,7 @@ func TestResolveCache_SharedAndLocalScope(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	projects[0].Name = "other-def456"
+	projects.Main.ProjectRoot = launchRoot("other-def456", projects.Main.HostRoot)
 	paths.WorkspaceDir = filepath.Join(paths.BaseDir, "workspaces/other-def456")
 	second, err := resolveCache(
 		cfg,
@@ -266,8 +292,8 @@ func TestResolveCache_Empty(t *testing.T) {
 
 func TestResolveCache_ProtectedDestinations(t *testing.T) {
 	paths, projects := cacheFixture(t)
-	projects = append(projects, docker.Project{Host: t.TempDir(), Name: "joined"})
-	source := filepath.Join(projects[0].Host, "source")
+	projects.Joins = []docker.Project{{ProjectRoot: launchRoot("joined", t.TempDir())}}
+	source := filepath.Join(projects.Main.HostRoot, "source")
 	writeFile(t, source, "x")
 	targets := []string{
 		"/", "/home", "/home/user", "~", "/workspace", "/workspace/app-abc123",
@@ -296,7 +322,7 @@ func TestResolveCache_ProtectedDestinations(t *testing.T) {
 
 func TestResolveCache_OverlappingDestinations(t *testing.T) {
 	paths, projects := cacheFixture(t)
-	source := filepath.Join(projects[0].Host, "source")
+	source := filepath.Join(projects.Main.HostRoot, "source")
 	writeFile(t, source, "x")
 	cases := []struct {
 		name    string
@@ -327,7 +353,7 @@ func TestResolveCache_OverlappingDestinations(t *testing.T) {
 
 func TestResolveCache_PathSegmentBoundaries(t *testing.T) {
 	paths, projects := cacheFixture(t)
-	source := filepath.Join(projects[0].Host, "source")
+	source := filepath.Join(projects.Main.HostRoot, "source")
 	writeFile(t, source, "x")
 	cfg := projectconfig.CacheMounts{Static: []projectconfig.CacheBind{}}
 	for _, target := range []string{
@@ -348,7 +374,7 @@ func TestResolveCache_PathSegmentBoundaries(t *testing.T) {
 
 func TestResolveCache_ExcludeConflicts(t *testing.T) {
 	paths, projects := cacheFixture(t)
-	source := filepath.Join(projects[0].Host, "source")
+	source := filepath.Join(projects.Main.HostRoot, "source")
 	writeFile(t, source, "x")
 	cases := []struct{ name, target, exclude string }{
 		{name: "equality", target: "/workspace/app-abc123/docs", exclude: "docs"},
@@ -375,7 +401,7 @@ func TestResolveCache_ExcludeConflicts(t *testing.T) {
 
 func TestResolveCache_CrossGroupConflicts(t *testing.T) {
 	paths, projects := cacheFixture(t)
-	source := filepath.Join(projects[0].Host, "source")
+	source := filepath.Join(projects.Main.HostRoot, "source")
 	writeFile(t, source, "x")
 	cases := []projectconfig.CacheMounts{
 		{

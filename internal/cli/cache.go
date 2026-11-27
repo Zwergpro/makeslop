@@ -30,16 +30,16 @@ type cacheGroup struct {
 func resolveCache(
 	c projectconfig.CacheMounts,
 	paths cachePaths,
-	projects []docker.Project,
+	layout docker.Layout,
 	declaredExcludes []string,
 ) (cachePlan, error) {
 	// Empty plans retain zero-value slices, like absent project configuration.
 	var result cachePlan
-	mainRoot := "/workspace/" + projects[0].Name
+	mainRoot := layout.Main.ContainerRoot
 	if err := result.resolveManaged(c, paths, mainRoot); err != nil {
 		return cachePlan{}, err
 	}
-	if err := result.resolveStatic(c.Static, paths, projects[0]); err != nil {
+	if err := result.resolveStatic(c.Static, paths, layout.Main.ProjectRoot); err != nil {
 		return cachePlan{}, err
 	}
 
@@ -47,7 +47,7 @@ func resolveCache(
 	if err := validateCacheTargets(
 		result.Mounts,
 		result.entries,
-		projects,
+		layout,
 		declaredExcludes,
 	); err != nil {
 		return cachePlan{}, err
@@ -98,7 +98,7 @@ func (p *cachePlan) resolveManagedGroup(group cacheGroup, base string) error {
 	return nil
 }
 
-func (p *cachePlan) resolveStatic(binds []projectconfig.CacheBind, paths cachePaths, project docker.Project) error {
+func (p *cachePlan) resolveStatic(binds []projectconfig.CacheBind, paths cachePaths, project docker.ProjectRoot) error {
 	for i, bind := range binds {
 		entry := fmt.Sprintf("cache.static[%d]", i)
 		mount, err := resolveStaticCacheMount(
@@ -121,10 +121,10 @@ func (p *cachePlan) resolveStatic(binds []projectconfig.CacheBind, paths cachePa
 func resolveStaticCacheMount(
 	bind projectconfig.CacheBind,
 	paths cachePaths,
-	project docker.Project,
+	project docker.ProjectRoot,
 	entry string,
 ) (docker.Mount, error) {
-	host, err := staticCacheHost(bind.Host, paths.HostHome, project.Host)
+	host, err := staticCacheHost(bind.Host, paths.HostHome, project.HostRoot)
 	if err != nil {
 		return docker.Mount{}, fmt.Errorf("%s: %w", entry, err)
 	}
@@ -142,7 +142,7 @@ func resolveStaticCacheMount(
 		target = path.Join(containerHome, strings.TrimPrefix(target, "~/"))
 	}
 	if !path.IsAbs(target) {
-		target = path.Join("/workspace/"+project.Name, target)
+		target = path.Join(project.ContainerRoot, target)
 	}
 	target = path.Clean(target)
 	if isDir {
@@ -199,8 +199,8 @@ func staticCacheSource(host, entry string) (string, bool, error) {
 	return source, info.IsDir(), nil
 }
 
-func resolveProjectCache(baseDir string, projects []docker.Project, cfg projectconfig.Config) (cachePlan, error) {
-	paths, err := projectCachePaths(baseDir, projects[0].Name, cfg.Cache.Static)
+func resolveProjectCache(baseDir string, layout docker.Layout, cfg projectconfig.Config) (cachePlan, error) {
+	paths, err := projectCachePaths(baseDir, layout.Main.Name, cfg.Cache.Static)
 	if err != nil {
 		return cachePlan{}, err
 	}
@@ -208,7 +208,7 @@ func resolveProjectCache(baseDir string, projects []docker.Project, cfg projectc
 	return resolveCache(
 		cfg.Cache,
 		paths,
-		projects,
+		layout,
 		cfg.Excludes.DeclaredPaths,
 	)
 }

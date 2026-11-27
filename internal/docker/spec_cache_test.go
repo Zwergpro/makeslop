@@ -11,12 +11,12 @@ func TestBuildSpec_ConfiguredCacheMounts(t *testing.T) {
 		{Host: "/host/file", Container: "/opt/file", ReadOnly: true},
 	}
 	opts := Options{
-		Projects: []Project{
-			{
-				Host: "/host/app", Name: "app", ProtectConfig: true, MaskGitHooks: true,
+		Layout: Layout{
+			Main: Project{
+				ProjectRoot: ProjectRoot{HostRoot: "/host/app", Name: "app", ContainerRoot: "/workspace/app"}, ProtectConfig: true, MaskGitHooks: true,
 				MaskedFiles: []string{"/host/app/key"},
 			},
-			{Host: "/host/lib", Name: "lib"},
+			Joins: []Project{{ProjectRoot: ProjectRoot{HostRoot: "/host/lib", Name: "lib", ContainerRoot: "/workspace/lib"}}},
 		},
 		CacheMounts: caches,
 	}
@@ -34,7 +34,7 @@ func TestBuildSpec_ConfiguredCacheMounts(t *testing.T) {
 func TestBuildSpec_CacheMountsDoNotAliasOptions(t *testing.T) {
 	caches := []Mount{{Host: "/host/shared/custom/", Container: "/home/user/custom/"}}
 	opts := Options{
-		Projects:    []Project{{Host: "/host/app", Name: "app"}},
+		Layout:      Layout{Main: Project{ProjectRoot: ProjectRoot{HostRoot: "/host/app", Name: "app", ContainerRoot: "/workspace/app"}}},
 		CacheMounts: caches,
 	}
 
@@ -46,7 +46,7 @@ func TestBuildSpec_CacheMountsDoNotAliasOptions(t *testing.T) {
 }
 
 func TestBuildSpec_NoImplicitCaches(t *testing.T) {
-	spec := BuildSpec(Options{Projects: []Project{{Host: "/host/app", Name: "app"}}})
+	spec := BuildSpec(Options{Layout: Layout{Main: Project{ProjectRoot: ProjectRoot{HostRoot: "/host/app", Name: "app", ContainerRoot: "/workspace/app"}}}})
 	want := []Mount{{Host: "/host/app", Container: "/workspace/app"}}
 	if !reflect.DeepEqual(spec.Mounts, want) {
 		t.Fatalf("implicit mounts: %#v", spec.Mounts)
@@ -61,7 +61,7 @@ func TestDriftGuard_ConfiguredCacheMounts(t *testing.T) {
 		{Host: "/host/rw-file", Container: "/opt/rw-file"},
 	}
 	spec := BuildSpec(Options{
-		Projects: []Project{{Host: "/host/app", Name: "app"}}, CacheMounts: caches,
+		Layout: Layout{Main: Project{ProjectRoot: ProjectRoot{HostRoot: "/host/app", Name: "app", ContainerRoot: "/workspace/app"}}}, CacheMounts: caches,
 	})
 	sdk := spec.HostConfig().Mounts
 	args := collectMountArgs(spec.Args())

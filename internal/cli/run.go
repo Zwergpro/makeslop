@@ -7,6 +7,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -132,7 +133,6 @@ func loadProject(ctx context.Context, stderr, chrome io.Writer, root string, joi
 	protect, maskHooks := sandboxMountGates(root)
 
 	return docker.Project{
-		Host:          root,
 		MaskedFiles:   mergeUniqueSorted(masked, pcfg.Excludes.Files),
 		MaskedDirs:    pcfg.Excludes.Dirs,
 		ProtectConfig: protect,
@@ -216,29 +216,29 @@ func prepareLaunch(
 	if err != nil {
 		return preparedLaunch{}, err
 	}
-	mainProj.Name = mainName
+	mainProj.ProjectRoot = launchRoot(mainName, workspaceRoot)
 	mainProj.Label = "project: " + workspaceRoot
-	projects := []docker.Project{mainProj}
+	layout := docker.Layout{Main: mainProj}
 
 	for _, j := range joins {
 		p, _, err := loadProject(cmd.Context(), cmd.ErrOrStderr(), chrome, j.Host, true)
 		if err != nil {
 			return preparedLaunch{}, fmt.Errorf("join %s: %w", j.Host, err)
 		}
-		p.Name = j.Name
+		p.ProjectRoot = launchRoot(j.Name, j.Host)
 		p.ReadOnly = j.ReadOnly
 		p.Label = j.label()
-		projects = append(projects, p)
+		layout.Joins = append(layout.Joins, p)
 	}
 
-	cache, err := resolveProjectCache(baseDir, projects, pcfg)
+	cache, err := resolveProjectCache(baseDir, layout, pcfg)
 	if err != nil {
 		return preparedLaunch{}, err
 	}
 
 	spec := docker.BuildSpec(docker.Options{
 		CacheMounts: cache.Mounts,
-		Projects:    projects,
+		Layout:      layout,
 		Image:       image,
 		Command:     s.Shell,
 		TmpDirSize:  s.TmpDirSize,
@@ -248,6 +248,10 @@ func prepareLaunch(
 	})
 
 	return preparedLaunch{Spec: spec, Project: mainName, Network: pcfg.Network, CacheDirs: cache.Dirs}, nil
+}
+
+func launchRoot(name, host string) docker.ProjectRoot {
+	return docker.ProjectRoot{Name: name, HostRoot: host, ContainerRoot: path.Join("/workspace", name)}
 }
 
 func prepareLaunchExecution(cmd *cobra.Command, launch preparedLaunch, deps dockerDeps) error {
