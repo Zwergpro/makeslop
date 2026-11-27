@@ -3,12 +3,15 @@ package docker
 import (
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"unicode"
 
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/mount"
 	"github.com/moby/moby/api/types/network"
+
+	"github.com/Zwergpro/makeslop/internal/projectconfig"
 )
 
 // ProjectRoot pairs a resolved absolute host root with its container destination.
@@ -37,31 +40,6 @@ type Layout struct {
 	Joins []Project
 }
 
-// Options must be resolved before BuildSpec; it performs no I/O.
-type Options struct {
-	Layout Layout
-	// CacheMounts contains fully resolved opt-in binds, in configuration order.
-	CacheMounts []Mount
-	Image       string
-	Command     string // shell to exec inside the container
-
-	// TmpDirSize is passed verbatim to --tmpfs /tmp:size=<TmpDirSize>; config.Load
-	// owns the default, BuildSpec does not re-default.
-	TmpDirSize string
-
-	// Env holds "KEY=VALUE" pairs to inject; copied verbatim (caller sorts).
-	Env []string
-
-	// NetworkMode is passed verbatim as --network / HostConfig.NetworkMode
-	// (bridge, host, none, container:<x>, or a network name). Empty means the
-	// Docker default. Mutually exclusive with Networks (projectconfig enforces).
-	NetworkMode string
-
-	// Networks lists networks to attach at create time, in order; the first is
-	// the primary (HostConfig.NetworkMode). Copied verbatim.
-	Networks []string
-}
-
 func filterOut(s []string, exclude string) []string {
 	for i, v := range s {
 		if v == exclude {
@@ -76,105 +54,42 @@ func filterOut(s []string, exclude string) []string {
 
 // Mount keeps the same representation for CLI and SDK projections.
 type Mount struct {
-	Type            string
+	Type            MountKind
 	Host, Container string
 	ReadOnly        bool
 }
 
-// Spec is shared by dry-run output and the SDK call to prevent drift.
-type Spec struct {
-	Image   string
-	Command string
-	ZMXArgv []string // nil for foreground; otherwise prefix before Command
-	Workdir string
-	Env     []string // "KEY=VALUE" pairs; nil/empty → no -e flags
-	Mounts  []Mount
-	Tmpfs   []string
-	CapDrop []string
-	SecOpt  []string
+type MountKind string
 
-	NetworkMode string   // "" → no --network flag, Docker default bridge
-	Networks    []string // one --network per entry; first is primary
+const (
+	MountBind   MountKind = "bind"
+	MountTmpfs  MountKind = "tmpfs"
+	MountVolume MountKind = "volume"
+)
 
-	// Presentation only; argv and SDK projections ignore these labels.
-	Sections []Section
-
-	bgUUID    string
-	bgProject string
-}
-
-type Section struct {
+type section struct {
 	Label string
-	Start int // index into Spec.Mounts
-}
-
-// BuildSpec preserves mount order because later masks must shadow earlier binds.
-func BuildSpec(o Options) Spec {
-	main := o.Layout.Main
-	main.ReadOnly = false
-	workspacePath := main.ContainerRoot
-
-	// Directory trailing slashes make Docker reject unexpected files early.
-	mounts := []Mount{projectBind(main)}
-	// The policy mounts must shadow the writable project bind.
-	mounts = append(mounts, projectSandbox(main)...)
-
-	mounts = append(mounts, o.CacheMounts...)
-
-	mounts = append(mounts, projectMasks(main, main.ProtectConfig)...)
-
-	// An ro join needs no policy self-bind, so its config mask remains effective.
-	var sections []Section
-	if len(o.Layout.Joins) > 0 {
-		sections = append(sections, Section{Label: main.Label, Start: 0})
-	}
-	for _, j := range o.Layout.Joins {
-		sections = append(sections, Section{Label: j.Label, Start: len(mounts)})
-		mounts = append(mounts, projectBind(j))
-		if !j.ReadOnly {
-			mounts = append(mounts, projectSandbox(j)...)
-		}
-		mounts = append(mounts, projectMasks(j, !j.ReadOnly && j.ProtectConfig)...)
-	}
-
-	return Spec{
-		Image:   o.Image,
-		Command: o.Command,
-		Workdir: workspacePath,
-		Env:     o.Env,
-		Mounts:  mounts,
-		Tmpfs:   []string{"/tmp:size=" + o.TmpDirSize},
-		CapDrop: []string{"ALL"},
-		SecOpt:  []string{"no-new-privileges"},
-
-		NetworkMode: o.NetworkMode,
-		Networks:    o.Networks,
-
-		Sections: sections,
-	}
+	Start int // index into createSpec.Mounts
 }
 
 func projectBind(p Project) Mount {
-	return Mount{Host: p.HostRoot, Container: p.ContainerRoot, ReadOnly: p.ReadOnly}
+	return Mount{Type: MountBind, Host: p.HostRoot, Container: p.ContainerRoot, ReadOnly: p.ReadOnly}
 }
-
-// projectConfigFile mirrors projectconfig.Filename; docker does not import
-// projectconfig.
-const projectConfigFile = ".makeslop.yaml"
 
 func projectSandbox(p Project) []Mount {
 	var mounts []Mount
 	workspacePath := p.ContainerRoot
 	if p.ProtectConfig {
 		mounts = append(mounts, Mount{
-			Host:      filepath.Join(p.HostRoot, projectConfigFile),
-			Container: workspacePath + "/" + projectConfigFile,
+			Type:      MountBind,
+			Host:      filepath.Join(p.HostRoot, projectconfig.Filename),
+			Container: workspacePath + "/" + projectconfig.Filename,
 			ReadOnly:  true,
 		})
 	}
 	if p.MaskGitHooks {
 		mounts = append(mounts, Mount{
-			Type:      "tmpfs",
+			Type:      MountTmpfs,
 			Container: workspacePath + "/.git/hooks",
 		})
 	}
@@ -187,7 +102,7 @@ func projectMasks(p Project, configBound bool) []Mount {
 	workspacePath := p.ContainerRoot
 	maskedFiles := p.MaskedFiles
 	if configBound {
-		maskedFiles = filterOut(maskedFiles, filepath.Join(p.HostRoot, projectConfigFile))
+		maskedFiles = filterOut(maskedFiles, filepath.Join(p.HostRoot, projectconfig.Filename))
 	}
 
 	// Validated mask paths are beneath Host, so Rel cannot fail on POSIX.
@@ -195,6 +110,7 @@ func projectMasks(p Project, configBound bool) []Mount {
 	for _, host := range maskedFiles {
 		rel, _ := filepath.Rel(p.HostRoot, host)
 		mounts = append(mounts, Mount{
+			Type:      MountBind,
 			Host:      "/dev/null",
 			Container: workspacePath + "/" + filepath.ToSlash(rel),
 		})
@@ -202,7 +118,7 @@ func projectMasks(p Project, configBound bool) []Mount {
 	for _, host := range p.MaskedDirs {
 		rel, _ := filepath.Rel(p.HostRoot, host)
 		mounts = append(mounts, Mount{
-			Type:      "tmpfs",
+			Type:      MountTmpfs,
 			Container: workspacePath + "/" + filepath.ToSlash(rel),
 		})
 	}
@@ -210,25 +126,29 @@ func projectMasks(p Project, configBound bool) []Mount {
 }
 
 // Args uses CSV quoting so Docker can parse mount paths containing ',' or '"'.
-func (s Spec) Args() []string {
-	var args []string
-
-	if s.bgUUID == "" {
-		args = append(args, "run", "--rm", "-it")
-	} else {
-		args = append(
-			args,
-			"run",
-			"-dit",
-			"--name",
-			bgPrefix+s.bgUUID,
-			"--label",
-			bgUUIDLabel+"="+s.bgUUID,
-			"--label",
-			bgProjectLabel+"="+s.bgProject,
-			"--label",
-			bgShellLabel+"="+s.Command,
-		)
+func (s createSpec) Args() []string {
+	args := []string{"run"}
+	if s.AutoRemove {
+		args = append(args, "--rm")
+	}
+	flags := "-"
+	if !s.Attached {
+		flags += "d"
+	}
+	if s.OpenStdin {
+		flags += "i"
+	}
+	if s.Tty {
+		flags += "t"
+	}
+	if flags != "-" {
+		args = append(args, flags)
+	}
+	if s.Name != "" {
+		args = append(args, "--name", s.Name)
+	}
+	for _, l := range s.Labels {
+		args = append(args, "--label", l.key+"="+l.value)
 	}
 
 	args = append(args, "--workdir", s.Workdir)
@@ -252,16 +172,16 @@ func (s Spec) Args() []string {
 	}
 	for _, m := range s.Mounts {
 		switch m.Type {
-		case "tmpfs":
+		case MountTmpfs:
 			args = append(args, "--mount",
 				"type=tmpfs,"+csvField("target="+m.Container))
-		case "volume":
+		case MountVolume:
 			val := "type=volume," + csvField("source="+m.Host) + "," + csvField("target="+m.Container)
 			if m.ReadOnly {
 				val += ",readonly"
 			}
 			args = append(args, "--mount", val)
-		default: // "" or "bind"
+		case MountBind:
 			val := "type=bind," + csvField("source="+m.Host) + "," + csvField("target="+m.Container)
 			if m.ReadOnly {
 				val += ",readonly"
@@ -272,7 +192,7 @@ func (s Spec) Args() []string {
 
 	args = append(args, s.Image)
 
-	return append(args, s.commandArgv()...)
+	return append(args, s.Argv...)
 }
 
 var shellSafeRe = regexp.MustCompile(`^[A-Za-z0-9_./:=,@+-]+$`)
@@ -298,7 +218,7 @@ func sanitizeLabel(label string) string {
 
 // ShellCommand labels join sections for inspection. With joins, those labels
 // break shell continuation, so the result cannot be pasted as one command.
-func (s Spec) ShellCommand() string {
+func (s createSpec) ShellCommand() string {
 	args := s.Args() // starts with "run", not "docker"
 
 	var lines []string
@@ -312,8 +232,8 @@ func (s Spec) ShellCommand() string {
 	}
 	mountN := 0
 
-	tail := len(args) - 2 - len(s.ZMXArgv) // image, optional prefix, shell
-	i := 1                                 // skip "run" — already in "docker run" prefix
+	tail := len(args) - 1 - len(s.Argv) // image and final argv
+	i := 1                              // skip "run" — already in "docker run" prefix
 	for i < tail {
 		tok := args[i]
 		if tok == "--mount" {
@@ -355,42 +275,32 @@ func (s Spec) ShellCommand() string {
 	return strings.TrimSuffix(sb.String(), "\n")
 }
 
-func (s Spec) commandArgv() []string {
-	argv := make([]string, 0, len(s.ZMXArgv)+1)
-
-	return append(append(argv, s.ZMXArgv...), s.Command)
-}
-
-func (s Spec) ContainerConfig() *container.Config {
-	attached := s.bgUUID == ""
+func (s createSpec) ContainerConfig() *container.Config {
 	cfg := &container.Config{
 		Image:        s.Image,
-		Cmd:          s.commandArgv(),
+		Cmd:          slices.Clone(s.Argv),
 		WorkingDir:   s.Workdir,
-		Env:          s.Env,
-		Tty:          true,
-		OpenStdin:    true,
-		AttachStdin:  attached,
-		AttachStdout: attached,
-		AttachStderr: attached,
+		Env:          slices.Clone(s.Env),
+		Tty:          s.Tty,
+		OpenStdin:    s.OpenStdin,
+		AttachStdin:  s.Attached,
+		AttachStdout: s.Attached,
+		AttachStderr: s.Attached,
 	}
-
-	if !attached {
-		cfg.Labels = map[string]string{
-			bgUUIDLabel:    s.bgUUID,
-			bgProjectLabel: s.bgProject,
-			bgShellLabel:   s.Command,
+	if len(s.Labels) > 0 {
+		cfg.Labels = make(map[string]string, len(s.Labels))
+		for _, l := range s.Labels {
+			cfg.Labels[l.key] = l.value
 		}
 	}
-
 	return cfg
 }
 
-func (s Spec) HostConfig() *container.HostConfig {
+func (s createSpec) HostConfig() *container.HostConfig {
 	return &container.HostConfig{
-		AutoRemove:  s.bgUUID == "",
-		CapDrop:     s.CapDrop,
-		SecurityOpt: s.SecOpt,
+		AutoRemove:  s.AutoRemove,
+		CapDrop:     slices.Clone(s.CapDrop),
+		SecurityOpt: slices.Clone(s.SecOpt),
 		Tmpfs:       tmpfsMap(s.Tmpfs),
 		Mounts:      mountsFor(s.Mounts),
 		NetworkMode: container.NetworkMode(s.primaryNetwork()),
@@ -399,7 +309,7 @@ func (s Spec) HostConfig() *container.HostConfig {
 
 // primaryNetwork is the value for HostConfig.NetworkMode: NetworkMode when set,
 // else the first of Networks, else "" (Docker default).
-func (s Spec) primaryNetwork() string {
+func (s createSpec) primaryNetwork() string {
 	if s.NetworkMode != "" {
 		return s.NetworkMode
 	}
@@ -412,7 +322,7 @@ func (s Spec) primaryNetwork() string {
 // NetworkingConfig returns the SDK endpoint config attaching every entry of
 // Networks at create time, or nil when Networks is empty (NetworkMode alone
 // is carried by HostConfig). Multiple endpoints need daemon API >= 1.44.
-func (s Spec) NetworkingConfig() *network.NetworkingConfig {
+func (s createSpec) NetworkingConfig() *network.NetworkingConfig {
 	if len(s.Networks) == 0 {
 		return nil
 	}
@@ -448,12 +358,12 @@ func mountsFor(mounts []Mount) []mount.Mount {
 	out := make([]mount.Mount, len(mounts))
 	for i, m := range mounts {
 		switch m.Type {
-		case "tmpfs":
+		case MountTmpfs:
 			out[i] = mount.Mount{
 				Type:   mount.TypeTmpfs,
 				Target: m.Container,
 			}
-		case "volume":
+		case MountVolume:
 			// Host carries the Docker volume name for volume mounts.
 			out[i] = mount.Mount{
 				Type:     mount.TypeVolume,
@@ -461,7 +371,7 @@ func mountsFor(mounts []Mount) []mount.Mount {
 				Target:   m.Container,
 				ReadOnly: m.ReadOnly,
 			}
-		default: // "" or "bind"
+		case MountBind:
 			out[i] = mount.Mount{
 				Type:     mount.TypeBind,
 				Source:   m.Host,

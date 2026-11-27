@@ -86,8 +86,8 @@ func TestRun_ConfiguredCacheMounts(t *testing.T) {
 		{host: ws + "/docs/", target: "/workspace/" + filepath.Base(ws) + "/docs/"},
 		{host: file, target: "/home/user/.settings.json"},
 	} {
-		if !hasMountWithContainerAndHost(fc.LastSpec.Mounts, want.target, want.host) {
-			t.Fatalf("missing %#v in %#v", want, fc.LastSpec.Mounts)
+		if !hasMountWithContainerAndHost(fc.LastCreate.HostConfig.Mounts, want.target, want.host) {
+			t.Fatalf("missing %#v in %#v", want, fc.LastCreate.HostConfig.Mounts)
 		}
 	}
 }
@@ -107,10 +107,10 @@ func TestRun_CacheRelativeStatic(t *testing.T) {
 			}
 			wantTarget := "/workspace/" + filepath.Base(ws) + "/" + filepath.ToSlash(filepath.Clean(target))
 			found := false
-			for _, mount := range fc.LastSpec.Mounts {
-				if mount.Container == wantTarget {
+			for _, mount := range fc.LastCreate.HostConfig.Mounts {
+				if mount.Target == wantTarget {
 					found = true
-					if mount.Host != root+"/source.json" || !mount.ReadOnly {
+					if mount.Source != root+"/source.json" || !mount.ReadOnly {
 						t.Fatalf("wrong mount: %#v", mount)
 					}
 				}
@@ -195,8 +195,8 @@ func TestRun_CacheModes(t *testing.T) {
 					continue
 				}
 				found := false
-				for _, mount := range fc.LastSpec.Mounts {
-					if mount.Container == tc.target {
+				for _, mount := range fc.LastCreate.HostConfig.Mounts {
+					if mount.Target == tc.target {
 						found = true
 						if mount.ReadOnly != tc.readOnly {
 							t.Errorf("wrong mode: %#v", mount)
@@ -301,7 +301,7 @@ func TestRun_CacheDryRunMatchesLaunch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if out != fc.LastSpec.ShellCommand()+"\n" {
+	if out != fc.LastPreview+"\n" {
 		t.Fatal("dry-run/launch drift")
 	}
 }
@@ -336,8 +336,8 @@ func TestRun_CacheFromSubdirectory(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	if !hasMountWithContainerAndHost(fc.LastSpec.Mounts, "/opt/tools/", root+"/tools/") {
-		t.Fatalf("wrong relative bind: %#v", fc.LastSpec.Mounts)
+	if !hasMountWithContainerAndHost(fc.LastCreate.HostConfig.Mounts, "/opt/tools/", root+"/tools/") {
+		t.Fatalf("wrong relative bind: %#v", fc.LastCreate.HostConfig.Mounts)
 	}
 }
 
@@ -414,16 +414,16 @@ func TestRun_CacheScanMaskOrder(t *testing.T) {
 	}
 
 	overlay, mask := -1, -1
-	for i, mount := range fc.LastSpec.Mounts {
-		if mount.Host == ws+"/docs/" {
+	for i, mount := range fc.LastCreate.HostConfig.Mounts {
+		if mount.Source == ws+"/docs/" {
 			overlay = i
 		}
-		if mount.Host == "/dev/null" && mount.Container == "/workspace/"+filepath.Base(ws)+"/docs/key.pem" {
+		if mount.Source == "/dev/null" && mount.Target == "/workspace/"+filepath.Base(ws)+"/docs/key.pem" {
 			mask = i
 		}
 	}
 	if overlay < 0 || mask <= overlay {
-		t.Fatalf("mask order: %#v", fc.LastSpec.Mounts)
+		t.Fatalf("mask order: %#v", fc.LastCreate.HostConfig.Mounts)
 	}
 }
 
@@ -443,8 +443,8 @@ func TestRun_NoImplicitCaches(t *testing.T) {
 			); err != nil {
 				t.Fatal(err)
 			}
-			for _, mount := range fc.LastSpec.Mounts {
-				if strings.HasPrefix(mount.Container, "/home/user/") || strings.HasPrefix(mount.Host, ws+"/") {
+			for _, mount := range fc.LastCreate.HostConfig.Mounts {
+				if strings.HasPrefix(mount.Target, "/home/user/") || strings.HasPrefix(mount.Source, ws+"/") {
 					t.Fatalf("implicit mount %#v", mount)
 				}
 			}

@@ -82,8 +82,8 @@ func TestJoin_CacheIgnoredWithoutSourceChecks(t *testing.T) {
 	}
 
 	assertAbsent(t, filepath.Join(f.baseDir, "shared/join-only"))
-	for _, m := range fc.LastSpec.Mounts {
-		if strings.Contains(m.Host, "join-only") || strings.Contains(m.Container, "/opt/missing") {
+	for _, m := range fc.LastCreate.HostConfig.Mounts {
+		if strings.Contains(m.Source, "join-only") || strings.Contains(m.Target, "/opt/missing") {
 			t.Fatalf("join cache mounted: %#v", m)
 		}
 	}

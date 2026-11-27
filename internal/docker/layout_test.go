@@ -5,8 +5,8 @@ import (
 	"testing"
 )
 
-func TestBuildSpec_UsesResolvedRoots(t *testing.T) {
-	o := Options{Layout: Layout{
+func TestBuildForeground_UsesResolvedRoots(t *testing.T) {
+	o := BuildInputs{Layout: Layout{
 		Main: Project{
 			ProjectRoot:   ProjectRoot{Name: "app", HostRoot: "/host/app", ContainerRoot: "/src/app"},
 			ProtectConfig: true,
@@ -16,7 +16,7 @@ func TestBuildSpec_UsesResolvedRoots(t *testing.T) {
 			MaskedFiles: []string{"/host/lib/.env"},
 		}},
 	}}
-	s := BuildSpec(o)
+	s := testForegroundCreate(o)
 	want := []string{"/src/app", "/src/app/.makeslop.yaml", "/src/lib", "/src/lib/.env"}
 	var got []string
 

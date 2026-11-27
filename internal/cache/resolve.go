@@ -91,6 +91,7 @@ func (p *Plan) resolveManagedGroup(group cacheGroup, base string) error {
 		p.dirs = append(p.dirs, dir)
 		p.entries = append(p.entries, entry)
 		p.mounts = append(p.mounts, docker.Mount{
+			Type: docker.MountBind,
 			Host: source + "/", Container: path.Join(group.target, name) + "/",
 			ReadOnly: dirConfig.ReadOnly,
 		})
@@ -151,7 +152,7 @@ func resolveStaticCacheMount(
 		target += "/"
 	}
 
-	return docker.Mount{Host: source, Container: target, ReadOnly: bind.ReadOnly}, nil
+	return docker.Mount{Type: docker.MountBind, Host: source, Container: target, ReadOnly: bind.ReadOnly}, nil
 }
 
 func staticCacheHost(host, home, projectRoot string) (string, error) {

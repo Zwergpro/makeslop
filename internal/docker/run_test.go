@@ -17,13 +17,13 @@ import (
 	moby "github.com/moby/moby/client"
 )
 
-func sampleSpec() Spec {
-	return BuildSpec(Options{
+func sampleSpec() ForegroundSpec {
+	return ForegroundSpec{create: testForegroundCreate(BuildInputs{
 		Layout: Layout{Main: Project{ProjectRoot: ProjectRoot{HostRoot: "/host/project", Name: "demo-abc123", ContainerRoot: "/workspace/demo-abc123"}}},
 
-		Image:   "claudebox",
-		Command: "/bin/zsh",
-	})
+		Image: "claudebox",
+		Shell: "/bin/zsh",
+	})}
 }
 
 // closeWriteConn wraps a net.Conn and implements CloseWriter, recording whether
@@ -1151,15 +1151,19 @@ func TestRun_PassesNetworkingConfig(t *testing.T) {
 		f := newFakeRunClient(0)
 		d := newDockerWithClient(t, f, WithTTYCheck(alwaysTTY), WithRawMode(noopMakeRaw))
 		s := sampleSpec()
-		s.Networks = []string{"a_net", "b_net"}
+		s.create.Networks = []string{"a_net", "b_net"}
 		if err := d.Run(context.Background(), s); err != nil {
 			t.Fatalf("Run: %v", err)
 		}
 		opts := f.LastContainerCreateOpts
+		if opts.Name != "" || !opts.HostConfig.AutoRemove || !opts.Config.Tty || !opts.Config.OpenStdin ||
+			!opts.Config.AttachStdin || !opts.Config.AttachStdout || !opts.Config.AttachStderr {
+			t.Fatalf("foreground create: %+v", opts)
+		}
 		if opts.NetworkingConfig == nil {
 			t.Fatal("ContainerCreate NetworkingConfig = nil, want endpoints for a_net, b_net")
 		}
-		for _, n := range s.Networks {
+		for _, n := range s.create.Networks {
 			if _, ok := opts.NetworkingConfig.EndpointsConfig[n]; !ok {
 				t.Errorf("EndpointsConfig missing %q", n)
 			}
@@ -1172,7 +1176,7 @@ func TestRun_PassesNetworkingConfig(t *testing.T) {
 		f := newFakeRunClient(0)
 		d := newDockerWithClient(t, f, WithTTYCheck(alwaysTTY), WithRawMode(noopMakeRaw))
 		s := sampleSpec()
-		s.NetworkMode = "container:proxy"
+		s.create.NetworkMode = "container:proxy"
 		if err := d.Run(context.Background(), s); err != nil {
 			t.Fatalf("Run: %v", err)
 		}

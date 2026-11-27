@@ -101,17 +101,17 @@ func sameCharDevice(a, b *os.File) bool {
 // their status. It drains output and joins closeable stdin readers before return
 // to avoid lost output and goroutine leaks. If stdin cannot be made closeable,
 // its blocked copy goroutine may outlive Run.
-func (d *Docker) Run(ctx context.Context, s Spec) error {
+func (d *Docker) Run(ctx context.Context, s ForegroundSpec) error {
+	if len(s.create.Argv) == 0 {
+		return fmt.Errorf("foreground spec was not built")
+	}
+
 	cli := d.client
 	if !d.isTTYFn() {
 		return ErrNoTTY
 	}
 
-	createRes, err := cli.ContainerCreate(ctx, moby.ContainerCreateOptions{
-		Config:           s.ContainerConfig(),
-		HostConfig:       s.HostConfig(),
-		NetworkingConfig: s.NetworkingConfig(),
-	})
+	createRes, err := cli.ContainerCreate(ctx, s.create.createOptions())
 	if err != nil {
 		return fmt.Errorf("container create: %w", err)
 	}

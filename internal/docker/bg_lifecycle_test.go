@@ -16,18 +16,18 @@ import (
 )
 
 func TestBGSpec(t *testing.T) {
-	fg := Spec{
-		Image:    "local:test",
-		Command:  "/bin/a shell",
-		Workdir:  "/workspace/demo",
-		Env:      []string{"X=ok", "ZMX_DIR=/tmp/user-controlled"},
-		CapDrop:  []string{"ALL"},
-		SecOpt:   []string{"no-new-privileges"},
-		Networks: []string{"one", "two"},
-		Mounts:   []Mount{{Type: "tmpfs", Container: "/workspace/demo/private"}},
+	in := modeInputs()
+	in.Shell = "/bin/a shell"
+	in.Env = []string{"X=ok", "ZMX_DIR=/tmp/user-controlled"}
+	in.Network.Networks = []string{"one", "two"}
+	in.Layout.Main.MaskedDirs = []string{"/host/demo/private"}
+	fg := testForegroundCreate(in)
+	spec, err := BuildBackground(in, testBGUUID)
+	if err != nil {
+		t.Fatal(err)
 	}
-	bg := fg.ForBackground(testBGUUID, "demo")
-	if fg.ZMXArgv != nil || !fg.HostConfig().AutoRemove || bg.HostConfig().AutoRemove {
+	bg := spec.create
+	if !fg.HostConfig().AutoRemove || bg.HostConfig().AutoRemove {
 		t.Fatal("foreground/background auto-remove mismatch")
 	}
 
@@ -350,13 +350,24 @@ func TestBGRun(t *testing.T) {
 				f.startErr = errors.New("zmx: executable file not found")
 			}
 
-			err := d.RunBG(ctx, Spec{Command: "/bin/zsh"}.ForBackground(testBGUUID, "demo"))
+			in := modeInputs()
+			in.Shell = "/bin/zsh"
+			spec, err := BuildBackground(in, testBGUUID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = d.RunBG(ctx, spec)
 
 			if f.createOptions.Name != "makeslop-"+testBGUUID || f.mutationID != "new-id" {
 				t.Fatalf("create/start: %+v, %q", f.createOptions, f.mutationID)
 			}
 
 			if name == "success" {
+				got := f.createOptions
+				if !reflect.DeepEqual(got, spec.create.createOptions()) {
+					t.Fatalf("runner create differs from planned options: %+v", got)
+				}
+
 				wantCalls := []string{"create", "start", "inspect", "probe"}
 				if err != nil || f.removed != "" || !slices.Equal(f.calls, wantCalls) {
 					t.Fatalf("success: %v, %v", f.calls, err)

@@ -18,39 +18,14 @@ var bgZMXEnv = []string{
 	"ZMX_DIR=/tmp/makeslop-zmx", "ZMX_DIR_MODE=0700", "ZMX_SESSION=", "ZMX_SESSION_PREFIX=",
 }
 
-// ForBackground returns the detached projection of an existing project spec.
-func (s Spec) ForBackground(uuid, project string) Spec {
-	s.bgUUID, s.bgProject = uuid, project
-	s.ZMXArgv = []string{"zmx", "attach", bgSession}
-	env := make([]string, 0, len(s.Env)+len(bgZMXEnv))
-
-	for _, entry := range s.Env {
-		key, _, _ := strings.Cut(entry, "=")
-		switch key {
-		case "ZMX_DIR", "ZMX_DIR_MODE", "ZMX_SESSION", "ZMX_SESSION_PREFIX":
-		default:
-			env = append(env, entry)
-		}
-	}
-
-	s.Env = append(env, bgZMXEnv...)
-
-	return s
-}
-
 // RunBG starts a new background container and reports success only after zmx is ready.
-func (d *Docker) RunBG(ctx context.Context, s Spec) (err error) {
-	uuid := s.bgUUID
+func (d *Docker) RunBG(ctx context.Context, s BackgroundSpec) (err error) {
+	uuid := s.uuid
 	if !validBGUUID(uuid) {
 		return fmt.Errorf("expected a full background UUID")
 	}
 
-	created, err := d.client.ContainerCreate(ctx, moby.ContainerCreateOptions{
-		Name:             bgPrefix + uuid,
-		Config:           s.ContainerConfig(),
-		HostConfig:       s.HostConfig(),
-		NetworkingConfig: s.NetworkingConfig(),
-	})
+	created, err := d.client.ContainerCreate(ctx, s.create.createOptions())
 	if err != nil {
 		return bgDaemonError("create", uuid, err)
 	}

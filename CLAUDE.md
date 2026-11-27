@@ -8,7 +8,7 @@ makeslop runs Claude Code or Codex in a per-project Docker container. Users supp
 go build ./cmd/makeslop                         # version defaults to dev
 make build                                      # install with git-describe version
 go test -timeout=100s ./...                     # CI suite
-go test ./internal/docker -run TestBuildSpec    # focused test
+go test ./internal/docker -run TestBuildModes   # focused test
 golangci-lint run                               # CI pins v2.12.2
 ```
 
@@ -17,7 +17,8 @@ golangci-lint run                               # CI pins v2.12.2
 ## Code map
 
 - `internal/cli`: cobra commands, dependency injection, preflight, and exit codes.
-- `internal/docker`: pure spec construction and SDK calls. `spec.go` renders both dry-run and SDK forms; drift tests keep them aligned.
+- `internal/cache`: cache mount validation and managed-directory preparation.
+- `internal/docker`: pure spec construction and SDK calls. `create_spec.go` finalizes each mode; `spec.go` projects it into shell and SDK values.
 - `internal/config`: settings, bootstrap, and file locking.
 - `internal/projectconfig`: strict `.makeslop.yaml` parsing and validation.
 - `internal/workspace`: project registration and cache directories.
@@ -26,8 +27,8 @@ golangci-lint run                               # CI pins v2.12.2
 
 ## Invariants
 
-- `BuildSpec` has no filesystem or process side effects. Resolve paths, host environment values, and policy flags in the CLI first. The main project is `Options.Projects[0]`; joins follow flag order. Masks come after the mounts they cover. `Spec.Sections` affects display only; joined dry-run output has labels and is not paste-ready.
-- Cache mounts are opt-in: absent `cache:` and zero-value `Options.CacheMounts` mount nothing. Shared directories live beneath `shared/`; local directories beneath the registered workspace. Static sources must already exist as regular files/directories. Resolve and validate all mounts before creation; dry runs never create sources. Reject managed symlinks and cache/policy/exclude overlaps. Retain declared excludes before stat filtering for deterministic conflict checks.
+- `BuildForeground` and `BuildBackground` have no filesystem or process side effects. CLI resolves one layout for cache and Docker; `BuildInputs.Layout.Main` is the main project, and joins follow flag order. Masks come after the mounts they cover. Sections affect display only; joined dry-run output has labels and is not paste-ready.
+- Cache mounts are opt-in: absent `cache:` and zero-value `BuildInputs.CacheMounts` mount nothing. Shared directories live beneath `shared/`; local directories beneath the registered workspace. Static sources must already exist as regular files/directories. Resolve and validate all mounts before creation; dry runs never create sources. Reject managed symlinks and cache/policy/exclude overlaps. Retain declared excludes before stat filtering for deterministic conflict checks.
 - Add new SDK calls to `apiClient` and its fakes in `internal/docker/fakes_test.go`. CLI Docker dependencies belong in `dockerAPI`, `dockerNewErrStub`, and `fakeDocker`. Build command tests with `newRootCmdWithDeps`. A failed `docker.New()` must leave non-Docker commands usable.
 - `runWithExitCode` wraps execution in a signal-cancellable context. Every `RunE` uses `cmd.Context()`. Preflight has a 10-second deadline; interactive `Run` does not. `ImageExists` returns `(false, nil)` only for a classified not-found error. `*docker.ExitError` passes the container's status through; `errSilent` avoids printing an already shown error.
 - Image resolution is flag, then setting, then an error. There is no default or automatic pull. `run` resolves the image before workspace lookup. `status -i` can inspect an image even when settings are unreadable.

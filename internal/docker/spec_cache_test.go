@@ -5,23 +5,26 @@ import (
 	"testing"
 )
 
-func TestBuildSpec_ConfiguredCacheMounts(t *testing.T) {
-	caches := []Mount{
-		{Host: "/host/shared/custom/", Container: "/home/user/custom/"},
-		{Host: "/host/file", Container: "/opt/file", ReadOnly: true},
-	}
-	opts := Options{
-		Layout: Layout{
-			Main: Project{
-				ProjectRoot: ProjectRoot{HostRoot: "/host/app", Name: "app", ContainerRoot: "/workspace/app"}, ProtectConfig: true, MaskGitHooks: true,
-				MaskedFiles: []string{"/host/app/key"},
-			},
-			Joins: []Project{{ProjectRoot: ProjectRoot{HostRoot: "/host/lib", Name: "lib", ContainerRoot: "/workspace/lib"}}},
-		},
-		CacheMounts: caches,
-	}
+func cacheTestLayout() Layout {
+	return Layout{Main: Project{ProjectRoot: ProjectRoot{
+		HostRoot: "/host/app", Name: "app", ContainerRoot: "/workspace/app",
+	}}}
+}
 
-	spec := BuildSpec(opts)
+func TestBuildForeground_ConfiguredCacheMounts(t *testing.T) {
+	caches := []Mount{
+		{Type: MountBind, Host: "/host/shared/custom/", Container: "/home/user/custom/"},
+		{Type: MountBind, Host: "/host/file", Container: "/opt/file", ReadOnly: true},
+	}
+	layout := cacheTestLayout()
+	layout.Main.ProtectConfig, layout.Main.MaskGitHooks = true, true
+	layout.Main.MaskedFiles = []string{"/host/app/key"}
+	layout.Joins = []Project{{ProjectRoot: ProjectRoot{
+		HostRoot: "/host/lib", Name: "lib", ContainerRoot: "/workspace/lib",
+	}}}
+	opts := BuildInputs{Layout: layout, CacheMounts: caches}
+
+	spec := testForegroundCreate(opts)
 	// The project bind and two policy mounts precede the configured caches.
 	if !reflect.DeepEqual(spec.Mounts[3:5], caches) {
 		t.Fatalf("cache order: %#v", spec.Mounts)
@@ -31,23 +34,23 @@ func TestBuildSpec_ConfiguredCacheMounts(t *testing.T) {
 	}
 }
 
-func TestBuildSpec_CacheMountsDoNotAliasOptions(t *testing.T) {
-	caches := []Mount{{Host: "/host/shared/custom/", Container: "/home/user/custom/"}}
-	opts := Options{
-		Layout:      Layout{Main: Project{ProjectRoot: ProjectRoot{HostRoot: "/host/app", Name: "app", ContainerRoot: "/workspace/app"}}},
+func TestBuildForeground_CacheMountsDoNotAliasOptions(t *testing.T) {
+	caches := []Mount{{Type: MountBind, Host: "/host/shared/custom/", Container: "/home/user/custom/"}}
+	opts := BuildInputs{
+		Layout:      cacheTestLayout(),
 		CacheMounts: caches,
 	}
 
-	spec := BuildSpec(opts)
+	spec := testForegroundCreate(opts)
 	spec.Mounts[1].Host = "changed"
 	if caches[0].Host != "/host/shared/custom/" {
 		t.Fatal("mutated caller mounts")
 	}
 }
 
-func TestBuildSpec_NoImplicitCaches(t *testing.T) {
-	spec := BuildSpec(Options{Layout: Layout{Main: Project{ProjectRoot: ProjectRoot{HostRoot: "/host/app", Name: "app", ContainerRoot: "/workspace/app"}}}})
-	want := []Mount{{Host: "/host/app", Container: "/workspace/app"}}
+func TestBuildForeground_NoImplicitCaches(t *testing.T) {
+	spec := testForegroundCreate(BuildInputs{Layout: cacheTestLayout()})
+	want := []Mount{{Type: MountBind, Host: "/host/app", Container: "/workspace/app"}}
 	if !reflect.DeepEqual(spec.Mounts, want) {
 		t.Fatalf("implicit mounts: %#v", spec.Mounts)
 	}
@@ -55,13 +58,13 @@ func TestBuildSpec_NoImplicitCaches(t *testing.T) {
 
 func TestDriftGuard_ConfiguredCacheMounts(t *testing.T) {
 	caches := []Mount{
-		{Host: "/host/a b,c'd/", Container: "/home/user/a b,c'd/", ReadOnly: true},
-		{Host: "/host/file", Container: "/opt/file", ReadOnly: true},
-		{Host: "/host/rw/", Container: "/opt/rw/"},
-		{Host: "/host/rw-file", Container: "/opt/rw-file"},
+		{Type: MountBind, Host: "/host/a b,c'd/", Container: "/home/user/a b,c'd/", ReadOnly: true},
+		{Type: MountBind, Host: "/host/file", Container: "/opt/file", ReadOnly: true},
+		{Type: MountBind, Host: "/host/rw/", Container: "/opt/rw/"},
+		{Type: MountBind, Host: "/host/rw-file", Container: "/opt/rw-file"},
 	}
-	spec := BuildSpec(Options{
-		Layout: Layout{Main: Project{ProjectRoot: ProjectRoot{HostRoot: "/host/app", Name: "app", ContainerRoot: "/workspace/app"}}}, CacheMounts: caches,
+	spec := testForegroundCreate(BuildInputs{
+		Layout: cacheTestLayout(), CacheMounts: caches,
 	})
 	sdk := spec.HostConfig().Mounts
 	args := collectMountArgs(spec.Args())

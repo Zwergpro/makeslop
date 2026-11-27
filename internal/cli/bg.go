@@ -75,8 +75,16 @@ func runBG(
 		return err
 	}
 
+	id := dryRunBGUUID
+	if !opts.DryRun {
+		id = uuid.NewV4().String()
+	}
+
+	spec, err := docker.BuildBackground(launch.Inputs, id)
+	if err != nil {
+		return err
+	}
 	if opts.DryRun {
-		spec := launch.Spec.ForBackground(dryRunBGUUID, launch.Project)
 		_, err = fmt.Fprintln(cmd.OutOrStdout(), "# Example UUID; no container was created.\n"+spec.ShellCommand())
 
 		return err
@@ -92,9 +100,7 @@ func runBG(
 		return err
 	}
 
-	id := uuid.NewV4().String()
-
-	if err := deps.api.RunBG(cmd.Context(), launch.Spec.ForBackground(id, launch.Project)); err != nil {
+	if err := deps.api.RunBG(cmd.Context(), spec); err != nil {
 		return err
 	}
 

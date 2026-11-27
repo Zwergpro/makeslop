@@ -83,9 +83,9 @@ func TestResolveCache_Mappings(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []docker.Mount{
-		{Host: paths.BaseDir + "/shared/.claude/", Container: "/home/user/.claude/"},
-		{Host: paths.WorkspaceDir + "/docs/", Container: "/workspace/app-abc123/docs/"},
-		{Host: file, Container: "/home/user/.settings.json"},
+		{Type: docker.MountBind, Host: paths.BaseDir + "/shared/.claude/", Container: "/home/user/.claude/"},
+		{Type: docker.MountBind, Host: paths.WorkspaceDir + "/docs/", Container: "/workspace/app-abc123/docs/"},
+		{Type: docker.MountBind, Host: file, Container: "/home/user/.settings.json"},
 	}
 	if !reflect.DeepEqual(got.Mounts(), want) {
 		t.Fatalf("got %#v, want %#v", got.Mounts(), want)
@@ -119,10 +119,10 @@ func TestResolveCache_Modes(t *testing.T) {
 				t.Fatal(err)
 			}
 			want := []docker.Mount{
-				{Host: paths.BaseDir + "/shared/shared/", Container: "/home/user/shared/", ReadOnly: readOnly},
-				{Host: paths.WorkspaceDir + "/local/", Container: "/workspace/app-abc123/local/", ReadOnly: readOnly},
-				{Host: projects.Main.HostRoot + "/a b,c'd", Container: "/opt/file", ReadOnly: readOnly},
-				{Host: projects.Main.HostRoot + "/tools/", Container: "/opt/tools/", ReadOnly: readOnly},
+				{Type: docker.MountBind, Host: paths.BaseDir + "/shared/shared/", Container: "/home/user/shared/", ReadOnly: readOnly},
+				{Type: docker.MountBind, Host: paths.WorkspaceDir + "/local/", Container: "/workspace/app-abc123/local/", ReadOnly: readOnly},
+				{Type: docker.MountBind, Host: projects.Main.HostRoot + "/a b,c'd", Container: "/opt/file", ReadOnly: readOnly},
+				{Type: docker.MountBind, Host: projects.Main.HostRoot + "/tools/", Container: "/opt/tools/", ReadOnly: readOnly},
 			}
 			if !reflect.DeepEqual(plan.Mounts(), want) {
 				t.Fatalf("got %#v, want %#v", plan.Mounts(), want)
@@ -194,7 +194,7 @@ func TestResolveCache_StaticDirectorySources(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			want := docker.Mount{Host: projects.Main.HostRoot + "/tools/", Container: "/opt/tools/"}
+			want := docker.Mount{Type: docker.MountBind, Host: projects.Main.HostRoot + "/tools/", Container: "/opt/tools/"}
 			if plan.Mounts()[0] != want {
 				t.Fatalf("got %#v, want %#v", plan.Mounts()[0], want)
 			}

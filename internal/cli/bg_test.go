@@ -6,10 +6,13 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
 	"testing"
+
+	moby "github.com/moby/moby/client"
 
 	"github.com/Zwergpro/makeslop/internal/config"
 	"github.com/Zwergpro/makeslop/internal/docker"
@@ -19,7 +22,7 @@ const bgTestUUID = "018009ac-5fec-4c37-891a-244c91beda77"
 
 type bgCLIProbe struct {
 	*fakeDocker
-	spec                          docker.Spec
+	create                        moby.ContainerCreateOptions
 	calls                         []string
 	rows                          []docker.BGContainer
 	argv                          []string
@@ -35,15 +38,19 @@ func (p *bgCLIProbe) CheckTTY() error {
 	return p.ttyErr
 }
 
-func (p *bgCLIProbe) RunBG(ctx context.Context, s docker.Spec) error {
+func (p *bgCLIProbe) RunBG(ctx context.Context, s docker.BackgroundSpec) error {
 	p.calls = append(p.calls, "run")
-	p.spec = s
 
 	if p.beforeRun != nil {
 		p.beforeRun(ctx)
 	}
 
-	return p.errorRun
+	if p.errorRun != nil {
+		return p.errorRun
+	}
+	var err error
+	p.create, err = captureCreate(func(d *docker.Docker) error { return d.RunBG(ctx, s) })
+	return err
 }
 
 func (p *bgCLIProbe) ListBG(context.Context) ([]docker.BGContainer, error) {
@@ -111,7 +118,7 @@ func (p *bgPolicyProbe) CheckTTY() error {
 	return p.bgCLIProbe.CheckTTY()
 }
 
-func (p *bgPolicyProbe) RunBG(ctx context.Context, s docker.Spec) error {
+func (p *bgPolicyProbe) RunBG(ctx context.Context, s docker.BackgroundSpec) error {
 	p.trace = append(p.trace, "run")
 
 	return p.bgCLIProbe.RunBG(ctx, s)
@@ -231,8 +238,9 @@ func TestBGCommands(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		if !slices.Equal(p.spec.Mounts, p.LastSpec.Mounts) || !slices.Equal(p.spec.Networks, p.LastSpec.Networks) {
-			t.Fatalf("foreground/background policy differs: %+v / %+v", p.spec.Mounts, p.LastSpec.Mounts)
+		if !reflect.DeepEqual(p.create.HostConfig.Mounts, p.LastCreate.HostConfig.Mounts) ||
+			!reflect.DeepEqual(p.create.NetworkingConfig, p.LastCreate.NetworkingConfig) {
+			t.Fatal("foreground/background mount or network policy differs")
 		}
 	})
 	t.Run("creation", func(t *testing.T) {
@@ -254,11 +262,11 @@ func TestBGCommands(t *testing.T) {
 			t.Fatalf("run: %q / %q / %v, %v", out, stderr, err, p.calls)
 		}
 
-		cfg := p.spec.ContainerConfig()
+		cfg := p.create.Config
 		const shell = "/bin/fish"
 
-		if p.spec.Command != shell || cfg.Labels["io.makeslop.bg.shell"] != shell {
-			t.Fatalf("shell: spec=%q labels=%v", p.spec.Command, cfg.Labels)
+		if cfg.Labels["io.makeslop.bg.shell"] != shell {
+			t.Fatalf("shell label: %v", cfg.Labels)
 		}
 
 		if !slices.Equal(cfg.Cmd, []string{"zmx", "attach", "agent", shell}) {

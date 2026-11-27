@@ -4,13 +4,13 @@ The CLI lives in `internal/cli`. It loads settings and project configuration, ch
 
 ## Spec and runtime
 
-`internal/docker/spec.go` builds a pure `Spec` from resolved `Options`. `Args()` and `ShellCommand()` render the dry run; `ContainerConfig()`, `HostConfig()`, and `NetworkingConfig()` render the SDK request. Drift tests keep printed flags and daemon settings aligned. Filesystem checks, host environment lookup, and SDK calls happen before or after spec construction, never inside it.
+`internal/docker/create_spec.go` builds a `ForegroundSpec` or `BackgroundSpec` from resolved `BuildInputs`. Both hold final create values: the dry-run shell command and the SDK request render those values without inferring execution mode from a UUID. Drift tests keep printed flags and daemon settings aligned. Filesystem checks, host environment lookup, and SDK calls happen before or after spec construction, never inside it.
 
-`projectconfig.Load` parses `environments:` without reading host variables. `internal/cli/run.go` resolves them and sorts the final `KEY=VALUE` pairs before building the spec. Network settings follow the same path: project config to `Options`, then to both CLI and SDK projections.
+`projectconfig.Load` parses `environments:` without reading host variables. `internal/cli/run.go` resolves them and sorts the final `KEY=VALUE` pairs before building the spec. Network settings follow the same path: project config to `BuildInputs`, then to both shell and SDK projections. Image and network preflight read those same inputs.
 
 ### Mount order
 
-`Options.Projects[0]` is the writable main project; joins follow in flag order. Mounts are added in this order:
+`BuildInputs.Layout.Main` is the writable main project; joins follow in flag order. CLI resolves each host and container root once and passes the same layout to cache validation and spec construction. Mounts are added in this order:
 
 1. Main-project root.
 2. Main-project policy mounts: a read-only `.makeslop.yaml` bind and a `.git/hooks` tmpfs when applicable.
@@ -20,7 +20,7 @@ The CLI lives in `internal/cli`. It loads settings and project configuration, ch
 
 Masks must follow the mounts they cover. A `/dev/null` mask for `.makeslop.yaml` is dropped when it would hide the read-only config bind. Read-only joins need no policy mounts, though their config may still be masked. Cache mounts apply only to the main project.
 
-Absent `cache:` config and zero-value `Options.CacheMounts` both mount nothing. Projectconfig validates declarations without preparing sources. CLI cache helpers resolve host/container paths, preserve file/directory types, reject destination conflicts, and check managed-directory containment. Real launches prepare shared/local directories after image/network preflight; dry runs perform no creation. Explicit exclude declarations are retained before stat filtering so missing paths cannot bypass collision checks. Joined dry runs include group labels for inspection; those labels make the output unsuitable for pasting into a shell.
+Absent `cache:` config and zero-value `BuildInputs.CacheMounts` both mount nothing. Projectconfig validates declarations without preparing sources. `internal/cache.Resolve` preserves file/directory types, rejects destination conflicts, and checks managed-directory containment. CLI supplies the layout and host source locations. Real launches call `Plan.Prepare` after image/network preflight; it rechecks all managed directories before creating any. Dry runs never call it. Explicit exclude declarations are retained before stat filtering so missing paths cannot bypass collision checks. Joined dry runs include group labels for inspection; those labels make the output unsuitable for pasting into a shell.
 
 ## Docker boundary
 
@@ -29,6 +29,14 @@ Absent `cache:` config and zero-value `Options.CacheMounts` both mount nothing. 
 The CLI uses the consumer-side `dockerAPI` interface in `internal/cli/deps.go`. `dockerDeps` holds one implementation, and tests inject `fakeDocker` through `newRootCmdWithDeps`. If client construction fails, `dockerNewErrStub` defers the error until a Docker command runs, leaving commands such as `config` and `ls` usable.
 
 `Run` creates, attaches, starts, streams, and waits for the container. It registers the wait before start so a fast, auto-removed container still yields an exit status. Details of terminal cleanup and input handling are documented beside the code in `internal/docker/run.go`.
+
+### Background identity and lifecycle
+
+`internal/cli/bg.go` reuses foreground preparation. For a preview it supplies an example UUID; for execution it generates a fresh v4 UUID. `BuildBackground` sets the final zmx command and reserved environment directly, without constructing a foreground spec. The create request names the container `makeslop-<uuid>`, labels it with the UUID, project, and shell, and disables auto-removal. `lookupBG` in `internal/docker/bg_identity.go` requires the name and UUID label to agree before acting on the daemon's container ID.
+
+`RunBG` in `internal/docker/bg_lifecycle.go` does not treat a successful Docker start as a ready terminal: it waits for the `agent` zmx session and attempts to remove the newly created container if startup fails. After readiness, CLI prints the UUID to stdout for detached runs. With `--attach`, it prints the UUID to stderr before attaching, even under `--quiet`, so the user can reconnect if attachment fails.
+
+`AttachBG` joins the named terminal via Docker exec; `ExecBG` starts an independent interactive process. Stopping preserves the container and its writable layer, restarting reuses that container, and explicit removal requires it to be stopped.
 
 ## Preflight and errors
 
