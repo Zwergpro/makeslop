@@ -3,26 +3,37 @@ package docker
 import (
 	"encoding/csv"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/moby/moby/api/types/mount"
 )
 
-func sampleOptions() Options {
-	return Options{
-		Projects: []Project{{Host: "/home/me/code/myproj", Name: "myproj-abc123"}},
+func sampleOptions() BuildInputs {
+	return BuildInputs{
+		Layout: Layout{Main: Project{
+			ProjectRoot: ProjectRoot{
+				HostRoot:      "/home/me/code/myproj",
+				Name:          "myproj-abc123",
+				ContainerRoot: "/workspace/myproj-abc123",
+			},
+		}},
 		CacheMounts: []Mount{
-			{Host: "/home/me/.makeslop/shared/.claude/", Container: "/home/user/.claude/"},
-			{Host: "/home/me/.makeslop/shared/.codex/", Container: "/home/user/.codex/"},
-			{Host: "/home/me/.makeslop/workspaces/myproj-abc123/docs/", Container: "/workspace/myproj-abc123/docs/"},
+			{Type: MountBind, Host: "/home/me/.makeslop/shared/.claude/", Container: "/home/user/.claude/"},
+			{Type: MountBind, Host: "/home/me/.makeslop/shared/.codex/", Container: "/home/user/.codex/"},
+			{
+				Type:      MountBind,
+				Host:      "/home/me/.makeslop/workspaces/myproj-abc123/docs/",
+				Container: "/workspace/myproj-abc123/docs/",
+			},
 		},
-		Image: "claudebox", Command: "/bin/zsh", TmpDirSize: "100m",
+		Image: "claudebox", Shell: "/bin/zsh", TmpDirSize: "100m",
 	}
 }
 
-func TestBuildSpec_PopulatesWorkdirAndSecurityFlags(t *testing.T) {
-	spec := BuildSpec(sampleOptions())
+func TestBuildForeground_PopulatesWorkdirAndSecurityFlags(t *testing.T) {
+	spec := testForegroundCreate(sampleOptions())
 
 	if spec.Workdir != "/workspace/myproj-abc123" {
 		t.Errorf("Workdir = %q, want %q", spec.Workdir, "/workspace/myproj-abc123")
@@ -39,19 +50,23 @@ func TestBuildSpec_PopulatesWorkdirAndSecurityFlags(t *testing.T) {
 	if spec.Image != "claudebox" {
 		t.Errorf("Image = %q, want %q", spec.Image, "claudebox")
 	}
-	if spec.Command != "/bin/zsh" {
-		t.Errorf("Command = %q, want %q", spec.Command, "/bin/zsh")
+	if !slices.Equal(spec.Argv, []string{"/bin/zsh"}) {
+		t.Errorf("Command = %q, want %q", spec.Argv, "/bin/zsh")
 	}
 }
 
-func TestBuildSpec_MountListMatchesReferenceOrder(t *testing.T) {
-	spec := BuildSpec(sampleOptions())
+func TestBuildForeground_MountListMatchesReferenceOrder(t *testing.T) {
+	spec := testForegroundCreate(sampleOptions())
 
 	want := []Mount{
-		{Host: "/home/me/code/myproj", Container: "/workspace/myproj-abc123"},
-		{Host: "/home/me/.makeslop/shared/.claude/", Container: "/home/user/.claude/"},
-		{Host: "/home/me/.makeslop/shared/.codex/", Container: "/home/user/.codex/"},
-		{Host: "/home/me/.makeslop/workspaces/myproj-abc123/docs/", Container: "/workspace/myproj-abc123/docs/"},
+		{Type: MountBind, Host: "/home/me/code/myproj", Container: "/workspace/myproj-abc123"},
+		{Type: MountBind, Host: "/home/me/.makeslop/shared/.claude/", Container: "/home/user/.claude/"},
+		{Type: MountBind, Host: "/home/me/.makeslop/shared/.codex/", Container: "/home/user/.codex/"},
+		{
+			Type:      MountBind,
+			Host:      "/home/me/.makeslop/workspaces/myproj-abc123/docs/",
+			Container: "/workspace/myproj-abc123/docs/",
+		},
 	}
 	if !reflect.DeepEqual(spec.Mounts, want) {
 		t.Errorf("Mounts mismatch\n got: %+v\nwant: %+v", spec.Mounts, want)
@@ -59,7 +74,7 @@ func TestBuildSpec_MountListMatchesReferenceOrder(t *testing.T) {
 }
 
 func TestSpecArgs_FullArgvForRepresentativeSpec(t *testing.T) {
-	spec := BuildSpec(sampleOptions())
+	spec := testForegroundCreate(sampleOptions())
 
 	want := []string{
 		"run", "--rm", "-it",
@@ -78,14 +93,14 @@ func TestSpecArgs_FullArgvForRepresentativeSpec(t *testing.T) {
 	}
 }
 
-// Defensive: even though BuildSpec always populates Tmpfs/CapDrop/SecOpt, a
-// caller could hand-build a Spec; Args must not emit empty flag tokens.
+// Defensive: even though BuildForeground always populates Tmpfs/CapDrop/SecOpt, a
+// caller could hand-build a createSpec; Args must not emit empty flag tokens.
 func TestSpecArgs_EmptyMultiValueSlicesProduceNoFlags(t *testing.T) {
-	spec := Spec{
+	spec := createSpec{Attached: true, AutoRemove: true, Tty: true, OpenStdin: true,
 		Image:   "img",
-		Command: "sh",
+		Argv:    []string{"sh"},
 		Workdir: "/wd",
-		Mounts:  []Mount{{Host: "/h", Container: "/c"}},
+		Mounts:  []Mount{{Type: MountBind, Host: "/h", Container: "/c"}},
 	}
 	want := []string{
 		"run", "--rm", "-it",
@@ -101,12 +116,12 @@ func TestSpecArgs_EmptyMultiValueSlicesProduceNoFlags(t *testing.T) {
 // A host path with a comma must wrap the whole `"source=..."` field per RFC 4180;
 // quoting only the value (not the field) makes docker's --mount parser reject it.
 func TestSpecArgs_MountValuesQuoteCommaInPath(t *testing.T) {
-	spec := Spec{
+	spec := createSpec{Attached: true, AutoRemove: true, Tty: true, OpenStdin: true,
 		Image:   "img",
-		Command: "sh",
+		Argv:    []string{"sh"},
 		Workdir: "/wd",
 		Mounts: []Mount{
-			{Host: "/path,with,commas/x", Container: "/in/container"},
+			{Type: MountBind, Host: "/path,with,commas/x", Container: "/in/container"},
 		},
 	}
 	want := []string{
@@ -125,7 +140,7 @@ func TestSpecArgs_MountValuesQuoteCommaInPath(t *testing.T) {
 // iteration emitted source="/path",target="/path" which RFC 4180 rejects.
 // tmpfs mounts (2 fields) are covered by TestSpecArgs_TmpfsMountFlagShape.
 func TestSpecArgs_MountArgsParseAsRFC4180CSV(t *testing.T) {
-	spec := BuildSpec(sampleOptions())
+	spec := testForegroundCreate(sampleOptions())
 	args := spec.Args()
 
 	type pair struct{ host, container string }
@@ -136,13 +151,13 @@ func TestSpecArgs_MountArgsParseAsRFC4180CSV(t *testing.T) {
 		}
 	}
 
-	commaSpec := Spec{
+	commaSpec := createSpec{Attached: true, AutoRemove: true, Tty: true, OpenStdin: true,
 		Image:   "img",
-		Command: "sh",
+		Argv:    []string{"sh"},
 		Workdir: "/wd",
 		Mounts: []Mount{
-			{Host: "/path,with,commas/x", Container: "/c,with,commas/y"},
-			{Host: `/has"quote/x`, Container: "/plain"},
+			{Type: MountBind, Host: "/path,with,commas/x", Container: "/c,with,commas/y"},
+			{Type: MountBind, Host: `/has"quote/x`, Container: "/plain"},
 		},
 	}
 	commaArgs := commaSpec.Args()
@@ -190,21 +205,21 @@ func TestSpecArgs_MountArgsParseAsRFC4180CSV(t *testing.T) {
 	}
 }
 
-func TestBuildSpec_MaskedFilesAppendDevNullMounts(t *testing.T) {
+func TestBuildForeground_MaskedFilesAppendDevNullMounts(t *testing.T) {
 	o := sampleOptions()
-	o.Projects[0].MaskedFiles = []string{
+	o.Layout.Main.MaskedFiles = []string{
 		"/home/me/code/myproj/.env",
 		"/home/me/code/myproj/configs/env/local.env",
 	}
-	spec := BuildSpec(o)
+	spec := testForegroundCreate(o)
 
 	n := len(spec.Mounts)
 	if n < 2 {
 		t.Fatalf("got %d mounts, want at least 2", n)
 	}
 	wantTail := []Mount{
-		{Host: "/dev/null", Container: "/workspace/myproj-abc123/.env"},
-		{Host: "/dev/null", Container: "/workspace/myproj-abc123/configs/env/local.env"},
+		{Type: MountBind, Host: "/dev/null", Container: "/workspace/myproj-abc123/.env"},
+		{Type: MountBind, Host: "/dev/null", Container: "/workspace/myproj-abc123/configs/env/local.env"},
 	}
 	gotTail := spec.Mounts[n-2:]
 	if !reflect.DeepEqual(gotTail, wantTail) {
@@ -214,11 +229,11 @@ func TestBuildSpec_MaskedFilesAppendDevNullMounts(t *testing.T) {
 
 func TestSpecArgs_MaskedFilesProduceDevNullMountArgs(t *testing.T) {
 	o := sampleOptions()
-	o.Projects[0].MaskedFiles = []string{
+	o.Layout.Main.MaskedFiles = []string{
 		"/home/me/code/myproj/.env",
 		"/home/me/code/myproj/configs/env/local.env",
 	}
-	spec := BuildSpec(o)
+	spec := testForegroundCreate(o)
 	args := spec.Args()
 
 	mountArgs := collectMountArgs(args)
@@ -241,13 +256,13 @@ func TestSpecArgs_MaskedFilesProduceDevNullMountArgs(t *testing.T) {
 	}
 }
 
-func TestBuildSpec_MaskedDirsAppendTmpfsMounts(t *testing.T) {
+func TestBuildForeground_MaskedDirsAppendTmpfsMounts(t *testing.T) {
 	o := sampleOptions()
-	o.Projects[0].MaskedDirs = []string{
+	o.Layout.Main.MaskedDirs = []string{
 		"/home/me/code/myproj/node_modules",
 		"/home/me/code/myproj/secrets",
 	}
-	spec := BuildSpec(o)
+	spec := testForegroundCreate(o)
 
 	n := len(spec.Mounts)
 	if n < 2 {
@@ -263,18 +278,18 @@ func TestBuildSpec_MaskedDirsAppendTmpfsMounts(t *testing.T) {
 	}
 }
 
-func TestBuildSpec_MaskedFilesAndDirsInteract(t *testing.T) {
+func TestBuildForeground_MaskedFilesAndDirsInteract(t *testing.T) {
 	o := sampleOptions()
-	o.Projects[0].MaskedFiles = []string{"/home/me/code/myproj/.env"}
-	o.Projects[0].MaskedDirs = []string{"/home/me/code/myproj/node_modules"}
-	spec := BuildSpec(o)
+	o.Layout.Main.MaskedFiles = []string{"/home/me/code/myproj/.env"}
+	o.Layout.Main.MaskedDirs = []string{"/home/me/code/myproj/node_modules"}
+	spec := testForegroundCreate(o)
 
 	n := len(spec.Mounts)
 	if n < 2 {
 		t.Fatalf("got %d mounts, want at least 2", n)
 	}
 	wantTail := []Mount{
-		{Host: "/dev/null", Container: "/workspace/myproj-abc123/.env"},
+		{Type: MountBind, Host: "/dev/null", Container: "/workspace/myproj-abc123/.env"},
 		{Type: "tmpfs", Container: "/workspace/myproj-abc123/node_modules"},
 	}
 	gotTail := spec.Mounts[n-2:]
@@ -285,8 +300,8 @@ func TestBuildSpec_MaskedFilesAndDirsInteract(t *testing.T) {
 
 func TestSpecArgs_TmpfsMountFlagShape(t *testing.T) {
 	o := sampleOptions()
-	o.Projects[0].MaskedDirs = []string{"/home/me/code/myproj/node_modules"}
-	spec := BuildSpec(o)
+	o.Layout.Main.MaskedDirs = []string{"/home/me/code/myproj/node_modules"}
+	spec := testForegroundCreate(o)
 	args := spec.Args()
 
 	mountArgs := collectMountArgs(args)
@@ -303,14 +318,14 @@ func TestSpecArgs_TmpfsMountFlagShape(t *testing.T) {
 	}
 }
 
-// Uses a minimal hand-built Spec (not BuildSpec) so the golden stays stable if
-// BuildSpec later adds flags.
+// Uses a minimal hand-built createSpec (not BuildForeground) so the golden stays stable if
+// BuildForeground later adds flags.
 func TestShellCommand_MinimalSpec_GoldenString(t *testing.T) {
-	spec := Spec{
+	spec := createSpec{Attached: true, AutoRemove: true, Tty: true, OpenStdin: true,
 		Image:   "claudebox",
-		Command: "/bin/zsh",
+		Argv:    []string{"/bin/zsh"},
 		Workdir: "/workspace/myproj-abc123",
-		Mounts:  []Mount{{Host: "/home/me/code/myproj", Container: "/workspace/myproj-abc123"}},
+		Mounts:  []Mount{{Type: MountBind, Host: "/home/me/code/myproj", Container: "/workspace/myproj-abc123"}},
 		Tmpfs:   []string{"/tmp:size=100m"},
 	}
 	want := "docker run \\\n" +
@@ -340,34 +355,34 @@ func TestShellCommand_MinimalSpec_GoldenString(t *testing.T) {
 func TestShellCommand_ShellQuoting(t *testing.T) {
 	tests := []struct {
 		name    string
-		spec    Spec
+		spec    createSpec
 		wantSub string // substring that must appear in ShellCommand output
 	}{
 		{
 			name: "image with space is single-quoted",
-			spec: Spec{
+			spec: createSpec{Attached: true, AutoRemove: true, Tty: true, OpenStdin: true,
 				Image:   "my image",
-				Command: "sh",
+				Argv:    []string{"sh"},
 				Workdir: "/wd",
 			},
 			wantSub: `'my image'`,
 		},
 		{
 			name: "command with embedded single-quote uses POSIX escape",
-			spec: Spec{
+			spec: createSpec{Attached: true, AutoRemove: true, Tty: true, OpenStdin: true,
 				Image:   "img",
-				Command: "it's-a-shell",
+				Argv:    []string{"it's-a-shell"},
 				Workdir: "/wd",
 			},
 			wantSub: `'it'\''s-a-shell'`,
 		},
 		{
 			name: "mount value with CSV-quoted double-quote triggers single-quote wrap",
-			spec: Spec{
+			spec: createSpec{Attached: true, AutoRemove: true, Tty: true, OpenStdin: true,
 				Image:   "img",
-				Command: "sh",
+				Argv:    []string{"sh"},
 				Workdir: "/wd",
-				Mounts:  []Mount{{Host: `/has"quote/x`, Container: "/plain"}},
+				Mounts:  []Mount{{Type: MountBind, Host: `/has"quote/x`, Container: "/plain"}},
 			},
 			// csvField doubles the embedded " to "" per RFC 4180, producing
 			// type=bind,"source=/has""quote/x",target=/plain in Args().
@@ -386,9 +401,9 @@ func TestShellCommand_ShellQuoting(t *testing.T) {
 }
 
 func TestShellCommand_NilSlices_DegenerateCase(t *testing.T) {
-	spec := Spec{
+	spec := createSpec{Attached: true, AutoRemove: true, Tty: true, OpenStdin: true,
 		Image:   "img",
-		Command: "sh",
+		Argv:    []string{"sh"},
 		Workdir: "/wd",
 		// Mounts, Tmpfs, CapDrop, SecOpt all nil.
 	}
@@ -416,7 +431,7 @@ func TestShellCommand_NilSlices_DegenerateCase(t *testing.T) {
 
 // TestShellCommand_Deterministic guards against map-iteration leaking.
 func TestShellCommand_Deterministic(t *testing.T) {
-	spec := BuildSpec(sampleOptions())
+	spec := testForegroundCreate(sampleOptions())
 	first := spec.ShellCommand()
 	for i := 0; i < 20; i++ {
 		if got := spec.ShellCommand(); got != first {
@@ -426,7 +441,7 @@ func TestShellCommand_Deterministic(t *testing.T) {
 }
 
 func TestShellCommand_AgreeWithArgs(t *testing.T) {
-	spec := BuildSpec(sampleOptions())
+	spec := testForegroundCreate(sampleOptions())
 	output := spec.ShellCommand()
 
 	var got []string
@@ -453,10 +468,10 @@ func shellUnquote(s string) string {
 	return s
 }
 
-func TestBuildSpec_TmpDirSize_Custom(t *testing.T) {
+func TestBuildForeground_TmpDirSize_Custom(t *testing.T) {
 	o := sampleOptions()
 	o.TmpDirSize = "1000m"
-	spec := BuildSpec(o)
+	spec := testForegroundCreate(o)
 
 	want := []string{"/tmp:size=1000m"}
 	if !reflect.DeepEqual(spec.Tmpfs, want) {
@@ -480,7 +495,7 @@ func TestBuildSpec_TmpDirSize_Custom(t *testing.T) {
 func TestShellCommand_TmpDirSize_Custom(t *testing.T) {
 	o := sampleOptions()
 	o.TmpDirSize = "1000m"
-	spec := BuildSpec(o)
+	spec := testForegroundCreate(o)
 	out := spec.ShellCommand()
 
 	if !strings.Contains(out, "--tmpfs /tmp:size=1000m") {
@@ -489,8 +504,8 @@ func TestShellCommand_TmpDirSize_Custom(t *testing.T) {
 }
 
 // The config.Load default (100m) must pass through unchanged.
-func TestBuildSpec_TmpDirSize_DefaultPath(t *testing.T) {
-	spec := BuildSpec(sampleOptions()) // sampleOptions sets TmpDirSize "100m"
+func TestBuildForeground_TmpDirSize_DefaultPath(t *testing.T) {
+	spec := testForegroundCreate(sampleOptions()) // sampleOptions sets TmpDirSize "100m"
 
 	want := []string{"/tmp:size=100m"}
 	if !reflect.DeepEqual(spec.Tmpfs, want) {
@@ -509,8 +524,8 @@ func collectMountArgs(argv []string) []string {
 }
 
 // The representative fixture has one project bind and three configured caches.
-func TestBuildSpec_DefaultMountCount(t *testing.T) {
-	spec := BuildSpec(sampleOptions())
+func TestBuildForeground_DefaultMountCount(t *testing.T) {
+	spec := testForegroundCreate(sampleOptions())
 	if len(spec.Mounts) != 4 {
 		t.Errorf("Mounts len = %d, want 4", len(spec.Mounts))
 	}
@@ -518,7 +533,7 @@ func TestBuildSpec_DefaultMountCount(t *testing.T) {
 
 // Default argv must contain no --network or -e flags (bridge, no env injection).
 func TestSpecArgs_DefaultArgvHasNoNetworkOrEnv(t *testing.T) {
-	spec := BuildSpec(sampleOptions())
+	spec := testForegroundCreate(sampleOptions())
 	args := spec.Args()
 
 	for i, tok := range args {
@@ -532,9 +547,9 @@ func TestSpecArgs_DefaultArgvHasNoNetworkOrEnv(t *testing.T) {
 }
 
 func TestSpecArgs_VolumeNameWithComma(t *testing.T) {
-	spec := Spec{
+	spec := createSpec{Attached: true, AutoRemove: true, Tty: true, OpenStdin: true,
 		Image:   "img",
-		Command: "sh",
+		Argv:    []string{"sh"},
 		Workdir: "/wd",
 		Mounts: []Mount{
 			{Type: "volume", Host: "vol,with,commas", Container: "/data", ReadOnly: true},
@@ -553,11 +568,11 @@ func TestSpecArgs_VolumeNameWithComma(t *testing.T) {
 
 // ReadOnly: false must render byte-identically to a mount without the field set.
 func TestMount_ReadOnlyFalseRendersIdentical(t *testing.T) {
-	spec := Spec{
+	spec := createSpec{Attached: true, AutoRemove: true, Tty: true, OpenStdin: true,
 		Image:   "img",
-		Command: "sh",
+		Argv:    []string{"sh"},
 		Workdir: "/wd",
-		Mounts:  []Mount{{Host: "/h", Container: "/c", ReadOnly: false}},
+		Mounts:  []Mount{{Type: MountBind, Host: "/h", Container: "/c", ReadOnly: false}},
 	}
 	args := spec.Args()
 	mountArgs := collectMountArgs(args)
@@ -571,11 +586,11 @@ func TestMount_ReadOnlyFalseRendersIdentical(t *testing.T) {
 }
 
 func TestMount_ReadOnlyTrueAddsReadonlySuffix(t *testing.T) {
-	spec := Spec{
+	spec := createSpec{Attached: true, AutoRemove: true, Tty: true, OpenStdin: true,
 		Image:   "img",
-		Command: "sh",
+		Argv:    []string{"sh"},
 		Workdir: "/wd",
-		Mounts:  []Mount{{Host: "/h", Container: "/c", ReadOnly: true}},
+		Mounts:  []Mount{{Type: MountBind, Host: "/h", Container: "/c", ReadOnly: true}},
 	}
 	args := spec.Args()
 	mountArgs := collectMountArgs(args)
@@ -589,9 +604,9 @@ func TestMount_ReadOnlyTrueAddsReadonlySuffix(t *testing.T) {
 }
 
 func TestMount_ReadOnlyIgnoredForTmpfs(t *testing.T) {
-	spec := Spec{
+	spec := createSpec{Attached: true, AutoRemove: true, Tty: true, OpenStdin: true,
 		Image:   "img",
-		Command: "sh",
+		Argv:    []string{"sh"},
 		Workdir: "/wd",
 		Mounts:  []Mount{{Type: "tmpfs", Container: "/c", ReadOnly: true}},
 	}
@@ -607,9 +622,9 @@ func TestMount_ReadOnlyIgnoredForTmpfs(t *testing.T) {
 }
 
 func TestSpecArgs_MultiValueSlicesRepeatFlag(t *testing.T) {
-	spec := Spec{
+	spec := createSpec{Attached: true, AutoRemove: true, Tty: true, OpenStdin: true,
 		Image:   "img",
-		Command: "sh",
+		Argv:    []string{"sh"},
 		Workdir: "/wd",
 		Tmpfs:   []string{"/tmp:size=100m", "/run:size=10m"},
 		CapDrop: []string{"ALL", "NET_RAW"},
@@ -634,21 +649,29 @@ func TestSpecArgs_MultiValueSlicesRepeatFlag(t *testing.T) {
 func TestContainerConfig_ImageCmdTTYStdin(t *testing.T) {
 	tests := []struct {
 		name    string
-		spec    Spec
+		spec    createSpec
 		wantImg string
 		wantCmd []string
 		wantWd  string
 	}{
 		{
-			name:    "minimal spec",
-			spec:    Spec{Image: "claudebox", Command: "/bin/zsh", Workdir: "/workspace/foo"},
+			name: "minimal spec",
+			spec: createSpec{
+				Attached:   true,
+				AutoRemove: true,
+				Tty:        true,
+				OpenStdin:  true,
+				Image:      "claudebox",
+				Argv:       []string{"/bin/zsh"},
+				Workdir:    "/workspace/foo",
+			},
 			wantImg: "claudebox",
 			wantCmd: []string{"/bin/zsh"},
 			wantWd:  "/workspace/foo",
 		},
 		{
-			name:    "from BuildSpec defaults",
-			spec:    BuildSpec(sampleOptions()),
+			name:    "from BuildForeground defaults",
+			spec:    testForegroundCreate(sampleOptions()),
 			wantImg: "claudebox",
 			wantCmd: []string{"/bin/zsh"},
 			wantWd:  "/workspace/myproj-abc123",
@@ -689,7 +712,7 @@ func TestContainerConfig_ImageCmdTTYStdin(t *testing.T) {
 }
 
 func TestHostConfig_AutoRemoveCapDropSecOpt(t *testing.T) {
-	spec := BuildSpec(sampleOptions())
+	spec := testForegroundCreate(sampleOptions())
 	hc := spec.HostConfig()
 
 	if !hc.AutoRemove {
@@ -705,7 +728,15 @@ func TestHostConfig_AutoRemoveCapDropSecOpt(t *testing.T) {
 
 // With no network settings, NetworkMode is empty (Docker default bridge).
 func TestHostConfig_NetworkModeDefaultsToEmpty(t *testing.T) {
-	spec := Spec{Image: "img", Command: "sh", Workdir: "/wd"}
+	spec := createSpec{
+		Attached:   true,
+		AutoRemove: true,
+		Tty:        true,
+		OpenStdin:  true,
+		Image:      "img",
+		Argv:       []string{"sh"},
+		Workdir:    "/wd",
+	}
 	hc := spec.HostConfig()
 	if hc.NetworkMode != "" {
 		t.Errorf("NetworkMode = %q, want empty string (default bridge)", hc.NetworkMode)
@@ -713,9 +744,9 @@ func TestHostConfig_NetworkModeDefaultsToEmpty(t *testing.T) {
 }
 
 func TestHostConfig_TmpfsMapWithColon(t *testing.T) {
-	spec := Spec{
+	spec := createSpec{Attached: true, AutoRemove: true, Tty: true, OpenStdin: true,
 		Image:   "img",
-		Command: "sh",
+		Argv:    []string{"sh"},
 		Workdir: "/wd",
 		Tmpfs:   []string{"/tmp:size=100m"},
 	}
@@ -727,9 +758,9 @@ func TestHostConfig_TmpfsMapWithColon(t *testing.T) {
 }
 
 func TestHostConfig_TmpfsMapWithoutColon(t *testing.T) {
-	spec := Spec{
+	spec := createSpec{Attached: true, AutoRemove: true, Tty: true, OpenStdin: true,
 		Image:   "img",
-		Command: "sh",
+		Argv:    []string{"sh"},
 		Workdir: "/wd",
 		Tmpfs:   []string{"/tmp"},
 	}
@@ -741,7 +772,15 @@ func TestHostConfig_TmpfsMapWithoutColon(t *testing.T) {
 }
 
 func TestHostConfig_TmpfsMapEmpty(t *testing.T) {
-	spec := Spec{Image: "img", Command: "sh", Workdir: "/wd"}
+	spec := createSpec{
+		Attached:   true,
+		AutoRemove: true,
+		Tty:        true,
+		OpenStdin:  true,
+		Image:      "img",
+		Argv:       []string{"sh"},
+		Workdir:    "/wd",
+	}
 	hc := spec.HostConfig()
 	if hc.Tmpfs != nil {
 		t.Errorf("Tmpfs = %v, want nil for empty input", hc.Tmpfs)
@@ -749,9 +788,9 @@ func TestHostConfig_TmpfsMapEmpty(t *testing.T) {
 }
 
 func TestHostConfig_TmpfsMapMultipleEntries(t *testing.T) {
-	spec := Spec{
+	spec := createSpec{Attached: true, AutoRemove: true, Tty: true, OpenStdin: true,
 		Image:   "img",
-		Command: "sh",
+		Argv:    []string{"sh"},
 		Workdir: "/wd",
 		Tmpfs:   []string{"/tmp:size=100m", "/run:size=10m", "/var/run"},
 	}
@@ -767,13 +806,13 @@ func TestHostConfig_TmpfsMapMultipleEntries(t *testing.T) {
 }
 
 func TestHostConfig_BindMountTranslation(t *testing.T) {
-	spec := Spec{
+	spec := createSpec{Attached: true, AutoRemove: true, Tty: true, OpenStdin: true,
 		Image:   "img",
-		Command: "sh",
+		Argv:    []string{"sh"},
 		Workdir: "/wd",
 		Mounts: []Mount{
-			{Host: "/host/path", Container: "/container/path"},
-			{Host: "/host/ro", Container: "/container/ro", ReadOnly: true},
+			{Type: MountBind, Host: "/host/path", Container: "/container/path"},
+			{Type: MountBind, Host: "/host/ro", Container: "/container/ro", ReadOnly: true},
 		},
 	}
 	hc := spec.HostConfig()
@@ -787,9 +826,9 @@ func TestHostConfig_BindMountTranslation(t *testing.T) {
 }
 
 func TestHostConfig_TmpfsMountTranslation(t *testing.T) {
-	spec := Spec{
+	spec := createSpec{Attached: true, AutoRemove: true, Tty: true, OpenStdin: true,
 		Image:   "img",
-		Command: "sh",
+		Argv:    []string{"sh"},
 		Workdir: "/wd",
 		Mounts: []Mount{
 			{Type: "tmpfs", Container: "/workspace/secrets"},
@@ -813,12 +852,12 @@ func TestHostConfig_TmpfsMountTranslation(t *testing.T) {
 
 func TestHostConfig_DevNullMountTranslation(t *testing.T) {
 	// /dev/null masked-file overlays are bind mounts with Source=/dev/null.
-	spec := Spec{
+	spec := createSpec{Attached: true, AutoRemove: true, Tty: true, OpenStdin: true,
 		Image:   "img",
-		Command: "sh",
+		Argv:    []string{"sh"},
 		Workdir: "/wd",
 		Mounts: []Mount{
-			{Host: "/dev/null", Container: "/workspace/foo/.env"},
+			{Type: MountBind, Host: "/dev/null", Container: "/workspace/foo/.env"},
 		},
 	}
 	hc := spec.HostConfig()
@@ -838,13 +877,13 @@ func TestHostConfig_DevNullMountTranslation(t *testing.T) {
 }
 
 func TestHostConfig_ReadOnlyPropagated(t *testing.T) {
-	spec := Spec{
+	spec := createSpec{Attached: true, AutoRemove: true, Tty: true, OpenStdin: true,
 		Image:   "img",
-		Command: "sh",
+		Argv:    []string{"sh"},
 		Workdir: "/wd",
 		Mounts: []Mount{
-			{Host: "/h", Container: "/c", ReadOnly: true},
-			{Host: "/h2", Container: "/c2", ReadOnly: false},
+			{Type: MountBind, Host: "/h", Container: "/c", ReadOnly: true},
+			{Type: MountBind, Host: "/h2", Container: "/c2", ReadOnly: false},
 		},
 	}
 	hc := spec.HostConfig()
@@ -860,9 +899,9 @@ func TestHostConfig_ReadOnlyPropagated(t *testing.T) {
 }
 
 func TestHostConfig_VolumeMountTranslation(t *testing.T) {
-	spec := Spec{
+	spec := createSpec{Attached: true, AutoRemove: true, Tty: true, OpenStdin: true,
 		Image:   "img",
-		Command: "sh",
+		Argv:    []string{"sh"},
 		Workdir: "/wd",
 		Mounts: []Mount{
 			{Type: "volume", Host: "my-vol", Container: "/mnt/data"},
@@ -897,14 +936,14 @@ func TestHostConfig_VolumeMountTranslation(t *testing.T) {
 }
 
 func TestHostConfig_MixedMountTypesOrder(t *testing.T) {
-	spec := Spec{
+	spec := createSpec{Attached: true, AutoRemove: true, Tty: true, OpenStdin: true,
 		Image:   "img",
-		Command: "sh",
+		Argv:    []string{"sh"},
 		Workdir: "/wd",
 		Mounts: []Mount{
-			{Host: "/host/proj", Container: "/workspace/proj"},
+			{Type: MountBind, Host: "/host/proj", Container: "/workspace/proj"},
 			{Type: "tmpfs", Container: "/workspace/proj/secrets"},
-			{Host: "/dev/null", Container: "/workspace/proj/.env"},
+			{Type: MountBind, Host: "/dev/null", Container: "/workspace/proj/.env"},
 		},
 	}
 	hc := spec.HostConfig()
@@ -923,18 +962,18 @@ func TestHostConfig_MixedMountTypesOrder(t *testing.T) {
 }
 
 // Catches silent drift: the argv projection (Args) and the SDK-struct projection
-// (ContainerConfig/HostConfig) must agree on every load-bearing field for a Spec
+// (ContainerConfig/HostConfig) must agree on every load-bearing field for a createSpec
 // exercising masked files/dirs, env injection, and default security/network.
 func TestDriftGuard_ArgsAndSDKProjectionsAgree(t *testing.T) {
 	o := sampleOptions()
-	o.Projects[0].MaskedFiles = []string{
+	o.Layout.Main.MaskedFiles = []string{
 		"/home/me/code/myproj/.env",
 		"/home/me/code/myproj/configs/secret.yaml",
 	}
-	o.Projects[0].MaskedDirs = []string{"/home/me/code/myproj/node_modules"}
+	o.Layout.Main.MaskedDirs = []string{"/home/me/code/myproj/node_modules"}
 	o.Env = []string{"DEBUG=true", "PORT=8080"}
 
-	spec := BuildSpec(o)
+	spec := testForegroundCreate(o)
 	args := spec.Args()
 	cfg := spec.ContainerConfig()
 	hc := spec.HostConfig()
@@ -1054,7 +1093,7 @@ func TestDriftGuard_ArgsAndSDKProjectionsAgree(t *testing.T) {
 func TestArgs_EnvFlagsEmittedAfterSecOptBeforeMounts(t *testing.T) {
 	o := sampleOptions()
 	o.Env = []string{"NODE_ENV=production", "PORT=3000"}
-	spec := BuildSpec(o)
+	spec := testForegroundCreate(o)
 	args := spec.Args()
 
 	lastSecOpt := -1
@@ -1105,9 +1144,9 @@ func TestArgs_EnvFlagsEmittedAfterSecOptBeforeMounts(t *testing.T) {
 }
 
 func TestShellCommand_EnvLinesRendered(t *testing.T) {
-	spec := Spec{
+	spec := createSpec{Attached: true, AutoRemove: true, Tty: true, OpenStdin: true,
 		Image:   "img",
-		Command: "sh",
+		Argv:    []string{"sh"},
 		Workdir: "/wd",
 		Env:     []string{"FOO=bar", "BAZ=qux"},
 		CapDrop: []string{"ALL"},
@@ -1131,7 +1170,7 @@ func TestEnv_NewlineAndQuoteValue_AllProjectionsAgree(t *testing.T) {
 	const pair = "K=line1\nline2'x"
 	o := sampleOptions()
 	o.Env = []string{pair}
-	spec := BuildSpec(o)
+	spec := testForegroundCreate(o)
 
 	var argsEnv []string
 	args := spec.Args()
@@ -1154,9 +1193,9 @@ func TestEnv_NewlineAndQuoteValue_AllProjectionsAgree(t *testing.T) {
 }
 
 func TestContainerConfig_EnvPropagated(t *testing.T) {
-	spec := Spec{
+	spec := createSpec{Attached: true, AutoRemove: true, Tty: true, OpenStdin: true,
 		Image:   "img",
-		Command: "sh",
+		Argv:    []string{"sh"},
 		Workdir: "/wd",
 		Env:     []string{"A=1", "B=2"},
 	}
@@ -1172,8 +1211,8 @@ func TestArgs_EmptyEnv_NoEFlag(t *testing.T) {
 	oEmpty := sampleOptions()
 	oEmpty.Env = []string{}
 
-	argsNil := BuildSpec(oNil).Args()
-	argsEmpty := BuildSpec(oEmpty).Args()
+	argsNil := testForegroundCreate(oNil).Args()
+	argsEmpty := testForegroundCreate(oEmpty).Args()
 
 	for i, a := range argsNil {
 		if a == "-e" {
@@ -1190,12 +1229,12 @@ func TestArgs_EmptyEnv_NoEFlag(t *testing.T) {
 	}
 }
 
-func TestBuildSpec_EnvDeterminism(t *testing.T) {
+func TestBuildForeground_EnvDeterminism(t *testing.T) {
 	o := sampleOptions()
 	o.Env = []string{"LOG_LEVEL=debug", "NODE_ENV=test", "PORT=8080"}
 
-	spec1 := BuildSpec(o)
-	spec2 := BuildSpec(o)
+	spec1 := testForegroundCreate(o)
+	spec2 := testForegroundCreate(o)
 
 	if !reflect.DeepEqual(spec1.Env, spec2.Env) {
 		t.Errorf("non-deterministic Env: first=%v, second=%v", spec1.Env, spec2.Env)
@@ -1208,10 +1247,10 @@ func TestBuildSpec_EnvDeterminism(t *testing.T) {
 // ---- ProtectProjectConfig and MaskGitHooks tests ----
 
 // Policy flags add mounts without replacing the configured cache binds.
-func TestBuildSpec_SandboxFlags_BothOff(t *testing.T) {
+func TestBuildForeground_SandboxFlags_BothOff(t *testing.T) {
 	o := sampleOptions()
 	// flags default to false
-	specOff := BuildSpec(o)
+	specOff := testForegroundCreate(o)
 
 	// sampleOptions includes three explicit cache binds:
 	// One project bind plus three cache binds.
@@ -1222,34 +1261,35 @@ func TestBuildSpec_SandboxFlags_BothOff(t *testing.T) {
 
 	// Enabling each flag individually must increase the mount count by exactly 1.
 	oProtect := sampleOptions()
-	oProtect.Projects[0].ProtectConfig = true
-	if got, want := len(BuildSpec(oProtect).Mounts), wantBaseline+1; got != want {
+	oProtect.Layout.Main.ProtectConfig = true
+	if got, want := len(testForegroundCreate(oProtect).Mounts), wantBaseline+1; got != want {
 		t.Errorf("ProtectProjectConfig=true: mount count = %d, want %d (baseline+1)", got, want)
 	}
 
 	oHooks := sampleOptions()
-	oHooks.Projects[0].MaskGitHooks = true
-	if got, want := len(BuildSpec(oHooks).Mounts), wantBaseline+1; got != want {
+	oHooks.Layout.Main.MaskGitHooks = true
+	if got, want := len(testForegroundCreate(oHooks).Mounts), wantBaseline+1; got != want {
 		t.Errorf("MaskGitHooks=true: mount count = %d, want %d (baseline+1)", got, want)
 	}
 
 	// Both on: exactly two extra mounts.
 	oBoth := sampleOptions()
-	oBoth.Projects[0].ProtectConfig = true
-	oBoth.Projects[0].MaskGitHooks = true
-	if got, want := len(BuildSpec(oBoth).Mounts), wantBaseline+2; got != want {
+	oBoth.Layout.Main.ProtectConfig = true
+	oBoth.Layout.Main.MaskGitHooks = true
+	if got, want := len(testForegroundCreate(oBoth).Mounts), wantBaseline+2; got != want {
 		t.Errorf("both flags on: mount count = %d, want %d (baseline+2)", got, want)
 	}
 }
 
 // ProtectProjectConfig=true: .makeslop.yaml read-only bind is present at mounts[1]
 // (after the project bind and before any cache overlays).
-func TestBuildSpec_ProtectProjectConfig_MountPresent(t *testing.T) {
+func TestBuildForeground_ProtectProjectConfig_MountPresent(t *testing.T) {
 	o := sampleOptions()
-	o.Projects[0].ProtectConfig = true
-	spec := BuildSpec(o)
+	o.Layout.Main.ProtectConfig = true
+	spec := testForegroundCreate(o)
 
 	wantMount := Mount{
+		Type:      MountBind,
 		Host:      "/home/me/code/myproj/.makeslop.yaml",
 		Container: "/workspace/myproj-abc123/.makeslop.yaml",
 		ReadOnly:  true,
@@ -1269,15 +1309,15 @@ func TestBuildSpec_ProtectProjectConfig_MountPresent(t *testing.T) {
 // dropped — docker applies mounts last-write-wins, so a mask emitted after the
 // read-only self-bind would silently override the protection. Other masked
 // files are unaffected, and with the flag off the mask is emitted normally.
-func TestBuildSpec_ProtectProjectConfig_DropsConfigMask(t *testing.T) {
+func TestBuildForeground_ProtectProjectConfig_DropsConfigMask(t *testing.T) {
 	configHost := "/home/me/code/myproj/.makeslop.yaml"
 	configTarget := "/workspace/myproj-abc123/.makeslop.yaml"
 	otherHost := "/home/me/code/myproj/.env"
 
 	o := sampleOptions()
-	o.Projects[0].ProtectConfig = true
-	o.Projects[0].MaskedFiles = []string{otherHost, configHost}
-	spec := BuildSpec(o)
+	o.Layout.Main.ProtectConfig = true
+	o.Layout.Main.MaskedFiles = []string{otherHost, configHost}
+	spec := testForegroundCreate(o)
 
 	var sawConfigMask, sawOtherMask, sawReadOnlyBind bool
 	for _, m := range spec.Mounts {
@@ -1302,8 +1342,8 @@ func TestBuildSpec_ProtectProjectConfig_DropsConfigMask(t *testing.T) {
 
 	// Flag off: the mask is emitted as usual.
 	o = sampleOptions()
-	o.Projects[0].MaskedFiles = []string{configHost}
-	spec = BuildSpec(o)
+	o.Layout.Main.MaskedFiles = []string{configHost}
+	spec = testForegroundCreate(o)
 	found := false
 	for _, m := range spec.Mounts {
 		if m.Host == "/dev/null" && m.Container == configTarget {
@@ -1316,10 +1356,10 @@ func TestBuildSpec_ProtectProjectConfig_DropsConfigMask(t *testing.T) {
 }
 
 // MaskGitHooks=true: .git/hooks tmpfs mount is present at a fixed position.
-func TestBuildSpec_MaskGitHooks_MountPresent(t *testing.T) {
+func TestBuildForeground_MaskGitHooks_MountPresent(t *testing.T) {
 	o := sampleOptions()
-	o.Projects[0].MaskGitHooks = true
-	spec := BuildSpec(o)
+	o.Layout.Main.MaskGitHooks = true
+	spec := testForegroundCreate(o)
 
 	wantMount := Mount{
 		Type:      "tmpfs",
@@ -1337,17 +1377,18 @@ func TestBuildSpec_MaskGitHooks_MountPresent(t *testing.T) {
 
 // Both flags on: .makeslop.yaml bind is at mounts[1], .git/hooks tmpfs at mounts[2],
 // both before cache overlays.
-func TestBuildSpec_BothSandboxFlags_Order(t *testing.T) {
+func TestBuildForeground_BothSandboxFlags_Order(t *testing.T) {
 	o := sampleOptions()
-	o.Projects[0].ProtectConfig = true
-	o.Projects[0].MaskGitHooks = true
-	spec := BuildSpec(o)
+	o.Layout.Main.ProtectConfig = true
+	o.Layout.Main.MaskGitHooks = true
+	spec := testForegroundCreate(o)
 
 	if len(spec.Mounts) < 6 {
 		t.Fatalf("expected at least 6 mounts, got %d", len(spec.Mounts))
 	}
 
 	wantConfig := Mount{
+		Type:      MountBind,
 		Host:      "/home/me/code/myproj/.makeslop.yaml",
 		Container: "/workspace/myproj-abc123/.makeslop.yaml",
 		ReadOnly:  true,
@@ -1384,8 +1425,8 @@ func TestBuildSpec_BothSandboxFlags_Order(t *testing.T) {
 // ProtectProjectConfig: readonly=true must render as ",readonly" in Args() output.
 func TestArgs_ProtectProjectConfig_ReadonlySuffix(t *testing.T) {
 	o := sampleOptions()
-	o.Projects[0].ProtectConfig = true
-	spec := BuildSpec(o)
+	o.Layout.Main.ProtectConfig = true
+	spec := testForegroundCreate(o)
 	args := spec.Args()
 
 	mountArgs := collectMountArgs(args)
@@ -1407,8 +1448,8 @@ func TestArgs_ProtectProjectConfig_ReadonlySuffix(t *testing.T) {
 // MaskGitHooks: tmpfs mount for .git/hooks must render correctly in Args().
 func TestArgs_MaskGitHooks_TmpfsMountShape(t *testing.T) {
 	o := sampleOptions()
-	o.Projects[0].MaskGitHooks = true
-	spec := BuildSpec(o)
+	o.Layout.Main.MaskGitHooks = true
+	spec := testForegroundCreate(o)
 	args := spec.Args()
 
 	mountArgs := collectMountArgs(args)
@@ -1429,10 +1470,10 @@ func TestArgs_MaskGitHooks_TmpfsMountShape(t *testing.T) {
 
 // ProtectProjectConfig mount must appear after the base mounts (mounts[0]) and
 // before the first cache overlay mount.
-func TestBuildSpec_ProtectProjectConfig_PositionAfterBase_BeforeCache(t *testing.T) {
+func TestBuildForeground_ProtectProjectConfig_PositionAfterBase_BeforeCache(t *testing.T) {
 	o := sampleOptions()
-	o.Projects[0].ProtectConfig = true
-	spec := BuildSpec(o)
+	o.Layout.Main.ProtectConfig = true
+	spec := testForegroundCreate(o)
 
 	// Find the index of the .makeslop.yaml mount.
 	sandboxIdx := -1
@@ -1467,8 +1508,8 @@ func TestBuildSpec_ProtectProjectConfig_PositionAfterBase_BeforeCache(t *testing
 // MaskGitHooks: verify the HostConfig translation produces a proper tmpfs mount.
 func TestHostConfig_MaskGitHooks_TmpfsMount(t *testing.T) {
 	o := sampleOptions()
-	o.Projects[0].MaskGitHooks = true
-	spec := BuildSpec(o)
+	o.Layout.Main.MaskGitHooks = true
+	spec := testForegroundCreate(o)
 	hc := spec.HostConfig()
 
 	found := false
@@ -1491,8 +1532,8 @@ func TestHostConfig_MaskGitHooks_TmpfsMount(t *testing.T) {
 // ProtectProjectConfig: verify the HostConfig translation produces a read-only bind mount.
 func TestHostConfig_ProtectProjectConfig_ReadOnlyBind(t *testing.T) {
 	o := sampleOptions()
-	o.Projects[0].ProtectConfig = true
-	spec := BuildSpec(o)
+	o.Layout.Main.ProtectConfig = true
+	spec := testForegroundCreate(o)
 	hc := spec.HostConfig()
 
 	found := false
@@ -1531,10 +1572,10 @@ func TestDriftGuard_SandboxFlags(t *testing.T) {
 	for _, c := range combos {
 		t.Run(c.name, func(t *testing.T) {
 			o := sampleOptions()
-			o.Projects[0].ProtectConfig = c.protectProjectConfig
-			o.Projects[0].MaskGitHooks = c.maskGitHooks
+			o.Layout.Main.ProtectConfig = c.protectProjectConfig
+			o.Layout.Main.MaskGitHooks = c.maskGitHooks
 
-			spec := BuildSpec(o)
+			spec := testForegroundCreate(o)
 			args := spec.Args()
 			hc := spec.HostConfig()
 
@@ -1553,7 +1594,7 @@ func TestDriftGuard_SandboxFlags(t *testing.T) {
 			}
 			var hcBindCount int
 			for _, m := range hc.Mounts {
-				if m.Type == "bind" || m.Type == "" {
+				if m.Type == "bind" {
 					hcBindCount++
 				}
 			}
@@ -1582,7 +1623,7 @@ func TestDriftGuard_SandboxFlags(t *testing.T) {
 }
 
 // Drift-guard across all 4 cache combos: Args() and HostConfig() mount counts must agree.
-func TestBuildSpec_Network(t *testing.T) {
+func TestBuildForeground_Network(t *testing.T) {
 	cases := []struct {
 		name        string
 		mode        string
@@ -1605,15 +1646,15 @@ func TestBuildSpec_Network(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			o := sampleOptions()
-			o.NetworkMode = c.mode
-			o.Networks = c.networks
-			spec := BuildSpec(o)
+			o.Network.Mode = c.mode
+			o.Network.Networks = c.networks
+			spec := testForegroundCreate(o)
 
 			if spec.NetworkMode != c.mode {
-				t.Errorf("Spec.NetworkMode = %q, want %q", spec.NetworkMode, c.mode)
+				t.Errorf("createSpec.NetworkMode = %q, want %q", spec.NetworkMode, c.mode)
 			}
 			if !reflect.DeepEqual(spec.Networks, c.networks) {
-				t.Errorf("Spec.Networks = %v, want %v", spec.Networks, c.networks)
+				t.Errorf("createSpec.Networks = %v, want %v", spec.Networks, c.networks)
 			}
 			if got := collectFlagValues(spec.Args(), "--network"); !reflect.DeepEqual(got, c.wantFlags) {
 				t.Errorf("--network values = %v, want %v", got, c.wantFlags)
@@ -1646,9 +1687,9 @@ func TestBuildSpec_Network(t *testing.T) {
 // --network is emitted after --security-opt and before -e / --mount.
 func TestArgs_NetworkFlagPosition(t *testing.T) {
 	o := sampleOptions()
-	o.NetworkMode = "container:proxy"
+	o.Network.Mode = "container:proxy"
 	o.Env = []string{"A=1"}
-	args := BuildSpec(o).Args()
+	args := testForegroundCreate(o).Args()
 	idx := func(flag string) int {
 		for i, a := range args {
 			if a == flag {
@@ -1679,7 +1720,17 @@ func TestShellCommand_NetworkLines(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			spec := Spec{Image: "img", Command: "sh", Workdir: "/wd", NetworkMode: c.mode, Networks: c.networks}
+			spec := createSpec{
+				Attached:    true,
+				AutoRemove:  true,
+				Tty:         true,
+				OpenStdin:   true,
+				Image:       "img",
+				Argv:        []string{"sh"},
+				Workdir:     "/wd",
+				NetworkMode: c.mode,
+				Networks:    c.networks,
+			}
 			out := spec.ShellCommand()
 			lines := strings.Split(out, "\n")
 			var got []string
@@ -1696,7 +1747,7 @@ func TestShellCommand_NetworkLines(t *testing.T) {
 }
 
 func TestShellCommand_NoNetworkLineWhenUnset(t *testing.T) {
-	if out := BuildSpec(sampleOptions()).ShellCommand(); strings.Contains(out, "--network") {
+	if out := testForegroundCreate(sampleOptions()).ShellCommand(); strings.Contains(out, "--network") {
 		t.Errorf("unexpected --network in default ShellCommand:\n%s", out)
 	}
 }
@@ -1720,9 +1771,9 @@ func TestDriftGuard_Network(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			o := sampleOptions()
-			o.NetworkMode = c.mode
-			o.Networks = c.networks
-			spec := BuildSpec(o)
+			o.Network.Mode = c.mode
+			o.Network.Networks = c.networks
+			spec := testForegroundCreate(o)
 			flags := collectFlagValues(spec.Args(), "--network")
 			hc := spec.HostConfig()
 			nc := spec.NetworkingConfig()
@@ -1769,51 +1820,55 @@ func collectFlagValues(args []string, flag string) []string {
 	return out
 }
 
-func TestBuildSpec_MainProjectReadOnlyIgnored(t *testing.T) {
+func TestBuildForeground_MainProjectReadOnlyIgnored(t *testing.T) {
 	o := sampleOptions()
-	o.Projects[0].ReadOnly = true
-	spec := BuildSpec(o)
-	want := Mount{Host: "/home/me/code/myproj", Container: "/workspace/myproj-abc123"}
+	o.Layout.Main.ReadOnly = true
+	spec := testForegroundCreate(o)
+	want := Mount{Type: MountBind, Host: "/home/me/code/myproj", Container: "/workspace/myproj-abc123"}
 	if spec.Mounts[0] != want {
 		t.Errorf("mounts[0] = %+v, want %+v", spec.Mounts[0], want)
 	}
-	if !reflect.DeepEqual(spec.Mounts, BuildSpec(sampleOptions()).Mounts) {
+	if !reflect.DeepEqual(spec.Mounts, testForegroundCreate(sampleOptions()).Mounts) {
 		t.Errorf("ReadOnly on Projects[0] must not change mounts")
 	}
 }
 
-func joinOptions(joins ...Project) Options {
+func joinOptions(joins ...Project) BuildInputs {
 	o := sampleOptions()
-	o.Projects[0].Label = "project: /home/me/code/myproj"
-	o.Projects = append(o.Projects, joins...)
+	o.Layout.Main.Label = "project: /home/me/code/myproj"
+	o.Layout.Joins = joins
 	return o
 }
 
 const mainMountCount = 4
 
-func TestBuildSpec_Join_RW(t *testing.T) {
+func TestBuildForeground_Join_RW(t *testing.T) {
 	o := joinOptions(Project{
-		Host:          "/home/me/code/lib",
-		Name:          "lib",
+		ProjectRoot:   ProjectRoot{HostRoot: "/home/me/code/lib", Name: "lib", ContainerRoot: "/workspace/lib"},
 		Label:         "join: /home/me/code/lib (rw)",
 		MaskedFiles:   []string{"/home/me/code/lib/.env"},
 		MaskedDirs:    []string{"/home/me/code/lib/secrets"},
 		ProtectConfig: true,
 		MaskGitHooks:  true,
 	})
-	spec := BuildSpec(o)
+	spec := testForegroundCreate(o)
 	got := spec.Mounts[mainMountCount:]
 	want := []Mount{
-		{Host: "/home/me/code/lib", Container: "/workspace/lib"},
-		{Host: "/home/me/code/lib/.makeslop.yaml", Container: "/workspace/lib/.makeslop.yaml", ReadOnly: true},
+		{Type: MountBind, Host: "/home/me/code/lib", Container: "/workspace/lib"},
+		{
+			Type:      MountBind,
+			Host:      "/home/me/code/lib/.makeslop.yaml",
+			Container: "/workspace/lib/.makeslop.yaml",
+			ReadOnly:  true,
+		},
 		{Type: "tmpfs", Container: "/workspace/lib/.git/hooks"},
-		{Host: "/dev/null", Container: "/workspace/lib/.env"},
+		{Type: MountBind, Host: "/dev/null", Container: "/workspace/lib/.env"},
 		{Type: "tmpfs", Container: "/workspace/lib/secrets"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("join mounts =\n%+v\nwant\n%+v", got, want)
 	}
-	if !reflect.DeepEqual(spec.Mounts[:mainMountCount], BuildSpec(sampleOptions()).Mounts) {
+	if !reflect.DeepEqual(spec.Mounts[:mainMountCount], testForegroundCreate(sampleOptions()).Mounts) {
 		t.Errorf("main group changed by join")
 	}
 	if spec.Workdir != "/workspace/myproj-abc123" {
@@ -1821,38 +1876,41 @@ func TestBuildSpec_Join_RW(t *testing.T) {
 	}
 }
 
-func TestBuildSpec_Join_RO(t *testing.T) {
+func TestBuildForeground_Join_RO(t *testing.T) {
 	o := joinOptions(Project{
-		Host:          "/home/me/code/lib",
-		Name:          "lib",
+		ProjectRoot:   ProjectRoot{HostRoot: "/home/me/code/lib", Name: "lib", ContainerRoot: "/workspace/lib"},
 		ReadOnly:      true,
 		MaskedFiles:   []string{"/home/me/code/lib/.makeslop.yaml", "/home/me/code/lib/.env"},
 		ProtectConfig: true,
 		MaskGitHooks:  true,
 	})
-	got := BuildSpec(o).Mounts[mainMountCount:]
+	got := testForegroundCreate(o).Mounts[mainMountCount:]
 	want := []Mount{
-		{Host: "/home/me/code/lib", Container: "/workspace/lib", ReadOnly: true},
-		{Host: "/dev/null", Container: "/workspace/lib/.makeslop.yaml"},
-		{Host: "/dev/null", Container: "/workspace/lib/.env"},
+		{Type: MountBind, Host: "/home/me/code/lib", Container: "/workspace/lib", ReadOnly: true},
+		{Type: MountBind, Host: "/dev/null", Container: "/workspace/lib/.makeslop.yaml"},
+		{Type: MountBind, Host: "/dev/null", Container: "/workspace/lib/.env"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("ro join mounts =\n%+v\nwant\n%+v", got, want)
 	}
 }
 
-func TestBuildSpec_Join_RWConfigMaskFiltered(t *testing.T) {
+func TestBuildForeground_Join_RWConfigMaskFiltered(t *testing.T) {
 	o := joinOptions(Project{
-		Host:          "/home/me/code/lib",
-		Name:          "lib",
+		ProjectRoot:   ProjectRoot{HostRoot: "/home/me/code/lib", Name: "lib", ContainerRoot: "/workspace/lib"},
 		MaskedFiles:   []string{"/home/me/code/lib/.makeslop.yaml", "/home/me/code/lib/a.yaml"},
 		ProtectConfig: true,
 	})
-	got := BuildSpec(o).Mounts[mainMountCount:]
+	got := testForegroundCreate(o).Mounts[mainMountCount:]
 	want := []Mount{
-		{Host: "/home/me/code/lib", Container: "/workspace/lib"},
-		{Host: "/home/me/code/lib/.makeslop.yaml", Container: "/workspace/lib/.makeslop.yaml", ReadOnly: true},
-		{Host: "/dev/null", Container: "/workspace/lib/a.yaml"},
+		{Type: MountBind, Host: "/home/me/code/lib", Container: "/workspace/lib"},
+		{
+			Type:      MountBind,
+			Host:      "/home/me/code/lib/.makeslop.yaml",
+			Container: "/workspace/lib/.makeslop.yaml",
+			ReadOnly:  true,
+		},
+		{Type: MountBind, Host: "/dev/null", Container: "/workspace/lib/a.yaml"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("rw join mounts =\n%+v\nwant\n%+v", got, want)
@@ -1860,16 +1918,15 @@ func TestBuildSpec_Join_RWConfigMaskFiltered(t *testing.T) {
 }
 
 // A join without ProtectConfig keeps a mask on its config path: nothing binds it.
-func TestBuildSpec_Join_RWNoProtectKeepsConfigMask(t *testing.T) {
+func TestBuildForeground_Join_RWNoProtectKeepsConfigMask(t *testing.T) {
 	o := joinOptions(Project{
-		Host:        "/home/me/code/lib",
-		Name:        "lib",
+		ProjectRoot: ProjectRoot{HostRoot: "/home/me/code/lib", Name: "lib", ContainerRoot: "/workspace/lib"},
 		MaskedFiles: []string{"/home/me/code/lib/.makeslop.yaml"},
 	})
-	got := BuildSpec(o).Mounts[mainMountCount:]
+	got := testForegroundCreate(o).Mounts[mainMountCount:]
 	want := []Mount{
-		{Host: "/home/me/code/lib", Container: "/workspace/lib"},
-		{Host: "/dev/null", Container: "/workspace/lib/.makeslop.yaml"},
+		{Type: MountBind, Host: "/home/me/code/lib", Container: "/workspace/lib"},
+		{Type: MountBind, Host: "/dev/null", Container: "/workspace/lib/.makeslop.yaml"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("join mounts =\n%+v\nwant\n%+v", got, want)
@@ -1877,17 +1934,16 @@ func TestBuildSpec_Join_RWNoProtectKeepsConfigMask(t *testing.T) {
 }
 
 // Join mask targets are relative to the join's Host, never the main root.
-func TestBuildSpec_Join_MaskTargetsRelativeToJoinHost(t *testing.T) {
+func TestBuildForeground_Join_MaskTargetsRelativeToJoinHost(t *testing.T) {
 	o := joinOptions(Project{
-		Host:        "/srv/other/deep/lib",
-		Name:        "lib",
+		ProjectRoot: ProjectRoot{HostRoot: "/srv/other/deep/lib", Name: "lib", ContainerRoot: "/workspace/lib"},
 		MaskedFiles: []string{"/srv/other/deep/lib/conf/prod.key"},
 		MaskedDirs:  []string{"/srv/other/deep/lib/a/b"},
 	})
-	got := BuildSpec(o).Mounts[mainMountCount:]
+	got := testForegroundCreate(o).Mounts[mainMountCount:]
 	want := []Mount{
-		{Host: "/srv/other/deep/lib", Container: "/workspace/lib"},
-		{Host: "/dev/null", Container: "/workspace/lib/conf/prod.key"},
+		{Type: MountBind, Host: "/srv/other/deep/lib", Container: "/workspace/lib"},
+		{Type: MountBind, Host: "/dev/null", Container: "/workspace/lib/conf/prod.key"},
 		{Type: "tmpfs", Container: "/workspace/lib/a/b"},
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -1896,14 +1952,13 @@ func TestBuildSpec_Join_MaskTargetsRelativeToJoinHost(t *testing.T) {
 }
 
 // Main masks stay under the main workspace and join masks under the join.
-func TestBuildSpec_Join_MasksIsolatedPerProject(t *testing.T) {
+func TestBuildForeground_Join_MasksIsolatedPerProject(t *testing.T) {
 	o := joinOptions(Project{
-		Host:        "/home/me/code/lib",
-		Name:        "lib",
+		ProjectRoot: ProjectRoot{HostRoot: "/home/me/code/lib", Name: "lib", ContainerRoot: "/workspace/lib"},
 		MaskedFiles: []string{"/home/me/code/lib/.env"},
 	})
-	o.Projects[0].MaskedFiles = []string{"/home/me/code/myproj/.env"}
-	spec := BuildSpec(o)
+	o.Layout.Main.MaskedFiles = []string{"/home/me/code/myproj/.env"}
+	spec := testForegroundCreate(o)
 	var targets []string
 	for _, m := range spec.Mounts {
 		if m.Host == "/dev/null" {
@@ -1916,21 +1971,23 @@ func TestBuildSpec_Join_MasksIsolatedPerProject(t *testing.T) {
 	}
 }
 
-func TestBuildSpec_TwoJoins_OrderAndSections(t *testing.T) {
+func TestBuildForeground_TwoJoins_OrderAndSections(t *testing.T) {
 	o := joinOptions(
 		Project{
-			Host: "/home/me/code/lib", Name: "lib", Label: "join: /home/me/code/lib (rw)",
+			ProjectRoot: ProjectRoot{HostRoot: "/home/me/code/lib", Name: "lib", ContainerRoot: "/workspace/lib"},
+			Label:       "join: /home/me/code/lib (rw)",
 			MaskedFiles: []string{"/home/me/code/lib/.env"}, ProtectConfig: true, MaskGitHooks: true,
 		},
 		Project{
-			Host: "/home/me/code/util", Name: "util", Label: "join: /home/me/code/util (ro)",
-			ReadOnly: true, MaskedDirs: []string{"/home/me/code/util/keys"},
+			ProjectRoot: ProjectRoot{HostRoot: "/home/me/code/util", Name: "util", ContainerRoot: "/workspace/util"},
+			Label:       "join: /home/me/code/util (ro)",
+			ReadOnly:    true, MaskedDirs: []string{"/home/me/code/util/keys"},
 		},
 	)
-	o.Projects[0].MaskedFiles = []string{"/home/me/code/myproj/.env"}
-	spec := BuildSpec(o)
+	o.Layout.Main.MaskedFiles = []string{"/home/me/code/myproj/.env"}
+	spec := testForegroundCreate(o)
 
-	wantSections := []Section{
+	wantSections := []section{
 		{Label: "project: /home/me/code/myproj", Start: 0},
 		{Label: "join: /home/me/code/lib (rw)", Start: 5},
 		{Label: "join: /home/me/code/util (ro)", Start: 9},
@@ -1939,11 +1996,16 @@ func TestBuildSpec_TwoJoins_OrderAndSections(t *testing.T) {
 		t.Errorf("Sections = %+v, want %+v", spec.Sections, wantSections)
 	}
 	wantTail := []Mount{
-		{Host: "/home/me/code/lib", Container: "/workspace/lib"},
-		{Host: "/home/me/code/lib/.makeslop.yaml", Container: "/workspace/lib/.makeslop.yaml", ReadOnly: true},
+		{Type: MountBind, Host: "/home/me/code/lib", Container: "/workspace/lib"},
+		{
+			Type:      MountBind,
+			Host:      "/home/me/code/lib/.makeslop.yaml",
+			Container: "/workspace/lib/.makeslop.yaml",
+			ReadOnly:  true,
+		},
 		{Type: "tmpfs", Container: "/workspace/lib/.git/hooks"},
-		{Host: "/dev/null", Container: "/workspace/lib/.env"},
-		{Host: "/home/me/code/util", Container: "/workspace/util", ReadOnly: true},
+		{Type: MountBind, Host: "/dev/null", Container: "/workspace/lib/.env"},
+		{Type: MountBind, Host: "/home/me/code/util", Container: "/workspace/util", ReadOnly: true},
 		{Type: "tmpfs", Container: "/workspace/util/keys"},
 	}
 	if got := spec.Mounts[5:]; !reflect.DeepEqual(got, wantTail) {
@@ -1957,10 +2019,10 @@ func TestBuildSpec_TwoJoins_OrderAndSections(t *testing.T) {
 	}
 }
 
-func TestBuildSpec_NoJoins_SectionsNil(t *testing.T) {
+func TestBuildForeground_NoJoins_SectionsNil(t *testing.T) {
 	o := sampleOptions()
-	o.Projects[0].Label = "project: /home/me/code/myproj"
-	if s := BuildSpec(o).Sections; s != nil {
+	o.Layout.Main.Label = "project: /home/me/code/myproj"
+	if s := testForegroundCreate(o).Sections; s != nil {
 		t.Errorf("Sections = %+v, want nil", s)
 	}
 }
@@ -1985,23 +2047,28 @@ func parseMountArg(t *testing.T, raw string) map[string]string {
 func TestDriftGuard_Joins(t *testing.T) {
 	o := joinOptions(
 		Project{
-			Host: "/home/me/code/lib", Name: "lib", Label: "join: /home/me/code/lib (rw)",
+			ProjectRoot: ProjectRoot{HostRoot: "/home/me/code/lib", Name: "lib", ContainerRoot: "/workspace/lib"},
+			Label:       "join: /home/me/code/lib (rw)",
 			MaskedFiles: []string{"/home/me/code/lib/.env"}, MaskedDirs: []string{"/home/me/code/lib/d"},
 			ProtectConfig: true, MaskGitHooks: true,
 		},
 		Project{
-			Host: "/home/me/code/util", Name: "util", Label: "join: /home/me/code/util (ro)",
-			ReadOnly: true, MaskedFiles: []string{"/home/me/code/util/.makeslop.yaml"},
+			ProjectRoot: ProjectRoot{HostRoot: "/home/me/code/util", Name: "util", ContainerRoot: "/workspace/util"},
+			Label:       "join: /home/me/code/util (ro)",
+			ReadOnly:    true, MaskedFiles: []string{"/home/me/code/util/.makeslop.yaml"},
 			ProtectConfig: true, MaskGitHooks: true,
 		},
 	)
-	o.Projects[0].ProtectConfig = true
-	o.Projects[0].MaskGitHooks = true
-	spec := BuildSpec(o)
+	o.Layout.Main.ProtectConfig = true
+	o.Layout.Main.MaskGitHooks = true
+	spec := testForegroundCreate(o)
 	argsMounts := collectMountArgs(spec.Args())
 	hc := spec.HostConfig()
 	if len(argsMounts) != len(hc.Mounts) || len(argsMounts) != len(spec.Mounts) {
-		t.Fatalf("mount count: Args=%d, HostConfig=%d, Spec=%d", len(argsMounts), len(hc.Mounts), len(spec.Mounts))
+		t.Fatalf(
+			"mount count: Args=%d, HostConfig=%d, createSpec=%d",
+			len(argsMounts), len(hc.Mounts), len(spec.Mounts),
+		)
 	}
 	for i, raw := range argsMounts {
 		f := parseMountArg(t, raw)
@@ -2022,21 +2089,21 @@ func TestDriftGuard_Joins(t *testing.T) {
 	}
 }
 
-// joinSectionSpec is a minimal hand-built Spec with two sections, so the
-// golden stays stable if BuildSpec later adds flags.
-func joinSectionSpec(mainLabel, joinLabel string) Spec {
-	return Spec{
+// joinSectionSpec is a minimal hand-built createSpec with two sections, so the
+// golden stays stable if BuildForeground later adds flags.
+func joinSectionSpec(mainLabel, joinLabel string) createSpec {
+	return createSpec{Attached: true, AutoRemove: true, Tty: true, OpenStdin: true,
 		Image:   "claudebox",
-		Command: "/bin/zsh",
+		Argv:    []string{"/bin/zsh"},
 		Workdir: "/workspace/app",
 		Mounts: []Mount{
-			{Host: "/home/me/app", Container: "/workspace/app"},
-			{Host: "/dev/null", Container: "/workspace/app/.env"},
-			{Host: "/home/me/lib", Container: "/workspace/lib", ReadOnly: true},
+			{Type: MountBind, Host: "/home/me/app", Container: "/workspace/app"},
+			{Type: MountBind, Host: "/dev/null", Container: "/workspace/app/.env"},
+			{Type: MountBind, Host: "/home/me/lib", Container: "/workspace/lib", ReadOnly: true},
 			{Type: "tmpfs", Container: "/workspace/lib/keys"},
 		},
 		Tmpfs: []string{"/tmp:size=100m"},
-		Sections: []Section{
+		Sections: []section{
 			{Label: mainLabel, Start: 0},
 			{Label: joinLabel, Start: 2},
 		},
@@ -2066,15 +2133,24 @@ func TestShellCommand_Sections_GoldenString(t *testing.T) {
 	}
 }
 
-// Sections come from BuildSpec: one separator per project, each directly
+// Sections come from BuildForeground: one separator per project, each directly
 // before that project's bind mount line.
-func TestShellCommand_Sections_FromBuildSpec(t *testing.T) {
+func TestShellCommand_Sections_FromBuildForeground(t *testing.T) {
 	o := joinOptions(
-		Project{Host: "/home/me/code/lib", Name: "lib", Label: "join: /home/me/code/lib (rw)",
-			MaskedFiles: []string{"/home/me/code/lib/.env"}, ProtectConfig: true, MaskGitHooks: true},
-		Project{Host: "/home/me/code/util", Name: "util", Label: "join: /home/me/code/util (ro)", ReadOnly: true},
+		Project{
+			ProjectRoot:   ProjectRoot{HostRoot: "/home/me/code/lib", Name: "lib", ContainerRoot: "/workspace/lib"},
+			Label:         "join: /home/me/code/lib (rw)",
+			MaskedFiles:   []string{"/home/me/code/lib/.env"},
+			ProtectConfig: true,
+			MaskGitHooks:  true,
+		},
+		Project{
+			ProjectRoot: ProjectRoot{HostRoot: "/home/me/code/util", Name: "util", ContainerRoot: "/workspace/util"},
+			Label:       "join: /home/me/code/util (ro)",
+			ReadOnly:    true,
+		},
 	)
-	lines := strings.Split(BuildSpec(o).ShellCommand(), "\n")
+	lines := strings.Split(testForegroundCreate(o).ShellCommand(), "\n")
 	wantBefore := map[string]string{
 		"  # --- project: /home/me/code/myproj ---": "  --mount type=bind,source=/home/me/code/myproj,target=/workspace/myproj-abc123 \\",
 		"  # --- join: /home/me/code/lib (rw) ---":  "  --mount type=bind,source=/home/me/code/lib,target=/workspace/lib \\",
@@ -2103,12 +2179,12 @@ func TestShellCommand_Sections_FromBuildSpec(t *testing.T) {
 // Without joins the output has no separator, even when the main Label is set.
 func TestShellCommand_NoJoins_NoSeparator(t *testing.T) {
 	o := sampleOptions()
-	o.Projects[0].Label = "project: /home/me/code/myproj"
-	labeled := BuildSpec(o).ShellCommand()
+	o.Layout.Main.Label = "project: /home/me/code/myproj"
+	labeled := testForegroundCreate(o).ShellCommand()
 	if strings.Contains(labeled, "`") {
 		t.Errorf("unexpected separator without joins:\n%s", labeled)
 	}
-	if plain := BuildSpec(sampleOptions()).ShellCommand(); labeled != plain {
+	if plain := testForegroundCreate(sampleOptions()).ShellCommand(); labeled != plain {
 		t.Errorf("Label changed output without joins:\ngot:\n%s\nwant:\n%s", labeled, plain)
 	}
 }
@@ -2160,4 +2236,12 @@ func TestShellCommand_HostileLabel_SingleLine(t *testing.T) {
 	if sep[1] != want {
 		t.Errorf("separator =\n%s\nwant\n%s", sep[1], want)
 	}
+}
+
+func testForegroundCreate(in BuildInputs) createSpec {
+	s, err := BuildForeground(in)
+	if err != nil {
+		panic(err)
+	}
+	return s.create
 }

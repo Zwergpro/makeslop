@@ -9,7 +9,7 @@ import (
 )
 
 type containerRunner interface {
-	Run(ctx context.Context, s docker.Spec) error
+	Run(ctx context.Context, s docker.ForegroundSpec) error
 }
 
 type daemonChecker interface {
@@ -27,7 +27,7 @@ type networkChecker interface {
 
 type backgroundRunner interface {
 	CheckTTY() error
-	RunBG(context.Context, docker.Spec) error
+	RunBG(context.Context, docker.BackgroundSpec) error
 	ListBG(context.Context) ([]docker.BGContainer, error)
 	AttachBG(context.Context, string) error
 	ExecBG(context.Context, string, []string) error
@@ -112,8 +112,8 @@ func (d dockerDeps) networkPreflight(ctx context.Context, n projectconfig.Networ
 // non-docker commands still work while docker commands fail clearly.
 type dockerNewErrStub struct{ err error }
 
-func (s dockerNewErrStub) Run(_ context.Context, _ docker.Spec) error { return s.err }
-func (s dockerNewErrStub) CheckDaemon(_ context.Context) error        { return s.err }
+func (s dockerNewErrStub) Run(_ context.Context, _ docker.ForegroundSpec) error { return s.err }
+func (s dockerNewErrStub) CheckDaemon(_ context.Context) error                  { return s.err }
 func (s dockerNewErrStub) ImageExists(_ context.Context, _ string) (bool, error) {
 	return false, s.err
 }
@@ -126,7 +126,7 @@ func (s dockerNewErrStub) NetworkExists(_ context.Context, _ string) (bool, erro
 
 func (s dockerNewErrStub) CheckTTY() error { return s.err }
 
-func (s dockerNewErrStub) RunBG(context.Context, docker.Spec) error { return s.err }
+func (s dockerNewErrStub) RunBG(context.Context, docker.BackgroundSpec) error { return s.err }
 
 func (s dockerNewErrStub) ListBG(context.Context) ([]docker.BGContainer, error) { return nil, s.err }
 

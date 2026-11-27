@@ -7,12 +7,14 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
 
+	"github.com/Zwergpro/makeslop/internal/cache"
 	"github.com/Zwergpro/makeslop/internal/config"
 	"github.com/Zwergpro/makeslop/internal/docker"
 	"github.com/Zwergpro/makeslop/internal/projectconfig"
@@ -61,7 +63,7 @@ func resolveEnv(env projectconfig.Env, lookup func(string) (string, bool)) []str
 	return out
 }
 
-// sandboxMountGates checks live paths before the pure BuildSpec call.
+// sandboxMountGates checks live paths before the pure BuildForeground call.
 func sandboxMountGates(workspaceRoot string) (protect, maskHooks bool) {
 	configPath := filepath.Join(workspaceRoot, projectconfig.Filename)
 	if fi, err := os.Lstat(configPath); err == nil {
@@ -132,7 +134,6 @@ func loadProject(ctx context.Context, stderr, chrome io.Writer, root string, joi
 	protect, maskHooks := sandboxMountGates(root)
 
 	return docker.Project{
-		Host:          root,
 		MaskedFiles:   mergeUniqueSorted(masked, pcfg.Excludes.Files),
 		MaskedDirs:    pcfg.Excludes.Dirs,
 		ProtectConfig: protect,
@@ -147,10 +148,8 @@ type launchOptions struct {
 }
 
 type preparedLaunch struct {
-	Spec      docker.Spec
-	Project   string
-	Network   projectconfig.Network
-	CacheDirs []cacheDir
+	Inputs docker.BuildInputs
+	Cache  cache.Plan
 }
 
 func prepareLaunch(
@@ -216,42 +215,45 @@ func prepareLaunch(
 	if err != nil {
 		return preparedLaunch{}, err
 	}
-	mainProj.Name = mainName
+	mainProj.ProjectRoot = launchRoot(mainName, workspaceRoot)
 	mainProj.Label = "project: " + workspaceRoot
-	projects := []docker.Project{mainProj}
+	layout := docker.Layout{Main: mainProj}
 
 	for _, j := range joins {
 		p, _, err := loadProject(cmd.Context(), cmd.ErrOrStderr(), chrome, j.Host, true)
 		if err != nil {
 			return preparedLaunch{}, fmt.Errorf("join %s: %w", j.Host, err)
 		}
-		p.Name = j.Name
+		p.ProjectRoot = launchRoot(j.Name, j.Host)
 		p.ReadOnly = j.ReadOnly
 		p.Label = j.label()
-		projects = append(projects, p)
+		layout.Joins = append(layout.Joins, p)
 	}
 
-	cache, err := resolveProjectCache(baseDir, projects, pcfg)
+	plan, err := resolveProjectCache(baseDir, layout, pcfg)
 	if err != nil {
 		return preparedLaunch{}, err
 	}
 
-	spec := docker.BuildSpec(docker.Options{
-		CacheMounts: cache.Mounts,
-		Projects:    projects,
+	inputs := docker.BuildInputs{
+		CacheMounts: plan.Mounts(),
+		Layout:      layout,
 		Image:       image,
-		Command:     s.Shell,
+		Shell:       s.Shell,
 		TmpDirSize:  s.TmpDirSize,
 		Env:         resolveEnv(pcfg.Env, os.LookupEnv),
-		NetworkMode: pcfg.Network.Mode,
-		Networks:    pcfg.Network.Networks,
-	})
+		Network:     pcfg.Network,
+	}
 
-	return preparedLaunch{Spec: spec, Project: mainName, Network: pcfg.Network, CacheDirs: cache.Dirs}, nil
+	return preparedLaunch{Inputs: inputs, Cache: plan}, nil
+}
+
+func launchRoot(name, host string) docker.ProjectRoot {
+	return docker.ProjectRoot{Name: name, HostRoot: host, ContainerRoot: path.Join("/workspace", name)}
 }
 
 func prepareLaunchExecution(cmd *cobra.Command, launch preparedLaunch, deps dockerDeps) error {
-	image := launch.Spec.Image
+	image := launch.Inputs.Image
 	imageFound, imageErr := deps.imageExistsPreflight(cmd.Context(), image)
 	if imageErr != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(),
@@ -263,11 +265,11 @@ func prepareLaunchExecution(cmd *cobra.Command, launch preparedLaunch, deps dock
 		return errSilent
 	}
 
-	if err := deps.networkPreflight(cmd.Context(), launch.Network); err != nil {
+	if err := deps.networkPreflight(cmd.Context(), launch.Inputs.Network); err != nil {
 		return err
 	}
 
-	return prepareCacheDirs(cmd.Context(), launch.CacheDirs)
+	return launch.Cache.Prepare(cmd.Context())
 }
 
 func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, opts launchOptions, deps dockerDeps) error {
@@ -276,8 +278,12 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, opts l
 		return err
 	}
 
+	spec, err := docker.BuildForeground(launch.Inputs)
+	if err != nil {
+		return err
+	}
 	if opts.DryRun {
-		fmt.Fprintln(cmd.OutOrStdout(), launch.Spec.ShellCommand())
+		fmt.Fprintln(cmd.OutOrStdout(), spec.ShellCommand())
 
 		return nil
 	}
@@ -286,7 +292,7 @@ func runRun(cmd *cobra.Command, ws *workspace.Workspaces, baseDir string, opts l
 		return err
 	}
 
-	if err := deps.api.Run(cmd.Context(), launch.Spec); err != nil {
+	if err := deps.api.Run(cmd.Context(), spec); err != nil {
 		if errors.Is(err, docker.ErrNoTTY) {
 			fmt.Fprintln(cmd.ErrOrStderr(),
 				"makeslop: stdin/stdout must be a TTY — run in an interactive terminal")

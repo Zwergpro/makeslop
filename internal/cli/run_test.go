@@ -17,34 +17,6 @@ import (
 	"github.com/Zwergpro/makeslop/internal/workspace"
 )
 
-// hasMountWithContainer returns true iff spec.Mounts contains a mount
-// whose Container field equals target.
-func hasMountWithContainer(mounts []docker.Mount, target string) bool {
-	_, ok := findMount(mounts, target)
-	return ok
-}
-
-// findMount returns the first mount whose Container field equals container.
-func findMount(mounts []docker.Mount, container string) (docker.Mount, bool) {
-	for _, m := range mounts {
-		if m.Container == container {
-			return m, true
-		}
-	}
-	return docker.Mount{}, false
-}
-
-// hasMountWithContainerAndHost returns true iff spec.Mounts contains a mount
-// whose Container field equals containerTarget and Host field equals hostTarget.
-func hasMountWithContainerAndHost(mounts []docker.Mount, containerTarget, hostTarget string) bool {
-	for _, m := range mounts {
-		if m.Container == containerTarget && m.Host == hostTarget {
-			return true
-		}
-	}
-	return false
-}
-
 func TestRun_NotRegistered_NoMutation(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -112,22 +84,14 @@ func TestRun_AfterInit_LaunchesDocker(t *testing.T) {
 		t.Fatalf("load settings: %v", loadErr)
 	}
 
-	// Verify fc.LastSpec carries the correct wiring from runRun → BuildSpec.
-	// Field-level assertions catch bugs where runRun passes the wrong value
-	// (e.g. wrong image, wrong project root) even when fc.Started is true.
-	got := fc.LastSpec
-	if got.Image != s.Image {
-		t.Errorf("fc.LastSpec.Image = %q, want %q", got.Image, s.Image)
-	}
-	if got.Command != s.Shell {
-		t.Errorf("fc.LastSpec.Command = %q, want %q", got.Command, s.Shell)
+	if !strings.HasSuffix(fc.LastPreview, "  "+s.Image+" \\\n  "+s.Shell) {
+		t.Errorf("expected configured image and shell in %s", fc.LastPreview)
 	}
 	// The workspace mount must bind the registered project root (resolvedPwd).
 	wantMountSource := resolvedPwd
 	wantMountTarget := "/workspace/" + filepath.Base(workspaceDir)
-	if !hasMountWithContainerAndHost(got.Mounts, wantMountTarget, wantMountSource) {
-		t.Errorf("fc.LastSpec missing workspace mount source=%q target=%q; mounts=%v",
-			wantMountSource, wantMountTarget, got.Mounts)
+	if !hasBind(fc.LastPreview, wantMountSource, wantMountTarget, false) {
+		t.Errorf("missing workspace mount in %s", fc.LastPreview)
 	}
 }
 
@@ -155,22 +119,12 @@ func TestRun_FromSubdirectory_MountsRegisteredAncestor(t *testing.T) {
 		t.Error("docker.Run must have been invoked for a registered workspace")
 	}
 
-	// fc.LastSpec must mount the registered ancestor (parent), not the subdir.
-	// Inspecting fc.LastSpec directly catches wiring bugs in runRun that would
-	// not be visible from a locally-reconstructed spec.
+	// Inspect the spec passed to Run, not a locally reconstructed layout.
 	resolvedParent := evalSymlinks(t, parent)
 	wantMountSource := resolvedParent
 	wantMountTarget := "/workspace/" + filepath.Base(workspaceDir)
-	var foundWorkspaceMount bool
-	for _, m := range fc.LastSpec.Mounts {
-		if m.Host == wantMountSource && m.Container == wantMountTarget {
-			foundWorkspaceMount = true
-			break
-		}
-	}
-	if !foundWorkspaceMount {
-		t.Errorf("fc.LastSpec missing workspace mount source=%q target=%q; mounts=%v",
-			wantMountSource, wantMountTarget, fc.LastSpec.Mounts)
+	if !hasBind(fc.LastPreview, wantMountSource, wantMountTarget, false) {
+		t.Errorf("registered ancestor mount missing in %s", fc.LastPreview)
 	}
 }
 
@@ -571,8 +525,8 @@ func TestRun_DryRun_SkipsDocker(t *testing.T) {
 	}
 }
 
-// --dry-run stdout must equal BuildSpec(opts).ShellCommand() (single source of truth).
-func TestRun_DryRun_StdoutEqualsBuildSpecShellCommand(t *testing.T) {
+// --dry-run stdout must equal BuildForeground(opts).ShellCommand() (single source of truth).
+func TestRun_DryRun_StdoutEqualsBuildForegroundShellCommand(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
 	pwd := t.TempDir()
@@ -593,16 +547,15 @@ func TestRun_DryRun_StdoutEqualsBuildSpecShellCommand(t *testing.T) {
 	}
 	// init scaffolds .makeslop.yaml ⇒ ProtectProjectConfig true; both cache groups default to true.
 	// t.TempDir() has no .git directory — MaskGitHooks stays false.
-	want := docker.BuildSpec(docker.Options{
-		Projects: []docker.Project{{
-			Host:          resolvedPwd,
-			Name:          filepath.Base(workspaceDir),
+	want := testBuildForeground(t, docker.BuildInputs{
+		Layout: docker.Layout{Main: docker.Project{
+			ProjectRoot:   launchRoot(filepath.Base(workspaceDir), resolvedPwd),
 			Label:         "project: " + resolvedPwd,
 			ProtectConfig: true,
 		}},
 
 		Image:      s.Image,
-		Command:    s.Shell,
+		Shell:      s.Shell,
 		TmpDirSize: s.TmpDirSize,
 	}).ShellCommand()
 
@@ -1000,7 +953,7 @@ func TestRun_LoadsYamlMaskedDirs_TmpfsMountInArgv(t *testing.T) {
 	}
 }
 
-// Absent .makeslop.yaml must yield the plain bridge-default BuildSpec output.
+// Absent .makeslop.yaml must yield the plain bridge-default BuildForeground output.
 func TestRun_YamlAbsentIsBitIdenticalArgv(t *testing.T) {
 	setHomeToTestParent(t)
 	baseDir := t.TempDir()
@@ -1025,15 +978,14 @@ func TestRun_YamlAbsentIsBitIdenticalArgv(t *testing.T) {
 		t.Fatalf("load settings: %v", loadErr)
 	}
 	// Absent yaml ⇒ both cache groups default to true.
-	want := docker.BuildSpec(docker.Options{
-		Projects: []docker.Project{{
-			Host:  resolvedPwd,
-			Name:  filepath.Base(workspaceDir),
-			Label: "project: " + resolvedPwd,
+	want := testBuildForeground(t, docker.BuildInputs{
+		Layout: docker.Layout{Main: docker.Project{
+			ProjectRoot: launchRoot(filepath.Base(workspaceDir), resolvedPwd),
+			Label:       "project: " + resolvedPwd,
 		}},
 
 		Image:      s.Image,
-		Command:    s.Shell,
+		Shell:      s.Shell,
 		TmpDirSize: s.TmpDirSize,
 	}).ShellCommand()
 
@@ -1277,15 +1229,14 @@ func TestRun_DryRun_DefaultIsBridge(t *testing.T) {
 	if loadErr != nil {
 		t.Fatalf("load settings: %v", loadErr)
 	}
-	want := docker.BuildSpec(docker.Options{
-		Projects: []docker.Project{{
-			Host:  resolvedPwd,
-			Name:  filepath.Base(workspaceDir),
-			Label: "project: " + resolvedPwd,
+	want := testBuildForeground(t, docker.BuildInputs{
+		Layout: docker.Layout{Main: docker.Project{
+			ProjectRoot: launchRoot(filepath.Base(workspaceDir), resolvedPwd),
+			Label:       "project: " + resolvedPwd,
 		}},
 
 		Image:      s.Image,
-		Command:    s.Shell,
+		Shell:      s.Shell,
 		TmpDirSize: s.TmpDirSize,
 	}).ShellCommand()
 	got := strings.TrimSuffix(stdout, "\n")
@@ -1716,9 +1667,9 @@ func TestRun_EnvironmentsHost_SpecEnvResolved(t *testing.T) {
 		t.Fatalf("run failed: %v; stderr=%q", err, stderr)
 	}
 
-	want := []string{"AA_STATIC=a", "MAKESLOP_TEST_SET_VAR=line1\nline2", "ZZ_STATIC=z"}
-	if !slices.Equal(fc.LastSpec.Env, want) {
-		t.Errorf("spec Env = %q, want %q", fc.LastSpec.Env, want)
+	want := "  -e AA_STATIC=a \\\n  -e 'MAKESLOP_TEST_SET_VAR=line1\nline2' \\\n  -e ZZ_STATIC=z"
+	if !strings.Contains(fc.LastPreview, want) {
+		t.Errorf("expected sorted environment with embedded newline in %s", fc.LastPreview)
 	}
 }
 
@@ -1755,24 +1706,11 @@ func TestRun_GitAndConfig_BothSandboxMounts(t *testing.T) {
 	wantConfigContainer := workspacePath + "/.makeslop.yaml"
 	wantHooksContainer := workspacePath + "/.git/hooks"
 
-	if !hasMountWithContainerAndHost(fc.LastSpec.Mounts, wantConfigContainer, filepath.Join(resolvedPwd, ".makeslop.yaml")) {
-		t.Errorf("ProtectProjectConfig mount not found in spec\nmounts: %+v", fc.LastSpec.Mounts)
-	}
-	// Verify read-only flag.
-	for _, m := range fc.LastSpec.Mounts {
-		if m.Container == wantConfigContainer && !m.ReadOnly {
-			t.Errorf("ProtectProjectConfig mount must be read-only; got ReadOnly=false")
-		}
-	}
-
-	if !hasMountWithContainer(fc.LastSpec.Mounts, wantHooksContainer) {
-		t.Errorf("MaskGitHooks tmpfs mount not found in spec\nmounts: %+v", fc.LastSpec.Mounts)
-	}
-	// Verify tmpfs type.
-	for _, m := range fc.LastSpec.Mounts {
-		if m.Container == wantHooksContainer && m.Type != "tmpfs" {
-			t.Errorf("MaskGitHooks mount type = %q, want %q", m.Type, "tmpfs")
-		}
+	configSource := filepath.Join(resolvedPwd, ".makeslop.yaml")
+	hasConfig := hasBind(fc.LastPreview, configSource, wantConfigContainer, true)
+	hasHooks := slices.Contains(previewFlags(fc.LastPreview, "--mount"), "type=tmpfs,target="+wantHooksContainer)
+	if !hasConfig || !hasHooks {
+		t.Errorf("expected read-only config and tmpfs hooks mounts in %s", fc.LastPreview)
 	}
 }
 
@@ -1803,8 +1741,8 @@ func TestRun_NoGit_NoHooksMask(t *testing.T) {
 
 	workspacePath := "/workspace/" + workspaceName
 	wantHooksContainer := workspacePath + "/.git/hooks"
-	if hasMountWithContainer(fc.LastSpec.Mounts, wantHooksContainer) {
-		t.Errorf("MaskGitHooks mount must be absent when .git does not exist; mounts: %+v", fc.LastSpec.Mounts)
+	if strings.Contains(fc.LastPreview, "target="+wantHooksContainer) {
+		t.Errorf("unexpected hooks mount: %s", fc.LastPreview)
 	}
 }
 
@@ -1836,8 +1774,8 @@ func TestRun_NoConfig_NoConfigMount(t *testing.T) {
 
 	workspacePath := "/workspace/" + workspaceName
 	wantConfigContainer := workspacePath + "/.makeslop.yaml"
-	if hasMountWithContainer(fc.LastSpec.Mounts, wantConfigContainer) {
-		t.Errorf("ProtectProjectConfig mount must be absent when .makeslop.yaml does not exist; mounts: %+v", fc.LastSpec.Mounts)
+	if strings.Contains(fc.LastPreview, "target="+wantConfigContainer) {
+		t.Errorf("unexpected config mount: %s", fc.LastPreview)
 	}
 }
 
@@ -1869,8 +1807,8 @@ func TestRun_GitFile_NoHooksMask(t *testing.T) {
 
 	workspacePath := "/workspace/" + workspaceName
 	wantHooksContainer := workspacePath + "/.git/hooks"
-	if hasMountWithContainer(fc.LastSpec.Mounts, wantHooksContainer) {
-		t.Errorf("MaskGitHooks mount must be absent when .git is a regular file (gitfile); mounts: %+v", fc.LastSpec.Mounts)
+	if strings.Contains(fc.LastPreview, "target="+wantHooksContainer) {
+		t.Errorf("unexpected hooks mount for gitfile: %s", fc.LastPreview)
 	}
 }
 
@@ -2292,8 +2230,9 @@ func TestRun_ImageFlag_OverridesSettings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run -i failed: %v; stderr=%q", err, stderr)
 	}
-	if fc.LastSpec.Image != "flag-img:1" {
-		t.Errorf("LastSpec.Image = %q, want %q", fc.LastSpec.Image, "flag-img:1")
+
+	if !strings.Contains(fc.LastPreview, "\n  flag-img:1 \\\n") {
+		t.Errorf("missing flag image in %s", fc.LastPreview)
 	}
 	if fc.ImageChecked != "flag-img:1" {
 		t.Errorf("image preflight checked %q, want %q", fc.ImageChecked, "flag-img:1")
@@ -2316,8 +2255,9 @@ func TestRun_ImageFlag_NoSettingsImage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run -i failed: %v; stderr=%q", err, stderr)
 	}
-	if fc.LastSpec.Image != "flag-img" {
-		t.Errorf("LastSpec.Image = %q, want %q", fc.LastSpec.Image, "flag-img")
+
+	if !strings.Contains(fc.LastPreview, "\n  flag-img \\\n") {
+		t.Errorf("missing flag image in %s", fc.LastPreview)
 	}
 	if fc.ImageChecked != "flag-img" {
 		t.Errorf("image preflight checked %q, want %q", fc.ImageChecked, "flag-img")
@@ -2622,16 +2562,13 @@ func TestRun_NetworkFlowsIntoSpec(t *testing.T) {
 	if _, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fc), "run"); err != nil {
 		t.Fatalf("run failed: %v; stderr=%q", err, stderr)
 	}
-	if fc.LastSpec.NetworkMode != "" || !slices.Equal(fc.LastSpec.Networks, []string{"a", "b"}) {
-		t.Errorf("spec network = (%q, %q), want (\"\", [a b])", fc.LastSpec.NetworkMode, fc.LastSpec.Networks)
-	}
-	if got := string(fc.LastSpec.HostConfig().NetworkMode); got != "a" {
-		t.Errorf("HostConfig.NetworkMode = %q, want a", got)
+
+	if got := previewFlags(fc.LastPreview, "--network"); !slices.Equal(got, []string{"a", "b"}) {
+		t.Errorf("networks = %q, want [a b]", got)
 	}
 }
 
-// Acceptance: network_mode "container:proxy" reaches the executed HostConfig
-// with no NetworkingConfig, and matches what --dry-run prints.
+// The spec passed to Run must request the same container network as the preview.
 func TestRun_NetworkContainerProxy_DryRunMatchesExecuted(t *testing.T) {
 	baseDir := setupNetworkRun(t, "network_mode: \"container:proxy\"\n")
 
@@ -2653,11 +2590,9 @@ func TestRun_NetworkContainerProxy_DryRunMatchesExecuted(t *testing.T) {
 	if _, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fc), "run"); err != nil {
 		t.Fatalf("run failed: %v; stderr=%q", err, stderr)
 	}
-	if got := string(fc.LastSpec.HostConfig().NetworkMode); got != printed {
-		t.Errorf("executed HostConfig.NetworkMode = %q, printed --network %q", got, printed)
-	}
-	if nc := fc.LastSpec.NetworkingConfig(); nc != nil {
-		t.Errorf("NetworkingConfig = %v, want nil for container mode", nc)
+
+	if stdout != fc.LastPreview+"\n" {
+		t.Errorf("preview differs from spec passed to Run: %s", fc.LastPreview)
 	}
 }
 
@@ -2678,11 +2613,9 @@ func TestRun_NoNetworkKeys_NoNetworkFlag(t *testing.T) {
 	if _, stderr, err := runCmdWithDeps(t, baseDir, depsFrom(fc), "run"); err != nil {
 		t.Fatalf("run failed: %v; stderr=%q", err, stderr)
 	}
-	if got := fc.LastSpec.HostConfig().NetworkMode; got != "" {
-		t.Errorf("HostConfig.NetworkMode = %q, want empty", got)
-	}
-	if nc := fc.LastSpec.NetworkingConfig(); nc != nil {
-		t.Errorf("NetworkingConfig = %v, want nil", nc)
+
+	if got := previewFlags(fc.LastPreview, "--network"); len(got) != 0 {
+		t.Errorf("unexpected networks: %v", got)
 	}
 }
 
@@ -2839,15 +2772,13 @@ func TestRun_Join_ReadOnlyVsReadWrite(t *testing.T) {
 			if err != nil {
 				t.Fatalf("run -j failed: %v; stderr=%q", err, stderr)
 			}
-			bind, ok := findMount(fc.LastSpec.Mounts, "/workspace/lib")
-			if !ok {
-				t.Fatalf("join bind missing; mounts=%+v", fc.LastSpec.Mounts)
+
+			if !hasBind(fc.LastPreview, f.lib, "/workspace/lib", tc.wantRO) {
+				t.Errorf("join bind missing or wrong mode: %s", fc.LastPreview)
 			}
-			if bind.Host != f.lib || bind.ReadOnly != tc.wantRO {
-				t.Errorf("join bind = %+v, want host %s readonly=%v", bind, f.lib, tc.wantRO)
-			}
-			_, hasCfg := findMount(fc.LastSpec.Mounts, "/workspace/lib/.makeslop.yaml")
-			_, hasHooks := findMount(fc.LastSpec.Mounts, "/workspace/lib/.git/hooks")
+
+			hasCfg := strings.Contains(fc.LastPreview, "target=/workspace/lib/.makeslop.yaml")
+			hasHooks := strings.Contains(fc.LastPreview, "target=/workspace/lib/.git/hooks")
 			if hasCfg != tc.wantSandbox || hasHooks != tc.wantSandbox {
 				t.Errorf("sandbox mounts: config=%v hooks=%v, want %v", hasCfg, hasHooks, tc.wantSandbox)
 			}
@@ -2856,11 +2787,14 @@ func TestRun_Join_ReadOnlyVsReadWrite(t *testing.T) {
 				mode = "ro"
 			}
 			wantSections := []string{"project: " + f.app, "join: " + f.lib + " (" + mode + ")"}
-			if got := sectionLabels(fc.LastSpec.Sections); !slices.Equal(got, wantSections) {
+			if got := sectionLabels(fc.LastPreview); !slices.Equal(got, wantSections) {
 				t.Errorf("Section labels = %q, want %q", got, wantSections)
 			}
-			if want := mainWorkspacePath(t, f.baseDir, f.app); fc.LastSpec.Workdir != want || fc.LastSpec.Mounts[0].Container != want {
-				t.Errorf("Workdir = %q, main bind = %q, want both %q", fc.LastSpec.Workdir, fc.LastSpec.Mounts[0].Container, want)
+
+			want := mainWorkspacePath(t, f.baseDir, f.app)
+			hasWorkdir := slices.Equal(previewFlags(fc.LastPreview, "--workdir"), []string{want})
+			if !hasWorkdir || !hasBind(fc.LastPreview, f.app, want, false) {
+				t.Errorf("expected workdir and main bind at %q: %s", want, fc.LastPreview)
 			}
 		})
 	}
@@ -2886,10 +2820,11 @@ func TestRun_Join_MaskingIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run -j failed: %v; stderr=%q", err, stderr)
 	}
-	mainPath := fc.LastSpec.Workdir
+
+	mainPath := mainWorkspacePath(t, f.baseDir, f.app)
 	masked := func(container string) bool {
-		m, ok := findMount(fc.LastSpec.Mounts, container)
-		return ok && (m.Host == "/dev/null" || m.Type == "tmpfs")
+		return hasBind(fc.LastPreview, "/dev/null", container, false) ||
+			slices.Contains(previewFlags(fc.LastPreview, "--mount"), "type=tmpfs,target="+container)
 	}
 	want := map[string]bool{
 		mainPath + "/a.env":             true,
@@ -2907,7 +2842,7 @@ func TestRun_Join_MaskingIsolation(t *testing.T) {
 	}
 	for target, w := range want {
 		if got := masked(target); got != w {
-			t.Errorf("masked(%s) = %v, want %v; mounts=%+v", target, got, w, fc.LastSpec.Mounts)
+			t.Errorf("masked(%s) = %v, want %v; mounts=%+v", target, got, w, fc.LastPreview)
 		}
 	}
 	if !strings.Contains(stderr, "makeslop: masked 1 secret file(s)\n") {
@@ -3042,9 +2977,9 @@ func TestRun_Join_EnvAndNetworkIgnored(t *testing.T) {
 			if err != nil {
 				t.Fatalf("run -j failed: %v; stderr=%q", err, stderr)
 			}
-			if fc.LastSpec.Env != nil || fc.LastSpec.NetworkMode != "" || fc.LastSpec.Networks != nil {
-				t.Errorf("join env/network must be ignored; Env=%v NetworkMode=%q Networks=%v",
-					fc.LastSpec.Env, fc.LastSpec.NetworkMode, fc.LastSpec.Networks)
+
+			if len(previewFlags(fc.LastPreview, "-e")) != 0 || len(previewFlags(fc.LastPreview, "--network")) != 0 {
+				t.Errorf("join env/network must be ignored: %s", fc.LastPreview)
 			}
 			if len(fc.NetworksInspected) > 0 || len(fc.ContainersInspected) > 0 {
 				t.Errorf("join network settings must not be preflighted; networks=%v containers=%v",
@@ -3089,10 +3024,12 @@ func TestRun_Join_ResolveErrorBeforeDaemon(t *testing.T) {
 	}
 }
 
-func sectionLabels(secs []docker.Section) []string {
+func sectionLabels(preview string) []string {
 	var out []string
-	for _, s := range secs {
-		out = append(out, s.Label)
+	for line := range strings.SplitSeq(preview, "\n") {
+		if label, ok := strings.CutPrefix(line, "  # --- "); ok {
+			out = append(out, strings.TrimSuffix(label, " ---"))
+		}
 	}
 	return out
 }
@@ -3170,8 +3107,9 @@ func TestRun_Join_RelativeToCwdSubdir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run -j ../../lib from app/sub failed: %v; stderr=%q", err, stderr)
 	}
-	if bind, ok := findMount(fc.LastSpec.Mounts, "/workspace/lib"); !ok || bind.Host != f.lib {
-		t.Errorf("join bind = %+v (found=%v), want host %s", bind, ok, f.lib)
+
+	if !hasBind(fc.LastPreview, f.lib, "/workspace/lib", false) {
+		t.Errorf("missing relative join in %s", fc.LastPreview)
 	}
 
 	fc = newFakeDocker(0, true)
@@ -3225,8 +3163,9 @@ func TestRun_Join_OutOfHome(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run --out-of-home -j failed: %v; stderr=%q", err, stderr)
 	}
-	if bind, ok := findMount(fc.LastSpec.Mounts, "/workspace/ext"); !ok || bind.Host != outside {
-		t.Errorf("join bind = %+v (found=%v), want host %s", bind, ok, outside)
+
+	if !hasBind(fc.LastPreview, outside, "/workspace/ext", false) {
+		t.Errorf("missing out-of-home join in %s", fc.LastPreview)
 	}
 }
 
@@ -3241,17 +3180,16 @@ func TestRun_Join_TwoJoins_OrderAndSecondLoadError(t *testing.T) {
 		t.Fatalf("run with two joins failed: %v; stderr=%q", err, stderr)
 	}
 	wantLabels := []string{"project: " + f.app, "join: " + tools + " (ro)", "join: " + f.lib + " (rw)"}
-	if got := sectionLabels(fc.LastSpec.Sections); !slices.Equal(got, wantLabels) {
+	if got := sectionLabels(fc.LastPreview); !slices.Equal(got, wantLabels) {
 		t.Errorf("Section labels = %q, want %q", got, wantLabels)
 	}
-	secs := fc.LastSpec.Sections
-	if len(secs) == 3 {
-		if m := fc.LastSpec.Mounts[secs[1].Start]; m.Container != "/workspace/tools" || !m.ReadOnly {
-			t.Errorf("section 1 starts at %+v, want ro /workspace/tools bind", m)
-		}
-		if m := fc.LastSpec.Mounts[secs[2].Start]; m.Container != "/workspace/lib" || m.ReadOnly {
-			t.Errorf("section 2 starts at %+v, want rw /workspace/lib bind", m)
-		}
+
+	mounts := previewFlags(fc.LastPreview, "--mount")
+	toolsIndex := slices.Index(mounts, bindFlag(tools, "/workspace/tools", true))
+	libIndex := slices.Index(mounts, bindFlag(f.lib, "/workspace/lib", false))
+
+	if toolsIndex < 0 || libIndex <= toolsIndex {
+		t.Errorf("want ro tools before rw lib: %v", mounts)
 	}
 
 	// Second join broken: the first loads fine, the error names the second.

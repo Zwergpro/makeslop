@@ -27,7 +27,7 @@ type fakeDocker struct {
 	ImageMissing bool  // ImageExists returns (false, nil)
 	ImageErr     error // ImageExists returns (false, err) unless ImageMissing
 
-	LastSpec docker.Spec // set when Run is called (isTTY=true)
+	LastPreview string
 
 	DaemonChecked bool   // set when CheckDaemon is called
 	OnCheckDaemon func() // when set, called by CheckDaemon (simulates changes during preflight)
@@ -55,7 +55,7 @@ func newFakeDocker(exitCode int, isTTY bool) *fakeDocker {
 
 func (*fakeDocker) CheckTTY() error { return nil }
 
-func (*fakeDocker) RunBG(context.Context, docker.Spec) error { return nil }
+func (*fakeDocker) RunBG(context.Context, docker.BackgroundSpec) error { return nil }
 
 func (*fakeDocker) ListBG(context.Context) ([]docker.BGContainer, error) { return nil, nil }
 
@@ -71,12 +71,13 @@ func (*fakeDocker) RestartBG(context.Context, string) error { return nil }
 
 func (*fakeDocker) RemoveBG(context.Context, string) error { return nil }
 
-func (f *fakeDocker) Run(_ context.Context, s docker.Spec) error {
+func (f *fakeDocker) Run(_ context.Context, s docker.ForegroundSpec) error {
 	if !f.isTTY {
 		return docker.ErrNoTTY
 	}
 	f.Started = true
-	f.LastSpec = s
+	f.LastPreview = s.ShellCommand()
+
 	if f.exitCode != 0 {
 		return &docker.ExitError{Code: f.exitCode}
 	}

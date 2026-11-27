@@ -19,13 +19,14 @@ const bgTestUUID = "018009ac-5fec-4c37-891a-244c91beda77"
 
 type bgCLIProbe struct {
 	*fakeDocker
-	spec                          docker.Spec
+	bgPreview                     string
 	calls                         []string
 	rows                          []docker.BGContainer
 	argv                          []string
 	uuid                          string
 	ttyErr, errorRun, errorAttach error
 	beforeAttach                  func(string)
+	beforeRun                     func(context.Context)
 }
 
 func (p *bgCLIProbe) CheckTTY() error {
@@ -34,11 +35,20 @@ func (p *bgCLIProbe) CheckTTY() error {
 	return p.ttyErr
 }
 
-func (p *bgCLIProbe) RunBG(_ context.Context, s docker.Spec) error {
+func (p *bgCLIProbe) RunBG(ctx context.Context, s docker.BackgroundSpec) error {
 	p.calls = append(p.calls, "run")
-	p.spec = s
 
-	return p.errorRun
+	if p.beforeRun != nil {
+		p.beforeRun(ctx)
+	}
+
+	if p.errorRun != nil {
+		return p.errorRun
+	}
+
+	p.bgPreview = s.ShellCommand()
+
+	return nil
 }
 
 func (p *bgCLIProbe) ListBG(context.Context) ([]docker.BGContainer, error) {
@@ -97,27 +107,98 @@ func (p *bgCLIProbe) RestartBG(_ context.Context, id string) error {
 type bgPolicyProbe struct {
 	*bgCLIProbe
 	checks []string
+	trace  []string
+}
+
+func (p *bgPolicyProbe) CheckTTY() error {
+	p.trace = append(p.trace, "tty")
+
+	return p.bgCLIProbe.CheckTTY()
+}
+
+func (p *bgPolicyProbe) RunBG(ctx context.Context, s docker.BackgroundSpec) error {
+	p.trace = append(p.trace, "run")
+
+	return p.bgCLIProbe.RunBG(ctx, s)
+}
+
+func (p *bgPolicyProbe) AttachBG(ctx context.Context, id string) error {
+	p.trace = append(p.trace, "attach")
+
+	return p.bgCLIProbe.AttachBG(ctx, id)
 }
 
 func (p *bgPolicyProbe) CheckDaemon(ctx context.Context) error {
 	p.checks = append(p.checks, "daemon")
+	p.trace = append(p.trace, "daemon")
 
 	return p.fakeDocker.CheckDaemon(ctx)
 }
 
 func (p *bgPolicyProbe) ImageExists(ctx context.Context, image string) (bool, error) {
 	p.checks = append(p.checks, "image")
+	p.trace = append(p.trace, "image")
 
 	return p.fakeDocker.ImageExists(ctx, image)
 }
 
 func (p *bgPolicyProbe) NetworkExists(ctx context.Context, name string) (bool, error) {
 	p.checks = append(p.checks, "network:"+name)
+	p.trace = append(p.trace, "network:"+name)
 
 	return p.fakeDocker.NetworkExists(ctx, name)
 }
 
 func TestBGCommands(t *testing.T) {
+	t.Run("attach runs after preflight and cache preparation", func(t *testing.T) {
+		base, root, ws := runCacheFixture(t)
+		cacheDir := filepath.Join(ws, "docs")
+		writeCacheConfig(t, root, "cache:\n  local: [docs]\nnetworks: [devnet]\n")
+		p := &bgPolicyProbe{bgCLIProbe: &bgCLIProbe{fakeDocker: newFakeDocker(0, true), ttyErr: docker.ErrNoTTY}}
+		p.Networks = map[string]bool{"devnet": true}
+		deps := dockerDeps{api: p}
+		out, _, err := runCmdWithDeps(t, base, deps, "bg", "run", "--attach", "-n")
+
+		if err != nil || !strings.Contains(out, "# Example UUID; no container was created.") || len(p.trace) != 0 {
+			t.Fatalf("preview: stdout=%q trace=%v err=%v", out, p.trace, err)
+		}
+		if _, err := os.Stat(cacheDir); !os.IsNotExist(err) {
+			t.Fatalf("preview touched cache: %v", err)
+		}
+
+		p.ttyErr = nil
+		p.ImageErr = errors.New("inspect failed")
+		out, _, err = runCmdWithDeps(t, base, deps, "bg", "run", "--attach")
+
+		if err == nil || out != "" || !slices.Equal(p.trace, []string{"daemon", "tty", "image"}) {
+			t.Fatalf("failed preflight: stdout=%q trace=%v err=%v", out, p.trace, err)
+		}
+		if _, err := os.Stat(cacheDir); !os.IsNotExist(err) {
+			t.Fatalf("failed preflight touched cache: %v", err)
+		}
+
+		p.ImageErr, p.trace = nil, nil
+		var stdout, stderr bytes.Buffer
+		p.beforeRun = func(ctx context.Context) {
+			if _, ok := ctx.Deadline(); ok || p.NetworkCtxNoDeadline {
+				t.Error("preflight deadline should apply only to preflight")
+			}
+			if info, err := os.Stat(cacheDir); err != nil || !info.IsDir() {
+				t.Errorf("managed cache not prepared at entry to RunBG: %v", err)
+			}
+		}
+		p.beforeAttach = func(id string) {
+			if !strings.Contains(stderr.String(), id+"\n") {
+				t.Errorf("recovery ID missing before attach: %q", stderr.String())
+			}
+		}
+		code := runWithExitCodeAndDeps(base, &stdout, &stderr, deps, []string{"bg", "run", "--attach", "--quiet"})
+		want := []string{"daemon", "tty", "image", "network:devnet", "run", "attach"}
+
+		if code != 0 || stdout.Len() != 0 || !slices.Equal(p.trace, want) {
+			t.Fatalf("launch: code=%d stdout=%q stderr=%q trace=%v", code, &stdout, &stderr, p.trace)
+		}
+	})
 	t.Run("shared policy and preflight", func(t *testing.T) {
 		base, root, ws := runCacheFixture(t)
 		cache := filepath.Join(ws, "docs")
@@ -155,8 +236,10 @@ func TestBGCommands(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		if !slices.Equal(p.spec.Mounts, p.LastSpec.Mounts) || !slices.Equal(p.spec.Networks, p.LastSpec.Networks) {
-			t.Fatalf("foreground/background policy differs: %+v / %+v", p.spec.Mounts, p.LastSpec.Mounts)
+		for _, flag := range []string{"--mount", "--network"} {
+			if !slices.Equal(previewFlags(p.bgPreview, flag), previewFlags(p.LastPreview, flag)) {
+				t.Errorf("foreground/background %s values differ", flag)
+			}
 		}
 	})
 	t.Run("creation", func(t *testing.T) {
@@ -165,7 +248,8 @@ func TestBGCommands(t *testing.T) {
 		base := t.TempDir()
 		initWithImage(t, base)
 
-		if _, _, err := runCmd(t, base, "config", "set", "shell", "/bin/fish"); err != nil {
+		const shell = "/bin/fish"
+		if _, _, err := runCmd(t, base, "config", "set", "shell", shell); err != nil {
 			t.Fatal(err)
 		}
 
@@ -178,21 +262,12 @@ func TestBGCommands(t *testing.T) {
 			t.Fatalf("run: %q / %q / %v, %v", out, stderr, err, p.calls)
 		}
 
-		cfg := p.spec.ContainerConfig()
-		const shell = "/bin/fish"
-
-		if p.spec.Command != shell || cfg.Labels["io.makeslop.bg.shell"] != shell {
-			t.Fatalf("shell: spec=%q labels=%v", p.spec.Command, cfg.Labels)
-		}
-
-		if !slices.Equal(cfg.Cmd, []string{"zmx", "attach", "agent", shell}) {
-			t.Fatalf("command: %v", cfg.Cmd)
-		}
-
-		privateSocket := slices.Contains(cfg.Env, "ZMX_DIR=/tmp/makeslop-zmx") &&
-			!slices.Contains(cfg.Env, "ZMX_DIR=/tmp/overridden")
-		if !slices.Contains(cfg.Env, "COLOR=blue") || !privateSocket {
-			t.Fatalf("cfg: %+v", cfg)
+		wantName := "makeslop-" + strings.TrimSpace(out)
+		hasName := slices.Contains(previewFlags(p.bgPreview, "--name"), wantName)
+		hasShell := strings.HasSuffix(p.bgPreview, "  "+shell)
+		hasEnv := slices.Contains(previewFlags(p.bgPreview, "-e"), "COLOR=blue")
+		if !hasName || !hasShell || !hasEnv {
+			t.Fatalf("background spec does not match launch: %s", p.bgPreview)
 		}
 
 		another, _, err := runCmdWithDeps(t, base, deps, "bg", "run")

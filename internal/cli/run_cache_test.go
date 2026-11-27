@@ -1,13 +1,25 @@
 package cli
 
 import (
+	"bytes"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/Zwergpro/makeslop/internal/projectconfig"
 )
+
+func assertAbsent(t *testing.T, p string) {
+	t.Helper()
+
+	if _, err := os.Lstat(p); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected absent %s, got %v", p, err)
+	}
+}
 
 func runCacheFixture(t *testing.T) (base, root, workspaceDir string) {
 	t.Helper()
@@ -26,6 +38,27 @@ func writeCacheConfig(t *testing.T, root, text string) {
 
 	if err := os.WriteFile(filepath.Join(root, projectconfig.Filename), []byte(text), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestRun_QuietWarningBeforeCacheError(t *testing.T) {
+	skipNonPOSIX(t, "symlinks require POSIX")
+	base, root, _ := runCacheFixture(t)
+	writeFile(t, filepath.Join(root, "secret"), "not real credentials")
+
+	if err := os.Symlink("secret", filepath.Join(root, "secret.env")); err != nil {
+		t.Fatal(err)
+	}
+
+	writeCacheConfig(t, root, "exclude:\n  scan:\n    patterns: ['*.env']\ncache:\n  static: [./missing:/opt/cache]\n")
+	f := newFakeDocker(0, true)
+	var stderr bytes.Buffer
+	code := runWithExitCodeAndDeps(base, io.Discard, &stderr, dockerDeps{api: f}, []string{"run", "--quiet"})
+	text := stderr.String()
+	warning, failure := strings.Index(text, "NOT masked"), strings.Index(text, "cache.static[0]")
+
+	if code != 1 || f.Started || warning < 0 || failure <= warning || strings.Count(text, "cache.static[0]") != 1 {
+		t.Fatalf("exit=%d started=%v stderr=%q", code, f.Started, text)
 	}
 }
 
@@ -54,8 +87,8 @@ func TestRun_ConfiguredCacheMounts(t *testing.T) {
 		{host: ws + "/docs/", target: "/workspace/" + filepath.Base(ws) + "/docs/"},
 		{host: file, target: "/home/user/.settings.json"},
 	} {
-		if !hasMountWithContainerAndHost(fc.LastSpec.Mounts, want.target, want.host) {
-			t.Fatalf("missing %#v in %#v", want, fc.LastSpec.Mounts)
+		if !hasBind(fc.LastPreview, want.host, want.target, false) {
+			t.Fatalf("missing %#v in %s", want, fc.LastPreview)
 		}
 	}
 }
@@ -74,17 +107,8 @@ func TestRun_CacheRelativeStatic(t *testing.T) {
 				t.Fatal(err)
 			}
 			wantTarget := "/workspace/" + filepath.Base(ws) + "/" + filepath.ToSlash(filepath.Clean(target))
-			found := false
-			for _, mount := range fc.LastSpec.Mounts {
-				if mount.Container == wantTarget {
-					found = true
-					if mount.Host != root+"/source.json" || !mount.ReadOnly {
-						t.Fatalf("wrong mount: %#v", mount)
-					}
-				}
-			}
-			if !found {
-				t.Fatalf("missing target %s", wantTarget)
+			if !hasBind(fc.LastPreview, root+"/source.json", wantTarget, true) {
+				t.Fatalf("missing read-only bind at %s: %s", wantTarget, fc.LastPreview)
 			}
 		})
 	}
@@ -131,6 +155,14 @@ func TestRun_CacheModes(t *testing.T) {
 			if err != nil {
 				t.Fatalf("%v %s", err, stderr)
 			}
+
+			preview := fc.LastPreview
+
+			if dryRun {
+				preview = stdout
+			}
+
+			mounts := previewFlags(preview, "--mount")
 			rootTarget := "/workspace/" + filepath.Base(ws)
 			for _, tc := range []struct {
 				target   string
@@ -146,35 +178,18 @@ func TestRun_CacheModes(t *testing.T) {
 				{target: "/opt/tools/"},
 				{target: "/opt/default"},
 			} {
-				if dryRun {
-					found := false
-					for _, line := range strings.Split(stdout, "\n") {
-						mountLine := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(line), "\\"))
-						if strings.Contains(mountLine, "target="+tc.target+",") || strings.HasSuffix(mountLine, "target="+tc.target) {
-							found = true
-							if strings.Contains(line, ",readonly") != tc.readOnly {
-								t.Errorf("wrong mode for %s: %s", tc.target, line)
-							}
-						}
-					}
-					if !found {
-						t.Errorf("missing target %s in %s", tc.target, stdout)
-					}
-					continue
+				suffix := ",target=" + tc.target
+
+				if tc.readOnly {
+					suffix += ",readonly"
 				}
-				found := false
-				for _, mount := range fc.LastSpec.Mounts {
-					if mount.Container == tc.target {
-						found = true
-						if mount.ReadOnly != tc.readOnly {
-							t.Errorf("wrong mode: %#v", mount)
-						}
-					}
-				}
-				if !found {
-					t.Errorf("missing target %s", tc.target)
+
+				hasMount := slices.ContainsFunc(mounts, func(m string) bool { return strings.HasSuffix(m, suffix) })
+				if !hasMount {
+					t.Errorf("missing mount ending in %q: %v", suffix, mounts)
 				}
 			}
+
 			for _, dir := range []string{
 				base + "/shared/shared-ro", base + "/shared/shared-rw", base + "/shared/shared-default",
 				ws + "/local-ro", ws + "/local-rw", ws + "/local-default",
@@ -269,7 +284,7 @@ func TestRun_CacheDryRunMatchesLaunch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if out != fc.LastSpec.ShellCommand()+"\n" {
+	if out != fc.LastPreview+"\n" {
 		t.Fatal("dry-run/launch drift")
 	}
 }
@@ -304,8 +319,8 @@ func TestRun_CacheFromSubdirectory(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	if !hasMountWithContainerAndHost(fc.LastSpec.Mounts, "/opt/tools/", root+"/tools/") {
-		t.Fatalf("wrong relative bind: %#v", fc.LastSpec.Mounts)
+	if !hasBind(fc.LastPreview, root+"/tools/", "/opt/tools/", false) {
+		t.Fatalf("wrong relative bind: %s", fc.LastPreview)
 	}
 }
 
@@ -381,17 +396,12 @@ func TestRun_CacheScanMaskOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	overlay, mask := -1, -1
-	for i, mount := range fc.LastSpec.Mounts {
-		if mount.Host == ws+"/docs/" {
-			overlay = i
-		}
-		if mount.Host == "/dev/null" && mount.Container == "/workspace/"+filepath.Base(ws)+"/docs/key.pem" {
-			mask = i
-		}
-	}
+	mounts := previewFlags(fc.LastPreview, "--mount")
+	docs := "/workspace/" + filepath.Base(ws) + "/docs/"
+	overlay := slices.Index(mounts, bindFlag(ws+"/docs/", docs, false))
+	mask := slices.Index(mounts, bindFlag("/dev/null", docs+"key.pem", false))
 	if overlay < 0 || mask <= overlay {
-		t.Fatalf("mask order: %#v", fc.LastSpec.Mounts)
+		t.Fatalf("mask order: %v", mounts)
 	}
 }
 
@@ -411,8 +421,8 @@ func TestRun_NoImplicitCaches(t *testing.T) {
 			); err != nil {
 				t.Fatal(err)
 			}
-			for _, mount := range fc.LastSpec.Mounts {
-				if strings.HasPrefix(mount.Container, "/home/user/") || strings.HasPrefix(mount.Host, ws+"/") {
+			for _, mount := range previewFlags(fc.LastPreview, "--mount") {
+				if strings.Contains(mount, ",target=/home/user/") || strings.Contains(mount, ",source="+ws+"/") {
 					t.Fatalf("implicit mount %#v", mount)
 				}
 			}
